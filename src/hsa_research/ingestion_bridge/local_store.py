@@ -645,6 +645,16 @@ class SQLiteResearchRepository(ResearchRepository):
             object_id=row["object_id"],
         )
 
+    def replace_document_chunks(self, object_id: UUID, chunks: list[DocumentChunk]) -> list[DocumentChunk]:
+        """Replace all chunks for an object and clear derived chunk-level rows."""
+
+        object_id_text = str(object_id)
+        self.conn.execute("delete from entity_mentions where object_id = ?", (object_id_text,))
+        self.conn.execute("delete from text_embeddings where object_id = ?", (object_id_text,))
+        self.conn.execute("delete from document_chunks where object_id = ?", (object_id_text,))
+        self.conn.commit()
+        return [self.upsert_document_chunk(chunk) for chunk in chunks]
+
     def list_document_chunks(
         self,
         object_id: UUID | None = None,

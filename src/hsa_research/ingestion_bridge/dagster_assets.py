@@ -56,6 +56,7 @@ _STRUCTURED_SOURCE_COUNT_TABLE_COLUMNS = (
     "passes_minimum_bar",
     "claim_status",
     "claim_types",
+    "full_text_qa",
 )
 _SOURCE_HEALTH_TABLE_COLUMNS = (
     "source_key",
@@ -72,6 +73,7 @@ _SOURCE_HEALTH_TABLE_COLUMNS = (
     "risks",
     "recommended_actions",
     "claim_metadata",
+    "full_text_qa",
 )
 _ENTITY_RESOLUTION_TABLE_COLUMNS = (
     "source_key",
@@ -745,7 +747,10 @@ if dg is not None:
         failed_sources = [
             report["source_key"]
             for report in source_reports
-            if not _has_minimum_ingested_source_outputs(report)
+            if (
+                not _has_minimum_ingested_source_outputs(report)
+                or not _has_required_full_text_outputs(report)
+            )
         ]
         errors = literature_full_text_refresh_report.get("errors", [])
         return dg.AssetCheckResult(
@@ -1061,3 +1066,8 @@ else:
 def _has_minimum_ingested_source_outputs(report: dict) -> bool:
     qa = report.get("qa", {})
     return all(qa.get(field, 0) >= 1 for field in ("raw_records", "research_objects", "document_chunks", "claims"))
+
+
+def _has_required_full_text_outputs(report: dict) -> bool:
+    full_text_qa = report.get("full_text_qa")
+    return full_text_qa is None or bool(full_text_qa.get("passes_full_text_bar"))

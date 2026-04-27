@@ -372,8 +372,14 @@ Sources and per-query limits:
 Required QA output:
 - Every full-text source has raw records, research objects, document chunks, and
   claims.
-- Full-text chunks use `section_label=full_text`.
+- Title/abstract text is chunked as `section_label=title_abstract`; licensed
+  body text is chunked separately as `section_label=full_text`.
+- `full_text_qa.passes_full_text_bar` is true, with at least one persisted
+  `full_text` body chunk and at least one current-run `full_text` body chunk.
 - No ingestion, extraction, or curation errors.
+- Re-ingesting a refreshed object replaces its prior chunks and clears derived
+  chunk-level embeddings and entity mentions, so stale body chunks cannot make a
+  failed refresh look healthy.
 
 Dagster schedule:
 - `literature_full_text_weekly_schedule`

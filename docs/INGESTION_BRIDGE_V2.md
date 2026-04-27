@@ -99,6 +99,12 @@ A research object is any durable source-derived object that can produce evidence
 
 Objects can have many identifiers. The resolver links DOI, PMID, PMCID, OpenAlex ID, NCT ID, AVMA study ID, GEO/SRA accession, PubChem CID, ChEMBL ID, UniProt accession, PDB ID, AlphaFold ID, and internal IDs.
 
+Full-text sources chunk title/abstract text and licensed article body text as
+separate sections. `title_abstract` chunks stay useful for metadata triage, but
+`full_text` chunks must come from body text only. Full-text QA requires both
+persisted body chunks and current-run body chunks, and object refreshes replace
+old chunk rows plus derived chunk-level embeddings and entity mentions.
+
 ## Retrieval Foundation
 
 Retrieval starts as a bounded storage contract, not a user-facing tool. The

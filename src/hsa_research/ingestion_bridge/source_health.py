@@ -6,8 +6,8 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 
-from .source_sets import ALL_API_SOURCE_KEYS, TRIAGE_ONLY_SOURCE_KEYS
-from .structured_orchestration import structured_source_qa
+from .source_sets import ALL_API_SOURCE_KEYS, LITERATURE_FULL_TEXT_SOURCE_KEYS, TRIAGE_ONLY_SOURCE_KEYS
+from .structured_orchestration import full_text_source_qa, structured_source_qa
 
 
 COUNT_FIELDS = ("raw_records", "research_objects", "document_chunks", "claims")
@@ -79,6 +79,11 @@ def build_source_health(
 
     triage_only = source_key in TRIAGE_ONLY_SOURCE_KEYS
     runtime = structured_source_qa(repository, source_key, sample_limit=sample_limit)
+    if source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS:
+        runtime = {
+            **runtime,
+            "full_text_qa": full_text_source_qa(repository, source_key),
+        }
     claim_metadata = _claim_metadata_summary(repository, source_key, limit=metadata_claim_limit)
     health_score, signals, risks, recommended_actions = _score_source(
         runtime,
@@ -87,7 +92,8 @@ def build_source_health(
         triage_only=triage_only,
     )
     has_required_counts = _has_required_counts(runtime, require_claims=require_claims)
-    passes_minimum_bar = has_required_counts and health_score >= min_health_score
+    full_text_required_passes = _full_text_required_passes(runtime)
+    passes_minimum_bar = has_required_counts and full_text_required_passes and health_score >= min_health_score
     health_status = _health_status(
         passes_minimum_bar=passes_minimum_bar,
         risks=risks,
@@ -107,6 +113,7 @@ def build_source_health(
             "require_claims": require_claims,
             "min_health_score": min_health_score,
             "has_required_counts": has_required_counts,
+            "full_text_required_passes": full_text_required_passes,
         },
     }
 
@@ -195,6 +202,15 @@ def _score_source(
             risks.append("All sampled claims are source-context triage claims, not typed biological evidence.")
             recommended_actions.append("Leave source-context claims review-only unless a typed extractor path is added.")
 
+    full_text_qa = runtime.get("full_text_qa")
+    if full_text_qa:
+        if full_text_qa.get("passes_full_text_bar"):
+            score += 0.1
+            signals.append("full_text_body_chunks_present")
+        else:
+            risks.append("Full-text source lacks persisted body chunks or current-run full-text output.")
+            recommended_actions.append("Run the full-text refresh and inspect XML parsing plus section-labeled chunk output.")
+
     return round(min(score, 1.0), 3), _dedupe(signals), _dedupe(risks), _dedupe(recommended_actions)
 
 
@@ -227,6 +243,11 @@ def _count_action(field: str) -> str:
 def _has_required_counts(runtime: dict[str, Any], *, require_claims: bool) -> bool:
     required_fields = (*HARD_COUNT_FIELDS, "claims") if require_claims else HARD_COUNT_FIELDS
     return all(runtime.get(field, 0) >= 1 for field in required_fields)
+
+
+def _full_text_required_passes(runtime: dict[str, Any]) -> bool:
+    full_text_qa = runtime.get("full_text_qa")
+    return full_text_qa is None or bool(full_text_qa.get("passes_full_text_bar"))
 
 
 def _health_status(*, passes_minimum_bar: bool, risks: Sequence[str], triage_only: bool) -> str:

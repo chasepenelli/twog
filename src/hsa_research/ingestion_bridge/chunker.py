@@ -14,6 +14,7 @@ def chunk_text(
     text: str,
     *,
     section_label: str | None = None,
+    start_index: int = 0,
     max_chars: int = 2800,
     overlap_chars: int = 240,
     metadata: dict | None = None,
@@ -30,7 +31,7 @@ def chunk_text(
 
     chunks: list[DocumentChunk] = []
     start = 0
-    index = 0
+    index = start_index
     while start < len(cleaned):
         end = min(start + max_chars, len(cleaned))
         if end < len(cleaned):

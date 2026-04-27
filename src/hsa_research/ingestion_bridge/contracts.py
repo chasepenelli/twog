@@ -343,6 +343,8 @@ class IngestionResult(StrictBaseModel):
     raw_records: int = 0
     research_objects: int = 0
     document_chunks: int = 0
+    full_text_research_objects: int = 0
+    section_chunk_counts: dict[str, int] = Field(default_factory=dict)
     status: RunStatus = RunStatus.COMPLETED
     errors: list[str] = Field(default_factory=list)
 

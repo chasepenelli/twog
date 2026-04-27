@@ -32,6 +32,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ScrapeProfileReviewRequest,
     ScrapeReviewRequest,
     ScrapeSourceProfile,
+    SourceQuery,
     TextEmbedding,
     TextEmbeddingSearchRequest,
     ValidationRequest,
@@ -90,6 +91,7 @@ from hsa_research.ingestion_bridge.source_scout import SourceScoutAgent
 from hsa_research.ingestion_bridge.source_health import build_source_health_report
 from hsa_research.ingestion_bridge.structured_orchestration import (
     build_structured_source_count_report,
+    full_text_source_qa,
     run_structured_sources_pipeline,
     structured_source_qa,
 )
@@ -412,6 +414,34 @@ def test_dagster_embedding_maintenance_check_requires_full_active_model_coverage
     assert populated_store_result.passed is True
 
 
+def test_dagster_full_text_check_requires_full_text_body_chunks():
+    report = {
+        "source_keys": ["europe_pmc"],
+        "sources": [
+            {
+                "source_key": "europe_pmc",
+                "qa": {
+                    "raw_records": 1,
+                    "research_objects": 1,
+                    "document_chunks": 1,
+                    "claims": 1,
+                },
+                "full_text_qa": {
+                    "passes_full_text_bar": False,
+                    "full_text_document_chunks": 0,
+                },
+            }
+        ],
+        "errors": [],
+        "totals": {"raw_records": 1, "research_objects": 1, "document_chunks": 1, "claims": 1},
+    }
+
+    result = dagster_asset_module.literature_full_text_refresh_has_outputs.node_def.compute_fn.decorated_fn(report)
+
+    assert result.passed is False
+    assert result.metadata["failed_sources"].data == ["europe_pmc"]
+
+
 def _seed_minimal_source_claim(
     repo: SQLiteResearchRepository,
     source_key: str,
@@ -458,6 +488,51 @@ def _seed_minimal_source_claim(
             source_url=f"https://example.org/{source_key}/1",
             support_count=1,
             metadata={"curation_status": curation_status, "extraction_status": extraction_status},
+        )
+    )
+
+
+def _seed_full_text_source_claim(repo: SQLiteResearchRepository, source_key: str = "europe_pmc") -> None:
+    raw_record = RawSourceRecord(
+        source_key=source_key,
+        source_record_id=f"{source_key}:full-text",
+        content_hash=f"{source_key}-full-text-raw",
+        source_url=f"https://example.org/{source_key}/full-text",
+        raw_payload={"source_key": source_key, "full_text": "Full text body mentions canine hemangiosarcoma."},
+    )
+    raw_record_id = repo.upsert_raw_record(raw_record)
+    research_object = ResearchObject(
+        object_type="publication",
+        title=f"{source_key} full text source record",
+        canonical_url=f"https://example.org/{source_key}/full-text",
+        source_key=source_key,
+        raw_record_id=raw_record_id,
+        dedupe_key=f"{source_key}:full-text",
+        metadata={"full_text_available": True},
+    )
+    object_id = repo.upsert_research_object(research_object, raw_record_id)
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="full_text",
+            text_content="Full text body mentions canine hemangiosarcoma and human angiosarcoma context.",
+            content_hash=f"{source_key}-full-text-chunk",
+        )
+    )
+    repo.upsert_claim(
+        ClaimSearchResult(
+            claim_id=uuid4(),
+            statement=f"{source_key} provides full-text source context for canine HSA research.",
+            claim_type=ClaimType.OTHER,
+            direction=ClaimDirection.NEUTRAL,
+            confidence=0.7,
+            evidence_level=EvidenceLevel.REVIEW,
+            source_object_id=object_id,
+            source_title=f"{source_key} full text source record",
+            source_url=f"https://example.org/{source_key}/full-text",
+            support_count=1,
+            metadata={"curation_status": "promote", "extraction_status": "typed"},
         )
     )
 
@@ -693,6 +768,35 @@ def test_source_health_report_marks_expected_triage_sources(tmp_path):
     assert any("specialized triage agent" in action for action in sra["recommended_actions"])
 
 
+def test_full_text_source_health_requires_body_chunks(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    _seed_minimal_source_claim(repo, "europe_pmc")
+
+    report = build_source_health_report(repo, source_keys=["europe_pmc"], sample_limit=1)
+    europe_pmc = report["sources"][0]
+
+    assert report["failed_sources"] == ["europe_pmc"]
+    assert report["passes_minimum_bar"] is False
+    assert europe_pmc["full_text_qa"]["passes_full_text_bar"] is False
+    assert europe_pmc["minimum_bar"]["full_text_required_passes"] is False
+    assert any("Full-text source lacks" in risk for risk in europe_pmc["risks"])
+
+
+def test_full_text_source_count_report_passes_with_body_chunks(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    _seed_full_text_source_claim(repo, "europe_pmc")
+
+    report = build_structured_source_count_report(repo, source_keys=["europe_pmc"], sample_limit=1)
+    qa = full_text_source_qa(repo, "europe_pmc")
+
+    assert report["failed_sources"] == []
+    assert report["passes_minimum_bar"] is True
+    assert report["sources"][0]["full_text_qa"]["passes_full_text_bar"] is True
+    assert qa["full_text_research_objects"] == 1
+    assert qa["full_text_document_chunks"] == 1
+    assert full_text_source_qa(repo, "europe_pmc", ingestion_results=[])["passes_full_text_bar"] is False
+
+
 def test_entity_resolution_persists_entities_aliases_and_mentions_idempotently(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
     raw_record_id = repo.upsert_raw_record(
@@ -888,6 +992,11 @@ def test_europe_pmc_v2_normalizer_can_store_licensed_full_text():
     assert record.research_object.metadata["body_ingestion_policy"]["matched_concepts"] == ["human_angiosarcoma"]
     assert harvester.chunk_section_label(record) == "full_text"
     assert "full text mentions VEGF" in harvester.text_for_chunking(record)
+    sections = harvester.chunk_text_sections(record)
+    assert [section_label for section_label, _text in sections] == ["title_abstract", "full_text"]
+    assert "Sparse abstract" in sections[0][1]
+    assert "Sparse abstract" not in sections[1][1]
+    assert "full text mentions VEGF" in sections[1][1]
 
 
 def test_europe_pmc_v2_fetch_keeps_body_only_policy_match(monkeypatch):
@@ -1008,6 +1117,33 @@ def test_pmc_oa_v2_chunks_full_text_not_just_abstract():
 
     assert harvester.chunk_section_label(record) == "full_text"
     assert "Full text body" in harvester.text_for_chunking(record)
+    sections = harvester.chunk_text_sections(record)
+    assert [section_label for section_label, _text in sections] == ["title_abstract", "full_text"]
+    assert "Short abstract" in sections[0][1]
+    assert "Short abstract" not in sections[1][1]
+    assert sections[1][1] == "Full text body with human angiosarcoma comparative evidence."
+
+
+def test_pmc_oa_v2_does_not_label_abstract_only_records_as_full_text():
+    record = PMCOAHarvesterV2().normalize(
+        """
+        <article xmlns="http://jats.nlm.nih.gov">
+          <front>
+            <article-meta>
+              <article-id pub-id-type="pmc">PMC2</article-id>
+              <title-group><article-title>Canine hemangiosarcoma</article-title></title-group>
+              <abstract><p>Short abstract.</p></abstract>
+            </article-meta>
+          </front>
+        </article>
+        """,
+        oa_metadata={"oa_license": "CC BY"},
+    )
+    harvester = PMCOAHarvesterV2()
+
+    assert record.research_object.metadata["full_text_available"] is False
+    assert harvester.chunk_section_label(record) == "title_abstract"
+    assert harvester.chunk_text_sections(record) == [("title_abstract", "Canine hemangiosarcoma\n\nShort abstract.")]
 
 
 def test_pmc_oa_v2_fetch_keeps_body_only_policy_match(monkeypatch):
@@ -1054,6 +1190,65 @@ def test_pmc_oa_v2_fetch_keeps_body_only_policy_match(monkeypatch):
     assert records[0].research_object.metadata["body_ingestion_policy"]["matched_concepts"] == [
         "human_angiosarcoma"
     ]
+
+
+def test_local_ingestion_replaces_full_text_chunks_by_section(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    pipeline = LocalIngestionPipeline(repo)
+    query = SourceQuery(
+        source_key="europe_pmc",
+        query_name="licensed_full_text_test",
+        query_text="hemangiosarcoma",
+    )
+    full_text_record = EuropePMCHarvesterV2().normalize(
+        {
+            "id": "PMC123",
+            "pmcid": "PMC123",
+            "title": "Endothelial biology review",
+            "abstractText": "Sparse abstract.",
+            "isOpenAccess": "Y",
+        },
+        full_text_xml="""
+        <article xmlns="http://jats.nlm.nih.gov">
+          <body><p>Canine hemangiosarcoma full text body mentions VEGF and propranolol.</p></body>
+        </article>
+        """,
+    )
+    abstract_only_record = EuropePMCHarvesterV2().normalize(
+        {
+            "id": "PMC123",
+            "pmcid": "PMC123",
+            "title": "Endothelial biology review",
+            "abstractText": "Sparse abstract.",
+            "isOpenAccess": "Y",
+        }
+    )
+
+    class FakeEuropePMCHarvester(EuropePMCHarvesterV2):
+        records = [full_text_record]
+
+        def fetch(self, query_text, limit=25, **params):
+            return self.records
+
+    monkeypatch.setitem(harvesters_v2.HARVESTERS_V2, "europe_pmc", FakeEuropePMCHarvester)
+
+    result = pipeline.ingest_query(query, limit=1)
+    chunks = repo.list_document_chunks(source_key="europe_pmc")
+
+    assert result.document_chunks == 2
+    assert result.full_text_research_objects == 1
+    assert result.section_chunk_counts == {"title_abstract": 1, "full_text": 1}
+    assert [chunk.section_label for chunk in chunks] == ["title_abstract", "full_text"]
+    assert "Sparse abstract" not in chunks[1].text_content
+
+    FakeEuropePMCHarvester.records = [abstract_only_record]
+    refreshed = pipeline.ingest_query(query, limit=1)
+    refreshed_chunks = repo.list_document_chunks(source_key="europe_pmc")
+
+    assert refreshed.document_chunks == 1
+    assert refreshed.full_text_research_objects == 0
+    assert refreshed.section_chunk_counts == {"title_abstract": 1}
+    assert [chunk.section_label for chunk in refreshed_chunks] == ["title_abstract"]
 
 
 def test_pmc_oa_v2_is_registered_harvester():

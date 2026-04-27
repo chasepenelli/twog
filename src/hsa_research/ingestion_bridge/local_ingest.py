@@ -48,6 +48,8 @@ class LocalIngestionPipeline:
         raw_count = 0
         object_count = 0
         chunk_count = 0
+        full_text_object_count = 0
+        section_chunk_counts: dict[str, int] = {}
         errors: list[str] = []
 
         try:
@@ -56,18 +58,34 @@ class LocalIngestionPipeline:
             for record in records:
                 raw_id = self.repository.upsert_raw_record(record.raw_record, fetch_run_id)
                 object_id = self.repository.upsert_research_object(record.research_object, raw_id)
-                for doc_chunk in chunk_text(
-                    object_id,
-                    harvester.text_for_chunking(record),
-                    section_label=harvester.chunk_section_label(record),
-                    metadata={
-                        "source_key": query.source_key,
-                        "query_name": query.query_name,
-                        "harvester": "v2",
-                    },
-                ):
-                    self.repository.upsert_document_chunk(doc_chunk)
-                    chunk_count += 1
+                if record.research_object.metadata.get("full_text_available"):
+                    full_text_object_count += 1
+                doc_chunks = []
+                next_chunk_index = 0
+                for section_label, section_text in harvester.chunk_text_sections(record):
+                    section_chunks = chunk_text(
+                        object_id,
+                        section_text,
+                        section_label=section_label,
+                        start_index=next_chunk_index,
+                        metadata={
+                            "source_key": query.source_key,
+                            "query_name": query.query_name,
+                            "harvester": "v2",
+                            "section_label": section_label,
+                            "full_text_available": bool(record.research_object.metadata.get("full_text_available")),
+                        },
+                    )
+                    next_chunk_index += len(section_chunks)
+                    section_chunk_counts[section_label] = section_chunk_counts.get(section_label, 0) + len(section_chunks)
+                    doc_chunks.extend(section_chunks)
+                if hasattr(self.repository, "replace_document_chunks"):
+                    written_chunks = self.repository.replace_document_chunks(object_id, doc_chunks)
+                    chunk_count += len(written_chunks)
+                else:
+                    for doc_chunk in doc_chunks:
+                        self.repository.upsert_document_chunk(doc_chunk)
+                        chunk_count += 1
                 raw_count += 1
                 object_count += 1
             self.repository.finish_fetch_run(
@@ -90,6 +108,8 @@ class LocalIngestionPipeline:
             raw_records=raw_count,
             research_objects=object_count,
             document_chunks=chunk_count,
+            full_text_research_objects=full_text_object_count,
+            section_chunk_counts=section_chunk_counts,
             status=status,
             errors=errors,
         )

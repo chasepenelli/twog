@@ -59,6 +59,9 @@ class ResearchRepository(Protocol):
     ) -> list[DocumentChunk]:
         """Return document chunks by durable filters."""
 
+    def replace_document_chunks(self, object_id: UUID, chunks: list[DocumentChunk]) -> list[DocumentChunk]:
+        """Replace all chunks for a research object."""
+
     def search_research_chunks(self, request: ResearchChunkSearchRequest) -> list[ResearchChunkSearchResult]:
         """Search document chunks with keyword matching as a retrieval fallback."""
 
@@ -248,6 +251,29 @@ class InMemoryResearchRepository:
             chunks = filtered
         chunks.sort(key=lambda chunk: (str(chunk.research_object_id), chunk.chunk_index))
         return chunks[:limit] if limit is not None else chunks
+
+    def replace_document_chunks(self, object_id: UUID, chunks: list[DocumentChunk]) -> list[DocumentChunk]:
+        existing_chunk_ids = {
+            chunk.id for chunk in self.document_chunks.values() if chunk.research_object_id == object_id
+        }
+        self.document_chunks = {
+            chunk_id: chunk
+            for chunk_id, chunk in self.document_chunks.items()
+            if chunk.research_object_id != object_id
+        }
+        self.entity_mentions = {
+            mention_id: mention
+            for mention_id, mention in self.entity_mentions.items()
+            if mention.research_object_id != object_id
+        }
+        self.text_embeddings = {
+            embedding_id: embedding
+            for embedding_id, embedding in self.text_embeddings.items()
+            if embedding.research_object_id != object_id and embedding.chunk_id not in existing_chunk_ids
+        }
+        for chunk in chunks:
+            self.document_chunks[chunk.id] = chunk
+        return chunks
 
     def search_research_chunks(self, request: ResearchChunkSearchRequest) -> list[ResearchChunkSearchResult]:
         terms = keyword_terms(request.query)

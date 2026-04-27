@@ -130,6 +130,14 @@ class HarvesterV2(ABC):
         _ = record
         return "title_abstract"
 
+    def chunk_text_sections(self, record: HarvestedRecord) -> list[tuple[str, str]]:
+        """Return section-labeled text blocks for document chunking."""
+
+        text = self.text_for_chunking(record)
+        if not text:
+            return []
+        return [(self.chunk_section_label(record), text)]
+
 
 class ScholarlyHarvesterV2(HarvesterV2):
     """Base class for scholarly metadata harvesters with comparative expansion."""
@@ -362,6 +370,18 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
 
     def chunk_section_label(self, record: HarvestedRecord) -> str:
         return "full_text" if record.raw_record.raw_payload.get("full_text") else "title_abstract"
+
+    def chunk_text_sections(self, record: HarvestedRecord) -> list[tuple[str, str]]:
+        sections: list[tuple[str, str]] = []
+        title_abstract = "\n\n".join(
+            part for part in (record.research_object.title, record.research_object.abstract) if part
+        )
+        full_text = record.raw_record.raw_payload.get("full_text")
+        if title_abstract:
+            sections.append(("title_abstract", title_abstract))
+        if full_text:
+            sections.append(("full_text", str(full_text)))
+        return sections
 
 
 class PubMedHarvesterV2(ScholarlyHarvesterV2):
@@ -596,8 +616,19 @@ class PMCOAHarvesterV2(ScholarlyHarvesterV2):
         )
 
     def chunk_section_label(self, record: HarvestedRecord) -> str:
-        _ = record
-        return "full_text"
+        return "full_text" if record.raw_record.raw_payload.get("full_text") else "title_abstract"
+
+    def chunk_text_sections(self, record: HarvestedRecord) -> list[tuple[str, str]]:
+        sections: list[tuple[str, str]] = []
+        title_abstract = "\n\n".join(
+            part for part in (record.research_object.title, record.research_object.abstract) if part
+        )
+        full_text = record.raw_record.raw_payload.get("full_text")
+        if title_abstract:
+            sections.append(("title_abstract", title_abstract))
+        if full_text:
+            sections.append(("full_text", str(full_text)))
+        return sections
 
 
 class ClinicalTrialsGovHarvesterV2(HarvesterV2):
