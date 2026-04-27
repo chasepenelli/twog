@@ -6,7 +6,7 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 
-from .source_sets import ALL_API_SOURCE_KEYS
+from .source_sets import ALL_API_SOURCE_KEYS, TRIAGE_ONLY_SOURCE_KEYS
 from .structured_orchestration import structured_source_qa
 
 
@@ -40,6 +40,7 @@ def build_source_health_report(
     status_counts = Counter(report["health_status"] for report in source_reports)
     failed_sources = [report["source_key"] for report in source_reports if not report["passes_minimum_bar"]]
     watch_sources = [report["source_key"] for report in source_reports if report["health_status"] == "watch"]
+    triage_sources = [report["source_key"] for report in source_reports if report["health_status"] == "triage"]
     return {
         "source_keys": selected_sources,
         "sources": source_reports,
@@ -47,16 +48,19 @@ def build_source_health_report(
         "summary": {
             "sources": len(source_reports),
             "healthy": status_counts.get("healthy", 0),
+            "triage": status_counts.get("triage", 0),
             "watch": status_counts.get("watch", 0),
             "failing": status_counts.get("failing", 0),
         },
         "failed_sources": failed_sources,
+        "triage_sources": triage_sources,
         "watch_sources": watch_sources,
         "passes_minimum_bar": not failed_sources,
         "minimum_bar": {
             "require_claims": require_claims,
             "min_health_score": min_health_score,
             "required_counts": list((*HARD_COUNT_FIELDS, "claims") if require_claims else HARD_COUNT_FIELDS),
+            "triage_only_sources": list(TRIAGE_ONLY_SOURCE_KEYS),
         },
         "coverage": repository.coverage_summary(),
     }
@@ -73,18 +77,25 @@ def build_source_health(
 ) -> dict[str, Any]:
     """Return one source health row."""
 
+    triage_only = source_key in TRIAGE_ONLY_SOURCE_KEYS
     runtime = structured_source_qa(repository, source_key, sample_limit=sample_limit)
     claim_metadata = _claim_metadata_summary(repository, source_key, limit=metadata_claim_limit)
     health_score, signals, risks, recommended_actions = _score_source(
         runtime,
         claim_metadata=claim_metadata,
         require_claims=require_claims,
+        triage_only=triage_only,
     )
     has_required_counts = _has_required_counts(runtime, require_claims=require_claims)
     passes_minimum_bar = has_required_counts and health_score >= min_health_score
-    health_status = _health_status(passes_minimum_bar=passes_minimum_bar, risks=risks)
+    health_status = _health_status(
+        passes_minimum_bar=passes_minimum_bar,
+        risks=risks,
+        triage_only=triage_only,
+    )
     return {
         **runtime,
+        "source_role": "triage" if triage_only else "evidence",
         "health_status": health_status,
         "health_score": health_score,
         "signals": signals,
@@ -134,6 +145,7 @@ def _score_source(
     *,
     claim_metadata: dict[str, Any],
     require_claims: bool,
+    triage_only: bool,
 ) -> tuple[float, list[str], list[str], list[str]]:
     signals: list[str] = []
     risks: list[str] = []
@@ -157,6 +169,10 @@ def _score_source(
     if promoted_claims > 0:
         score += 0.1
         signals.append("promoted_claims_present")
+    elif runtime.get("claims", 0) > 0 and triage_only:
+        score += 0.05
+        signals.append("triage_only_source")
+        recommended_actions.append("Route claims to the specialized triage agent before using them as evidence.")
     elif runtime.get("claims", 0) > 0:
         score += 0.05
         risks.append("No promoted claims are present; the source is currently review-heavy or context-only.")
@@ -172,8 +188,12 @@ def _score_source(
     claims_sampled = int(claim_metadata.get("claims_sampled", 0))
     source_context_claims = int(claim_metadata.get("source_context_claims", 0))
     if claims_sampled > 0 and source_context_claims == claims_sampled:
-        risks.append("All sampled claims are source-context triage claims, not typed biological evidence.")
-        recommended_actions.append("Leave source-context claims review-only unless a typed extractor path is added.")
+        if triage_only:
+            signals.append("source_context_claims_expected_for_triage")
+            recommended_actions.append("Keep source-context claims review-only until the triage agent promotes them.")
+        else:
+            risks.append("All sampled claims are source-context triage claims, not typed biological evidence.")
+            recommended_actions.append("Leave source-context claims review-only unless a typed extractor path is added.")
 
     return round(min(score, 1.0), 3), _dedupe(signals), _dedupe(risks), _dedupe(recommended_actions)
 
@@ -209,9 +229,11 @@ def _has_required_counts(runtime: dict[str, Any], *, require_claims: bool) -> bo
     return all(runtime.get(field, 0) >= 1 for field in required_fields)
 
 
-def _health_status(*, passes_minimum_bar: bool, risks: Sequence[str]) -> str:
+def _health_status(*, passes_minimum_bar: bool, risks: Sequence[str], triage_only: bool) -> str:
     if not passes_minimum_bar:
         return "failing"
+    if triage_only:
+        return "triage"
     if risks:
         return "watch"
     return "healthy"

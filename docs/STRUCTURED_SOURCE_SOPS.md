@@ -315,6 +315,9 @@ Dagster job:
 Health status:
 - `healthy`: required records, objects, chunks, claims, samples, and promoted
   claim signals are present.
+- `triage`: required persisted outputs are present, and the source is
+  intentionally routed to the specialized triage agent before claims become
+  evidence. Current triage-only sources are `sra` and `crossref`.
 - `watch`: hard persisted outputs are present, but QA found review-heavy,
   context-only, or otherwise weak evidence signals.
 - `failing`: required persisted outputs are missing or the score is below the

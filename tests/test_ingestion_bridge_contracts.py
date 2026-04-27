@@ -309,16 +309,41 @@ def test_source_health_report_separates_failed_and_watch_sources(tmp_path):
     chembl = next(source for source in report["sources"] if source["source_key"] == "chembl")
 
     assert report["source_keys"] == ["pubchem", "chembl"]
-    assert report["summary"] == {"sources": 2, "healthy": 0, "watch": 1, "failing": 1}
+    assert report["summary"] == {"sources": 2, "healthy": 0, "triage": 0, "watch": 1, "failing": 1}
     assert report["failed_sources"] == ["chembl"]
     assert report["watch_sources"] == ["pubchem"]
+    assert report["triage_sources"] == []
     assert pubchem["health_status"] == "watch"
+    assert pubchem["source_role"] == "evidence"
     assert pubchem["health_score"] >= report["minimum_bar"]["min_health_score"]
     assert pubchem["passes_minimum_bar"] is True
     assert pubchem["claim_metadata"]["extraction_status"] == {"source_context": 1}
     assert any("source-context" in risk for risk in pubchem["risks"])
     assert chembl["health_status"] == "failing"
     assert chembl["passes_minimum_bar"] is False
+
+
+def test_source_health_report_marks_expected_triage_sources(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    _seed_minimal_source_claim(
+        repo,
+        "sra",
+        curation_status="needs_review",
+        extraction_status="source_context",
+    )
+
+    report = build_source_health_report(repo, source_keys=["sra"], sample_limit=1)
+    sra = report["sources"][0]
+
+    assert report["summary"] == {"sources": 1, "healthy": 0, "triage": 1, "watch": 0, "failing": 0}
+    assert report["failed_sources"] == []
+    assert report["triage_sources"] == ["sra"]
+    assert report["watch_sources"] == []
+    assert sra["source_role"] == "triage"
+    assert sra["health_status"] == "triage"
+    assert sra["passes_minimum_bar"] is True
+    assert "triage_only_source" in sra["signals"]
+    assert any("specialized triage agent" in action for action in sra["recommended_actions"])
 
 
 def test_structured_pipeline_can_report_empty_selection(tmp_path):
