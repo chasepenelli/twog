@@ -29,9 +29,11 @@ from .contracts import (
 from .claim_curator import ClaimCuratorAgent, curate_claims_for_repository
 from .embeddings import (
     EmbeddingIndexResult,
+    EmbeddingMaintenanceResult,
     LocalDeterministicEmbeddingProvider,
     build_chunk_embedding_text,
     index_embeddings_for_repository,
+    maintain_embedding_index,
 )
 from .harvesters_v2 import (
     CrossrefHarvesterV2,
@@ -63,6 +65,7 @@ __all__ = [
     "CommitHypothesisRequest",
     "DocumentChunk",
     "EmbeddingIndexResult",
+    "EmbeddingMaintenanceResult",
     "HypothesisDraft",
     "HypothesisProposalRequest",
     "HSAResearchService",
@@ -97,5 +100,6 @@ __all__ = [
     "get_harvester",
     "get_service",
     "index_embeddings_for_repository",
+    "maintain_embedding_index",
     "scout_sources_for_repository",
 ]

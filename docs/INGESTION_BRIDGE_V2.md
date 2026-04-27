@@ -129,11 +129,18 @@ Repository adapters expose:
 - `list_text_embeddings`
 - `search_text_embeddings`
 - `embedding_coverage`
+- `count_orphan_text_embeddings`
+- `delete_orphan_text_embeddings`
 
 `embedding_coverage` compares stored embeddings against durable
 `document_chunks`, optionally scoped by source, object type, or model. This
 lets the ingestion layer measure retrieval readiness for CLI, Dagster, and MCP
 read tools.
+
+`maintain_embedding_index(repository, embedding_model="local-hash-v1")`
+deletes orphan embedding rows whose `chunk_id` no longer exists in
+`document_chunks`, then reports active-model coverage. This keeps retrieval
+search from carrying stale vectors after chunk ID or chunking logic changes.
 
 Retrieval read contracts expose chunks and object context without exposing raw
 vectors:
@@ -158,12 +165,26 @@ deterministic `local-hash-v1` model. `embedding_index_job` materializes only
 that report. Its asset check passes for an empty local store, but once chunks
 exist it requires at least one readable embedding and a clean error list.
 
+`embedding_maintenance_report` and `embedding_maintenance_job` prune orphan
+embedding rows for all models, then require the active `local-hash-v1` model to
+cover every live `document_chunk`. Its metadata surfaces orphan rows seen,
+deleted rows, active coverage, missing chunks, and the repository coverage
+snapshot. Run this after `embedding_index_job` before using scheduled retrieval
+or RAG workflows.
+
 CLI smoke check:
 
 ```bash
 .venv/bin/python -m hsa_research.ingestion_bridge.cli retrieval-smoke \
   --query "hemangiosarcoma angiogenesis VEGFA" \
   --require-embedding \
+  --fail-on-error
+```
+
+CLI maintenance check:
+
+```bash
+.venv/bin/python -m hsa_research.ingestion_bridge.cli embedding-maintenance \
   --fail-on-error
 ```
 
@@ -330,6 +351,12 @@ Current executable scaffold:
 - `embedding_index_job`: Dagster job for the local embedding index report.
 - `embedding_index_has_minimum_outputs`: asset check that accepts an empty
   store, but requires at least one embedding once chunks exist.
+- `embedding_maintenance_report`: prunes orphan embedding rows and reports
+  active-model coverage.
+- `embedding_maintenance_job`: Dagster job for embedding maintenance.
+- `embedding_maintenance_has_clean_coverage`: asset check that accepts an empty
+  store, but requires active-model embeddings for every live chunk once chunks
+  exist.
 
 Dagster executable assets receive a `research_repository` resource instead of
 constructing storage directly. The resource reads:

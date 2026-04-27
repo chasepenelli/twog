@@ -19,6 +19,7 @@ on:
           - "source_health_report_job"
           - "entity_resolution_job"
           - "embedding_index_job"
+          - "embedding_maintenance_job"
           - "structured_source_pipeline_job"
 
 jobs:
@@ -213,8 +214,15 @@ jobs:
             --deployment "$DAGSTER_CLOUD_DEPLOYMENT" || true
         shell: bash
 
+      - name: Print hosted embedding maintenance report
+        if: ${{ inputs.job == 'embedding_maintenance_job' }}
+        run: |
+          uv run python -m hsa_research.ingestion_bridge.cli embedding-maintenance \
+            --fail-on-error
+        shell: bash
+
       - name: Print hosted retrieval smoke report
-        if: ${{ inputs.job == 'embedding_index_job' }}
+        if: ${{ inputs.job == 'embedding_index_job' || inputs.job == 'embedding_maintenance_job' }}
         run: |
           uv run python -m hsa_research.ingestion_bridge.cli retrieval-smoke \
             --query "hemangiosarcoma angiogenesis VEGFA" \

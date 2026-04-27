@@ -951,6 +951,76 @@ class SQLiteResearchRepository(ResearchRepository):
             embedding_models={row["embedding_model"]: row["count"] for row in model_rows},
         )
 
+    def count_orphan_text_embeddings(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+    ) -> int:
+        clauses, params = self._orphan_text_embedding_clauses(
+            embedding_model=embedding_model,
+            source_key=source_key,
+            object_type=object_type,
+        )
+        row = self.conn.execute(
+            f"""
+            select count(*) as count
+            from text_embeddings te
+            left join document_chunks dc on dc.chunk_id = te.chunk_id
+            where {' and '.join(clauses)}
+            """,
+            params,
+        ).fetchone()
+        return int(row["count"])
+
+    def delete_orphan_text_embeddings(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+    ) -> int:
+        clauses, params = self._orphan_text_embedding_clauses(
+            embedding_model=embedding_model,
+            source_key=source_key,
+            object_type=object_type,
+        )
+        cursor = self.conn.execute(
+            f"""
+            delete from text_embeddings
+            where embedding_id in (
+              select te.embedding_id
+              from text_embeddings te
+              left join document_chunks dc on dc.chunk_id = te.chunk_id
+              where {' and '.join(clauses)}
+            )
+            """,
+            params,
+        )
+        self.conn.commit()
+        return cursor.rowcount if cursor.rowcount >= 0 else 0
+
+    def _orphan_text_embedding_clauses(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+    ) -> tuple[list[str], list[object]]:
+        clauses = ["dc.chunk_id is null"]
+        params: list[object] = []
+        if embedding_model:
+            clauses.append("te.embedding_model = ?")
+            params.append(embedding_model)
+        if source_key:
+            clauses.append("te.source_key = ?")
+            params.append(source_key)
+        if object_type:
+            clauses.append("te.object_type = ?")
+            params.append(object_type)
+        return clauses, params
+
     def coverage_summary(self) -> dict[str, Any]:
         source_count = self.conn.execute("select count(*) as count from ingestion_sources").fetchone()["count"]
         query_count = self.conn.execute("select count(*) as count from source_queries").fetchone()["count"]

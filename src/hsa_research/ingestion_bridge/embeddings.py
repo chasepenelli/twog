@@ -7,10 +7,10 @@ from hashlib import sha256
 import json
 import math
 import re
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
-from .contracts import DocumentChunk, EntityMention, ResearchObject, TextEmbedding
+from .contracts import DocumentChunk, EmbeddingCoverageSummary, EntityMention, ResearchObject, TextEmbedding
 
 LOCAL_HASH_EMBEDDING_MODEL = "local-hash-v1"
 LOCAL_HASH_EMBEDDING_DIMENSIONS = 384
@@ -70,6 +70,47 @@ class EmbeddingIndexResult:
     errors: tuple[str, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True)
+class EmbeddingMaintenanceResult:
+    embedding_model: str
+    prune_embedding_model: str | None
+    source_key: str | None
+    object_type: str | None
+    orphan_embeddings_seen: int
+    orphan_embeddings_deleted: int
+    prune_enabled: bool
+    embedding_coverage: EmbeddingCoverageSummary
+    coverage: dict[str, Any]
+    errors: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def passes_minimum_bar(self) -> bool:
+        if self.errors:
+            return False
+        if self.embedding_coverage.total_chunks == 0:
+            return self.embedding_coverage.embedded_chunks == 0
+        return self.embedding_coverage.missing_chunks == 0
+
+    def to_report(self) -> dict[str, Any]:
+        return {
+            "embedding_model": self.embedding_model,
+            "prune_embedding_model": self.prune_embedding_model,
+            "source_key": self.source_key,
+            "object_type": self.object_type,
+            "orphan_embeddings": {
+                "seen": self.orphan_embeddings_seen,
+                "deleted": self.orphan_embeddings_deleted,
+                "prune_enabled": self.prune_enabled,
+                "embedding_model": self.prune_embedding_model or "all",
+            },
+            "errors": list(self.errors),
+            "embedding_coverage": self.embedding_coverage.model_dump(mode="json"),
+            "coverage": self.coverage,
+            "passes_minimum_bar": self.passes_minimum_bar,
+            "passed": self.passes_minimum_bar,
+        }
+
+
 class _EmbeddingRepository(Protocol):
     def list_document_chunks(
         self,
@@ -110,6 +151,36 @@ class _EmbeddingRepository(Protocol):
         ...
 
     def upsert_text_embedding(self, embedding: TextEmbedding) -> TextEmbedding:
+        ...
+
+    def embedding_coverage(
+        self,
+        *,
+        source_key: str | None = None,
+        object_type: str | None = None,
+        embedding_model: str | None = None,
+    ) -> EmbeddingCoverageSummary:
+        ...
+
+    def count_orphan_text_embeddings(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+    ) -> int:
+        ...
+
+    def delete_orphan_text_embeddings(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+    ) -> int:
+        ...
+
+    def coverage_summary(self) -> dict[str, Any]:
         ...
 
 
@@ -216,6 +287,57 @@ def index_embeddings_for_repository(
         embeddings_created=created,
         embeddings_updated=updated,
         embeddings_skipped=skipped,
+        errors=tuple(errors),
+    )
+
+
+def maintain_embedding_index(
+    repository: _EmbeddingRepository,
+    *,
+    embedding_model: str = LOCAL_HASH_EMBEDDING_MODEL,
+    prune_embedding_model: str | None = None,
+    source_key: str | None = None,
+    object_type: str | None = None,
+    prune_orphans: bool = True,
+) -> EmbeddingMaintenanceResult:
+    """Prune unreadable embedding rows and report active-model coverage."""
+
+    errors: list[str] = []
+    orphan_embeddings_seen = repository.count_orphan_text_embeddings(
+        embedding_model=prune_embedding_model,
+        source_key=source_key,
+        object_type=object_type,
+    )
+    orphan_embeddings_deleted = 0
+    if prune_orphans:
+        orphan_embeddings_deleted = repository.delete_orphan_text_embeddings(
+            embedding_model=prune_embedding_model,
+            source_key=source_key,
+            object_type=object_type,
+        )
+        remaining_orphans = repository.count_orphan_text_embeddings(
+            embedding_model=prune_embedding_model,
+            source_key=source_key,
+            object_type=object_type,
+        )
+        if remaining_orphans:
+            errors.append(f"{remaining_orphans} orphan text embeddings remain after pruning")
+
+    embedding_coverage = repository.embedding_coverage(
+        source_key=source_key,
+        object_type=object_type,
+        embedding_model=embedding_model,
+    )
+    return EmbeddingMaintenanceResult(
+        embedding_model=embedding_model,
+        prune_embedding_model=prune_embedding_model,
+        source_key=source_key,
+        object_type=object_type,
+        orphan_embeddings_seen=orphan_embeddings_seen,
+        orphan_embeddings_deleted=orphan_embeddings_deleted,
+        prune_enabled=prune_orphans,
+        embedding_coverage=embedding_coverage,
+        coverage=repository.coverage_summary(),
         errors=tuple(errors),
     )
 

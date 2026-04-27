@@ -127,6 +127,24 @@ class ResearchRepository(Protocol):
     ) -> EmbeddingCoverageSummary:
         """Return document chunk embedding coverage."""
 
+    def count_orphan_text_embeddings(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+    ) -> int:
+        """Return embeddings whose chunk no longer exists."""
+
+    def delete_orphan_text_embeddings(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+    ) -> int:
+        """Delete embeddings whose chunk no longer exists."""
+
     def get_candidate(self, request: CandidateDossierRequest) -> CandidateDossier | None:
         """Return a candidate dossier."""
 
@@ -461,25 +479,95 @@ class InMemoryResearchRepository:
         object_type: str | None = None,
         embedding_model: str | None = None,
     ) -> EmbeddingCoverageSummary:
-        embeddings = self.list_text_embeddings(
-            embedding_model=embedding_model,
+        chunks = self.list_document_chunks(
             source_key=source_key,
             object_type=object_type,
         )
+        live_chunk_ids = {chunk.id for chunk in chunks}
+        embeddings = [
+            embedding
+            for embedding in self.list_text_embeddings(
+                embedding_model=embedding_model,
+                source_key=source_key,
+                object_type=object_type,
+            )
+            if embedding.chunk_id in live_chunk_ids
+        ]
         embedded_chunks = len({embedding.chunk_id for embedding in embeddings})
         by_model: dict[str, int] = {}
         for embedding in self.list_text_embeddings(source_key=source_key, object_type=object_type):
+            if embedding.chunk_id not in live_chunk_ids:
+                continue
             by_model[embedding.embedding_model] = by_model.get(embedding.embedding_model, 0) + 1
+        total_chunks = len(live_chunk_ids)
+        missing_chunks = max(total_chunks - embedded_chunks, 0)
         return EmbeddingCoverageSummary(
             source_key=source_key,
             object_type=object_type,
             embedding_model=embedding_model,
-            total_chunks=embedded_chunks,
+            total_chunks=total_chunks,
             embedded_chunks=embedded_chunks,
-            missing_chunks=0,
-            coverage_ratio=1.0 if embedded_chunks else 0.0,
+            missing_chunks=missing_chunks,
+            coverage_ratio=embedded_chunks / total_chunks if total_chunks else 0.0,
             embedding_models=dict(sorted(by_model.items())),
         )
+
+    def count_orphan_text_embeddings(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+    ) -> int:
+        return len(
+            [
+                embedding
+                for embedding in self.text_embeddings.values()
+                if self._is_orphan_text_embedding(
+                    embedding,
+                    embedding_model=embedding_model,
+                    source_key=source_key,
+                    object_type=object_type,
+                )
+            ]
+        )
+
+    def delete_orphan_text_embeddings(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+    ) -> int:
+        orphan_ids = [
+            embedding_id
+            for embedding_id, embedding in self.text_embeddings.items()
+            if self._is_orphan_text_embedding(
+                embedding,
+                embedding_model=embedding_model,
+                source_key=source_key,
+                object_type=object_type,
+            )
+        ]
+        for embedding_id in orphan_ids:
+            del self.text_embeddings[embedding_id]
+        return len(orphan_ids)
+
+    def _is_orphan_text_embedding(
+        self,
+        embedding: TextEmbedding,
+        *,
+        embedding_model: str | None,
+        source_key: str | None,
+        object_type: str | None,
+    ) -> bool:
+        if embedding_model and embedding.embedding_model != embedding_model:
+            return False
+        if source_key and embedding.source_key != source_key:
+            return False
+        if object_type and str(embedding.object_type) != object_type:
+            return False
+        return embedding.chunk_id not in self.document_chunks
 
     def get_candidate(self, request: CandidateDossierRequest) -> CandidateDossier | None:
         name = request.candidate_name or "propranolol"

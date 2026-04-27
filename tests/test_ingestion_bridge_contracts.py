@@ -55,9 +55,11 @@ from hsa_research.ingestion_bridge.dagster_resources import ResearchRepositoryRe
 from hsa_research.ingestion_bridge.entity_resolution import normalize_entity_key, resolve_entities_for_repository
 from hsa_research.ingestion_bridge.embeddings import (
     EmbeddingIndexResult,
+    EmbeddingMaintenanceResult,
     LocalDeterministicEmbeddingProvider,
     build_chunk_embedding_text,
     index_embeddings_for_repository,
+    maintain_embedding_index,
 )
 from hsa_research.ingestion_bridge import harvesters_v2
 from hsa_research.ingestion_bridge.harvesters_v2 import (
@@ -298,6 +300,62 @@ def test_dagster_embedding_index_asset_uses_injected_repository(monkeypatch):
     assert result.metadata["passes_minimum_bar"] is True
 
 
+def test_dagster_embedding_maintenance_asset_uses_injected_repository(monkeypatch):
+    calls = []
+
+    class FakeRepository:
+        pass
+
+    sentinel_repository = FakeRepository()
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append(("build_repository",))
+            return sentinel_repository
+
+    def fake_maintain_embedding_index(repository, **kwargs):
+        assert repository is sentinel_repository
+        assert kwargs == {}
+        calls.append(("maintain_embedding_index",))
+        return EmbeddingMaintenanceResult(
+            embedding_model="local-hash-v1",
+            prune_embedding_model=None,
+            source_key=None,
+            object_type=None,
+            orphan_embeddings_seen=2,
+            orphan_embeddings_deleted=2,
+            prune_enabled=True,
+            embedding_coverage=EmbeddingCoverageSummary(
+                embedding_model="local-hash-v1",
+                total_chunks=3,
+                embedded_chunks=3,
+                missing_chunks=0,
+                coverage_ratio=1.0,
+                embedding_models={"local-hash-v1": 3},
+            ),
+            coverage={"document_chunks": 3, "text_embeddings": 3},
+        )
+
+    monkeypatch.setattr(
+        "hsa_research.ingestion_bridge.embeddings.maintain_embedding_index",
+        fake_maintain_embedding_index,
+    )
+
+    result = dagster_asset_module.embedding_maintenance_report.node_def.compute_fn.decorated_fn(
+        FakeRepositoryResource()
+    )
+
+    assert calls == [("build_repository",), ("maintain_embedding_index",)]
+    assert isinstance(result, dagster_asset_module.dg.MaterializeResult)
+    assert result.value["orphan_embeddings"]["seen"] == 2
+    assert result.value["orphan_embeddings"]["deleted"] == 2
+    assert result.value["embedding_coverage"]["missing_chunks"] == 0
+    assert result.value["passes_minimum_bar"] is True
+    assert result.metadata["orphan_embeddings_deleted"] == 2
+    assert result.metadata["embedded_chunks"] == 3
+    assert result.metadata["passes_minimum_bar"] is True
+
+
 def test_dagster_embedding_index_check_requires_embedding_when_chunks_exist():
     failing_result = dagster_asset_module.embedding_index_has_minimum_outputs.node_def.compute_fn.decorated_fn(
         {
@@ -318,6 +376,34 @@ def test_dagster_embedding_index_check_requires_embedding_when_chunks_exist():
             "errors": [],
             "totals": {"chunks_seen": 3},
             "embedding_coverage": {"total_chunks": 3, "embedded_chunks": 3},
+        }
+    )
+
+    assert failing_result.passed is False
+    assert empty_store_result.passed is True
+    assert populated_store_result.passed is True
+
+
+def test_dagster_embedding_maintenance_check_requires_full_active_model_coverage():
+    failing_result = dagster_asset_module.embedding_maintenance_has_clean_coverage.node_def.compute_fn.decorated_fn(
+        {
+            "errors": [],
+            "orphan_embeddings": {"seen": 0, "deleted": 0},
+            "embedding_coverage": {"total_chunks": 3, "embedded_chunks": 2, "missing_chunks": 1},
+        }
+    )
+    empty_store_result = dagster_asset_module.embedding_maintenance_has_clean_coverage.node_def.compute_fn.decorated_fn(
+        {
+            "errors": [],
+            "orphan_embeddings": {"seen": 0, "deleted": 0},
+            "embedding_coverage": {"total_chunks": 0, "embedded_chunks": 0, "missing_chunks": 0},
+        }
+    )
+    populated_store_result = dagster_asset_module.embedding_maintenance_has_clean_coverage.node_def.compute_fn.decorated_fn(
+        {
+            "errors": [],
+            "orphan_embeddings": {"seen": 1, "deleted": 1},
+            "embedding_coverage": {"total_chunks": 3, "embedded_chunks": 3, "missing_chunks": 0},
         }
     )
 
@@ -1904,6 +1990,70 @@ def test_sqlite_text_embeddings_persist_and_report_coverage(tmp_path):
     assert coverage.missing_chunks == 0
     assert coverage.coverage_ratio == 1.0
     assert coverage.embedding_models == {"unit-embedding-v1": 1}
+
+
+def test_embedding_maintenance_prunes_orphan_embeddings_and_reports_full_coverage(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Embedding maintenance example",
+            source_key="pubmed",
+            dedupe_key="pubmed:embedding-maintenance",
+        )
+    )
+    chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="VEGFA angiogenesis is discussed in canine hemangiosarcoma.",
+            content_hash="embedding-maintenance-live",
+        )
+    )
+    live_embedding = repo.upsert_text_embedding(
+        TextEmbedding(
+            chunk_id=chunk.id,
+            research_object_id=object_id,
+            chunk_index=chunk.chunk_index,
+            source_key="pubmed",
+            object_type="publication",
+            content_hash=chunk.content_hash,
+            embedding_model="unit-embedding-v1",
+            embedding_dimensions=3,
+            embedding=[1.0, 0.0, 0.0],
+        )
+    )
+    repo.upsert_text_embedding(
+        TextEmbedding(
+            chunk_id=uuid4(),
+            research_object_id=object_id,
+            chunk_index=0,
+            source_key="pubmed",
+            object_type="publication",
+            content_hash="embedding-maintenance-orphan",
+            embedding_model="unit-embedding-v1",
+            embedding_dimensions=3,
+            embedding=[0.0, 1.0, 0.0],
+        )
+    )
+
+    assert repo.coverage_summary()["text_embeddings"] == 2
+    assert repo.count_orphan_text_embeddings(embedding_model="unit-embedding-v1") == 1
+
+    result = maintain_embedding_index(repo, embedding_model="unit-embedding-v1")
+    report = result.to_report()
+
+    assert result.passes_minimum_bar is True
+    assert report["passed"] is True
+    assert report["orphan_embeddings"]["seen"] == 1
+    assert report["orphan_embeddings"]["deleted"] == 1
+    assert report["embedding_coverage"]["total_chunks"] == 1
+    assert report["embedding_coverage"]["embedded_chunks"] == 1
+    assert report["embedding_coverage"]["missing_chunks"] == 0
+    assert repo.count_orphan_text_embeddings(embedding_model="unit-embedding-v1") == 0
+    assert repo.list_text_embeddings(embedding_model="unit-embedding-v1") == [live_embedding]
+    assert repo.coverage_summary()["text_embeddings"] == 1
 
 
 def test_index_embeddings_for_repository_is_idempotent_and_includes_entities(tmp_path):

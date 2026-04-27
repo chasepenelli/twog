@@ -13,6 +13,7 @@ from .claim_extractor import extract_claims_for_repository
 from .contracts import (
     ClaimCurationRequest,
     EntityResolutionRequest,
+    RetrievalSmokeRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
     ScrapeManifestFetchRequest,
@@ -21,8 +22,8 @@ from .contracts import (
     ScrapeReviewRequest,
     SourceQuery,
     SourceScoutRequest,
-    RetrievalSmokeRequest,
 )
+from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, maintain_embedding_index
 from .entity_resolution import resolve_entities_for_repository
 from .local_ingest import LocalIngestionPipeline
 from .local_store import SQLiteResearchRepository
@@ -163,6 +164,25 @@ def main() -> None:
     retrieval_smoke.add_argument("--no-keyword-fallback", action="store_true", help="Fail open only to embedding search")
     retrieval_smoke.add_argument("--require-embedding", action="store_true", help="Fail if search does not use embeddings")
     retrieval_smoke.add_argument("--fail-on-error", action="store_true", help="Exit non-zero if the smoke check fails")
+
+    embedding_maintenance = subparsers.add_parser(
+        "embedding-maintenance",
+        help="Prune orphan embeddings and report active-model coverage",
+    )
+    embedding_maintenance.add_argument("--source", default=None, help="Optional source key filter")
+    embedding_maintenance.add_argument("--object-type", default=None, help="Optional research object type filter")
+    embedding_maintenance.add_argument(
+        "--embedding-model",
+        default=LOCAL_HASH_EMBEDDING_MODEL,
+        help="Active embedding model to enforce coverage against",
+    )
+    embedding_maintenance.add_argument(
+        "--prune-model",
+        default=None,
+        help="Optional embedding model to prune; defaults to all models",
+    )
+    embedding_maintenance.add_argument("--dry-run", action="store_true", help="Count orphan rows without deleting them")
+    embedding_maintenance.add_argument("--fail-on-error", action="store_true", help="Exit non-zero if maintenance fails")
 
     resolve_entities = subparsers.add_parser(
         "resolve-entities",
@@ -354,6 +374,15 @@ def main() -> None:
                 require_embedding=args.require_embedding,
             )
         ).model_dump(mode="json")
+    elif args.command == "embedding-maintenance":
+        output = maintain_embedding_index(
+            repo,
+            embedding_model=args.embedding_model,
+            prune_embedding_model=args.prune_model,
+            source_key=args.source,
+            object_type=args.object_type,
+            prune_orphans=not args.dry_run,
+        ).to_report()
     elif args.command == "resolve-entities":
         request = EntityResolutionRequest(
             source_key=args.source,

@@ -873,6 +873,77 @@ class PostgresResearchRepository(ResearchRepository):
             embedding_models={row["embedding_model"]: int(row["count"]) for row in model_rows},
         )
 
+    def count_orphan_text_embeddings(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+    ) -> int:
+        clauses, params = self._orphan_text_embedding_clauses(
+            embedding_model=embedding_model,
+            source_key=source_key,
+            object_type=object_type,
+        )
+        return self._scalar(
+            f"""
+            select count(*)
+            from text_embeddings te
+            left join document_chunks dc on dc.chunk_id = te.chunk_id
+            where {' and '.join(clauses)}
+            """,
+            params,
+        )
+
+    def delete_orphan_text_embeddings(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+    ) -> int:
+        clauses, params = self._orphan_text_embedding_clauses(
+            embedding_model=embedding_model,
+            source_key=source_key,
+            object_type=object_type,
+        )
+        with self.conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                delete from text_embeddings
+                where embedding_id in (
+                  select te.embedding_id
+                  from text_embeddings te
+                  left join document_chunks dc on dc.chunk_id = te.chunk_id
+                  where {' and '.join(clauses)}
+                )
+                """,
+                params,
+            )
+            deleted = cursor.rowcount
+        self.conn.commit()
+        return int(deleted) if deleted and deleted > 0 else 0
+
+    def _orphan_text_embedding_clauses(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+    ) -> tuple[list[str], list[object]]:
+        clauses = ["dc.chunk_id is null"]
+        params: list[object] = []
+        if embedding_model:
+            clauses.append("te.embedding_model = %s")
+            params.append(embedding_model)
+        if source_key:
+            clauses.append("te.source_key = %s")
+            params.append(source_key)
+        if object_type:
+            clauses.append("te.object_type = %s")
+            params.append(object_type)
+        return clauses, params
+
     def coverage_summary(self) -> dict[str, Any]:
         source_count = self._scalar("select count(*) from ingestion_sources")
         query_count = self._scalar("select count(*) from source_queries")

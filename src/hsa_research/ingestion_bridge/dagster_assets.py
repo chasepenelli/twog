@@ -229,6 +229,27 @@ if dg is not None:
             "passes_minimum_bar": bool(report.get("passes_minimum_bar", False)),
         }
 
+    def _embedding_maintenance_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        embedding_coverage = report.get("embedding_coverage", {})
+        orphan_embeddings = report.get("orphan_embeddings", {})
+        errors = report.get("errors", [])
+        return {
+            "embedding_model": report.get("embedding_model"),
+            "prune_embedding_model": orphan_embeddings.get("embedding_model", "all"),
+            "orphan_embeddings_seen": orphan_embeddings.get("seen", 0),
+            "orphan_embeddings_deleted": orphan_embeddings.get("deleted", 0),
+            "prune_enabled": bool(orphan_embeddings.get("prune_enabled", False)),
+            "error_count": len(errors),
+            "errors": dg.MetadataValue.json(errors),
+            "total_chunks": embedding_coverage.get("total_chunks", 0),
+            "embedded_chunks": embedding_coverage.get("embedded_chunks", 0),
+            "missing_chunks": embedding_coverage.get("missing_chunks", 0),
+            "coverage_ratio": embedding_coverage.get("coverage_ratio", 0.0),
+            "embedding_models": dg.MetadataValue.json(embedding_coverage.get("embedding_models", {})),
+            "coverage": dg.MetadataValue.json(report.get("coverage", {})),
+            "passes_minimum_bar": bool(report.get("passes_minimum_bar", False)),
+        }
+
     @dg.asset(group_name="ingestion_bridge_v2")
     def source_registry() -> list[dict]:
         """Canonical source registry for ingestion."""
@@ -546,6 +567,16 @@ if dg is not None:
         }
         return dg.MaterializeResult(value=report, metadata=_embedding_index_report_metadata(report))
 
+    @dg.asset(group_name="embedding_index")
+    def embedding_maintenance_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
+        """Prune orphan embedding rows and verify active-model coverage."""
+
+        from .embeddings import maintain_embedding_index
+
+        repository = research_repository.build_repository()
+        report = maintain_embedding_index(repository).to_report()
+        return dg.MaterializeResult(value=report, metadata=_embedding_maintenance_report_metadata(report))
+
     @dg.asset_check(asset=source_registry)
     def source_registry_has_phase_one_sources(source_registry: list[dict]) -> dg.AssetCheckResult:
         """Ensure the first bridge has the minimum source backbone."""
@@ -806,6 +837,34 @@ if dg is not None:
             },
         )
 
+    @dg.asset_check(asset=embedding_maintenance_report)
+    def embedding_maintenance_has_clean_coverage(
+        embedding_maintenance_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure active embeddings have no orphan rows and full chunk coverage."""
+
+        errors = embedding_maintenance_report.get("errors", [])
+        embedding_coverage = embedding_maintenance_report.get("embedding_coverage", {})
+        total_chunks = embedding_coverage.get("total_chunks", 0)
+        embedded_chunks = embedding_coverage.get("embedded_chunks", 0)
+        missing_chunks = embedding_coverage.get("missing_chunks", 0)
+        passed = not errors and (
+            (total_chunks == 0 and embedded_chunks == 0)
+            or (total_chunks > 0 and missing_chunks == 0)
+        )
+        return dg.AssetCheckResult(
+            passed=passed,
+            metadata={
+                "errors": errors,
+                "minimum_contract": {
+                    "when_chunks_exist": "active_embedding_model_covers_every_chunk",
+                    "when_no_chunks_exist": "zero_chunks_zero_embeddings",
+                },
+                "orphan_embeddings": embedding_maintenance_report.get("orphan_embeddings", {}),
+                "embedding_coverage": embedding_coverage,
+            },
+        )
+
     ingestion_bridge_assets = [
         source_registry,
         source_scout_plan,
@@ -828,6 +887,7 @@ if dg is not None:
         source_health_report,
         entity_resolution_report,
         embedding_index_report,
+        embedding_maintenance_report,
     ]
 
     structured_source_pipeline_job = dg.define_asset_job(
@@ -874,6 +934,10 @@ if dg is not None:
         "embedding_index_job",
         selection=dg.AssetSelection.assets(embedding_index_report),
     )
+    embedding_maintenance_job = dg.define_asset_job(
+        "embedding_maintenance_job",
+        selection=dg.AssetSelection.assets(embedding_maintenance_report),
+    )
     literature_corpus_daily_schedule = dg.ScheduleDefinition(
         job=literature_corpus_harvest_job,
         cron_schedule="0 7 * * *",
@@ -905,6 +969,7 @@ if dg is not None:
             source_health_report_has_no_failed_sources,
             entity_resolution_has_minimum_outputs,
             embedding_index_has_minimum_outputs,
+            embedding_maintenance_has_clean_coverage,
         ],
         jobs=[
             structured_source_pipeline_job,
@@ -918,6 +983,7 @@ if dg is not None:
             source_health_report_job,
             entity_resolution_job,
             embedding_index_job,
+            embedding_maintenance_job,
         ],
         schedules=[
             literature_corpus_daily_schedule,
@@ -942,6 +1008,7 @@ else:
     source_health_report_job = None
     entity_resolution_job = None
     embedding_index_job = None
+    embedding_maintenance_job = None
     literature_corpus_daily_schedule = None
     literature_full_text_weekly_schedule = None
     source_health_daily_schedule = None
