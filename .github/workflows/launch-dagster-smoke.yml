@@ -12,6 +12,7 @@ on:
           - "structured_source_smoke_job"
           - "structured_source_multisource_smoke_job"
           - "literature_clinical_smoke_job"
+          - "all_api_smoke_job"
           - "structured_source_count_report_job"
           - "structured_source_pipeline_job"
 
@@ -72,7 +73,7 @@ jobs:
       - name: Print hosted structured-source count report
         run: |
           validation_flags=""
-          if [ "$DAGSTER_CLOUD_JOB" = "literature_clinical_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "structured_source_count_report_job" ]; then
+          if [ "$DAGSTER_CLOUD_JOB" = "literature_clinical_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "all_api_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "structured_source_count_report_job" ]; then
             validation_flags="--fail-on-failed-sources"
           fi
           uv run python -m hsa_research.ingestion_bridge.cli structured-report \

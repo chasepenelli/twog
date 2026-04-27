@@ -29,7 +29,11 @@ from hsa_research.ingestion_bridge.backfill import backfill_deep_dives, backfill
 from hsa_research.ingestion_bridge.claim_curator import ClaimCuratorAgent
 from hsa_research.ingestion_bridge.claim_extractor import LocalRuleClaimExtractor, extract_claims_for_repository
 from hsa_research.ingestion_bridge.chunker import chunk_text
-from hsa_research.ingestion_bridge.dagster_assets import HOSTED_API_REPORT_KEYS, LITERATURE_CLINICAL_SMOKE_KEYS
+from hsa_research.ingestion_bridge.dagster_assets import (
+    ALL_API_SMOKE_KEYS,
+    HOSTED_API_REPORT_KEYS,
+    LITERATURE_CLINICAL_SMOKE_KEYS,
+)
 from hsa_research.ingestion_bridge import harvesters_v2
 from hsa_research.ingestion_bridge.harvesters_v2 import (
     AVMAVCTRHarvesterV2,
@@ -344,6 +348,79 @@ def test_europe_pmc_v2_normalizer_cleans_escaped_title_markup():
     assert record.research_object.metadata["ingestion_policy"]["matched_concepts"] == ["human_angiosarcoma"]
 
 
+def test_europe_pmc_v2_normalizer_can_store_licensed_full_text():
+    record = EuropePMCHarvesterV2().normalize(
+        {
+            "id": "PMC123",
+            "pmcid": "PMC123",
+            "title": "Endothelial biology review",
+            "abstractText": "Sparse abstract.",
+            "isOpenAccess": "Y",
+        },
+        full_text_xml="""
+        <article xmlns="http://jats.nlm.nih.gov">
+          <front>
+            <article-meta>
+              <article-id pub-id-type="pmc">PMC123</article-id>
+            </article-meta>
+          </front>
+          <body>
+            <sec>
+              <title>Results</title>
+              <p>Human angiosarcoma full text mentions VEGF and propranolol.</p>
+            </sec>
+          </body>
+        </article>
+        """,
+    )
+    harvester = EuropePMCHarvesterV2()
+
+    assert record.raw_record.raw_payload["full_text"] == "Results Human angiosarcoma full text mentions VEGF and propranolol."
+    assert record.research_object.metadata["full_text_available"] is True
+    assert record.research_object.metadata["body_only_match"] is True
+    assert record.research_object.metadata["body_ingestion_policy"]["matched_concepts"] == ["human_angiosarcoma"]
+    assert harvester.chunk_section_label(record) == "full_text"
+    assert "full text mentions VEGF" in harvester.text_for_chunking(record)
+
+
+def test_europe_pmc_v2_fetch_keeps_body_only_policy_match(monkeypatch):
+    def fake_get_json(url, params):
+        assert url.endswith("/search")
+        assert params["resultType"] == "core"
+        return {
+            "resultList": {
+                "result": [
+                    {
+                        "id": "PMC123",
+                        "pmcid": "PMC123",
+                        "title": "Endothelial biology review",
+                        "abstractText": "Sparse abstract.",
+                        "isOpenAccess": "Y",
+                    }
+                ]
+            }
+        }
+
+    def fake_get_text(url, params):
+        assert url == "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC123/fullTextXML"
+        assert params == {}
+        return """
+        <article xmlns="http://jats.nlm.nih.gov">
+          <front><article-meta><article-id pub-id-type="pmc">PMC123</article-id></article-meta></front>
+          <body><p>Canine hemangiosarcoma full text mentions VEGF and propranolol.</p></body>
+        </article>
+        """
+
+    monkeypatch.setattr(harvesters_v2, "_get_json", fake_get_json)
+    monkeypatch.setattr(harvesters_v2, "_get_text", fake_get_text)
+
+    records = EuropePMCHarvesterV2().fetch("hemangiosarcoma", limit=1, open_access=True, require_policy_match=True)
+
+    assert len(records) == 1
+    assert records[0].research_object.metadata["body_only_match"] is True
+    assert records[0].research_object.metadata["body_ingestion_policy"]["matched_concepts"] == ["canine_hsa"]
+
+
 def test_pmc_oa_v2_normalizer_extracts_license_and_full_text():
     xml = """
     <OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
@@ -479,6 +556,23 @@ def test_pmc_oa_v2_is_registered_harvester():
 def test_hosted_literature_smoke_includes_pmc_oa():
     assert "pmc_oa" in LITERATURE_CLINICAL_SMOKE_KEYS
     assert "pmc_oa" in HOSTED_API_REPORT_KEYS
+
+
+def test_all_api_smoke_covers_every_hosted_report_source():
+    assert ALL_API_SMOKE_KEYS == HOSTED_API_REPORT_KEYS
+    assert set(ALL_API_SMOKE_KEYS) == {
+        "pubchem",
+        "chembl",
+        "uniprot",
+        "rcsb_pdb",
+        "openfda_animal_events",
+        "openalex",
+        "pubmed",
+        "europe_pmc",
+        "crossref",
+        "pmc_oa",
+        "clinicaltrials_gov",
+    }
 
 
 def test_clinicaltrials_gov_v2_normalizer_extracts_trial_fields():

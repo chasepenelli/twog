@@ -265,21 +265,40 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
 
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         query_text, params = self.prepare_query(query_text, params)
-        if params.pop("open_access", False) and "OPEN_ACCESS:" not in query_text.upper():
+        open_access = params.pop("open_access", False)
+        fetch_full_text = params.pop("fetch_full_text", open_access)
+        if open_access and "OPEN_ACCESS:" not in query_text.upper():
             query_text = f"({query_text}) AND OPEN_ACCESS:Y"
         data = _get_json(
             "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
             {
                 "query": query_text,
-                "format": "json",
+                "format": params.pop("format", "json"),
+                "resultType": params.pop("resultType", "core"),
                 "pageSize": min(limit, 1000),
                 **params,
             },
         )
         items = ((data.get("resultList") or {}).get("result")) or []
-        return self.filter_relevant([self.normalize(item) for item in items], params)
+        records = [
+            self.normalize(
+                item,
+                full_text_xml=_europe_pmc_full_text_xml(_europe_pmc_full_text_id(item)) if fetch_full_text else None,
+            )
+            for item in items
+        ]
+        return self.filter_relevant(records, params)
 
-    def normalize(self, item: dict[str, Any]) -> HarvestedRecord:
+    def filter_relevant(
+        self,
+        records: list[HarvestedRecord],
+        params: dict[str, Any],
+    ) -> list[HarvestedRecord]:
+        if not params.pop("require_policy_match", True):
+            return records
+        return [record for record in records if _record_matches_policy(record)]
+
+    def normalize(self, item: dict[str, Any], *, full_text_xml: str | None = None) -> HarvestedRecord:
         pmid = item.get("pmid")
         pmcid = item.get("pmcid")
         doi = _normalize_doi(item.get("doi"))
@@ -294,7 +313,14 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
         source_url = _europe_pmc_url(item)
         title = _clean_markup(item.get("title"))
         abstract = _clean_markup(item.get("abstractText"))
-        raw = _raw_record(self.source_key, source_id, source_url, item)
+        full_text = _jats_full_text(full_text_xml) if full_text_xml else None
+        title_abstract_policy = infer_comparative_scope(title, abstract)
+        body_policy = infer_comparative_scope(None, full_text[:8000] if full_text else None)
+        payload = item | {
+            "full_text_xml": full_text_xml,
+            "full_text": full_text,
+        }
+        raw = _raw_record(self.source_key, source_id, source_url, payload)
         obj = ResearchObject(
             object_type=ResearchObjectType.PREPRINT if item.get("source") == "PPR" else ResearchObjectType.PUBLICATION,
             title=title,
@@ -311,11 +337,31 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
                 "is_open_access": item.get("isOpenAccess"),
                 "cited_by_count": item.get("citedByCount"),
                 "source": item.get("source"),
-                "ingestion_policy": infer_comparative_scope(title, abstract),
+                "license": item.get("license"),
+                "license_policy": "metadata_plus_open_access_when_licensed",
+                "full_text_available": bool(full_text),
+                "ingestion_policy": title_abstract_policy,
+                "body_ingestion_policy": body_policy,
+                "body_only_match": bool(body_policy["matched_concepts"])
+                and not bool(title_abstract_policy["matched_concepts"]),
                 "harvester": "v2",
             },
         )
         return HarvestedRecord(raw_record=raw, research_object=obj)
+
+    def text_for_chunking(self, record: HarvestedRecord) -> str:
+        return "\n\n".join(
+            part
+            for part in (
+                record.research_object.title,
+                record.research_object.abstract,
+                record.raw_record.raw_payload.get("full_text"),
+            )
+            if part
+        )
+
+    def chunk_section_label(self, record: HarvestedRecord) -> str:
+        return "full_text" if record.raw_record.raw_payload.get("full_text") else "title_abstract"
 
 
 class PubMedHarvesterV2(ScholarlyHarvesterV2):
@@ -2633,6 +2679,10 @@ def _pmc_oa_metadata(pmcid: str | None) -> dict[str, Any] | None:
 
 
 def _pmc_record_matches_policy(record: HarvestedRecord) -> bool:
+    return _record_matches_policy(record)
+
+
+def _record_matches_policy(record: HarvestedRecord) -> bool:
     metadata = record.research_object.metadata
     title_abstract_policy = metadata.get("ingestion_policy")
     body_policy = metadata.get("body_ingestion_policy")
@@ -2646,6 +2696,36 @@ def _pmc_record_matches_policy(record: HarvestedRecord) -> bool:
             and body_policy.get("matched_concepts")
         )
     )
+
+
+def _europe_pmc_full_text_id(item: dict[str, Any]) -> str | None:
+    return item.get("pmcid") or item.get("id")
+
+
+def _europe_pmc_full_text_xml(article_id: str | None) -> str | None:
+    if not article_id:
+        return None
+    try:
+        return _get_text(
+            f"https://www.ebi.ac.uk/europepmc/webservices/rest/{urllib.parse.quote(str(article_id))}/fullTextXML",
+            {},
+        )
+    except (ET.ParseError, RuntimeError, ValueError):
+        return None
+
+
+def _jats_full_text(xml_text: str | None) -> str | None:
+    if not xml_text:
+        return None
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+    article = _find_first(root, ".//{*}article")
+    if article is None and _local_name(root.tag) == "article":
+        article = root
+    body = _find_first(article, ".//{*}body") if article is not None else _find_first(root, ".//{*}body")
+    return _clean_multiline_text(_xml_join_text(body)) if body is not None else None
 
 
 def _jats_article_ids(article: ET.Element) -> dict[str, str]:

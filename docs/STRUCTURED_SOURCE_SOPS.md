@@ -173,8 +173,8 @@ Required gates:
 - Comparative oncology policy must remain enabled by default.
 - Normalized objects must retain DOI, PMID, PMCID, source URL, and source
   policy metadata when present.
-- PMC OA may pass relevance on licensed body text even when title/abstract
-  metadata is sparse.
+- PMC OA and Europe PMC may pass relevance on licensed/open-access body text
+  even when title/abstract metadata is sparse.
 - Every hosted smoke source must produce raw records, research objects, chunks,
   and at least one claim.
 
@@ -280,6 +280,23 @@ Dagster job:
 
 Dagster asset check:
 - `structured_source_pipeline_has_minimum_outputs`
+
+### Run The Hosted All-API Smoke
+
+Use this before broadening the ingestion framework. It validates every current
+API harvester under one Dagster job and then checks persisted source counts.
+
+GitHub Actions workflow:
+
+```text
+Launch Dagster Smoke Job -> all_api_smoke_job
+```
+
+Required QA output:
+- Every source in `ALL_API_SMOKE_KEYS` has at least one raw record, research
+  object, document chunk, and claim.
+- Sparse scholarly source-context claims remain `needs_review`.
+- Licensed full-text sources can produce `full_text` chunks and typed claims.
 
 ### Extract Claims
 

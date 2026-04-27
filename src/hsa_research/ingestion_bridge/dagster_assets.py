@@ -40,10 +40,11 @@ LITERATURE_CLINICAL_SMOKE_KEYS = (
     "pmc_oa",
     "clinicaltrials_gov",
 )
-HOSTED_API_REPORT_KEYS = (
+ALL_API_SMOKE_KEYS = (
     *STRUCTURED_SOURCE_MULTISOURCE_SMOKE_KEYS,
     *LITERATURE_CLINICAL_SMOKE_KEYS,
 )
+HOSTED_API_REPORT_KEYS = ALL_API_SMOKE_KEYS
 
 
 def build_source_queries() -> list[SourceQuery]:
@@ -232,6 +233,22 @@ if dg is not None:
             curate_limit=250,
         )
 
+    @dg.asset(group_name="hosted_api_refresh")
+    def all_api_smoke_report() -> dict:
+        """Small hosted-runtime validation run across every implemented API harvester."""
+
+        from .storage import build_sql_repository
+        from .structured_orchestration import run_structured_sources_pipeline
+
+        repository = build_sql_repository()
+        return run_structured_sources_pipeline(
+            repository,
+            source_keys=ALL_API_SMOKE_KEYS,
+            source_limits={source_key: 1 for source_key in ALL_API_SMOKE_KEYS},
+            extract_limit=500,
+            curate_limit=500,
+        )
+
     @dg.asset(group_name="structured_source_refresh")
     def structured_source_count_report() -> dict:
         """Persisted count report for hosted API source coverage."""
@@ -349,6 +366,30 @@ if dg is not None:
             },
         )
 
+    @dg.asset_check(asset=all_api_smoke_report)
+    def all_api_smoke_has_minimum_outputs(
+        all_api_smoke_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure every implemented API source can write records, chunks, and claims."""
+
+        source_reports = all_api_smoke_report.get("sources", [])
+        failed_sources = [
+            report["source_key"]
+            for report in source_reports
+            if not _has_minimum_ingested_source_outputs(report)
+        ]
+        errors = all_api_smoke_report.get("errors", [])
+        passed = not failed_sources and not errors
+        return dg.AssetCheckResult(
+            passed=passed,
+            metadata={
+                "failed_sources": failed_sources,
+                "errors": errors,
+                "source_keys": all_api_smoke_report.get("source_keys", []),
+                "totals": all_api_smoke_report.get("totals", {}),
+            },
+        )
+
     @dg.asset_check(asset=structured_source_count_report)
     def structured_source_count_report_has_minimum_outputs(
         structured_source_count_report: dict,
@@ -380,6 +421,7 @@ if dg is not None:
         structured_source_smoke_report,
         structured_source_multisource_smoke_report,
         literature_clinical_smoke_report,
+        all_api_smoke_report,
         structured_source_count_report,
     ]
 
@@ -399,6 +441,10 @@ if dg is not None:
         "literature_clinical_smoke_job",
         selection=dg.AssetSelection.assets(literature_clinical_smoke_report),
     )
+    all_api_smoke_job = dg.define_asset_job(
+        "all_api_smoke_job",
+        selection=dg.AssetSelection.assets(all_api_smoke_report),
+    )
     structured_source_count_report_job = dg.define_asset_job(
         "structured_source_count_report_job",
         selection=dg.AssetSelection.assets(structured_source_count_report),
@@ -412,6 +458,7 @@ if dg is not None:
             structured_source_smoke_has_minimum_outputs,
             structured_source_multisource_smoke_has_minimum_outputs,
             literature_clinical_smoke_has_minimum_outputs,
+            all_api_smoke_has_minimum_outputs,
             structured_source_count_report_has_minimum_outputs,
         ],
         jobs=[
@@ -419,6 +466,7 @@ if dg is not None:
             structured_source_smoke_job,
             structured_source_multisource_smoke_job,
             literature_clinical_smoke_job,
+            all_api_smoke_job,
             structured_source_count_report_job,
         ],
     )
@@ -429,6 +477,7 @@ else:
     structured_source_smoke_job = None
     structured_source_multisource_smoke_job = None
     literature_clinical_smoke_job = None
+    all_api_smoke_job = None
     structured_source_count_report_job = None
     defs = None
 
