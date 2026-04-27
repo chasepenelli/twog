@@ -19,6 +19,7 @@ from .contracts import (
     ClaimSearchRequest,
     ClaimSearchResult,
     CommitHypothesisRequest,
+    EmbeddingCoverageSummary,
     EntityAlias,
     EntityMention,
     EvidenceLevel,
@@ -27,6 +28,9 @@ from .contracts import (
     RunStatus,
     ScrapeSourceProfileReview,
     ScrapeReviewRecord,
+    TextEmbedding,
+    TextEmbeddingSearchRequest,
+    TextEmbeddingSearchResult,
     ValidationRequest,
 )
 
@@ -66,6 +70,36 @@ class ResearchRepository(Protocol):
         limit: int | None = None,
     ) -> list[EntityMention]:
         """Return chunk-level resolved entity mentions."""
+
+    def upsert_text_embedding(self, embedding: TextEmbedding) -> TextEmbedding:
+        """Persist a text embedding for one document chunk and model."""
+
+    def get_text_embedding(self, embedding_id: UUID) -> TextEmbedding | None:
+        """Return a single text embedding by ID."""
+
+    def list_text_embeddings(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        research_object_id: UUID | None = None,
+        chunk_id: UUID | None = None,
+        object_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[TextEmbedding]:
+        """Return stored text embeddings by durable filters."""
+
+    def search_text_embeddings(self, request: TextEmbeddingSearchRequest) -> list[TextEmbeddingSearchResult]:
+        """Search stored text embeddings using local JSON-vector similarity."""
+
+    def embedding_coverage(
+        self,
+        *,
+        source_key: str | None = None,
+        object_type: str | None = None,
+        embedding_model: str | None = None,
+    ) -> EmbeddingCoverageSummary:
+        """Return document chunk embedding coverage."""
 
     def get_candidate(self, request: CandidateDossierRequest) -> CandidateDossier | None:
         """Return a candidate dossier."""
@@ -135,6 +169,7 @@ class InMemoryResearchRepository:
         self.entities: dict[tuple[str, str], ResolvedEntity] = {}
         self.entity_aliases: dict[tuple[str, str, str], EntityAlias] = {}
         self.entity_mentions: dict[UUID, EntityMention] = {}
+        self.text_embeddings: dict[UUID, TextEmbedding] = {}
         self.scrape_reviews: dict[UUID, ScrapeReviewRecord] = {}
         self.scrape_profile_reviews: dict[str, ScrapeSourceProfileReview] = {}
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
@@ -255,6 +290,101 @@ class InMemoryResearchRepository:
             mentions = [mention for mention in mentions if mention.entity_type == entity_type]
         mentions.sort(key=lambda mention: (str(mention.research_object_id), mention.chunk_index, mention.chunk_char_start))
         return mentions[:limit] if limit is not None else mentions
+
+    def upsert_text_embedding(self, embedding: TextEmbedding) -> TextEmbedding:
+        existing = next(
+            (
+                item
+                for item in self.text_embeddings.values()
+                if item.chunk_id == embedding.chunk_id and item.embedding_model == embedding.embedding_model
+            ),
+            None,
+        )
+        if existing:
+            embedding = embedding.model_copy(update={"embedding_id": existing.embedding_id})
+        self.text_embeddings[embedding.embedding_id] = embedding
+        return embedding
+
+    def get_text_embedding(self, embedding_id: UUID) -> TextEmbedding | None:
+        return self.text_embeddings.get(embedding_id)
+
+    def list_text_embeddings(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        research_object_id: UUID | None = None,
+        chunk_id: UUID | None = None,
+        object_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[TextEmbedding]:
+        embeddings = list(self.text_embeddings.values())
+        if embedding_model:
+            embeddings = [embedding for embedding in embeddings if embedding.embedding_model == embedding_model]
+        if source_key:
+            embeddings = [embedding for embedding in embeddings if embedding.source_key == source_key]
+        if research_object_id:
+            embeddings = [
+                embedding for embedding in embeddings if embedding.research_object_id == research_object_id
+            ]
+        if chunk_id:
+            embeddings = [embedding for embedding in embeddings if embedding.chunk_id == chunk_id]
+        if object_type:
+            embeddings = [embedding for embedding in embeddings if str(embedding.object_type) == object_type]
+        embeddings.sort(
+            key=lambda embedding: (
+                embedding.source_key or "",
+                str(embedding.research_object_id),
+                embedding.chunk_index,
+                embedding.embedding_model,
+            )
+        )
+        return embeddings[:limit] if limit is not None else embeddings
+
+    def search_text_embeddings(self, request: TextEmbeddingSearchRequest) -> list[TextEmbeddingSearchResult]:
+        candidates = self.list_text_embeddings(
+            embedding_model=request.embedding_model,
+            source_key=request.source_key,
+            research_object_id=request.research_object_id,
+            object_type=str(request.object_type) if request.object_type else None,
+        )
+        results: list[TextEmbeddingSearchResult] = []
+        for embedding in candidates:
+            score = cosine_similarity(request.query_embedding, embedding.embedding)
+            if score is None:
+                continue
+            if request.min_score is not None and score < request.min_score:
+                continue
+            results.append(TextEmbeddingSearchResult(embedding=embedding, score=score))
+        results.sort(key=lambda result: result.score, reverse=True)
+        return results[: request.limit]
+
+    def embedding_coverage(
+        self,
+        *,
+        source_key: str | None = None,
+        object_type: str | None = None,
+        embedding_model: str | None = None,
+    ) -> EmbeddingCoverageSummary:
+        embeddings = self.list_text_embeddings(
+            embedding_model=embedding_model,
+            source_key=source_key,
+            object_type=object_type,
+        )
+        embedded_chunks = len({embedding.chunk_id for embedding in embeddings})
+        by_model: dict[str, int] = {}
+        for embedding in self.list_text_embeddings(source_key=source_key, object_type=object_type):
+            by_model[embedding.embedding_model] = by_model.get(embedding.embedding_model, 0) + 1
+        return EmbeddingCoverageSummary(
+            source_key=source_key,
+            object_type=object_type,
+            embedding_model=embedding_model,
+            total_chunks=embedded_chunks,
+            embedded_chunks=embedded_chunks,
+            missing_chunks=0,
+            coverage_ratio=1.0 if embedded_chunks else 0.0,
+            embedding_models=dict(sorted(by_model.items())),
+        )
 
     def get_candidate(self, request: CandidateDossierRequest) -> CandidateDossier | None:
         name = request.candidate_name or "propranolol"
@@ -439,3 +569,16 @@ def seed_claims() -> list[ClaimSearchResult]:
 
 
 _seed_claims = seed_claims
+
+
+def cosine_similarity(left: list[float], right: list[float]) -> float | None:
+    """Return cosine similarity for same-length non-zero vectors."""
+
+    if not left or len(left) != len(right):
+        return None
+    left_norm = sum(value * value for value in left) ** 0.5
+    right_norm = sum(value * value for value in right) ** 0.5
+    if left_norm == 0 or right_norm == 0:
+        return None
+    score = sum(left_value * right_value for left_value, right_value in zip(left, right, strict=True))
+    return max(min(score / (left_norm * right_norm), 1.0), -1.0)

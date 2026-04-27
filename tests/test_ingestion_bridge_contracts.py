@@ -26,6 +26,8 @@ from hsa_research.ingestion_bridge.contracts import (
     ScrapeProfileReviewRequest,
     ScrapeReviewRequest,
     ScrapeSourceProfile,
+    TextEmbedding,
+    TextEmbeddingSearchRequest,
     ValidationRequest,
     ClaimCurationRequest,
     SourceScoutRequest,
@@ -1645,6 +1647,158 @@ def test_local_store_persists_raw_and_research_object(tmp_path):
     assert saved is not None
     assert saved.title == "Local persistence example"
     assert repo.coverage_summary()["research_objects"] == 1
+
+
+def test_text_embedding_contract_rejects_dimension_mismatch():
+    with pytest.raises(ValueError, match="embedding_dimensions"):
+        TextEmbedding(
+            chunk_id=uuid4(),
+            research_object_id=uuid4(),
+            chunk_index=0,
+            source_key="pubmed",
+            object_type="publication",
+            content_hash="bad-dimensions",
+            embedding_model="unit-embedding-v1",
+            embedding_dimensions=2,
+            embedding=[1.0],
+        )
+
+
+def test_sqlite_text_embeddings_persist_and_report_coverage(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Embedding persistence example",
+            source_key="pubmed",
+            dedupe_key="pubmed:embedding-persistence",
+        )
+    )
+    chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="VEGF signaling is discussed in canine hemangiosarcoma.",
+            content_hash="embedding-chunk-1",
+        )
+    )
+
+    saved = repo.upsert_text_embedding(
+        TextEmbedding(
+            chunk_id=chunk.id,
+            research_object_id=object_id,
+            chunk_index=chunk.chunk_index,
+            source_key="pubmed",
+            object_type="publication",
+            content_hash=chunk.content_hash,
+            embedding_model="unit-embedding-v1",
+            embedding_dimensions=3,
+            embedding=[1.0, 0.0, 0.0],
+            text_preview=chunk.text_content,
+        )
+    )
+
+    fetched = repo.get_text_embedding(saved.embedding_id)
+    listed = repo.list_text_embeddings(source_key="pubmed", embedding_model="unit-embedding-v1")
+    coverage = repo.embedding_coverage(source_key="pubmed", embedding_model="unit-embedding-v1")
+
+    assert fetched == saved
+    assert listed == [saved]
+    assert repo.coverage_summary()["text_embeddings"] == 1
+    assert coverage.total_chunks == 1
+    assert coverage.embedded_chunks == 1
+    assert coverage.missing_chunks == 0
+    assert coverage.coverage_ratio == 1.0
+    assert coverage.embedding_models == {"unit-embedding-v1": 1}
+
+
+def test_sqlite_text_embedding_search_uses_json_vectors_and_upserts_by_chunk_model(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Embedding search example",
+            source_key="pubmed",
+            dedupe_key="pubmed:embedding-search",
+        )
+    )
+    chunks = [
+        repo.upsert_document_chunk(
+            DocumentChunk(
+                research_object_id=object_id,
+                chunk_index=index,
+                section_label="abstract",
+                text_content=text,
+                content_hash=f"embedding-search-{index}",
+            )
+        )
+        for index, text in enumerate(
+            [
+                "VEGF signaling and angiogenesis in hemangiosarcoma.",
+                "Chemotherapy toxicity monitoring in dogs.",
+            ]
+        )
+    ]
+    first = repo.upsert_text_embedding(
+        TextEmbedding(
+            chunk_id=chunks[0].id,
+            research_object_id=object_id,
+            chunk_index=0,
+            source_key="pubmed",
+            object_type="publication",
+            content_hash=chunks[0].content_hash,
+            embedding_model="unit-embedding-v1",
+            embedding_dimensions=3,
+            embedding=[1.0, 0.0, 0.0],
+        )
+    )
+    repo.upsert_text_embedding(
+        TextEmbedding(
+            chunk_id=chunks[1].id,
+            research_object_id=object_id,
+            chunk_index=1,
+            source_key="pubmed",
+            object_type="publication",
+            content_hash=chunks[1].content_hash,
+            embedding_model="unit-embedding-v1",
+            embedding_dimensions=3,
+            embedding=[0.0, 1.0, 0.0],
+        )
+    )
+
+    results = repo.search_text_embeddings(
+        TextEmbeddingSearchRequest(
+            query_embedding=[0.95, 0.05, 0.0],
+            embedding_model="unit-embedding-v1",
+            source_key="pubmed",
+            limit=2,
+        )
+    )
+
+    updated = repo.upsert_text_embedding(
+        TextEmbedding(
+            chunk_id=chunks[0].id,
+            research_object_id=object_id,
+            chunk_index=0,
+            source_key="pubmed",
+            object_type="publication",
+            content_hash="embedding-search-0-updated",
+            embedding_model="unit-embedding-v1",
+            embedding_dimensions=3,
+            embedding=[0.0, 0.0, 1.0],
+        )
+    )
+    updated_results = repo.search_text_embeddings(
+        TextEmbeddingSearchRequest(query_embedding=[0.0, 0.0, 1.0], embedding_model="unit-embedding-v1")
+    )
+
+    assert [result.embedding.chunk_id for result in results] == [chunks[0].id, chunks[1].id]
+    assert results[0].score > results[1].score
+    assert updated.embedding_id == first.embedding_id
+    assert updated.content_hash == "embedding-search-0-updated"
+    assert len(repo.list_text_embeddings(embedding_model="unit-embedding-v1")) == 2
+    assert updated_results[0].embedding.embedding_id == first.embedding_id
 
 
 def test_backfill_papers_json_creates_object_and_chunk(tmp_path):

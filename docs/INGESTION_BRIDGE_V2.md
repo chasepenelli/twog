@@ -99,6 +99,28 @@ A research object is any durable source-derived object that can produce evidence
 
 Objects can have many identifiers. The resolver links DOI, PMID, PMCID, OpenAlex ID, NCT ID, AVMA study ID, GEO/SRA accession, PubChem CID, ChEMBL ID, UniProt accession, PDB ID, AlphaFold ID, and internal IDs.
 
+## Retrieval Foundation
+
+Retrieval starts as a bounded storage contract, not a user-facing tool. The
+`TextEmbedding` contract stores one embedding for one `DocumentChunk` and one
+embedding model. SQLite and Postgres both persist it in `text_embeddings` with
+query-friendly columns plus the typed payload and JSON vector. There is no
+`pgvector` dependency yet; search computes cosine similarity in Python over the
+stored JSON vectors.
+
+Repository adapters expose:
+
+- `upsert_text_embedding`
+- `get_text_embedding`
+- `list_text_embeddings`
+- `search_text_embeddings`
+- `embedding_coverage`
+
+`embedding_coverage` compares stored embeddings against durable
+`document_chunks`, optionally scoped by source, object type, or model. This
+lets the ingestion layer measure retrieval readiness before CLI, Dagster, or
+MCP wiring exists.
+
 ## Claim Types
 
 The first claim set should stay small:

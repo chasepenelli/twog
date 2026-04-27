@@ -22,6 +22,7 @@ from .contracts import (
     ClaimSearchResult,
     CommitHypothesisRequest,
     DocumentChunk,
+    EmbeddingCoverageSummary,
     EntityAlias,
     EntityMention,
     RawSourceRecord,
@@ -31,10 +32,13 @@ from .contracts import (
     ScrapeReviewRecord,
     ScrapeSourceProfileReview,
     SourceQuery,
+    TextEmbedding,
+    TextEmbeddingSearchRequest,
+    TextEmbeddingSearchResult,
     ValidationRequest,
 )
 from .local_store import build_research_object_dedupe_key
-from .repository import ResearchRepository, seed_claims
+from .repository import ResearchRepository, cosine_similarity, seed_claims
 
 
 class PostgresResearchRepository(ResearchRepository):
@@ -571,6 +575,184 @@ class PostgresResearchRepository(ResearchRepository):
             params.append(limit)
         return [DocumentChunk.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
 
+    def upsert_text_embedding(self, embedding: TextEmbedding) -> TextEmbedding:
+        existing = self._fetchone(
+            """
+            select embedding_id
+            from text_embeddings
+            where chunk_id = %s and embedding_model = %s
+            """,
+            (str(embedding.chunk_id), embedding.embedding_model),
+        )
+        embedding_id = UUID(existing["embedding_id"]) if existing else embedding.embedding_id
+        record = embedding.model_copy(update={"embedding_id": embedding_id})
+        payload = record.model_dump(mode="json")
+        self._execute(
+            """
+            insert into text_embeddings (
+              embedding_id, chunk_id, object_id, chunk_index, source_key,
+              object_type, embedding_model, embedding_dimensions, content_hash,
+              vector_json, payload, embedded_at
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict(chunk_id, embedding_model) do update set
+              object_id = excluded.object_id,
+              chunk_index = excluded.chunk_index,
+              source_key = excluded.source_key,
+              object_type = excluded.object_type,
+              embedding_dimensions = excluded.embedding_dimensions,
+              content_hash = excluded.content_hash,
+              vector_json = excluded.vector_json,
+              payload = excluded.payload,
+              embedded_at = excluded.embedded_at,
+              updated_at = now()
+            """,
+            (
+                str(record.embedding_id),
+                str(record.chunk_id),
+                str(record.research_object_id),
+                record.chunk_index,
+                record.source_key,
+                str(record.object_type) if record.object_type else None,
+                record.embedding_model,
+                record.embedding_dimensions,
+                record.content_hash,
+                self._json(record.embedding),
+                self._json(payload),
+                record.embedded_at,
+            ),
+        )
+        row = self._fetchone("select payload from text_embeddings where embedding_id = %s", (str(record.embedding_id),))
+        return TextEmbedding.model_validate(_payload(row))
+
+    def get_text_embedding(self, embedding_id: UUID) -> TextEmbedding | None:
+        row = self._fetchone("select payload from text_embeddings where embedding_id = %s", (str(embedding_id),))
+        if row is None:
+            return None
+        return TextEmbedding.model_validate(_payload(row))
+
+    def list_text_embeddings(
+        self,
+        *,
+        embedding_model: str | None = None,
+        source_key: str | None = None,
+        research_object_id: UUID | None = None,
+        chunk_id: UUID | None = None,
+        object_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[TextEmbedding]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if embedding_model:
+            clauses.append("embedding_model = %s")
+            params.append(embedding_model)
+        if source_key:
+            clauses.append("source_key = %s")
+            params.append(source_key)
+        if research_object_id:
+            clauses.append("object_id = %s")
+            params.append(str(research_object_id))
+        if chunk_id:
+            clauses.append("chunk_id = %s")
+            params.append(str(chunk_id))
+        if object_type:
+            clauses.append("object_type = %s")
+            params.append(object_type)
+        sql = "select payload from text_embeddings"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by source_key, object_id, chunk_index, embedding_model"
+        if limit is not None:
+            sql += " limit %s"
+            params.append(limit)
+        return [TextEmbedding.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
+
+    def search_text_embeddings(self, request: TextEmbeddingSearchRequest) -> list[TextEmbeddingSearchResult]:
+        candidates = self.list_text_embeddings(
+            embedding_model=request.embedding_model,
+            source_key=request.source_key,
+            research_object_id=request.research_object_id,
+            object_type=str(request.object_type) if request.object_type else None,
+        )
+        results: list[TextEmbeddingSearchResult] = []
+        for embedding in candidates:
+            score = cosine_similarity(request.query_embedding, embedding.embedding)
+            if score is None:
+                continue
+            if request.min_score is not None and score < request.min_score:
+                continue
+            results.append(TextEmbeddingSearchResult(embedding=embedding, score=score))
+        results.sort(key=lambda result: result.score, reverse=True)
+        return results[: request.limit]
+
+    def embedding_coverage(
+        self,
+        *,
+        source_key: str | None = None,
+        object_type: str | None = None,
+        embedding_model: str | None = None,
+    ) -> EmbeddingCoverageSummary:
+        base_clauses: list[str] = []
+        base_params: list[object] = []
+        if source_key:
+            base_clauses.append("ro.source_key = %s")
+            base_params.append(source_key)
+        if object_type:
+            base_clauses.append("ro.object_type = %s")
+            base_params.append(object_type)
+        where = " where " + " and ".join(base_clauses) if base_clauses else ""
+        total_chunks = self._scalar(
+            f"""
+            select count(distinct dc.chunk_id)
+            from document_chunks dc
+            join research_objects ro on ro.object_id = dc.object_id
+            {where}
+            """,
+            base_params,
+        )
+
+        embedded_clauses = list(base_clauses)
+        embedded_params = list(base_params)
+        if embedding_model:
+            embedded_clauses.append("te.embedding_model = %s")
+            embedded_params.append(embedding_model)
+        embedded_where = " where " + " and ".join(embedded_clauses) if embedded_clauses else ""
+        embedded_chunks = self._scalar(
+            f"""
+            select count(distinct dc.chunk_id)
+            from document_chunks dc
+            join research_objects ro on ro.object_id = dc.object_id
+            join text_embeddings te on te.chunk_id = dc.chunk_id
+            {embedded_where}
+            """,
+            embedded_params,
+        )
+
+        model_rows = self._fetchall(
+            f"""
+            select te.embedding_model, count(distinct te.chunk_id) as count
+            from document_chunks dc
+            join research_objects ro on ro.object_id = dc.object_id
+            join text_embeddings te on te.chunk_id = dc.chunk_id
+            {where}
+            group by te.embedding_model
+            order by te.embedding_model
+            """,
+            base_params,
+        )
+        missing_chunks = max(total_chunks - embedded_chunks, 0)
+        coverage_ratio = embedded_chunks / total_chunks if total_chunks else 0.0
+        return EmbeddingCoverageSummary(
+            source_key=source_key,
+            object_type=object_type,
+            embedding_model=embedding_model,
+            total_chunks=total_chunks,
+            embedded_chunks=embedded_chunks,
+            missing_chunks=missing_chunks,
+            coverage_ratio=coverage_ratio,
+            embedding_models={row["embedding_model"]: int(row["count"]) for row in model_rows},
+        )
+
     def coverage_summary(self) -> dict[str, Any]:
         source_count = self._scalar("select count(*) from ingestion_sources")
         query_count = self._scalar("select count(*) from source_queries")
@@ -578,6 +760,7 @@ class PostgresResearchRepository(ResearchRepository):
         raw_count = self._scalar("select count(*) from raw_source_records")
         object_count = self._scalar("select count(*) from research_objects")
         chunk_count = self._scalar("select count(*) from document_chunks")
+        embedding_count = self._scalar("select count(*) from text_embeddings")
         claims_count = self._scalar("select count(*) from claims")
         entity_count = self._scalar("select count(*) from resolved_entities")
         entity_alias_count = self._scalar("select count(*) from entity_aliases")
@@ -616,6 +799,7 @@ class PostgresResearchRepository(ResearchRepository):
             "raw_records": raw_count,
             "research_objects": object_count,
             "document_chunks": chunk_count,
+            "text_embeddings": embedding_count,
             "claims": claims_count,
             "resolved_entities": entity_count,
             "entity_aliases": entity_alias_count,
@@ -1109,6 +1293,31 @@ class PostgresResearchRepository(ResearchRepository):
               on document_chunks(object_id, chunk_index);
             create index if not exists document_chunks_hash_idx
               on document_chunks(content_hash);
+
+            create table if not exists text_embeddings (
+              embedding_id text primary key,
+              chunk_id text not null,
+              object_id text not null,
+              chunk_index integer not null,
+              source_key text,
+              object_type text,
+              embedding_model text not null,
+              embedding_dimensions integer not null,
+              content_hash text not null,
+              vector_json jsonb not null,
+              payload jsonb not null,
+              embedded_at timestamptz not null,
+              created_at timestamptz not null default now(),
+              updated_at timestamptz not null default now(),
+              unique (chunk_id, embedding_model)
+            );
+
+            create index if not exists text_embeddings_chunk_idx
+              on text_embeddings(chunk_id, embedding_model);
+            create index if not exists text_embeddings_object_idx
+              on text_embeddings(object_id, chunk_index);
+            create index if not exists text_embeddings_source_model_idx
+              on text_embeddings(source_key, embedding_model);
 
             create table if not exists resolved_entities (
               entity_id text primary key,

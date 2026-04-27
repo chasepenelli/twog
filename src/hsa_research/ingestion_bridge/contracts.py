@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 
 class StrictBaseModel(BaseModel):
@@ -200,6 +200,54 @@ class DocumentChunk(StrictBaseModel):
     char_start: int | None = None
     char_end: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TextEmbedding(StrictBaseModel):
+    embedding_id: UUID = Field(default_factory=uuid4)
+    chunk_id: UUID
+    research_object_id: UUID
+    chunk_index: int = Field(ge=0)
+    source_key: str | None = None
+    object_type: ResearchObjectType | None = None
+    content_hash: str
+    embedding_model: str
+    embedding_dimensions: int = Field(ge=1)
+    embedding: list[float] = Field(min_length=1)
+    text_preview: str | None = Field(default=None, max_length=500)
+    embedded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_embedding_dimensions(self) -> "TextEmbedding":
+        if self.embedding_dimensions != len(self.embedding):
+            raise ValueError("embedding_dimensions must match embedding length")
+        return self
+
+
+class TextEmbeddingSearchRequest(StrictBaseModel):
+    query_embedding: list[float] = Field(min_length=1)
+    embedding_model: str | None = None
+    source_key: str | None = None
+    research_object_id: UUID | None = None
+    object_type: ResearchObjectType | None = None
+    min_score: float | None = Field(default=None, ge=-1.0, le=1.0)
+    limit: int = Field(default=10, ge=1, le=100)
+
+
+class TextEmbeddingSearchResult(StrictBaseModel):
+    embedding: TextEmbedding
+    score: float = Field(ge=-1.0, le=1.0)
+
+
+class EmbeddingCoverageSummary(StrictBaseModel):
+    source_key: str | None = None
+    object_type: str | None = None
+    embedding_model: str | None = None
+    total_chunks: int = Field(ge=0)
+    embedded_chunks: int = Field(ge=0)
+    missing_chunks: int = Field(ge=0)
+    coverage_ratio: float = Field(ge=0.0, le=1.0)
+    embedding_models: dict[str, int] = Field(default_factory=dict)
 
 
 class HarvestedRecord(StrictBaseModel):
