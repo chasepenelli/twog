@@ -104,6 +104,10 @@ separate sections. `title_abstract` chunks stay useful for metadata triage, but
 `full_text` chunks must come from body text only. Full-text QA requires both
 persisted body chunks and current-run body chunks, and object refreshes replace
 old chunk rows plus derived chunk-level embeddings and entity mentions.
+The hosted full-text lane is runtime-bounded with short body-fetch timeouts,
+source-level fetch budgets, and a capped PMC OA candidate scan so API slowness
+fails as source health signal instead of occupying the whole orchestration
+window.
 
 ## Retrieval Foundation
 

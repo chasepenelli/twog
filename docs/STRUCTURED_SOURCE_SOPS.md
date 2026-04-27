@@ -380,6 +380,11 @@ Required QA output:
 - Re-ingesting a refreshed object replaces its prior chunks and clears derived
   chunk-level embeddings and entity mentions, so stale body chunks cannot make a
   failed refresh look healthy.
+- Full-text body fetches use a shorter timeout and a bounded candidate scan.
+  Tune `HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS`,
+  `HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS`, and
+  `HSA_PMC_OA_MAX_CANDIDATE_RECORDS` only when a hosted run proves the default
+  lane is too conservative.
 
 Dagster schedule:
 - `literature_full_text_weekly_schedule`

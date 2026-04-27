@@ -1017,9 +1017,11 @@ def test_europe_pmc_v2_fetch_keeps_body_only_policy_match(monkeypatch):
             }
         }
 
-    def fake_get_text(url, params):
+    def fake_get_text(url, params, **kwargs):
         assert url == "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC123/fullTextXML"
         assert params == {}
+        assert kwargs["timeout_seconds"] == harvesters_v2.FULL_TEXT_REQUEST_TIMEOUT_SECONDS
+        assert kwargs["attempts"] == harvesters_v2.FULL_TEXT_REQUEST_ATTEMPTS
         return """
         <article xmlns="http://jats.nlm.nih.gov">
           <front><article-meta><article-id pub-id-type="pmc">PMC123</article-id></article-meta></front>
@@ -1169,9 +1171,11 @@ def test_pmc_oa_v2_fetch_keeps_body_only_policy_match(monkeypatch):
         assert params["db"] == "pmc"
         return {"esearchresult": {"idlist": ["123456"]}}
 
-    def fake_get_text(url, params):
+    def fake_get_text(url, params, **kwargs):
         assert url == "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/"
         assert params["identifier"] == "oai:pubmedcentral.nih.gov:123456"
+        assert kwargs["timeout_seconds"] == harvesters_v2.FULL_TEXT_REQUEST_TIMEOUT_SECONDS
+        assert kwargs["attempts"] == harvesters_v2.FULL_TEXT_REQUEST_ATTEMPTS
         return xml
 
     monkeypatch.setattr(harvesters_v2, "_get_json", fake_get_json)
@@ -1179,7 +1183,7 @@ def test_pmc_oa_v2_fetch_keeps_body_only_policy_match(monkeypatch):
     monkeypatch.setattr(
         harvesters_v2,
         "_pmc_oa_metadata",
-        lambda pmcid: {"oa_license": "CC BY", "retracted": "no"},
+        lambda pmcid, **kwargs: {"oa_license": "CC BY", "retracted": "no"},
     )
     monkeypatch.setattr(harvesters_v2.time, "sleep", lambda _seconds: None)
 
@@ -1190,6 +1194,36 @@ def test_pmc_oa_v2_fetch_keeps_body_only_policy_match(monkeypatch):
     assert records[0].research_object.metadata["body_ingestion_policy"]["matched_concepts"] == [
         "human_angiosarcoma"
     ]
+
+
+def test_pmc_oa_v2_fetch_caps_candidate_metadata_scans(monkeypatch):
+    metadata_calls = []
+
+    def fake_get_json(url, params):
+        assert url.endswith("/esearch.fcgi")
+        assert params["retmax"] == 4
+        return {"esearchresult": {"idlist": [str(index) for index in range(1, 20)]}}
+
+    def fake_metadata(pmcid, **kwargs):
+        metadata_calls.append((pmcid, kwargs))
+        return None
+
+    monkeypatch.setattr(harvesters_v2, "_get_json", fake_get_json)
+    monkeypatch.setattr(harvesters_v2, "_pmc_oa_metadata", fake_metadata)
+
+    records = PMCOAHarvesterV2().fetch(
+        "hemangiosarcoma",
+        limit=3,
+        max_candidate_records=4,
+    )
+
+    assert records == []
+    assert [pmcid for pmcid, _kwargs in metadata_calls] == ["PMC1", "PMC2", "PMC3", "PMC4"]
+    assert all(
+        kwargs["timeout_seconds"] == harvesters_v2.FULL_TEXT_REQUEST_TIMEOUT_SECONDS
+        and kwargs["attempts"] == harvesters_v2.FULL_TEXT_REQUEST_ATTEMPTS
+        for _pmcid, kwargs in metadata_calls
+    )
 
 
 def test_local_ingestion_replaces_full_text_chunks_by_section(tmp_path, monkeypatch):

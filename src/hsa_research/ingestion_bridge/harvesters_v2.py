@@ -29,6 +29,12 @@ from .query_policy import (
 )
 
 USER_AGENT = "hsa-autoresearch-ingestion-bridge-v2/0.2 (mailto:poppa@bradyandgraffiti.com)"
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 45.0
+DEFAULT_REQUEST_ATTEMPTS = 3
+FULL_TEXT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS", "12"))
+FULL_TEXT_REQUEST_ATTEMPTS = int(os.getenv("HSA_FULL_TEXT_REQUEST_ATTEMPTS", "1"))
+FULL_TEXT_FETCH_TIME_BUDGET_SECONDS = float(os.getenv("HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS", "360"))
+PMC_OA_MAX_CANDIDATE_RECORDS = int(os.getenv("HSA_PMC_OA_MAX_CANDIDATE_RECORDS", "40"))
 
 CHEMBL_PRIORITY_TARGETS: dict[str, dict[str, str]] = {
     "CHEMBL213": {"gene": "ADRB1", "category": "beta_adrenergic"},
@@ -275,6 +281,11 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
         query_text, params = self.prepare_query(query_text, params)
         open_access = params.pop("open_access", False)
         fetch_full_text = params.pop("fetch_full_text", open_access)
+        full_text_timeout_seconds = float(params.pop("full_text_timeout_seconds", FULL_TEXT_REQUEST_TIMEOUT_SECONDS))
+        full_text_attempts = int(params.pop("full_text_attempts", FULL_TEXT_REQUEST_ATTEMPTS))
+        full_text_time_budget_seconds = float(
+            params.pop("full_text_time_budget_seconds", FULL_TEXT_FETCH_TIME_BUDGET_SECONDS)
+        )
         if open_access and "OPEN_ACCESS:" not in query_text.upper():
             query_text = f"({query_text}) AND OPEN_ACCESS:Y"
         data = _get_json(
@@ -288,13 +299,23 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
             },
         )
         items = ((data.get("resultList") or {}).get("result")) or []
-        records = [
-            self.normalize(
-                item,
-                full_text_xml=_europe_pmc_full_text_xml(_europe_pmc_full_text_id(item)) if fetch_full_text else None,
+        records: list[HarvestedRecord] = []
+        started_at = time.monotonic()
+        for item in items:
+            if fetch_full_text and time.monotonic() - started_at >= full_text_time_budget_seconds:
+                break
+            records.append(
+                self.normalize(
+                    item,
+                    full_text_xml=_europe_pmc_full_text_xml(
+                        _europe_pmc_full_text_id(item),
+                        timeout_seconds=full_text_timeout_seconds,
+                        attempts=full_text_attempts,
+                    )
+                    if fetch_full_text
+                    else None,
+                )
             )
-            for item in items
-        ]
         return self.filter_relevant(records, params)
 
     def filter_relevant(
@@ -468,10 +489,16 @@ class PMCOAHarvesterV2(ScholarlyHarvesterV2):
         query_text, params = self.prepare_query(query_text, params)
         license_required = params.pop("license_required", True)
         skip_retracted = params.pop("skip_retracted", True)
+        full_text_timeout_seconds = float(params.pop("full_text_timeout_seconds", FULL_TEXT_REQUEST_TIMEOUT_SECONDS))
+        full_text_attempts = int(params.pop("full_text_attempts", FULL_TEXT_REQUEST_ATTEMPTS))
+        full_text_time_budget_seconds = float(
+            params.pop("full_text_time_budget_seconds", FULL_TEXT_FETCH_TIME_BUDGET_SECONDS)
+        )
+        max_candidate_records = int(params.pop("max_candidate_records", PMC_OA_MAX_CANDIDATE_RECORDS))
         if license_required and "open access" not in query_text.lower():
             query_text = f"({query_text}) AND \"open access\"[filter]"
         require_policy_match = params.get("require_policy_match", True)
-        candidate_limit = min(max(limit * 50, 100), 200)
+        candidate_limit = min(max(limit * 10, 25), max_candidate_records)
         search = _get_json(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
             {
@@ -482,14 +509,21 @@ class PMCOAHarvesterV2(ScholarlyHarvesterV2):
                 **params,
             },
         )
-        ids = (search.get("esearchresult") or {}).get("idlist", [])
+        ids = ((search.get("esearchresult") or {}).get("idlist", []))[:candidate_limit]
         records: list[HarvestedRecord] = []
+        started_at = time.monotonic()
         for pmc_numeric_id in ids:
             if len(records) >= limit:
                 break
+            if time.monotonic() - started_at >= full_text_time_budget_seconds:
+                break
             pmcid = _normalize_pmcid(pmc_numeric_id)
             try:
-                oa_metadata = _pmc_oa_metadata(pmcid)
+                oa_metadata = _pmc_oa_metadata(
+                    pmcid,
+                    timeout_seconds=full_text_timeout_seconds,
+                    attempts=full_text_attempts,
+                )
             except (ET.ParseError, RuntimeError, ValueError):
                 continue
             if not oa_metadata:
@@ -506,6 +540,8 @@ class PMCOAHarvesterV2(ScholarlyHarvesterV2):
                         "identifier": f"oai:pubmedcentral.nih.gov:{_pmcid_numeric(pmcid)}",
                         "metadataPrefix": "pmc",
                     },
+                    timeout_seconds=full_text_timeout_seconds,
+                    attempts=full_text_attempts,
                 )
                 record = self.normalize(xml, pmcid=pmcid, oa_metadata=oa_metadata, source_query=query_text)
             except (ET.ParseError, RuntimeError, ValueError):
@@ -2145,8 +2181,14 @@ def get_harvester(source_key: str) -> HarvesterV2:
         raise ValueError(f"No v2 harvester registered for source: {source_key}") from exc
 
 
-def _get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
-    return json.loads(_get_text(url, params))
+def _get_json(
+    url: str,
+    params: dict[str, Any],
+    *,
+    timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    attempts: int = DEFAULT_REQUEST_ATTEMPTS,
+) -> dict[str, Any]:
+    return json.loads(_get_text(url, params, timeout_seconds=timeout_seconds, attempts=attempts))
 
 
 def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2183,26 +2225,33 @@ def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     raise RuntimeError(f"Request failed for {url}: {last_error}") from last_error
 
 
-def _get_text(url: str, params: dict[str, Any]) -> str:
+def _get_text(
+    url: str,
+    params: dict[str, Any],
+    *,
+    timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    attempts: int = DEFAULT_REQUEST_ATTEMPTS,
+) -> str:
     params = dict(params)
     if "eutils.ncbi.nlm.nih.gov" in url and "api_key" not in params and os.getenv("NCBI_API_KEY"):
         params["api_key"] = os.environ["NCBI_API_KEY"]
     query = urllib.parse.urlencode({key: value for key, value in params.items() if value is not None})
     request = urllib.request.Request(f"{url}?{query}", headers={"User-Agent": USER_AGENT})
     last_error: Exception | None = None
-    for attempt in range(3):
+    attempts = max(1, attempts)
+    for attempt in range(attempts):
         try:
-            with urllib.request.urlopen(request, timeout=45) as response:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                 return response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             last_error = exc
-            if exc.code not in {429, 500, 502, 503, 504} or attempt == 2:
+            if exc.code not in {429, 500, 502, 503, 504} or attempt == attempts - 1:
                 detail = exc.read().decode("utf-8", errors="replace")[:500]
                 raise RuntimeError(f"HTTP {exc.code} from {url}: {detail}") from exc
             time.sleep(1.5 * (attempt + 1))
         except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
             last_error = exc
-            if attempt == 2:
+            if attempt == attempts - 1:
                 break
             time.sleep(1.5 * (attempt + 1))
     raise RuntimeError(f"Request failed for {url}: {last_error}") from last_error
@@ -2681,10 +2730,20 @@ def _pmcid_numeric(pmcid: str | None) -> str | None:
     return pmcid.upper().removeprefix("PMC")
 
 
-def _pmc_oa_metadata(pmcid: str | None) -> dict[str, Any] | None:
+def _pmc_oa_metadata(
+    pmcid: str | None,
+    *,
+    timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    attempts: int = DEFAULT_REQUEST_ATTEMPTS,
+) -> dict[str, Any] | None:
     if not pmcid:
         return None
-    xml = _get_text("https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi", {"id": pmcid})
+    xml = _get_text(
+        "https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi",
+        {"id": pmcid},
+        timeout_seconds=timeout_seconds,
+        attempts=attempts,
+    )
     root = ET.fromstring(xml)
     error = root.find(".//error")
     if error is not None:
@@ -2733,13 +2792,20 @@ def _europe_pmc_full_text_id(item: dict[str, Any]) -> str | None:
     return item.get("pmcid") or item.get("id")
 
 
-def _europe_pmc_full_text_xml(article_id: str | None) -> str | None:
+def _europe_pmc_full_text_xml(
+    article_id: str | None,
+    *,
+    timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    attempts: int = DEFAULT_REQUEST_ATTEMPTS,
+) -> str | None:
     if not article_id:
         return None
     try:
         return _get_text(
             f"https://www.ebi.ac.uk/europepmc/webservices/rest/{urllib.parse.quote(str(article_id))}/fullTextXML",
             {},
+            timeout_seconds=timeout_seconds,
+            attempts=attempts,
         )
     except (ET.ParseError, RuntimeError, ValueError):
         return None
