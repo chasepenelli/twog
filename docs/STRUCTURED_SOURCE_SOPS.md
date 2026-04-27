@@ -298,6 +298,40 @@ Required QA output:
 - Sparse scholarly source-context claims remain `needs_review`.
 - Licensed full-text sources can produce `full_text` chunks and typed claims.
 
+### Run The Literature Corpus Harvest
+
+Use this when you want to prove the system can build an organized paper corpus
+instead of only validating source connectivity. This job intentionally targets
+hundreds of persisted literature records while keeping the heavy full-text
+sources bounded.
+
+GitHub Actions workflow:
+
+```text
+Launch Dagster Smoke Job -> literature_corpus_harvest_job
+```
+
+Sources and per-query limits:
+- `openalex`: 100
+- `pubmed`: 100
+- `europe_pmc`: 50
+- `crossref`: 100
+- `pmc_oa`: 15
+
+Required QA output:
+- At least 200 raw records.
+- At least 100 canonical research objects.
+- At least 100 document chunks.
+- At least 50 claims.
+- No ingestion, extraction, or curation errors.
+
+Organization standard:
+- Every persisted object must keep `source_key`, canonical URL or source URL,
+  identifiers, source query metadata, and policy match metadata.
+- Full-text records must use `section_label=full_text`.
+- Crossref remains a triage source until the specialized review agent promotes
+  source-context claims into evidence.
+
 ### Run Source Health
 
 Use this after a smoke run or scheduled refresh. It is stricter than coverage:

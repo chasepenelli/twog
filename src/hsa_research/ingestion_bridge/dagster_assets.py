@@ -21,6 +21,8 @@ from .source_sets import (
     ALL_API_SOURCE_KEYS,
     CANINE_DATA_OMICS_SOURCE_KEYS,
     LITERATURE_CLINICAL_SOURCE_KEYS,
+    LITERATURE_CORPUS_SOURCE_KEYS,
+    LITERATURE_CORPUS_SOURCE_LIMITS,
     STRUCTURED_SOURCE_KEYS,
 )
 
@@ -240,6 +242,22 @@ if dg is not None:
             curate_limit=500,
         )
 
+    @dg.asset(group_name="literature_corpus_harvest")
+    def literature_corpus_harvest_report() -> dict:
+        """Hundreds-scale hosted literature ingestion across paper sources."""
+
+        from .storage import build_sql_repository
+        from .structured_orchestration import run_structured_sources_pipeline
+
+        repository = build_sql_repository()
+        return run_structured_sources_pipeline(
+            repository,
+            source_keys=LITERATURE_CORPUS_SOURCE_KEYS,
+            source_limits=LITERATURE_CORPUS_SOURCE_LIMITS,
+            extract_limit=5000,
+            curate_limit=5000,
+        )
+
     @dg.asset(group_name="structured_source_refresh")
     def structured_source_count_report() -> dict:
         """Persisted count report for hosted API source coverage."""
@@ -396,6 +414,37 @@ if dg is not None:
             },
         )
 
+    @dg.asset_check(asset=literature_corpus_harvest_report)
+    def literature_corpus_harvest_has_hundreds_of_records(
+        literature_corpus_harvest_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure the corpus run produces a meaningful persisted literature set."""
+
+        errors = literature_corpus_harvest_report.get("errors", [])
+        totals = literature_corpus_harvest_report.get("totals", {})
+        passed = (
+            not errors
+            and totals.get("raw_records", 0) >= 200
+            and totals.get("research_objects", 0) >= 100
+            and totals.get("document_chunks", 0) >= 100
+            and totals.get("claims", 0) >= 50
+        )
+        return dg.AssetCheckResult(
+            passed=passed,
+            metadata={
+                "errors": errors,
+                "minimum_totals": {
+                    "raw_records": 200,
+                    "research_objects": 100,
+                    "document_chunks": 100,
+                    "claims": 50,
+                },
+                "source_keys": literature_corpus_harvest_report.get("source_keys", []),
+                "source_limits": LITERATURE_CORPUS_SOURCE_LIMITS,
+                "totals": totals,
+            },
+        )
+
     @dg.asset_check(asset=structured_source_count_report)
     def structured_source_count_report_has_minimum_outputs(
         structured_source_count_report: dict,
@@ -423,6 +472,7 @@ if dg is not None:
             passed=not failed_sources,
             metadata={
                 "failed_sources": failed_sources,
+                "triage_sources": source_health_report.get("triage_sources", []),
                 "watch_sources": source_health_report.get("watch_sources", []),
                 "summary": source_health_report.get("summary", {}),
                 "totals": source_health_report.get("totals", {}),
@@ -445,6 +495,7 @@ if dg is not None:
         structured_source_multisource_smoke_report,
         literature_clinical_smoke_report,
         all_api_smoke_report,
+        literature_corpus_harvest_report,
         structured_source_count_report,
         source_health_report,
     ]
@@ -469,6 +520,10 @@ if dg is not None:
         "all_api_smoke_job",
         selection=dg.AssetSelection.assets(all_api_smoke_report),
     )
+    literature_corpus_harvest_job = dg.define_asset_job(
+        "literature_corpus_harvest_job",
+        selection=dg.AssetSelection.assets(literature_corpus_harvest_report),
+    )
     structured_source_count_report_job = dg.define_asset_job(
         "structured_source_count_report_job",
         selection=dg.AssetSelection.assets(structured_source_count_report),
@@ -487,6 +542,7 @@ if dg is not None:
             structured_source_multisource_smoke_has_minimum_outputs,
             literature_clinical_smoke_has_minimum_outputs,
             all_api_smoke_has_minimum_outputs,
+            literature_corpus_harvest_has_hundreds_of_records,
             structured_source_count_report_has_minimum_outputs,
             source_health_report_has_no_failed_sources,
         ],
@@ -496,6 +552,7 @@ if dg is not None:
             structured_source_multisource_smoke_job,
             literature_clinical_smoke_job,
             all_api_smoke_job,
+            literature_corpus_harvest_job,
             structured_source_count_report_job,
             source_health_report_job,
         ],
@@ -508,6 +565,7 @@ else:
     structured_source_multisource_smoke_job = None
     literature_clinical_smoke_job = None
     all_api_smoke_job = None
+    literature_corpus_harvest_job = None
     structured_source_count_report_job = None
     source_health_report_job = None
     defs = None
