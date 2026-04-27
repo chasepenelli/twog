@@ -11,7 +11,7 @@ jobs:
       DAGSTER_CLOUD_ORGANIZATION: "twogbio"
       DAGSTER_CLOUD_URL: "https://twogbio.dagster.cloud"
       DAGSTER_CLOUD_DEPLOYMENT: "prod"
-      DAGSTER_CLOUD_API_TOKEN: ${{ secrets.DAGSTER_CLOUD_API_TOKEN }}
+      DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
       HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
 
@@ -29,8 +29,8 @@ jobs:
 
       - name: Validate required secrets
         run: |
-          if [ -z "$DAGSTER_CLOUD_API_TOKEN" ]; then
-            echo "::error::DAGSTER_CLOUD_API_TOKEN is not configured."
+          if [ -z "$DAGSTER_PLUS_ENV_API_TOKEN" ]; then
+            echo "::error::DAGSTER_PLUS_ENV_API_TOKEN is not configured. This must be a Dagster+ token from a user with Editor, Admin, or Organization Admin permissions."
             exit 1
           fi
           if [ -z "$HSA_DATABASE_URL" ]; then
@@ -48,7 +48,7 @@ jobs:
             --organization "$DAGSTER_CLOUD_ORGANIZATION" \
             --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
             --url "$DAGSTER_CLOUD_URL" \
-            --api-token "$DAGSTER_CLOUD_API_TOKEN"
+            --api-token "$DAGSTER_PLUS_ENV_API_TOKEN"
         shell: bash
 
       - name: Set production environment variables
