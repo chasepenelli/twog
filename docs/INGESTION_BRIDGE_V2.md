@@ -108,6 +108,20 @@ query-friendly columns plus the typed payload and JSON vector. There is no
 `pgvector` dependency yet; search computes cosine similarity in Python over the
 stored JSON vectors.
 
+The first indexer is local and deterministic:
+
+- `LocalDeterministicEmbeddingProvider` creates dependency-free
+  `local-hash-v1` vectors with stable SHA-256 token hashing.
+- `build_chunk_embedding_text` combines `DocumentChunk` text with
+  `ResearchObject` title/source/identifier context and canonical
+  `EntityMention` labels.
+- `index_embeddings_for_repository(repository, source_key=None, limit=None,
+  embedding_model="local-hash-v1", force=False)` writes `TextEmbedding`
+  records through the existing repository methods. It skips rows whose current
+  embedding input hash is already stored, rebuilds when the chunk/context text
+  changes, and `force=True` refreshes matching rows while preserving the
+  `(chunk_id, embedding_model)` upsert identity.
+
 Repository adapters expose:
 
 - `upsert_text_embedding`

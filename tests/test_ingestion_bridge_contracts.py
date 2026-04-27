@@ -15,6 +15,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ClaimType,
     CommitHypothesisRequest,
     DocumentChunk,
+    EntityMention,
     EvidenceLevel,
     HypothesisProposalRequest,
     RawSourceRecord,
@@ -47,6 +48,11 @@ from hsa_research.ingestion_bridge.dagster_assets import (
 )
 from hsa_research.ingestion_bridge.dagster_resources import ResearchRepositoryResource
 from hsa_research.ingestion_bridge.entity_resolution import normalize_entity_key, resolve_entities_for_repository
+from hsa_research.ingestion_bridge.embeddings import (
+    LocalDeterministicEmbeddingProvider,
+    build_chunk_embedding_text,
+    index_embeddings_for_repository,
+)
 from hsa_research.ingestion_bridge import harvesters_v2
 from hsa_research.ingestion_bridge.harvesters_v2 import (
     AVMAVCTRHarvesterV2,
@@ -1649,6 +1655,89 @@ def test_local_store_persists_raw_and_research_object(tmp_path):
     assert repo.coverage_summary()["research_objects"] == 1
 
 
+def test_local_deterministic_embedding_provider_is_repeatable():
+    provider = LocalDeterministicEmbeddingProvider(dimensions=32)
+
+    vector = provider.embed_text("VEGF signaling in canine hemangiosarcoma.")
+    repeated = provider.embed_text("VEGF signaling in canine hemangiosarcoma.")
+    fresh_provider_vector = LocalDeterministicEmbeddingProvider(dimensions=32).embed_text(
+        "VEGF signaling in canine hemangiosarcoma."
+    )
+    different_vector = provider.embed_text("Doxorubicin toxicity monitoring in dogs.")
+
+    assert vector == repeated
+    assert vector == fresh_provider_vector
+    assert vector != different_vector
+    assert len(vector) == 32
+    assert sum(value * value for value in vector) == pytest.approx(1.0)
+
+
+def test_build_chunk_embedding_text_includes_canonical_entity_context():
+    object_id = uuid4()
+    chunk_id = uuid4()
+    research_object = ResearchObject(
+        id=object_id,
+        object_type="publication",
+        title="Canonical entity embedding example",
+        abstract="Canine HSA angiogenesis context.",
+        source_key="pubmed",
+        identifiers={"pmid": "123"},
+    )
+    chunk = DocumentChunk(
+        id=chunk_id,
+        research_object_id=object_id,
+        chunk_index=0,
+        section_label="abstract",
+        text_content="KDR is also called VEGF receptor 2 in canine hemangiosarcoma.",
+        content_hash="embedding-text-context",
+    )
+    mentions = [
+        EntityMention(
+            research_object_id=object_id,
+            chunk_id=chunk_id,
+            chunk_index=0,
+            section_label="abstract",
+            source_key="pubmed",
+            entity_type="target",
+            canonical_name="KDR",
+            normalized_key="target:kdr",
+            matched_text="VEGF receptor 2",
+            matched_alias="VEGF receptor 2",
+            chunk_char_start=19,
+            chunk_char_end=34,
+            external_ids={"chembl_id": "CHEMBL279"},
+            resolver_name="unit",
+            resolver_version="1",
+            match_rule="unit",
+        ),
+        EntityMention(
+            research_object_id=object_id,
+            chunk_id=chunk_id,
+            chunk_index=0,
+            section_label="abstract",
+            source_key="pubmed",
+            entity_type="disease",
+            canonical_name="canine hemangiosarcoma",
+            normalized_key="disease:canine_hsa",
+            matched_text="canine hemangiosarcoma",
+            matched_alias="canine hemangiosarcoma",
+            chunk_char_start=38,
+            chunk_char_end=61,
+            resolver_name="unit",
+            resolver_version="1",
+            match_rule="unit",
+        ),
+    ]
+
+    text = build_chunk_embedding_text(chunk, research_object, mentions)
+
+    assert "title: Canonical entity embedding example" in text
+    assert "chunk_text: KDR is also called VEGF receptor 2" in text
+    assert "canonical_entities:" in text
+    assert "target: KDR [target:kdr] (chembl_id=CHEMBL279)" in text
+    assert "disease: canine hemangiosarcoma [disease:canine_hsa]" in text
+
+
 def test_text_embedding_contract_rejects_dimension_mismatch():
     with pytest.raises(ValueError, match="embedding_dimensions"):
         TextEmbedding(
@@ -1711,6 +1800,117 @@ def test_sqlite_text_embeddings_persist_and_report_coverage(tmp_path):
     assert coverage.missing_chunks == 0
     assert coverage.coverage_ratio == 1.0
     assert coverage.embedding_models == {"unit-embedding-v1": 1}
+
+
+def test_index_embeddings_for_repository_is_idempotent_and_includes_entities(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Embedding index example",
+            source_key="pubmed",
+            dedupe_key="pubmed:embedding-index",
+        )
+    )
+    chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="VEGF receptor 2 appears in canine hemangiosarcoma literature.",
+            content_hash="embedding-index-chunk-1",
+        )
+    )
+    repo.upsert_entity_mention(
+        EntityMention(
+            research_object_id=object_id,
+            chunk_id=chunk.id,
+            chunk_index=chunk.chunk_index,
+            section_label=chunk.section_label,
+            source_key="pubmed",
+            entity_type="target",
+            canonical_name="KDR",
+            normalized_key="target:kdr",
+            matched_text="VEGF receptor 2",
+            matched_alias="VEGF receptor 2",
+            chunk_char_start=0,
+            chunk_char_end=15,
+            resolver_name="unit",
+            resolver_version="1",
+            match_rule="unit",
+        )
+    )
+
+    first_result = index_embeddings_for_repository(repo, source_key="pubmed", embedding_model="local-hash-test")
+    first_embedding = repo.list_text_embeddings(source_key="pubmed", embedding_model="local-hash-test")[0]
+    second_result = index_embeddings_for_repository(repo, source_key="pubmed", embedding_model="local-hash-test")
+    second_embedding = repo.list_text_embeddings(source_key="pubmed", embedding_model="local-hash-test")[0]
+
+    assert first_result.errors == ()
+    assert first_result.chunks_seen == 1
+    assert first_result.embeddings_created == 1
+    assert second_result.embeddings_skipped == 1
+    assert second_result.embeddings_created == 0
+    assert second_embedding.embedding_id == first_embedding.embedding_id
+    assert second_embedding.embedding == first_embedding.embedding
+    assert len(repo.list_text_embeddings(embedding_model="local-hash-test")) == 1
+    assert "canonical_entities: target: KDR [target:kdr]" in second_embedding.text_preview
+    assert second_embedding.metadata["chunk_content_hash"] == chunk.content_hash
+    assert second_embedding.metadata["canonical_entity_count"] == 1
+
+
+def test_index_embeddings_rebuilds_on_content_hash_change_and_force(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Embedding rebuild example",
+            source_key="pubmed",
+            dedupe_key="pubmed:embedding-rebuild",
+        )
+    )
+    chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="KIT signaling appears in canine hemangiosarcoma.",
+            content_hash="embedding-rebuild-original",
+        )
+    )
+
+    first_result = index_embeddings_for_repository(repo, source_key="pubmed", embedding_model="local-hash-test")
+    first_embedding = repo.list_text_embeddings(source_key="pubmed", embedding_model="local-hash-test")[0]
+    repo.upsert_document_chunk(
+        chunk.model_copy(
+            update={
+                "text_content": "MTOR signaling appears in canine hemangiosarcoma.",
+                "content_hash": "embedding-rebuild-updated",
+            }
+        )
+    )
+    rebuild_result = index_embeddings_for_repository(repo, source_key="pubmed", embedding_model="local-hash-test")
+    rebuilt_embedding = repo.list_text_embeddings(source_key="pubmed", embedding_model="local-hash-test")[0]
+    unchanged_result = index_embeddings_for_repository(repo, source_key="pubmed", embedding_model="local-hash-test")
+    forced_result = index_embeddings_for_repository(
+        repo,
+        source_key="pubmed",
+        embedding_model="local-hash-test",
+        force=True,
+    )
+    forced_embedding = repo.list_text_embeddings(source_key="pubmed", embedding_model="local-hash-test")[0]
+
+    assert first_result.embeddings_created == 1
+    assert rebuild_result.embeddings_updated == 1
+    assert rebuild_result.embeddings_skipped == 0
+    assert rebuilt_embedding.embedding_id == first_embedding.embedding_id
+    assert rebuilt_embedding.content_hash != first_embedding.content_hash
+    assert rebuilt_embedding.embedding != first_embedding.embedding
+    assert rebuilt_embedding.metadata["chunk_content_hash"] == "embedding-rebuild-updated"
+    assert unchanged_result.embeddings_skipped == 1
+    assert forced_result.embeddings_updated == 1
+    assert forced_embedding.embedding_id == first_embedding.embedding_id
+    assert len(repo.list_text_embeddings(embedding_model="local-hash-test")) == 1
 
 
 def test_sqlite_text_embedding_search_uses_json_vectors_and_upserts_by_chunk_model(tmp_path):

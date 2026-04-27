@@ -25,6 +25,12 @@ from .contracts import (
     ValidationRequest,
 )
 from .claim_curator import ClaimCuratorAgent, curate_claims_for_repository
+from .embeddings import (
+    EmbeddingIndexResult,
+    LocalDeterministicEmbeddingProvider,
+    build_chunk_embedding_text,
+    index_embeddings_for_repository,
+)
 from .harvesters_v2 import (
     CrossrefHarvesterV2,
     EuropePMCHarvesterV2,
@@ -54,6 +60,7 @@ __all__ = [
     "ClaimSearchResults",
     "CommitHypothesisRequest",
     "DocumentChunk",
+    "EmbeddingIndexResult",
     "HypothesisDraft",
     "HypothesisProposalRequest",
     "HSAResearchService",
@@ -63,6 +70,7 @@ __all__ = [
     "EuropePMCHarvesterV2",
     "LocalRuleClaimExtractor",
     "LocalIngestionPipeline",
+    "LocalDeterministicEmbeddingProvider",
     "OpenAlexHarvesterV2",
     "PubMedHarvesterV2",
     "PostgresResearchRepository",
@@ -76,6 +84,7 @@ __all__ = [
     "SourceScoutResult",
     "ValidationRequest",
     "build_scholarly_source_queries",
+    "build_chunk_embedding_text",
     "build_research_repository",
     "build_sql_repository",
     "comparative_required_query",
@@ -83,5 +92,6 @@ __all__ = [
     "extract_claims_for_repository",
     "get_harvester",
     "get_service",
+    "index_embeddings_for_repository",
     "scout_sources_for_repository",
 ]
