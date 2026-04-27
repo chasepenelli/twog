@@ -582,7 +582,7 @@ if dg is not None:
     literature_corpus_daily_schedule = dg.ScheduleDefinition(
         job=literature_corpus_harvest_job,
         cron_schedule="0 7 * * *",
-        default_status=dg.DefaultScheduleStatus.STOPPED,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
     )
     literature_full_text_weekly_schedule = dg.ScheduleDefinition(
         job=literature_full_text_refresh_job,

@@ -333,7 +333,7 @@ Organization standard:
 Dagster schedule:
 - `literature_corpus_daily_schedule`
 - Cron: `0 7 * * *`
-- Default status: stopped until the first hosted corpus run completes cleanly.
+- Default status: running after the first hosted corpus run completed cleanly.
 
 ### Run The Full-Text Literature Refresh
 
