@@ -14,6 +14,7 @@ from typing import Any
 
 
 TERMINAL_STATUSES = {"SUCCESS", "FAILURE", "CANCELED"}
+NON_TERMINABLE_STATUSES = {*TERMINAL_STATUSES, "CANCELING"}
 
 RUN_STATUS_QUERY = """
 query CliGetRunStatus($runId: ID!) {
@@ -198,7 +199,7 @@ def terminate_command(args: argparse.Namespace) -> int:
         status = _run_status(args, run_id)
         current_status = status["status"]
         print(f"{run_id}: current_status={current_status} canTerminate={status['canTerminate']}")
-        if args.skip_terminal and current_status in TERMINAL_STATUSES:
+        if args.skip_terminal and current_status in NON_TERMINABLE_STATUSES:
             continue
         runs_to_terminate.append(run_id)
 
@@ -213,6 +214,12 @@ def terminate_command(args: argparse.Namespace) -> int:
         if typename == "TerminateRunSuccess":
             run = result["run"]
             print(f"{run['runId']}: terminated status={run['status']}")
+        elif (
+            typename == "TerminateRunFailure"
+            and result.get("run", {}).get("status") == "CANCELING"
+        ):
+            run = result["run"]
+            print(f"{run['runId']}: already_canceling status={run['status']}")
         else:
             failures.append(result)
             print(f"termination_failed: {json.dumps(result)}", file=sys.stderr)
