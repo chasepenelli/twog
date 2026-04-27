@@ -14,6 +14,10 @@ jobs:
       DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
       HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
+      HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS: "8"
+      HSA_FULL_TEXT_REQUEST_ATTEMPTS: "1"
+      HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS: "120"
+      HSA_PMC_OA_MAX_CANDIDATE_RECORDS: "20"
 
     steps:
       - name: Checkout
@@ -67,6 +71,30 @@ jobs:
             --target-path .
 
           uv run dg plus create env HSA_CONTACT_EMAIL "$HSA_CONTACT_EMAIL" \
+            --global \
+            --scope full \
+            --yes \
+            --target-path .
+
+          uv run dg plus create env HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS "$HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS" \
+            --global \
+            --scope full \
+            --yes \
+            --target-path .
+
+          uv run dg plus create env HSA_FULL_TEXT_REQUEST_ATTEMPTS "$HSA_FULL_TEXT_REQUEST_ATTEMPTS" \
+            --global \
+            --scope full \
+            --yes \
+            --target-path .
+
+          uv run dg plus create env HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS "$HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS" \
+            --global \
+            --scope full \
+            --yes \
+            --target-path .
+
+          uv run dg plus create env HSA_PMC_OA_MAX_CANDIDATE_RECORDS "$HSA_PMC_OA_MAX_CANDIDATE_RECORDS" \
             --global \
             --scope full \
             --yes \

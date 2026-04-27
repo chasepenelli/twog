@@ -43,6 +43,10 @@ Set these in Dagster+ under Deployment -> Environment variables:
 HSA_STORAGE_BACKEND=postgres
 HSA_DATABASE_URL=<Neon or hosted Postgres connection string>
 HSA_CONTACT_EMAIL=poppa@bradyandgraffiti.com
+HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS=8
+HSA_FULL_TEXT_REQUEST_ATTEMPTS=1
+HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS=120
+HSA_PMC_OA_MAX_CANDIDATE_RECORDS=20
 ```
 
 Do not commit or paste `HSA_DATABASE_URL` into chat. Store it directly in
@@ -63,6 +67,10 @@ environment variables with:
 uv run dg plus create env HSA_STORAGE_BACKEND postgres --global --scope full --yes
 uv run dg plus create env HSA_DATABASE_URL --from-local-env --global --scope full --yes
 uv run dg plus create env HSA_CONTACT_EMAIL poppa@bradyandgraffiti.com --global --scope full --yes
+uv run dg plus create env HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS 8 --global --scope full --yes
+uv run dg plus create env HSA_FULL_TEXT_REQUEST_ATTEMPTS 1 --global --scope full --yes
+uv run dg plus create env HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS 120 --global --scope full --yes
+uv run dg plus create env HSA_PMC_OA_MAX_CANDIDATE_RECORDS 20 --global --scope full --yes
 ```
 
 ## GitHub Actions Settings

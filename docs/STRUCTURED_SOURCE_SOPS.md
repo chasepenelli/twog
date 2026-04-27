@@ -393,10 +393,11 @@ Required QA output:
   chunk-level embeddings and entity mentions, so stale body chunks cannot make a
   failed refresh look healthy.
 - Full-text body fetches use a shorter timeout and a bounded candidate scan.
-  Tune `HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS`,
-  `HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS`, and
-  `HSA_PMC_OA_MAX_CANDIDATE_RECORDS` only when a hosted run proves the default
-  lane is too conservative.
+  Hosted Dagster+ defaults are `HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS=8`,
+  `HSA_FULL_TEXT_REQUEST_ATTEMPTS=1`,
+  `HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS=120`, and
+  `HSA_PMC_OA_MAX_CANDIDATE_RECORDS=20`. Relax these only when a hosted run
+  proves the lane is too conservative.
 
 Dagster schedule:
 - `literature_full_text_weekly_schedule`
