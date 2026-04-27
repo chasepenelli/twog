@@ -63,6 +63,15 @@ PMC_HUMAN_VASCULAR_SARCOMA_TIAB_TERMS = (
     '"endothelial sarcoma"[tiab]',
 )
 
+PUBMED_COMPARATIVE_ONCOLOGY_TIAB_TERMS = (
+    '"comparative oncology"[tiab]',
+    '"spontaneous canine tumor"[tiab]',
+    '"spontaneous canine tumour"[tiab]',
+    '("canine model"[tiab] AND human[tiab])',
+    '("dog model"[tiab] AND human[tiab])',
+    '"translational oncology"[tiab]',
+)
+
 COMPARATIVE_ONCOLOGY_TERMS = (
     '"comparative oncology"',
     '"spontaneous canine tumor"',
@@ -97,7 +106,14 @@ THERAPY_TERMS = (
 def comparative_required_query(style: ComparativeQueryStyle = "generic") -> str:
     """Return the required broad disease/analog query for scholarly sources."""
 
-    _ = style
+    if style == "pubmed":
+        return _or_group(
+            (
+                _or_group(PMC_CANINE_HSA_TIAB_TERMS),
+                _or_group(PMC_HUMAN_VASCULAR_SARCOMA_TIAB_TERMS),
+                _or_group(PUBMED_COMPARATIVE_ONCOLOGY_TIAB_TERMS),
+            )
+        )
     groups = (
         _or_group(CANINE_HSA_TERMS),
         _or_group(HUMAN_VASCULAR_SARCOMA_TERMS),
@@ -132,8 +148,7 @@ def clinical_trials_analog_query() -> str:
 def therapy_comparative_query(style: ComparativeQueryStyle = "generic") -> str:
     """Return a therapy/target-centered comparative oncology query."""
 
-    _ = style
-    return f"({comparative_required_query()}) AND ({_or_group(THERAPY_TERMS)})"
+    return f"({comparative_required_query(style)}) AND ({_or_group(THERAPY_TERMS)})"
 
 
 def expand_with_comparative_policy(query_text: str, style: ComparativeQueryStyle = "generic") -> str:

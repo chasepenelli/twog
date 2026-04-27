@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from .backfill import backfill_deep_dives, backfill_papers_json
@@ -97,6 +98,11 @@ def main() -> None:
         "--no-require-claims",
         action="store_true",
         help="Require records, objects, and chunks, but do not require claims per source",
+    )
+    structured_report.add_argument(
+        "--fail-on-failed-sources",
+        action="store_true",
+        help="Exit non-zero if the report has failed sources",
     )
 
     backfill_papers = subparsers.add_parser("backfill-papers", help="Backfill legacy papers JSON")
@@ -385,6 +391,9 @@ def main() -> None:
         raise ValueError(f"Unsupported command: {args.command}")
 
     print(json.dumps(output, indent=2, sort_keys=True))
+    if getattr(args, "fail_on_failed_sources", False) and output.get("failed_sources"):
+        print(f"Failed sources: {', '.join(output['failed_sources'])}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

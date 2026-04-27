@@ -71,6 +71,10 @@ jobs:
 
       - name: Print hosted structured-source count report
         run: |
+          validation_flags=""
+          if [ "$DAGSTER_CLOUD_JOB" = "literature_clinical_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "structured_source_count_report_job" ]; then
+            validation_flags="--fail-on-failed-sources"
+          fi
           uv run python -m hsa_research.ingestion_bridge.cli structured-report \
             --source pubchem \
             --source chembl \
@@ -83,5 +87,6 @@ jobs:
             --source crossref \
             --source clinicaltrials_gov \
             --sample-limit 2 \
-            --no-require-claims
+            --no-require-claims \
+            $validation_flags
         shell: bash

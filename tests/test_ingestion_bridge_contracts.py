@@ -278,11 +278,13 @@ def test_openalex_v2_normalizer_produces_raw_and_research_object():
 
 def test_scholarly_query_policy_always_includes_human_angiosarcoma():
     queries = build_scholarly_source_queries()
+    pubmed_query = next(query for query in queries if query.source_key == "pubmed" and query.query_name == "comparative_hsa_required")
     pmc_query = next(query for query in queries if query.source_key == "pmc_oa")
 
     assert queries
     assert all("angiosarcoma" in query.query_text.lower() for query in queries)
     assert all("hemangiosarcoma" in query.query_text.lower() for query in queries)
+    assert "angiosarcoma[tiab]" in pubmed_query.query_text
     assert "[tiab]" in pmc_query.query_text
     assert "comparative oncology" not in pmc_query.query_text.lower()
 
