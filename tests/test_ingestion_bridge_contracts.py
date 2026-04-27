@@ -566,6 +566,9 @@ def test_all_api_smoke_covers_every_hosted_report_source():
         "uniprot",
         "rcsb_pdb",
         "openfda_animal_events",
+        "icdc",
+        "geo",
+        "sra",
         "openalex",
         "pubmed",
         "europe_pmc",
@@ -1454,6 +1457,48 @@ def test_local_claim_extractor_creates_sparse_scholarly_context_claims(tmp_path)
     assert result.claims_written == 2
     assert any("Europe PMC record provides human angiosarcoma" in statement for statement in statements)
     assert any("Crossref record provides human angiosarcoma" in statement for statement in statements)
+
+
+def test_local_claim_extractor_creates_dataset_source_context_claims(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+
+    geo_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="dataset",
+            title="Canine hemangiosarcoma expression dataset",
+            source_key="geo",
+        )
+    )
+    sra_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="dataset",
+            title="Dog hemangiosarcoma sequence runs",
+            source_key="sra",
+        )
+    )
+    icdc_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="dataset",
+            title="ICDC canine case CASE-1: Hemangiosarcoma",
+            source_key="icdc",
+        )
+    )
+    for object_id, text in (
+        (geo_id, "Canine hemangiosarcoma expression dataset."),
+        (sra_id, "Dog hemangiosarcoma sequence runs."),
+        (icdc_id, "Diagnosis: Hemangiosarcoma. Species: canine."),
+    ):
+        for chunk in chunk_text(object_id, text, section_label="dataset_metadata"):
+            repo.upsert_document_chunk(chunk)
+
+    result = extract_claims_for_repository(repo, limit=10)
+    claims = repo.search_claims(ClaimSearchRequest(query="source context", min_confidence=0.1, include_drafts=True, limit=10))
+    statements = [claim.statement for claim in claims]
+
+    assert result.claims_written == 3
+    assert any("GEO record provides canine HSA source context" in statement for statement in statements)
+    assert any("SRA record provides canine HSA source context" in statement for statement in statements)
+    assert any("ICDC record provides canine HSA source context" in statement for statement in statements)
 
 
 def test_local_claim_extractor_creates_structured_chembl_claims(tmp_path):

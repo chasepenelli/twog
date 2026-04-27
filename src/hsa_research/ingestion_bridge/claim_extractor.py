@@ -138,6 +138,7 @@ TRANSLATION_TERMS = (
 )
 
 SCHOLARLY_SOURCE_KEYS = {"current_papers", "pubmed", "europe_pmc", "openalex", "crossref", "pmc_oa"}
+TRIAGE_CONTEXT_SOURCE_KEYS = SCHOLARLY_SOURCE_KEYS | {"icdc", "geo", "sra"}
 
 
 class LocalRuleClaimExtractor:
@@ -302,7 +303,7 @@ class LocalRuleClaimExtractor:
                     )
                 )
 
-        if not claims and obj and obj.source_key in SCHOLARLY_SOURCE_KEYS:
+        if not claims and obj and obj.source_key in TRIAGE_CONTEXT_SOURCE_KEYS:
             claims.append(
                 self._claim(
                     chunk,
@@ -687,6 +688,9 @@ def _source_label(source_key: str) -> str:
         "openalex": "OpenAlex",
         "crossref": "Crossref",
         "pmc_oa": "PMC OA",
+        "icdc": "ICDC",
+        "geo": "GEO",
+        "sra": "SRA",
     }.get(source_key, source_key)
 
 
