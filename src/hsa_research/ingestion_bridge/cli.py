@@ -21,11 +21,13 @@ from .contracts import (
     ScrapeReviewRequest,
     SourceQuery,
     SourceScoutRequest,
+    RetrievalSmokeRequest,
 )
 from .entity_resolution import resolve_entities_for_repository
 from .local_ingest import LocalIngestionPipeline
 from .local_store import SQLiteResearchRepository
 from .scraper_bridge import ScrapeBridge, list_scrape_profiles
+from .service import HSAResearchService
 from .source_scout import scout_sources_for_repository
 from .source_health import build_source_health_report
 from .storage import build_sql_repository
@@ -141,6 +143,26 @@ def main() -> None:
         action="store_true",
         help="Exit non-zero if the report has failed sources",
     )
+
+    retrieval_smoke = subparsers.add_parser(
+        "retrieval-smoke",
+        help="Smoke-test retrieval reads: search chunks, fetch context, fetch parent object",
+    )
+    retrieval_smoke.add_argument(
+        "--query",
+        default="hemangiosarcoma angiogenesis",
+        help="Retrieval query to search against stored chunks",
+    )
+    retrieval_smoke.add_argument("--source", default=None, help="Optional source key filter")
+    retrieval_smoke.add_argument("--object-type", default=None, help="Optional research object type filter")
+    retrieval_smoke.add_argument("--embedding-model", default=None, help="Optional embedding model filter")
+    retrieval_smoke.add_argument("--limit", type=int, default=3, help="Maximum chunk search hits")
+    retrieval_smoke.add_argument("--max-chunk-chars", type=int, default=1200, help="Maximum returned chars per chunk")
+    retrieval_smoke.add_argument("--context-window", type=int, default=1, help="Neighbor chunks to return on each side")
+    retrieval_smoke.add_argument("--no-entity-mentions", action="store_true", help="Omit entity mentions from context")
+    retrieval_smoke.add_argument("--no-keyword-fallback", action="store_true", help="Fail open only to embedding search")
+    retrieval_smoke.add_argument("--require-embedding", action="store_true", help="Fail if search does not use embeddings")
+    retrieval_smoke.add_argument("--fail-on-error", action="store_true", help="Exit non-zero if the smoke check fails")
 
     resolve_entities = subparsers.add_parser(
         "resolve-entities",
@@ -317,6 +339,21 @@ def main() -> None:
             min_health_score=args.min_health_score,
             require_claims=not args.no_require_claims,
         )
+    elif args.command == "retrieval-smoke":
+        output = HSAResearchService(repo).run_retrieval_smoke(
+            RetrievalSmokeRequest(
+                query=args.query,
+                source_key=args.source,
+                object_type=args.object_type,
+                embedding_model=args.embedding_model,
+                limit=args.limit,
+                max_chunk_chars=args.max_chunk_chars,
+                context_window=args.context_window,
+                include_entity_mentions=not args.no_entity_mentions,
+                include_keyword_fallback=not args.no_keyword_fallback,
+                require_embedding=args.require_embedding,
+            )
+        ).model_dump(mode="json")
     elif args.command == "resolve-entities":
         request = EntityResolutionRequest(
             source_key=args.source,
@@ -465,6 +502,9 @@ def main() -> None:
     print(json.dumps(output, indent=2, sort_keys=True))
     if getattr(args, "fail_on_failed_sources", False) and output.get("failed_sources"):
         print(f"Failed sources: {', '.join(output['failed_sources'])}", file=sys.stderr)
+        raise SystemExit(1)
+    if getattr(args, "fail_on_error", False) and output.get("passed") is False:
+        print(f"Retrieval smoke failed: {', '.join(output.get('errors', []))}", file=sys.stderr)
         raise SystemExit(1)
 
 

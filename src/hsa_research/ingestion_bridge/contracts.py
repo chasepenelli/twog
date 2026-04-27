@@ -295,6 +295,30 @@ class ResearchObjectReadResult(StrictBaseModel):
     chunks: list[DocumentChunk] = Field(default_factory=list)
 
 
+class RetrievalSmokeRequest(StrictBaseModel):
+    query: str = Field(default="hemangiosarcoma angiogenesis", min_length=1, max_length=1000)
+    source_key: str | None = None
+    object_type: ResearchObjectType | None = None
+    embedding_model: str | None = None
+    limit: int = Field(default=3, ge=1, le=20)
+    max_chunk_chars: int = Field(default=1200, ge=200, le=12000)
+    context_window: int = Field(default=1, ge=0, le=5)
+    include_entity_mentions: bool = True
+    include_keyword_fallback: bool = True
+    require_embedding: bool = False
+
+
+class RetrievalSmokeResult(StrictBaseModel):
+    request: RetrievalSmokeRequest
+    passed: bool
+    errors: list[str] = Field(default_factory=list)
+    selected_chunk_id: UUID | None = None
+    selected_research_object_id: UUID | None = None
+    search: ResearchChunkSearchResults
+    chunk_context: ChunkContextResult | None = None
+    research_object: ResearchObjectReadResult | None = None
+
+
 class EmbeddingCoverageSummary(StrictBaseModel):
     source_key: str | None = None
     object_type: str | None = None

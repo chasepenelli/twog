@@ -23,6 +23,7 @@ from .contracts import (
     ModelProfile,
     ResearchChunkSearchRequest,
     ResearchObjectReadRequest,
+    RetrievalSmokeRequest,
     SourceScoutRequest,
     ValidationRequest,
 )
@@ -111,6 +112,35 @@ def get_research_object_tool(
     return {} if result is None else result.model_dump(mode="json")
 
 
+def run_retrieval_smoke_tool(
+    query: str = "hemangiosarcoma angiogenesis",
+    source_key: str | None = None,
+    object_type: str | None = None,
+    embedding_model: str | None = None,
+    limit: int = 3,
+    max_chunk_chars: int = 1200,
+    context_window: int = 1,
+    include_entity_mentions: bool = True,
+    include_keyword_fallback: bool = True,
+    require_embedding: bool = False,
+) -> dict:
+    """Exercise MCP retrieval reads: search, chunk context, and parent object."""
+
+    request = RetrievalSmokeRequest(
+        query=query,
+        source_key=source_key,
+        object_type=object_type,  # type: ignore[arg-type]
+        embedding_model=embedding_model,
+        limit=limit,
+        max_chunk_chars=max_chunk_chars,
+        context_window=context_window,
+        include_entity_mentions=include_entity_mentions,
+        include_keyword_fallback=include_keyword_fallback,
+        require_embedding=require_embedding,
+    )
+    return get_service().run_retrieval_smoke(request).model_dump(mode="json")
+
+
 if mcp is not None:
 
     @mcp.tool()
@@ -192,6 +222,34 @@ if mcp is not None:
             include_chunks=include_chunks,
             max_chunks=max_chunks,
             max_chunk_chars=max_chunk_chars,
+        )
+
+    @mcp.tool()
+    def run_retrieval_smoke(
+        query: str = "hemangiosarcoma angiogenesis",
+        source_key: str | None = None,
+        object_type: str | None = None,
+        embedding_model: str | None = None,
+        limit: int = 3,
+        max_chunk_chars: int = 1200,
+        context_window: int = 1,
+        include_entity_mentions: bool = True,
+        include_keyword_fallback: bool = True,
+        require_embedding: bool = False,
+    ) -> dict:
+        """Smoke-test retrieval by chaining search, chunk context, and object reads."""
+
+        return run_retrieval_smoke_tool(
+            query=query,
+            source_key=source_key,
+            object_type=object_type,
+            embedding_model=embedding_model,
+            limit=limit,
+            max_chunk_chars=max_chunk_chars,
+            context_window=context_window,
+            include_entity_mentions=include_entity_mentions,
+            include_keyword_fallback=include_keyword_fallback,
+            require_embedding=require_embedding,
         )
 
     @mcp.tool()

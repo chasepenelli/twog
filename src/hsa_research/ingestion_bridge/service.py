@@ -30,6 +30,8 @@ from .contracts import (
     ResearchChunkSearchResults,
     ResearchObjectReadRequest,
     ResearchObjectReadResult,
+    RetrievalSmokeRequest,
+    RetrievalSmokeResult,
     SourceScoutRequest,
     SourceScoutResult,
     TextEmbeddingSearchRequest,
@@ -145,6 +147,70 @@ class HSAResearchService:
                 )
             ]
         return ResearchObjectReadResult(research_object=research_object, chunks=chunks)
+
+    def run_retrieval_smoke(self, request: RetrievalSmokeRequest) -> RetrievalSmokeResult:
+        """Exercise the full read path: search, chunk context, and parent object."""
+
+        search = self.search_research_chunks(
+            ResearchChunkSearchRequest(
+                query=request.query,
+                source_key=request.source_key,
+                object_type=request.object_type,
+                embedding_model=request.embedding_model,
+                limit=request.limit,
+                max_chunk_chars=request.max_chunk_chars,
+                include_keyword_fallback=request.include_keyword_fallback,
+            )
+        )
+        errors: list[str] = []
+        chunk_context: ChunkContextResult | None = None
+        research_object: ResearchObjectReadResult | None = None
+        selected_chunk_id: UUID | None = None
+        selected_research_object_id: UUID | None = None
+
+        if request.require_embedding and search.search_mode != "embedding":
+            errors.append(f"expected embedding search, got {search.search_mode}")
+
+        if not search.results:
+            errors.append("search_research_chunks returned no results")
+        else:
+            first_hit = search.results[0]
+            selected_chunk_id = first_hit.chunk.id
+            selected_research_object_id = first_hit.chunk.research_object_id
+            chunk_context = self.get_chunk_context(
+                ChunkContextRequest(
+                    chunk_id=first_hit.chunk.id,
+                    window=request.context_window,
+                    max_chunk_chars=request.max_chunk_chars,
+                    include_entity_mentions=request.include_entity_mentions,
+                )
+            )
+            if chunk_context is None:
+                errors.append(f"get_chunk_context returned no result for chunk {first_hit.chunk.id}")
+
+            research_object = self.get_research_object(
+                ResearchObjectReadRequest(
+                    research_object_id=first_hit.chunk.research_object_id,
+                    include_chunks=True,
+                    max_chunks=max(request.limit, 1),
+                    max_chunk_chars=request.max_chunk_chars,
+                )
+            )
+            if research_object is None:
+                errors.append(
+                    f"get_research_object returned no result for object {first_hit.chunk.research_object_id}"
+                )
+
+        return RetrievalSmokeResult(
+            request=request,
+            passed=not errors,
+            errors=errors,
+            selected_chunk_id=selected_chunk_id,
+            selected_research_object_id=selected_research_object_id,
+            search=search,
+            chunk_context=chunk_context,
+            research_object=research_object,
+        )
 
     def curate_claims(self, request: ClaimCurationRequest) -> ClaimCurationResult:
         if not hasattr(self.repository, "list_claims") or not hasattr(self.repository, "upsert_claim"):

@@ -24,6 +24,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchChunkSearchRequest,
     ResearchObject,
     ResearchObjectReadRequest,
+    RetrievalSmokeRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
     ScrapeManifestFetchRequest,
@@ -2264,6 +2265,88 @@ def test_service_get_chunk_context_and_research_object_are_bounded(tmp_path):
     assert [chunk.id for chunk in object_result.chunks] == [chunks[0].id, chunks[1].id]
 
 
+def test_service_retrieval_smoke_chains_embedding_search_context_and_object(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Retrieval smoke example",
+            source_key="pubmed",
+            dedupe_key="pubmed:retrieval-smoke",
+        )
+    )
+    target_chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="VEGFA angiogenesis in canine hemangiosarcoma retrieval smoke context.",
+            content_hash="retrieval-smoke-target",
+        )
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=1,
+            section_label="methods",
+            text_content="Doxorubicin dosing background.",
+            content_hash="retrieval-smoke-other",
+        )
+    )
+    index_embeddings_for_repository(repo, source_key="pubmed", embedding_model="local-hash-test")
+
+    result = service.run_retrieval_smoke(
+        RetrievalSmokeRequest(
+            query="VEGFA angiogenesis",
+            source_key="pubmed",
+            embedding_model="local-hash-test",
+            limit=2,
+            require_embedding=True,
+        )
+    )
+
+    assert result.passed is True
+    assert result.errors == []
+    assert result.search.search_mode == "embedding"
+    assert result.selected_chunk_id == target_chunk.id
+    assert result.selected_research_object_id == object_id
+    assert result.chunk_context is not None
+    assert result.chunk_context.chunk.id == target_chunk.id
+    assert result.research_object is not None
+    assert result.research_object.research_object.id == object_id
+
+
+def test_service_retrieval_smoke_can_require_embeddings(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Retrieval smoke keyword fallback example",
+            source_key="pubmed",
+            dedupe_key="pubmed:retrieval-smoke-keyword",
+        )
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="VEGFA angiogenesis in canine hemangiosarcoma.",
+            content_hash="retrieval-smoke-keyword",
+        )
+    )
+
+    result = service.run_retrieval_smoke(
+        RetrievalSmokeRequest(query="VEGFA angiogenesis", source_key="pubmed", require_embedding=True)
+    )
+
+    assert result.passed is False
+    assert result.search.search_mode == "keyword"
+    assert result.errors == ["expected embedding search, got keyword"]
+
+
 def test_mcp_retrieval_tool_helpers_dump_bounded_read_results(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -2299,6 +2382,43 @@ def test_mcp_retrieval_tool_helpers_dump_bounded_read_results(monkeypatch, tmp_p
     assert chunk_payload["chunk"]["id"] == str(chunk.id)
     assert object_payload["research_object"]["id"] == str(object_id)
     assert len(object_payload["chunks"]) == 1
+
+
+def test_mcp_retrieval_smoke_helper_dumps_full_read_chain(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="MCP retrieval smoke example",
+            source_key="pubmed",
+            dedupe_key="pubmed:mcp-retrieval-smoke",
+        )
+    )
+    chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="VEGFA angiogenesis retrieval smoke context for MCP.",
+            content_hash="mcp-retrieval-smoke",
+        )
+    )
+    index_embeddings_for_repository(repo, source_key="pubmed", embedding_model="local-hash-test")
+    monkeypatch.setattr(mcp_server, "get_service", lambda: service)
+
+    payload = mcp_server.run_retrieval_smoke_tool(
+        query="VEGFA angiogenesis",
+        source_key="pubmed",
+        embedding_model="local-hash-test",
+        require_embedding=True,
+    )
+
+    assert payload["passed"] is True
+    assert payload["selected_chunk_id"] == str(chunk.id)
+    assert payload["search"]["search_mode"] == "embedding"
+    assert payload["chunk_context"]["chunk"]["id"] == str(chunk.id)
+    assert payload["research_object"]["research_object"]["id"] == str(object_id)
 
 
 def test_backfill_papers_json_creates_object_and_chunk(tmp_path):

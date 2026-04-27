@@ -213,6 +213,16 @@ jobs:
             --deployment "$DAGSTER_CLOUD_DEPLOYMENT" || true
         shell: bash
 
+      - name: Print hosted retrieval smoke report
+        if: ${{ inputs.job == 'embedding_index_job' }}
+        run: |
+          uv run python -m hsa_research.ingestion_bridge.cli retrieval-smoke \
+            --query "hemangiosarcoma angiogenesis VEGFA" \
+            --limit 3 \
+            --require-embedding \
+            --fail-on-error
+        shell: bash
+
       - name: Print hosted structured-source count report
         run: |
           validation_flags=""

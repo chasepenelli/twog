@@ -145,6 +145,8 @@ vectors:
 - `get_chunk_context` returns one chunk, nearby sibling chunks, its canonical
   research object, and resolved entity mentions.
 - `get_research_object` returns a canonical object plus a bounded chunk list.
+- `run_retrieval_smoke` chains the three read tools and reports whether the
+  retrieval path is usable for one query.
 
 All retrieval tools cap result counts and returned chunk text length. Raw
 embedding vectors remain an internal storage/search detail.
@@ -155,6 +157,20 @@ runs `index_embeddings_for_repository` over stored chunks using the
 deterministic `local-hash-v1` model. `embedding_index_job` materializes only
 that report. Its asset check passes for an empty local store, but once chunks
 exist it requires at least one readable embedding and a clean error list.
+
+CLI smoke check:
+
+```bash
+.venv/bin/python -m hsa_research.ingestion_bridge.cli retrieval-smoke \
+  --query "hemangiosarcoma angiogenesis VEGFA" \
+  --require-embedding \
+  --fail-on-error
+```
+
+The hosted GitHub Actions smoke workflow runs this command after
+`embedding_index_job`, so a green run proves the indexer wrote embeddings and
+the MCP read path can search a chunk, retrieve its context, and fetch the
+parent research object.
 
 ## Claim Types
 
@@ -217,6 +233,7 @@ MCP is the clean conversational interface. These tools are the v0 contract:
 | `search_research_chunks` | read | Search chunk retrieval context using embeddings first, with bounded keyword fallback |
 | `get_chunk_context` | read | Return a chunk with nearby sibling chunks and resolved entity mentions |
 | `get_research_object` | read | Return a canonical research object and bounded stored chunks |
+| `run_retrieval_smoke` | read | Verify search, context, and object reads work together for one retrieval query |
 | `curate_claims` | write | Run the claim curator agent to dedupe, review, and promote draft claims |
 | `scout_sources` | read | Run the source scout agent to prioritize ingestion gaps and starter source queries |
 | `get_candidate` | read | Return a candidate dossier with evidence, lineage, validation state, and risk flags |
