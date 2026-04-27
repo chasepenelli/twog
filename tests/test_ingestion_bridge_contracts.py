@@ -225,7 +225,18 @@ def test_structured_source_qa_reports_source_scoped_counts(tmp_path):
     assert report["totals"] == {"raw_records": 1, "research_objects": 1, "document_chunks": 1, "claims": 1}
     assert report["failed_sources"] == ["chembl"]
     assert report["passes_minimum_bar"] is False
+    assert report["minimum_bar"] == {"require_claims": True}
     assert report["sources"][0]["sample_claims"][0]["statement"] == "Propranolol has PubChem identity CID 4946."
+
+    source_health_report = build_structured_source_count_report(
+        repo,
+        source_keys=["pubchem"],
+        sample_limit=1,
+        require_claims=False,
+    )
+
+    assert source_health_report["failed_sources"] == []
+    assert source_health_report["minimum_bar"] == {"require_claims": False}
 
 
 def test_structured_pipeline_can_report_empty_selection(tmp_path):

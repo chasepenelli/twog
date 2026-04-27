@@ -143,6 +143,7 @@ def build_structured_source_count_report(
     *,
     source_keys: Sequence[str] | None = None,
     sample_limit: int = 5,
+    require_claims: bool = True,
 ) -> dict[str, Any]:
     """Return persisted runtime counts for structured sources without harvesting."""
 
@@ -154,7 +155,7 @@ def build_structured_source_count_report(
     failed_sources = [
         report["source_key"]
         for report in source_reports
-        if not report.get("passes_minimum_bar", False)
+        if not _runtime_summary_passes(report, require_claims=require_claims)
     ]
     return {
         "source_keys": selected_sources,
@@ -162,6 +163,7 @@ def build_structured_source_count_report(
         "totals": _sum_runtime_summaries(source_reports),
         "failed_sources": failed_sources,
         "passes_minimum_bar": not failed_sources,
+        "minimum_bar": {"require_claims": require_claims},
         "coverage": repository.coverage_summary(),
     }
 
@@ -186,3 +188,10 @@ def _sum_runtime_summaries(reports: Sequence[dict[str, Any]]) -> dict[str, int]:
         field: sum(report.get(field, 0) for report in reports)
         for field in fields
     }
+
+
+def _runtime_summary_passes(report: dict[str, Any], *, require_claims: bool) -> bool:
+    required_fields = ("raw_records", "research_objects", "document_chunks", "claims")
+    if not require_claims:
+        required_fields = required_fields[:-1]
+    return all(report.get(field, 0) >= 1 for field in required_fields)

@@ -93,6 +93,11 @@ def main() -> None:
         default=5,
         help="Maximum sample claims per source",
     )
+    structured_report.add_argument(
+        "--no-require-claims",
+        action="store_true",
+        help="Require records, objects, and chunks, but do not require claims per source",
+    )
 
     backfill_papers = subparsers.add_parser("backfill-papers", help="Backfill legacy papers JSON")
     backfill_papers.add_argument("--path", default="hsa_research/papers.json", help="Path to papers JSON")
@@ -244,6 +249,7 @@ def main() -> None:
             repo,
             source_keys=selected_sources,
             sample_limit=args.sample_limit,
+            require_claims=not args.no_require_claims,
         )
     elif args.command == "backfill-papers":
         output = backfill_papers_json(
