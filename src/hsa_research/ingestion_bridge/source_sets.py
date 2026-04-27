@@ -26,16 +26,20 @@ LITERATURE_CLINICAL_SOURCE_KEYS = (
 LITERATURE_CORPUS_SOURCE_KEYS = (
     "openalex",
     "pubmed",
-    "europe_pmc",
     "crossref",
-    "pmc_oa",
 )
 LITERATURE_CORPUS_SOURCE_LIMITS = {
     "openalex": 100,
     "pubmed": 100,
-    "europe_pmc": 50,
     "crossref": 100,
-    "pmc_oa": 15,
+}
+LITERATURE_FULL_TEXT_SOURCE_KEYS = (
+    "europe_pmc",
+    "pmc_oa",
+)
+LITERATURE_FULL_TEXT_SOURCE_LIMITS = {
+    "europe_pmc": 10,
+    "pmc_oa": 3,
 }
 ALL_API_SOURCE_KEYS = (
     *STRUCTURED_SOURCE_KEYS,

@@ -301,9 +301,9 @@ Required QA output:
 ### Run The Literature Corpus Harvest
 
 Use this when you want to prove the system can build an organized paper corpus
-instead of only validating source connectivity. This job intentionally targets
-hundreds of persisted literature records while keeping the heavy full-text
-sources bounded.
+instead of only validating source connectivity. This job targets hundreds of
+persisted literature records from metadata and abstract sources only. Legal
+full-text harvests run in a separate slower lane.
 
 GitHub Actions workflow:
 
@@ -314,9 +314,7 @@ Launch Dagster Smoke Job -> literature_corpus_harvest_job
 Sources and per-query limits:
 - `openalex`: 100
 - `pubmed`: 100
-- `europe_pmc`: 50
 - `crossref`: 100
-- `pmc_oa`: 15
 
 Required QA output:
 - At least 200 raw records.
@@ -331,6 +329,38 @@ Organization standard:
 - Full-text records must use `section_label=full_text`.
 - Crossref remains a triage source until the specialized review agent promotes
   source-context claims into evidence.
+
+Dagster schedule:
+- `literature_corpus_daily_schedule`
+- Cron: `0 7 * * *`
+- Default status: stopped until the first hosted corpus run completes cleanly.
+
+### Run The Full-Text Literature Refresh
+
+Use this for slower licensed full-text ingestion. Keep this smaller than the
+metadata corpus job because Europe PMC and PMC OA perform additional full-text
+fetches and parsing.
+
+GitHub Actions workflow:
+
+```text
+Launch Dagster Smoke Job -> literature_full_text_refresh_job
+```
+
+Sources and per-query limits:
+- `europe_pmc`: 10
+- `pmc_oa`: 3
+
+Required QA output:
+- Every full-text source has raw records, research objects, document chunks, and
+  claims.
+- Full-text chunks use `section_label=full_text`.
+- No ingestion, extraction, or curation errors.
+
+Dagster schedule:
+- `literature_full_text_weekly_schedule`
+- Cron: `0 8 * * 0`
+- Default status: stopped until the full-text lane has a clean hosted run.
 
 ### Run Source Health
 

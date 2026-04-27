@@ -14,6 +14,7 @@ on:
           - "literature_clinical_smoke_job"
           - "all_api_smoke_job"
           - "literature_corpus_harvest_job"
+          - "literature_full_text_refresh_job"
           - "structured_source_count_report_job"
           - "source_health_report_job"
           - "structured_source_pipeline_job"
@@ -22,6 +23,7 @@ jobs:
   launch_dagster_smoke:
     name: Launch Dagster Smoke Job
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     env:
       DAGSTER_CLOUD_ORGANIZATION: "twogbio"
       DAGSTER_CLOUD_URL: "https://twogbio.dagster.cloud"
@@ -75,32 +77,55 @@ jobs:
       - name: Print hosted structured-source count report
         run: |
           validation_flags=""
-          if [ "$DAGSTER_CLOUD_JOB" = "literature_clinical_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "all_api_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_corpus_harvest_job" ] || [ "$DAGSTER_CLOUD_JOB" = "structured_source_count_report_job" ] || [ "$DAGSTER_CLOUD_JOB" = "source_health_report_job" ]; then
+          sources=(
+            pubchem
+            chembl
+            uniprot
+            rcsb_pdb
+            openfda_animal_events
+            icdc
+            geo
+            sra
+            openalex
+            pubmed
+            europe_pmc
+            crossref
+            pmc_oa
+            clinicaltrials_gov
+          )
+          if [ "$DAGSTER_CLOUD_JOB" = "literature_corpus_harvest_job" ]; then
+            sources=(openalex pubmed crossref)
+          elif [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ]; then
+            sources=(europe_pmc pmc_oa)
+          fi
+          if [ "$DAGSTER_CLOUD_JOB" = "literature_clinical_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "all_api_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_corpus_harvest_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "structured_source_count_report_job" ] || [ "$DAGSTER_CLOUD_JOB" = "source_health_report_job" ]; then
             validation_flags="--fail-on-failed-sources"
           fi
+          source_args=()
+          for source in "${sources[@]}"; do
+            source_args+=(--source "$source")
+          done
           uv run python -m hsa_research.ingestion_bridge.cli structured-report \
-            --source pubchem \
-            --source chembl \
-            --source uniprot \
-            --source rcsb_pdb \
-            --source openfda_animal_events \
-            --source icdc \
-            --source geo \
-            --source sra \
-            --source openalex \
-            --source pubmed \
-            --source europe_pmc \
-            --source crossref \
-            --source pmc_oa \
-            --source clinicaltrials_gov \
+            "${source_args[@]}" \
             --sample-limit 2 \
             $validation_flags
         shell: bash
 
       - name: Print hosted source health report
-        if: ${{ inputs.job == 'all_api_smoke_job' || inputs.job == 'literature_corpus_harvest_job' || inputs.job == 'source_health_report_job' }}
+        if: ${{ inputs.job == 'all_api_smoke_job' || inputs.job == 'literature_corpus_harvest_job' || inputs.job == 'literature_full_text_refresh_job' || inputs.job == 'source_health_report_job' }}
         run: |
+          sources=()
+          if [ "$DAGSTER_CLOUD_JOB" = "literature_corpus_harvest_job" ]; then
+            sources=(openalex pubmed crossref)
+          elif [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ]; then
+            sources=(europe_pmc pmc_oa)
+          fi
+          source_args=()
+          for source in "${sources[@]}"; do
+            source_args+=(--source "$source")
+          done
           uv run python -m hsa_research.ingestion_bridge.cli source-health \
+            "${source_args[@]}" \
             --sample-limit 2 \
             --fail-on-failed-sources
         shell: bash

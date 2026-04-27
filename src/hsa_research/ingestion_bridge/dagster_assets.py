@@ -23,6 +23,8 @@ from .source_sets import (
     LITERATURE_CLINICAL_SOURCE_KEYS,
     LITERATURE_CORPUS_SOURCE_KEYS,
     LITERATURE_CORPUS_SOURCE_LIMITS,
+    LITERATURE_FULL_TEXT_SOURCE_KEYS,
+    LITERATURE_FULL_TEXT_SOURCE_LIMITS,
     STRUCTURED_SOURCE_KEYS,
 )
 
@@ -244,7 +246,7 @@ if dg is not None:
 
     @dg.asset(group_name="literature_corpus_harvest")
     def literature_corpus_harvest_report() -> dict:
-        """Hundreds-scale hosted literature ingestion across paper sources."""
+        """Hundreds-scale hosted literature ingestion across metadata and abstract sources."""
 
         from .storage import build_sql_repository
         from .structured_orchestration import run_structured_sources_pipeline
@@ -256,6 +258,22 @@ if dg is not None:
             source_limits=LITERATURE_CORPUS_SOURCE_LIMITS,
             extract_limit=5000,
             curate_limit=5000,
+        )
+
+    @dg.asset(group_name="literature_full_text_refresh")
+    def literature_full_text_refresh_report() -> dict:
+        """Bounded hosted full-text ingestion for licensed open-access sources."""
+
+        from .storage import build_sql_repository
+        from .structured_orchestration import run_structured_sources_pipeline
+
+        repository = build_sql_repository()
+        return run_structured_sources_pipeline(
+            repository,
+            source_keys=LITERATURE_FULL_TEXT_SOURCE_KEYS,
+            source_limits=LITERATURE_FULL_TEXT_SOURCE_LIMITS,
+            extract_limit=1000,
+            curate_limit=1000,
         )
 
     @dg.asset(group_name="structured_source_refresh")
@@ -445,6 +463,30 @@ if dg is not None:
             },
         )
 
+    @dg.asset_check(asset=literature_full_text_refresh_report)
+    def literature_full_text_refresh_has_outputs(
+        literature_full_text_refresh_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure the bounded full-text lane writes persisted outputs."""
+
+        source_reports = literature_full_text_refresh_report.get("sources", [])
+        failed_sources = [
+            report["source_key"]
+            for report in source_reports
+            if not _has_minimum_ingested_source_outputs(report)
+        ]
+        errors = literature_full_text_refresh_report.get("errors", [])
+        return dg.AssetCheckResult(
+            passed=not failed_sources and not errors,
+            metadata={
+                "failed_sources": failed_sources,
+                "errors": errors,
+                "source_keys": literature_full_text_refresh_report.get("source_keys", []),
+                "source_limits": LITERATURE_FULL_TEXT_SOURCE_LIMITS,
+                "totals": literature_full_text_refresh_report.get("totals", {}),
+            },
+        )
+
     @dg.asset_check(asset=structured_source_count_report)
     def structured_source_count_report_has_minimum_outputs(
         structured_source_count_report: dict,
@@ -496,6 +538,7 @@ if dg is not None:
         literature_clinical_smoke_report,
         all_api_smoke_report,
         literature_corpus_harvest_report,
+        literature_full_text_refresh_report,
         structured_source_count_report,
         source_health_report,
     ]
@@ -524,6 +567,10 @@ if dg is not None:
         "literature_corpus_harvest_job",
         selection=dg.AssetSelection.assets(literature_corpus_harvest_report),
     )
+    literature_full_text_refresh_job = dg.define_asset_job(
+        "literature_full_text_refresh_job",
+        selection=dg.AssetSelection.assets(literature_full_text_refresh_report),
+    )
     structured_source_count_report_job = dg.define_asset_job(
         "structured_source_count_report_job",
         selection=dg.AssetSelection.assets(structured_source_count_report),
@@ -531,6 +578,21 @@ if dg is not None:
     source_health_report_job = dg.define_asset_job(
         "source_health_report_job",
         selection=dg.AssetSelection.assets(source_health_report),
+    )
+    literature_corpus_daily_schedule = dg.ScheduleDefinition(
+        job=literature_corpus_harvest_job,
+        cron_schedule="0 7 * * *",
+        default_status=dg.DefaultScheduleStatus.STOPPED,
+    )
+    literature_full_text_weekly_schedule = dg.ScheduleDefinition(
+        job=literature_full_text_refresh_job,
+        cron_schedule="0 8 * * 0",
+        default_status=dg.DefaultScheduleStatus.STOPPED,
+    )
+    source_health_daily_schedule = dg.ScheduleDefinition(
+        job=source_health_report_job,
+        cron_schedule="0 9 * * *",
+        default_status=dg.DefaultScheduleStatus.STOPPED,
     )
 
     defs = dg.Definitions(
@@ -543,6 +605,7 @@ if dg is not None:
             literature_clinical_smoke_has_minimum_outputs,
             all_api_smoke_has_minimum_outputs,
             literature_corpus_harvest_has_hundreds_of_records,
+            literature_full_text_refresh_has_outputs,
             structured_source_count_report_has_minimum_outputs,
             source_health_report_has_no_failed_sources,
         ],
@@ -553,8 +616,14 @@ if dg is not None:
             literature_clinical_smoke_job,
             all_api_smoke_job,
             literature_corpus_harvest_job,
+            literature_full_text_refresh_job,
             structured_source_count_report_job,
             source_health_report_job,
+        ],
+        schedules=[
+            literature_corpus_daily_schedule,
+            literature_full_text_weekly_schedule,
+            source_health_daily_schedule,
         ],
     )
 
@@ -566,8 +635,12 @@ else:
     literature_clinical_smoke_job = None
     all_api_smoke_job = None
     literature_corpus_harvest_job = None
+    literature_full_text_refresh_job = None
     structured_source_count_report_job = None
     source_health_report_job = None
+    literature_corpus_daily_schedule = None
+    literature_full_text_weekly_schedule = None
+    source_health_daily_schedule = None
     defs = None
 
 

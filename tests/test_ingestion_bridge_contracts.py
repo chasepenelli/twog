@@ -35,6 +35,8 @@ from hsa_research.ingestion_bridge.dagster_assets import (
     LITERATURE_CLINICAL_SMOKE_KEYS,
     LITERATURE_CORPUS_SOURCE_KEYS,
     LITERATURE_CORPUS_SOURCE_LIMITS,
+    LITERATURE_FULL_TEXT_SOURCE_KEYS,
+    LITERATURE_FULL_TEXT_SOURCE_LIMITS,
 )
 from hsa_research.ingestion_bridge import harvesters_v2
 from hsa_research.ingestion_bridge.harvesters_v2 import (
@@ -666,13 +668,16 @@ def test_literature_corpus_harvest_targets_hundreds_of_papers():
     assert LITERATURE_CORPUS_SOURCE_KEYS == (
         "openalex",
         "pubmed",
-        "europe_pmc",
         "crossref",
-        "pmc_oa",
     )
     assert sum(LITERATURE_CORPUS_SOURCE_LIMITS.values()) >= 300
-    assert LITERATURE_CORPUS_SOURCE_LIMITS["pmc_oa"] <= 25
-    assert LITERATURE_CORPUS_SOURCE_LIMITS["europe_pmc"] <= 100
+    assert set(LITERATURE_CORPUS_SOURCE_KEYS).isdisjoint(LITERATURE_FULL_TEXT_SOURCE_KEYS)
+
+
+def test_full_text_refresh_keeps_heavy_sources_bounded():
+    assert LITERATURE_FULL_TEXT_SOURCE_KEYS == ("europe_pmc", "pmc_oa")
+    assert LITERATURE_FULL_TEXT_SOURCE_LIMITS["europe_pmc"] <= 10
+    assert LITERATURE_FULL_TEXT_SOURCE_LIMITS["pmc_oa"] <= 3
 
 
 def test_all_api_smoke_covers_every_hosted_report_source():
