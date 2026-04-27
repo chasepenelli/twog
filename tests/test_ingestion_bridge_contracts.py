@@ -940,6 +940,44 @@ def test_full_text_source_count_report_passes_with_body_chunks(tmp_path):
     assert full_text_source_qa(repo, "europe_pmc", ingestion_results=[])["passes_full_text_bar"] is False
 
 
+def test_full_text_qa_uses_body_chunks_as_persisted_gate(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    raw_record = RawSourceRecord(
+        source_key="pmc_oa",
+        source_record_id="pmc_oa:metadata-gap",
+        content_hash="pmc-oa-metadata-gap-raw",
+        source_url="https://example.org/pmc_oa/metadata-gap",
+        raw_payload={"source_key": "pmc_oa", "full_text": "Full text body is persisted."},
+    )
+    raw_record_id = repo.upsert_raw_record(raw_record)
+    research_object = ResearchObject(
+        object_type="publication",
+        title="PMC OA full text with missing object flag",
+        canonical_url="https://example.org/pmc_oa/metadata-gap",
+        source_key="pmc_oa",
+        raw_record_id=raw_record_id,
+        dedupe_key="pmc_oa:metadata-gap",
+        metadata={},
+    )
+    object_id = repo.upsert_research_object(research_object, raw_record_id)
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="full_text",
+            text_content="Full text body mentions canine hemangiosarcoma.",
+            content_hash="pmc-oa-metadata-gap-chunk",
+        )
+    )
+
+    qa = full_text_source_qa(repo, "pmc_oa")
+
+    assert qa["full_text_research_objects"] == 0
+    assert qa["full_text_document_chunks"] == 1
+    assert qa["passes_persisted_full_text_bar"] is True
+    assert qa["passes_full_text_bar"] is True
+
+
 def test_entity_resolution_persists_entities_aliases_and_mentions_idempotently(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
     raw_record_id = repo.upsert_raw_record(

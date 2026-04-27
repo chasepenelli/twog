@@ -249,10 +249,10 @@ def full_text_source_qa(
         if chunk.section_label == "title_abstract"
     ]
     current = _current_ingestion_full_text_counts(ingestion_results)
+    full_text_body_chars = sum(len(chunk.text_content) for chunk in full_text_chunks)
     persisted_passes = (
-        len(full_text_objects) >= 1
-        and len(full_text_chunks) >= 1
-        and sum(len(chunk.text_content) for chunk in full_text_chunks) >= MIN_FULL_TEXT_BODY_CHARS
+        len(full_text_chunks) >= 1
+        and full_text_body_chars >= MIN_FULL_TEXT_BODY_CHARS
     )
     current_run_required = ingestion_results is not None
     current_passes = (
@@ -272,7 +272,7 @@ def full_text_source_qa(
         "full_text_research_objects": len(full_text_objects),
         "full_text_document_chunks": len(full_text_chunks),
         "title_abstract_document_chunks": len(title_abstract_chunks),
-        "full_text_body_chars": sum(len(chunk.text_content) for chunk in full_text_chunks),
+        "full_text_body_chars": full_text_body_chars,
         "minimum_full_text_body_chars": MIN_FULL_TEXT_BODY_CHARS,
         "passes_persisted_full_text_bar": persisted_passes,
         "passes_current_full_text_bar": current_passes,
