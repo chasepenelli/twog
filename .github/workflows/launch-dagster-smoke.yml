@@ -85,6 +85,7 @@ jobs:
             --source pubmed \
             --source europe_pmc \
             --source crossref \
+            --source pmc_oa \
             --source clinicaltrials_gov \
             --sample-limit 2 \
             $validation_flags

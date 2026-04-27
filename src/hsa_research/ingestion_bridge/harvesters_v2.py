@@ -444,13 +444,20 @@ class PMCOAHarvesterV2(ScholarlyHarvesterV2):
                 record = self.normalize(xml, pmcid=pmcid, oa_metadata=oa_metadata, source_query=query_text)
             except (ET.ParseError, RuntimeError, ValueError):
                 continue
-            if require_policy_match and not record.research_object.metadata.get("ingestion_policy", {}).get(
-                "matched_concepts"
-            ):
+            if require_policy_match and not _pmc_record_matches_policy(record):
                 continue
             records.append(record)
             time.sleep(0.1)
         return self.filter_relevant(records, params)
+
+    def filter_relevant(
+        self,
+        records: list[HarvestedRecord],
+        params: dict[str, Any],
+    ) -> list[HarvestedRecord]:
+        if not params.pop("require_policy_match", True):
+            return records
+        return [record for record in records if _pmc_record_matches_policy(record)]
 
     def normalize(
         self,
@@ -2623,6 +2630,22 @@ def _pmc_oa_metadata(pmcid: str | None) -> dict[str, Any] | None:
         "retracted": record.attrib.get("retracted"),
         "links": links,
     }
+
+
+def _pmc_record_matches_policy(record: HarvestedRecord) -> bool:
+    metadata = record.research_object.metadata
+    title_abstract_policy = metadata.get("ingestion_policy")
+    body_policy = metadata.get("body_ingestion_policy")
+    return bool(
+        (
+            isinstance(title_abstract_policy, dict)
+            and title_abstract_policy.get("matched_concepts")
+        )
+        or (
+            isinstance(body_policy, dict)
+            and body_policy.get("matched_concepts")
+        )
+    )
 
 
 def _jats_article_ids(article: ET.Element) -> dict[str, str]:

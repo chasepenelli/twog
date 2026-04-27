@@ -173,6 +173,8 @@ Required gates:
 - Comparative oncology policy must remain enabled by default.
 - Normalized objects must retain DOI, PMID, PMCID, source URL, and source
   policy metadata when present.
+- PMC OA may pass relevance on licensed body text even when title/abstract
+  metadata is sparse.
 - Every hosted smoke source must produce raw records, research objects, chunks,
   and at least one claim.
 

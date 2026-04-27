@@ -26,6 +26,7 @@ DEFAULT_STRUCTURED_SOURCE_LIMITS = {
     "uniprot": 20,
     "rcsb_pdb": 20,
     "openfda_animal_events": 15,
+    "pmc_oa": 3,
 }
 
 DEFAULT_EXTRACT_LIMIT = 500

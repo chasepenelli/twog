@@ -29,6 +29,7 @@ from hsa_research.ingestion_bridge.backfill import backfill_deep_dives, backfill
 from hsa_research.ingestion_bridge.claim_curator import ClaimCuratorAgent
 from hsa_research.ingestion_bridge.claim_extractor import LocalRuleClaimExtractor, extract_claims_for_repository
 from hsa_research.ingestion_bridge.chunker import chunk_text
+from hsa_research.ingestion_bridge.dagster_assets import HOSTED_API_REPORT_KEYS, LITERATURE_CLINICAL_SMOKE_KEYS
 from hsa_research.ingestion_bridge import harvesters_v2
 from hsa_research.ingestion_bridge.harvesters_v2 import (
     AVMAVCTRHarvesterV2,
@@ -425,8 +426,59 @@ def test_pmc_oa_v2_chunks_full_text_not_just_abstract():
     assert "Full text body" in harvester.text_for_chunking(record)
 
 
+def test_pmc_oa_v2_fetch_keeps_body_only_policy_match(monkeypatch):
+    xml = """
+    <article xmlns="http://jats.nlm.nih.gov">
+      <front>
+        <article-meta>
+          <article-id pub-id-type="pmc">PMC123456</article-id>
+          <title-group><article-title>Open access endothelial biology review</article-title></title-group>
+          <permissions>
+            <license license-type="open-access">
+              <license-p>Creative Commons Attribution License</license-p>
+            </license>
+          </permissions>
+        </article-meta>
+      </front>
+      <body><p>Human angiosarcoma full text mentions VEGF and propranolol.</p></body>
+    </article>
+    """
+
+    def fake_get_json(url, params):
+        assert url.endswith("/esearch.fcgi")
+        assert params["db"] == "pmc"
+        return {"esearchresult": {"idlist": ["123456"]}}
+
+    def fake_get_text(url, params):
+        assert url == "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/"
+        assert params["identifier"] == "oai:pubmedcentral.nih.gov:123456"
+        return xml
+
+    monkeypatch.setattr(harvesters_v2, "_get_json", fake_get_json)
+    monkeypatch.setattr(harvesters_v2, "_get_text", fake_get_text)
+    monkeypatch.setattr(
+        harvesters_v2,
+        "_pmc_oa_metadata",
+        lambda pmcid: {"oa_license": "CC BY", "retracted": "no"},
+    )
+    monkeypatch.setattr(harvesters_v2.time, "sleep", lambda _seconds: None)
+
+    records = PMCOAHarvesterV2().fetch("hemangiosarcoma", limit=1, require_policy_match=True)
+
+    assert len(records) == 1
+    assert records[0].research_object.metadata["body_only_match"] is True
+    assert records[0].research_object.metadata["body_ingestion_policy"]["matched_concepts"] == [
+        "human_angiosarcoma"
+    ]
+
+
 def test_pmc_oa_v2_is_registered_harvester():
     assert HARVESTERS_V2["pmc_oa"] is PMCOAHarvesterV2
+
+
+def test_hosted_literature_smoke_includes_pmc_oa():
+    assert "pmc_oa" in LITERATURE_CLINICAL_SMOKE_KEYS
+    assert "pmc_oa" in HOSTED_API_REPORT_KEYS
 
 
 def test_clinicaltrials_gov_v2_normalizer_extracts_trial_fields():

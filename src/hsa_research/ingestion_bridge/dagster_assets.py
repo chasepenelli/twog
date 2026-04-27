@@ -37,6 +37,7 @@ LITERATURE_CLINICAL_SMOKE_KEYS = (
     "pubmed",
     "europe_pmc",
     "crossref",
+    "pmc_oa",
     "clinicaltrials_gov",
 )
 HOSTED_API_REPORT_KEYS = (
