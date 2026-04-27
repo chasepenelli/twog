@@ -1547,6 +1547,47 @@ def test_claim_curator_keeps_pmc_oa_source_context_review_only(tmp_path):
     assert "licensed full-text chunk has substantive snippet" in review_decisions[0].reasons
 
 
+def test_claim_curator_downgrades_stale_source_context_promotions(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Stale source context",
+            source_key="crossref",
+        )
+    )
+    claim_id = uuid4()
+    repo.upsert_claim(
+        ClaimSearchResult(
+            claim_id=claim_id,
+            statement="Crossref record provides canine-human comparative angiosarcoma/HSA source context relevant to HSA evidence triage.",
+            claim_type=ClaimType.OTHER,
+            direction=ClaimDirection.NEUTRAL,
+            confidence=0.7,
+            evidence_level=EvidenceLevel.UNKNOWN,
+            source_object_id=object_id,
+            support_count=1,
+            metadata={
+                "curation_status": "promote",
+                "curation_score": 0.7,
+                "extraction_status": "curated",
+                "rule_key": "source-context:canine_human_comparative",
+                "context_key": "canine_human_comparative",
+                "source_chunk_id": str(uuid4()),
+            },
+        )
+    )
+
+    result = ClaimCuratorAgent(repo).curate(ClaimCurationRequest(source_key="crossref", limit=20))
+    updated = repo.get_claim(claim_id)
+
+    assert result.needs_review == 1
+    assert updated is not None
+    assert updated.metadata["curation_status"] == "needs_review"
+    assert updated.metadata["extraction_status"] == "draft"
+    assert updated.confidence == 0.49
+
+
 def test_source_scout_prioritizes_zero_coverage_bridges(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
     pipeline = LocalIngestionPipeline(repo)

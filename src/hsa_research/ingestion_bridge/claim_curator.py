@@ -69,6 +69,7 @@ class ClaimCuratorAgent:
             dry_run=request.dry_run,
         )
         claims = self._load_claims(request)
+        self._downgrade_review_only_promotions(request, result)
         result.claims_seen = len(claims)
 
         for group in _group_claims(claims).values():
@@ -123,6 +124,54 @@ class ClaimCuratorAgent:
             if claim.metadata.get("curation_status") not in REJECTED_STATUSES | {ClaimCurationDecision.PROMOTE.value}
         ]
         return eligible[: request.limit]
+
+    def _downgrade_review_only_promotions(
+        self,
+        request: ClaimCurationRequest,
+        result: ClaimCurationResult,
+    ) -> None:
+        claims = self.repository.list_claims(
+            source_key=request.source_key,
+            query=request.query,
+            min_confidence=0.0,
+            include_seed_claims=False,
+        )
+        for claim in claims:
+            if claim.metadata.get("curation_status") != ClaimCurationDecision.PROMOTE.value:
+                continue
+            if not _is_review_only_context_claim(claim):
+                continue
+            reasons = list(claim.metadata.get("curation_reasons") or [])
+            reasons.append("downgraded stale source-context promotion to review-only")
+            curation_score = min(float(claim.metadata.get("curation_score") or claim.confidence), 0.49)
+            item = self._item(
+                claim,
+                decision=ClaimCurationDecision.NEEDS_REVIEW,
+                curation_score=curation_score,
+                curated_confidence=min(claim.confidence, 0.49),
+                canonical_claim_id=claim.claim_id,
+                reasons=reasons,
+            )
+            self._record_decision(item, result)
+            if not request.dry_run:
+                metadata = claim.metadata | {
+                    "curation_status": ClaimCurationDecision.NEEDS_REVIEW.value,
+                    "curation_score": item.curation_score,
+                    "curation_reasons": item.reasons,
+                    "curator_name": self.curator_name,
+                    "curator_version": self.curator_version,
+                    "curated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "extraction_status": "draft",
+                    "model_profile": request.model_profile,
+                }
+                self.repository.upsert_claim(
+                    claim.model_copy(
+                        update={
+                            "confidence": item.curated_confidence,
+                            "metadata": metadata,
+                        }
+                    )
+                )
 
     def _item(
         self,
