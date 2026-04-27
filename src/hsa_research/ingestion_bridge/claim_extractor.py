@@ -660,7 +660,8 @@ def _openfda_species_scope(species: str | None) -> str | None:
 
 
 def _normalize_context(text: str) -> str:
-    return f" {re.sub(r'\\s+', ' ', text).lower()} "
+    normalized_text = re.sub(r"\s+", " ", text).lower()
+    return f" {normalized_text} "
 
 
 def _context_scope(text: str) -> dict[str, str] | None:
