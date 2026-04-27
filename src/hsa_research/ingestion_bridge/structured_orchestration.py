@@ -75,6 +75,43 @@ def run_structured_sources_pipeline(
     }
 
 
+def run_structured_sources_ingestion_pipeline(
+    repository: SQLiteResearchRepository,
+    *,
+    source_keys: Sequence[str] | None = None,
+    source_limits: Mapping[str, int] | None = None,
+    initialize: bool = True,
+) -> dict[str, Any]:
+    """Run only source ingestion and QA, without entity resolution or claim work."""
+
+    pipeline = LocalIngestionPipeline(repository)
+    if initialize:
+        pipeline.initialize()
+
+    selected_sources = list(STRUCTURED_SOURCE_KEYS if source_keys is None else source_keys)
+    reports = [
+        run_structured_source_ingestion_pipeline(
+            repository,
+            source_key,
+            source_limits=source_limits,
+        )
+        for source_key in selected_sources
+    ]
+    errors = [
+        f"{report['source_key']}: {error}"
+        for report in reports
+        for error in report.get("ingestion_errors", [])
+    ]
+    return {
+        "mode": "ingestion_only",
+        "source_keys": selected_sources,
+        "sources": reports,
+        "totals": _sum_source_reports(reports),
+        "errors": errors,
+        "coverage": repository.coverage_summary(),
+    }
+
+
 def run_structured_source_pipeline(
     repository: SQLiteResearchRepository,
     source_key: str,
@@ -128,6 +165,44 @@ def run_structured_source_pipeline(
         "entity_resolution": entity_resolution,
         "extraction": extraction,
         "curation": curation,
+        "qa": qa,
+    }
+    if full_text_qa is not None:
+        report["full_text_qa"] = full_text_qa
+    return report
+
+
+def run_structured_source_ingestion_pipeline(
+    repository: SQLiteResearchRepository,
+    source_key: str,
+    *,
+    source_limits: Mapping[str, int] | None = None,
+) -> dict[str, Any]:
+    """Run one source through fetch, normalization, persistence, and QA only."""
+
+    limit = _source_limit(source_key, source_limits)
+    pipeline = LocalIngestionPipeline(repository)
+    ingestion_results = [result.model_dump(mode="json") for result in pipeline.ingest_source(source_key, limit=limit)]
+    qa = structured_source_qa(repository, source_key)
+    full_text_qa = (
+        full_text_source_qa(repository, source_key, ingestion_results=ingestion_results)
+        if source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS
+        else None
+    )
+
+    report = {
+        "mode": "ingestion_only",
+        "source_key": source_key,
+        "limit": limit,
+        "ingestion": ingestion_results,
+        "ingestion_errors": [
+            error
+            for result in ingestion_results
+            for error in result.get("errors", [])
+        ],
+        "entity_resolution": {"status": "skipped", "reason": "ingestion_only"},
+        "extraction": {"status": "skipped", "reason": "ingestion_only"},
+        "curation": {"status": "skipped", "reason": "ingestion_only"},
         "qa": qa,
     }
     if full_text_qa is not None:

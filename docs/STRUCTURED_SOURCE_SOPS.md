@@ -368,6 +368,9 @@ Launch Dagster Smoke Job -> literature_full_text_refresh_job
 For faster diagnosis, run the single-source lanes first:
 
 ```text
+Launch Dagster Smoke Job -> literature_full_text_ingest_smoke_job
+Launch Dagster Smoke Job -> europe_pmc_full_text_ingest_job
+Launch Dagster Smoke Job -> pmc_oa_full_text_ingest_job
 Launch Dagster Smoke Job -> literature_full_text_smoke_job
 Launch Dagster Smoke Job -> europe_pmc_full_text_refresh_job
 Launch Dagster Smoke Job -> pmc_oa_full_text_refresh_job
@@ -378,8 +381,12 @@ Sources and per-query limits:
 - `pmc_oa`: 3
 
 Single-source full-text jobs use the same source-specific limits as the combined
-refresh. `literature_full_text_smoke_job` uses one record per source and is the
-preferred hosted readiness check before the combined refresh.
+refresh. The `*_full_text_ingest_*` jobs are pull-only paths: they fetch,
+normalize, persist raw records, write research objects, write chunks, and run
+full-text QA without entity resolution, claim extraction, or curation. Use them
+first when hosted full-text behavior is unclear. `literature_full_text_smoke_job`
+uses one record per source plus a tiny extraction and curation pass, and is the
+preferred end-to-end readiness check before the combined refresh.
 
 Required QA output:
 - Every full-text source has raw records, research objects, document chunks, and

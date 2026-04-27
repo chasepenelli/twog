@@ -194,10 +194,14 @@ than chained. The initial production cadence is:
 - `embedding_maintenance_daily_schedule`: `45 5 * * *`, running.
 - `source_health_daily_schedule`: `15 6 * * *`, running.
 
-Full-text hosted debugging also exposes source-specific jobs:
+Full-text hosted debugging also exposes pull-only and end-to-end jobs. Start
+with `literature_full_text_ingest_smoke_job`,
+`europe_pmc_full_text_ingest_job`, and `pmc_oa_full_text_ingest_job` to isolate
+fetch, normalization, persistence, chunking, and full-text QA from entity
+resolution, claim extraction, and curation. Then run
 `literature_full_text_smoke_job`, `europe_pmc_full_text_refresh_job`, and
-`pmc_oa_full_text_refresh_job`. Use these before the combined weekly refresh
-when a source-specific parser, API, or runtime issue needs isolation.
+`pmc_oa_full_text_refresh_job` before the combined weekly refresh when a
+source-specific parser, API, or runtime issue needs isolation.
 
 No sensors, chained graph job, or source/date partitions are part of this
 first schedule pass.

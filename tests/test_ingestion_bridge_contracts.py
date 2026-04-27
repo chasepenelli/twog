@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 from uuid import uuid4
 
@@ -170,6 +171,7 @@ def test_dagster_full_text_source_specific_assets_use_injected_repository(monkey
         return kwargs
 
     monkeypatch.setattr(structured_orchestration, "run_structured_sources_pipeline", fake_pipeline)
+    monkeypatch.setattr(structured_orchestration, "run_structured_sources_ingestion_pipeline", fake_pipeline)
 
     europe_pmc_report = dagster_asset_module.europe_pmc_full_text_refresh_report.node_def.compute_fn.decorated_fn(
         FakeRepositoryResource()
@@ -177,17 +179,124 @@ def test_dagster_full_text_source_specific_assets_use_injected_repository(monkey
     pmc_oa_report = dagster_asset_module.pmc_oa_full_text_refresh_report.node_def.compute_fn.decorated_fn(
         FakeRepositoryResource()
     )
+    ingest_smoke_report = dagster_asset_module.literature_full_text_ingest_smoke_report.node_def.compute_fn.decorated_fn(
+        FakeRepositoryResource()
+    )
+    europe_pmc_ingest_report = dagster_asset_module.europe_pmc_full_text_ingest_report.node_def.compute_fn.decorated_fn(
+        FakeRepositoryResource()
+    )
+    pmc_oa_ingest_report = dagster_asset_module.pmc_oa_full_text_ingest_report.node_def.compute_fn.decorated_fn(
+        FakeRepositoryResource()
+    )
     smoke_report = dagster_asset_module.literature_full_text_smoke_report.node_def.compute_fn.decorated_fn(
         FakeRepositoryResource()
     )
 
-    assert calls == ["build_repository", "build_repository", "build_repository"]
+    assert calls == [
+        "build_repository",
+        "build_repository",
+        "build_repository",
+        "build_repository",
+        "build_repository",
+        "build_repository",
+    ]
     assert europe_pmc_report["source_keys"] == ("europe_pmc",)
     assert europe_pmc_report["source_limits"] == {"europe_pmc": 10}
+    assert europe_pmc_report["mode"] == "refresh"
     assert pmc_oa_report["source_keys"] == ("pmc_oa",)
     assert pmc_oa_report["source_limits"] == {"pmc_oa": 3}
+    assert pmc_oa_report["mode"] == "refresh"
+    assert ingest_smoke_report["source_keys"] == dagster_asset_module.LITERATURE_FULL_TEXT_SOURCE_KEYS
+    assert ingest_smoke_report["source_limits"] == {"europe_pmc": 1, "pmc_oa": 1}
+    assert ingest_smoke_report["mode"] == "ingestion_only"
+    assert europe_pmc_ingest_report["source_keys"] == ("europe_pmc",)
+    assert europe_pmc_ingest_report["source_limits"] == {"europe_pmc": 10}
+    assert europe_pmc_ingest_report["mode"] == "ingestion_only"
+    assert pmc_oa_ingest_report["source_keys"] == ("pmc_oa",)
+    assert pmc_oa_ingest_report["source_limits"] == {"pmc_oa": 3}
+    assert pmc_oa_ingest_report["mode"] == "ingestion_only"
     assert smoke_report["source_keys"] == dagster_asset_module.LITERATURE_FULL_TEXT_SOURCE_KEYS
     assert smoke_report["source_limits"] == {"europe_pmc": 1, "pmc_oa": 1}
+    assert smoke_report["mode"] == "refresh"
+
+
+def test_full_text_ingestion_pipeline_skips_downstream_work(monkeypatch):
+    calls = []
+
+    class FakeIngestionResult:
+        def model_dump(self, mode):
+            assert mode == "json"
+            return {
+                "source_key": "europe_pmc",
+                "query_name": "licensed_full_text_hsa",
+                "raw_records": 1,
+                "research_objects": 1,
+                "document_chunks": 2,
+                "full_text_research_objects": 1,
+                "section_chunk_counts": {"title_abstract": 1, "full_text": 1},
+                "status": "completed",
+                "errors": [],
+            }
+
+    class FakePipeline:
+        def __init__(self, repository):
+            calls.append(("init", repository))
+
+        def initialize(self):
+            calls.append(("initialize",))
+
+        def ingest_source(self, source_key, limit):
+            calls.append(("ingest_source", source_key, limit))
+            return [FakeIngestionResult()]
+
+    class FakeRepository:
+        def source_runtime_summary(self, source_key, sample_limit=5):
+            assert source_key == "europe_pmc"
+            return {
+                "source_key": source_key,
+                "raw_records": 1,
+                "research_objects": 1,
+                "document_chunks": 2,
+                "entity_mentions": 0,
+                "claims": 0,
+            }
+
+        def list_research_objects(self, source_key=None):
+            assert source_key == "europe_pmc"
+            return [SimpleNamespace(metadata={"full_text_available": True})]
+
+        def list_document_chunks(self, source_key=None):
+            assert source_key == "europe_pmc"
+            return [
+                SimpleNamespace(section_label="title_abstract", text_content="title"),
+                SimpleNamespace(section_label="full_text", text_content="body"),
+            ]
+
+        def coverage_summary(self):
+            return {"document_chunks": 2}
+
+    def fail_downstream(*args, **kwargs):
+        raise AssertionError("ingestion-only pipeline must not run downstream claim work")
+
+    monkeypatch.setattr(structured_orchestration, "LocalIngestionPipeline", FakePipeline)
+    monkeypatch.setattr(structured_orchestration, "resolve_entities_for_repository", fail_downstream)
+    monkeypatch.setattr(structured_orchestration, "extract_claims_for_repository", fail_downstream)
+    monkeypatch.setattr(structured_orchestration, "curate_claims_for_repository", fail_downstream)
+
+    report = structured_orchestration.run_structured_sources_ingestion_pipeline(
+        FakeRepository(),
+        source_keys=("europe_pmc",),
+        source_limits={"europe_pmc": 1},
+    )
+
+    assert calls[-1] == ("ingest_source", "europe_pmc", 1)
+    assert report["mode"] == "ingestion_only"
+    assert report["totals"]["document_chunks"] == 2
+    source_report = report["sources"][0]
+    assert source_report["entity_resolution"]["status"] == "skipped"
+    assert source_report["extraction"]["status"] == "skipped"
+    assert source_report["curation"]["status"] == "skipped"
+    assert source_report["full_text_qa"]["passes_full_text_bar"] is True
 
 
 def test_dagster_metadata_table_rows_encode_nested_values():
