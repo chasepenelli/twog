@@ -25,7 +25,11 @@ from .local_store import SQLiteResearchRepository
 from .scraper_bridge import ScrapeBridge, list_scrape_profiles
 from .source_scout import scout_sources_for_repository
 from .storage import build_sql_repository
-from .structured_orchestration import STRUCTURED_SOURCE_KEYS, run_structured_sources_pipeline
+from .structured_orchestration import (
+    STRUCTURED_SOURCE_KEYS,
+    build_structured_source_count_report,
+    run_structured_sources_pipeline,
+)
 
 
 def main() -> None:
@@ -72,6 +76,23 @@ def main() -> None:
         help="Curation score threshold for promotion",
     )
     structured_pipeline.add_argument("--no-init", action="store_true", help="Skip seeding source registry and queries")
+
+    structured_report = subparsers.add_parser(
+        "structured-report",
+        help="Report persisted structured-source counts without harvesting",
+    )
+    structured_report.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="Structured source key; repeat to report multiple. Defaults to all structured sources.",
+    )
+    structured_report.add_argument(
+        "--sample-limit",
+        type=int,
+        default=5,
+        help="Maximum sample claims per source",
+    )
 
     backfill_papers = subparsers.add_parser("backfill-papers", help="Backfill legacy papers JSON")
     backfill_papers.add_argument("--path", default="hsa_research/papers.json", help="Path to papers JSON")
@@ -216,6 +237,13 @@ def main() -> None:
             curate_limit=args.curate_limit,
             promote_threshold=args.promote_threshold,
             initialize=not args.no_init,
+        )
+    elif args.command == "structured-report":
+        selected_sources = args.source or list(STRUCTURED_SOURCE_KEYS)
+        output = build_structured_source_count_report(
+            repo,
+            source_keys=selected_sources,
+            sample_limit=args.sample_limit,
         )
     elif args.command == "backfill-papers":
         output = backfill_papers_json(

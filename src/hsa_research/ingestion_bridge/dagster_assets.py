@@ -204,6 +204,20 @@ if dg is not None:
             curate_limit=250,
         )
 
+    @dg.asset(group_name="structured_source_refresh")
+    def structured_source_count_report() -> dict:
+        """Persisted count report for structured API source coverage."""
+
+        from .storage import build_sql_repository
+        from .structured_orchestration import build_structured_source_count_report
+
+        repository = build_sql_repository()
+        return build_structured_source_count_report(
+            repository,
+            source_keys=STRUCTURED_SOURCE_MULTISOURCE_SMOKE_KEYS,
+            sample_limit=3,
+        )
+
     @dg.asset_check(asset=source_registry)
     def source_registry_has_phase_one_sources(source_registry: list[dict]) -> dg.AssetCheckResult:
         """Ensure the first bridge has the minimum source backbone."""
@@ -280,6 +294,22 @@ if dg is not None:
             },
         )
 
+    @dg.asset_check(asset=structured_source_count_report)
+    def structured_source_count_report_has_minimum_outputs(
+        structured_source_count_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure persisted structured-source counts are healthy after hosted runs."""
+
+        failed_sources = structured_source_count_report.get("failed_sources", [])
+        return dg.AssetCheckResult(
+            passed=not failed_sources,
+            metadata={
+                "failed_sources": failed_sources,
+                "source_keys": structured_source_count_report.get("source_keys", []),
+                "totals": structured_source_count_report.get("totals", {}),
+            },
+        )
+
     ingestion_bridge_assets = [
         source_registry,
         source_scout_plan,
@@ -294,6 +324,7 @@ if dg is not None:
         structured_source_pipeline_report,
         structured_source_smoke_report,
         structured_source_multisource_smoke_report,
+        structured_source_count_report,
     ]
 
     structured_source_pipeline_job = dg.define_asset_job(
@@ -308,6 +339,10 @@ if dg is not None:
         "structured_source_multisource_smoke_job",
         selection=dg.AssetSelection.assets(structured_source_multisource_smoke_report),
     )
+    structured_source_count_report_job = dg.define_asset_job(
+        "structured_source_count_report_job",
+        selection=dg.AssetSelection.assets(structured_source_count_report),
+    )
 
     defs = dg.Definitions(
         assets=ingestion_bridge_assets,
@@ -316,11 +351,13 @@ if dg is not None:
             structured_source_pipeline_has_minimum_outputs,
             structured_source_smoke_has_minimum_outputs,
             structured_source_multisource_smoke_has_minimum_outputs,
+            structured_source_count_report_has_minimum_outputs,
         ],
         jobs=[
             structured_source_pipeline_job,
             structured_source_smoke_job,
             structured_source_multisource_smoke_job,
+            structured_source_count_report_job,
         ],
     )
 
@@ -329,4 +366,5 @@ else:
     structured_source_pipeline_job = None
     structured_source_smoke_job = None
     structured_source_multisource_smoke_job = None
+    structured_source_count_report_job = None
     defs = None

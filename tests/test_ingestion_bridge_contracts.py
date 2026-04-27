@@ -55,6 +55,7 @@ from hsa_research.ingestion_bridge.scraper_bridge import ScrapeBridge, list_scra
 from hsa_research.ingestion_bridge.service import HSAResearchService
 from hsa_research.ingestion_bridge.source_scout import SourceScoutAgent
 from hsa_research.ingestion_bridge.structured_orchestration import (
+    build_structured_source_count_report,
     run_structured_sources_pipeline,
     structured_source_qa,
 )
@@ -217,6 +218,14 @@ def test_structured_source_qa_reports_source_scoped_counts(tmp_path):
     assert qa["claim_types"] == {"other": 1}
     assert qa["passes_minimum_bar"] is True
     assert qa["sample_claims"][0]["curation_status"] == "promote"
+
+    report = build_structured_source_count_report(repo, source_keys=["pubchem", "chembl"], sample_limit=1)
+
+    assert report["source_keys"] == ["pubchem", "chembl"]
+    assert report["totals"] == {"raw_records": 1, "research_objects": 1, "document_chunks": 1, "claims": 1}
+    assert report["failed_sources"] == ["chembl"]
+    assert report["passes_minimum_bar"] is False
+    assert report["sources"][0]["sample_claims"][0]["statement"] == "Propranolol has PubChem identity CID 4946."
 
 
 def test_structured_pipeline_can_report_empty_selection(tmp_path):

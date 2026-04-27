@@ -138,6 +138,34 @@ def structured_source_qa(
     raise TypeError(f"Repository does not support source runtime QA: {type(repository).__name__}")
 
 
+def build_structured_source_count_report(
+    repository: SQLiteResearchRepository,
+    *,
+    source_keys: Sequence[str] | None = None,
+    sample_limit: int = 5,
+) -> dict[str, Any]:
+    """Return persisted runtime counts for structured sources without harvesting."""
+
+    selected_sources = list(STRUCTURED_SOURCE_KEYS if source_keys is None else source_keys)
+    source_reports = [
+        structured_source_qa(repository, source_key, sample_limit=sample_limit)
+        for source_key in selected_sources
+    ]
+    failed_sources = [
+        report["source_key"]
+        for report in source_reports
+        if not report.get("passes_minimum_bar", False)
+    ]
+    return {
+        "source_keys": selected_sources,
+        "sources": source_reports,
+        "totals": _sum_runtime_summaries(source_reports),
+        "failed_sources": failed_sources,
+        "passes_minimum_bar": not failed_sources,
+        "coverage": repository.coverage_summary(),
+    }
+
+
 def _source_limit(source_key: str, source_limits: Mapping[str, int] | None) -> int:
     if source_limits and source_key in source_limits:
         return source_limits[source_key]
@@ -148,5 +176,13 @@ def _sum_source_reports(reports: Sequence[dict[str, Any]]) -> dict[str, int]:
     fields = ("raw_records", "research_objects", "document_chunks", "claims")
     return {
         field: sum(report.get("qa", {}).get(field, 0) for report in reports)
+        for field in fields
+    }
+
+
+def _sum_runtime_summaries(reports: Sequence[dict[str, Any]]) -> dict[str, int]:
+    fields = ("raw_records", "research_objects", "document_chunks", "claims")
+    return {
+        field: sum(report.get(field, 0) for report in reports)
         for field in fields
     }

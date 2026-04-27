@@ -11,6 +11,7 @@ on:
         options:
           - "structured_source_smoke_job"
           - "structured_source_multisource_smoke_job"
+          - "structured_source_count_report_job"
           - "structured_source_pipeline_job"
 
 jobs:
@@ -24,6 +25,9 @@ jobs:
       DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
       DAGSTER_CLOUD_LOCATION: "hsa-dagster"
       DAGSTER_CLOUD_JOB: ${{ inputs.job }}
+      HSA_STORAGE_BACKEND: "postgres"
+      HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
+      HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
 
     steps:
       - name: Checkout
@@ -43,6 +47,10 @@ jobs:
             echo "::error::DAGSTER_PLUS_ENV_API_TOKEN is not configured."
             exit 1
           fi
+          if [ -z "$HSA_DATABASE_URL" ]; then
+            echo "::error::HSA_DATABASE_URL is not configured."
+            exit 1
+          fi
         shell: bash
 
       - name: Install project dependencies
@@ -58,4 +66,10 @@ jobs:
             --job "$DAGSTER_CLOUD_JOB" \
             --wait \
             --interval 10
+        shell: bash
+
+      - name: Print hosted structured-source count report
+        run: |
+          uv run python -m hsa_research.ingestion_bridge.cli structured-report \
+            --sample-limit 2
         shell: bash
