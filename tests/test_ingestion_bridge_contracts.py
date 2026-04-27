@@ -2152,6 +2152,56 @@ def test_service_search_research_chunks_uses_embeddings_without_returning_vector
     assert not _contains_key(payload, "embedding")
 
 
+def test_service_search_research_chunks_overfetches_stale_embedding_hits(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="VEGFA angiogenesis overfetch example",
+            source_key="pubmed",
+            dedupe_key="pubmed:retrieval-overfetch",
+        )
+    )
+    chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="VEGFA angiogenesis in canine hemangiosarcoma.",
+            content_hash="retrieval-overfetch-valid",
+        )
+    )
+    provider = LocalDeterministicEmbeddingProvider(embedding_model="local-hash-test")
+    stale_vector = provider.embed_text("VEGFA angiogenesis")
+    repo.upsert_text_embedding(
+        TextEmbedding(
+            chunk_id=uuid4(),
+            research_object_id=object_id,
+            chunk_index=0,
+            source_key="pubmed",
+            object_type="publication",
+            content_hash="retrieval-overfetch-stale",
+            embedding_model="local-hash-test",
+            embedding_dimensions=provider.embedding_dimensions,
+            embedding=stale_vector,
+        )
+    )
+    index_embeddings_for_repository(repo, source_key="pubmed", embedding_model="local-hash-test")
+
+    results = service.search_research_chunks(
+        ResearchChunkSearchRequest(
+            query="VEGFA angiogenesis",
+            source_key="pubmed",
+            embedding_model="local-hash-test",
+            limit=1,
+        )
+    )
+
+    assert results.search_mode == "embedding"
+    assert results.results[0].chunk.id == chunk.id
+
+
 def test_service_search_research_chunks_falls_back_to_keyword_and_bounds_text(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
     service = HSAResearchService(repo)

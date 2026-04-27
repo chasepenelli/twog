@@ -333,6 +333,7 @@ class HSAResearchService:
         query_vector = self._embed_query_for_model(request, embedding_model)
         if not any(query_vector):
             return []
+        fetch_limit = min(max(request.limit * 20, request.limit), 100)
         embedding_hits = self.repository.search_text_embeddings(
             TextEmbeddingSearchRequest(
                 query_embedding=query_vector,
@@ -341,7 +342,7 @@ class HSAResearchService:
                 research_object_id=request.research_object_id,
                 object_type=request.object_type,
                 min_score=request.min_score,
-                limit=request.limit,
+                limit=fetch_limit,
             )
         )
 
@@ -363,6 +364,8 @@ class HSAResearchService:
                     text_truncated=len(chunk.text_content) > request.max_chunk_chars,
                 )
             )
+            if len(results) >= request.limit:
+                break
         return results
 
     def _embed_query_for_model(self, request: ResearchChunkSearchRequest, embedding_model: str) -> list[float]:
