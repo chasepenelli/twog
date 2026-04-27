@@ -1,3 +1,4 @@
+import json
 import xml.etree.ElementTree as ET
 from uuid import uuid4
 
@@ -126,6 +127,91 @@ def test_dagster_structured_asset_uses_injected_repository(monkeypatch):
 
     assert calls == ["build_repository"]
     assert result == {"repository": "injected", "source_keys": dagster_asset_module.STRUCTURED_SOURCE_SMOKE_KEYS}
+
+
+def test_dagster_metadata_table_rows_encode_nested_values():
+    rows = dagster_asset_module._compact_table_rows(
+        [
+            {
+                "source_key": "pubchem",
+                "raw_records": 1,
+                "claim_status": {"promote": 1},
+                "sample_claims": [{"statement": "Propranolol has PubChem identity CID 4946."}],
+                "passes_minimum_bar": True,
+            }
+        ],
+        columns=("source_key", "raw_records", "claim_status", "sample_claims", "passes_minimum_bar"),
+    )
+
+    assert rows[0]["source_key"] == "pubchem"
+    assert rows[0]["raw_records"] == 1
+    assert rows[0]["passes_minimum_bar"] is True
+    assert json.loads(rows[0]["claim_status"]) == {"promote": 1}
+    assert json.loads(rows[0]["sample_claims"]) == [
+        {"statement": "Propranolol has PubChem identity CID 4946."}
+    ]
+    assert all(value is None or isinstance(value, str | int | float | bool) for value in rows[0].values())
+
+
+def test_dagster_count_report_asset_returns_materialize_result_with_report_value(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+    report = {
+        "source_keys": ["pubchem"],
+        "sources": [
+            {
+                "source_key": "pubchem",
+                "raw_records": 1,
+                "research_objects": 1,
+                "document_chunks": 1,
+                "entity_mentions": 0,
+                "claims": 1,
+                "passes_minimum_bar": True,
+                "claim_status": {"promote": 1},
+                "claim_types": {"other": 1},
+            }
+        ],
+        "totals": {
+            "raw_records": 1,
+            "research_objects": 1,
+            "document_chunks": 1,
+            "entity_mentions": 0,
+            "claims": 1,
+        },
+        "failed_sources": [],
+        "passes_minimum_bar": True,
+        "minimum_bar": {"require_claims": True},
+        "coverage": {"claims": 1},
+    }
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    def fake_count_report(repository, **kwargs):
+        assert repository is sentinel_repository
+        assert kwargs == {
+            "source_keys": dagster_asset_module.HOSTED_API_REPORT_KEYS,
+            "sample_limit": 3,
+            "require_claims": True,
+        }
+        return report
+
+    monkeypatch.setattr(structured_orchestration, "build_structured_source_count_report", fake_count_report)
+
+    result = dagster_asset_module.structured_source_count_report.node_def.compute_fn.decorated_fn(
+        FakeRepositoryResource()
+    )
+
+    assert calls == ["build_repository"]
+    assert isinstance(result, dagster_asset_module.dg.MaterializeResult)
+    assert result.value is report
+    assert result.metadata["source_count"] == 1
+    assert result.metadata["passes_minimum_bar"] is True
+    table_row = result.metadata["source_count_table"].records[0].data
+    assert json.loads(table_row["claim_status"]) == {"promote": 1}
+    assert json.loads(table_row["claim_types"]) == {"other": 1}
 
 
 def _seed_minimal_source_claim(

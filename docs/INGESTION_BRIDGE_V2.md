@@ -259,6 +259,20 @@ the CLI command after the repository resource has built the storage adapter:
 .venv/bin/python -m hsa_research.ingestion_bridge.cli structured-pipeline
 ```
 
+First-pass structured Dagster metadata is limited to the low-risk reporting
+assets that already return stable dictionaries:
+
+- `structured_source_count_report`
+- `source_health_report`
+- `entity_resolution_report`
+
+Each asset materializes with the full report preserved as the Dagster value so
+existing asset checks can continue reading the same contract. The attached
+metadata adds compact totals, source key lists, coverage summaries, and
+per-source Dagster tables. Table cells must stay scalar; nested lists and
+dictionaries are JSON-encoded into strings before being attached to the table
+metadata.
+
 Dagster+ deployment setup lives in `docs/DAGSTER_PLUS_SETUP.md`. Hosted runs
 must use `HSA_STORAGE_BACKEND=postgres` and `HSA_DATABASE_URL`; local SQLite is
 not durable inside Dagster+ Serverless workers.

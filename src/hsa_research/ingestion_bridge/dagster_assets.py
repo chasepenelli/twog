@@ -6,6 +6,10 @@ They are intentionally lightweight and deterministic.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+import json
+from typing import Any
+
 from .contracts import ClaimCurationRequest, ClaimSearchRequest, ResearchObject, SourceQuery, SourceScoutRequest
 from .query_policy import (
     build_canine_data_source_queries,
@@ -41,6 +45,62 @@ LITERATURE_CLINICAL_SMOKE_KEYS = LITERATURE_CLINICAL_SOURCE_KEYS
 ALL_API_SMOKE_KEYS = ALL_API_SOURCE_KEYS
 HOSTED_API_REPORT_KEYS = ALL_API_SMOKE_KEYS
 
+_STRUCTURED_SOURCE_COUNT_TABLE_COLUMNS = (
+    "source_key",
+    "raw_records",
+    "research_objects",
+    "document_chunks",
+    "entity_mentions",
+    "claims",
+    "passes_minimum_bar",
+    "claim_status",
+    "claim_types",
+)
+_SOURCE_HEALTH_TABLE_COLUMNS = (
+    "source_key",
+    "source_role",
+    "health_status",
+    "health_score",
+    "raw_records",
+    "research_objects",
+    "document_chunks",
+    "entity_mentions",
+    "claims",
+    "passes_minimum_bar",
+    "signals",
+    "risks",
+    "recommended_actions",
+    "claim_metadata",
+)
+_ENTITY_RESOLUTION_TABLE_COLUMNS = (
+    "source_key",
+    "chunks_seen",
+    "chunks_with_mentions",
+    "entities_upserted",
+    "aliases_upserted",
+    "mentions_upserted",
+    "entity_mentions",
+    "claims",
+    "passes_minimum_bar",
+    "errors",
+)
+
+
+def _metadata_table_scalar(value: Any) -> str | int | float | bool | None:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _compact_table_rows(
+    rows: Sequence[Mapping[str, Any]],
+    columns: Sequence[str],
+) -> list[dict[str, str | int | float | bool | None]]:
+    return [
+        {column: _metadata_table_scalar(row.get(column)) for column in columns}
+        for row in rows
+    ]
+
 
 def build_source_queries() -> list[SourceQuery]:
     """Create the starter query set for implemented ingestion sources."""
@@ -58,6 +118,94 @@ def build_source_queries() -> list[SourceQuery]:
 
 if dg is not None:
     from .dagster_resources import ResearchRepositoryResource
+
+    def _metadata_table(
+        rows: Sequence[Mapping[str, Any]],
+        columns: Sequence[str],
+    ) -> dg.TableMetadataValue:
+        compact_rows = _compact_table_rows(rows, columns)
+        records = [dg.TableRecord(data=row) for row in compact_rows]
+        if records:
+            return dg.MetadataValue.table(records=records)
+        return dg.MetadataValue.table(
+            records=[],
+            schema=dg.TableSchema(columns=[dg.TableColumn(name=column) for column in columns]),
+        )
+
+    def _base_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "source_count": len(report.get("sources", [])),
+            "source_keys": dg.MetadataValue.json(report.get("source_keys", [])),
+            "totals": dg.MetadataValue.json(report.get("totals", {})),
+            "coverage": dg.MetadataValue.json(report.get("coverage", {})),
+        }
+
+    def _structured_source_count_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            **_base_report_metadata(report),
+            "failed_source_count": len(report.get("failed_sources", [])),
+            "failed_sources": dg.MetadataValue.json(report.get("failed_sources", [])),
+            "minimum_bar": dg.MetadataValue.json(report.get("minimum_bar", {})),
+            "passes_minimum_bar": bool(report.get("passes_minimum_bar", False)),
+            "source_count_table": _metadata_table(
+                report.get("sources", []),
+                _STRUCTURED_SOURCE_COUNT_TABLE_COLUMNS,
+            ),
+        }
+
+    def _source_health_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            **_base_report_metadata(report),
+            "failed_source_count": len(report.get("failed_sources", [])),
+            "failed_sources": dg.MetadataValue.json(report.get("failed_sources", [])),
+            "minimum_bar": dg.MetadataValue.json(report.get("minimum_bar", {})),
+            "passes_minimum_bar": bool(report.get("passes_minimum_bar", False)),
+            "summary": dg.MetadataValue.json(report.get("summary", {})),
+            "triage_source_count": len(report.get("triage_sources", [])),
+            "triage_sources": dg.MetadataValue.json(report.get("triage_sources", [])),
+            "watch_source_count": len(report.get("watch_sources", [])),
+            "watch_sources": dg.MetadataValue.json(report.get("watch_sources", [])),
+            "source_health_table": _metadata_table(
+                report.get("sources", []),
+                _SOURCE_HEALTH_TABLE_COLUMNS,
+            ),
+        }
+
+    def _entity_resolution_source_rows(report: Mapping[str, Any]) -> list[dict[str, Any]]:
+        rows = []
+        for source_report in report.get("sources", []):
+            resolution = source_report.get("resolution", {})
+            qa = source_report.get("qa", {})
+            rows.append(
+                {
+                    "source_key": source_report.get("source_key"),
+                    "chunks_seen": resolution.get("chunks_seen", 0),
+                    "chunks_with_mentions": resolution.get("chunks_with_mentions", 0),
+                    "entities_upserted": resolution.get("entities_upserted", 0),
+                    "aliases_upserted": resolution.get("aliases_upserted", 0),
+                    "mentions_upserted": resolution.get("mentions_upserted", 0),
+                    "entity_mentions": qa.get("entity_mentions", 0),
+                    "claims": qa.get("claims", 0),
+                    "passes_minimum_bar": qa.get("passes_minimum_bar"),
+                    "errors": resolution.get("errors", []),
+                }
+            )
+        return rows
+
+    def _entity_resolution_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        errors = report.get("errors", [])
+        totals = report.get("totals", {})
+        return {
+            **_base_report_metadata(report),
+            "error_count": len(errors),
+            "errors": dg.MetadataValue.json(errors),
+            "minimum_entity_mentions": 1,
+            "passes_minimum_bar": not errors and totals.get("entity_mentions", 0) >= 1,
+            "entity_resolution_table": _metadata_table(
+                _entity_resolution_source_rows(report),
+                _ENTITY_RESOLUTION_TABLE_COLUMNS,
+            ),
+        }
 
     @dg.asset(group_name="ingestion_bridge_v2")
     def source_registry() -> list[dict]:
@@ -271,35 +419,37 @@ if dg is not None:
         )
 
     @dg.asset(group_name="structured_source_refresh")
-    def structured_source_count_report(research_repository: ResearchRepositoryResource) -> dict:
+    def structured_source_count_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
         """Persisted count report for hosted API source coverage."""
 
         from .structured_orchestration import build_structured_source_count_report
 
         repository = research_repository.build_repository()
-        return build_structured_source_count_report(
+        report = build_structured_source_count_report(
             repository,
             source_keys=HOSTED_API_REPORT_KEYS,
             sample_limit=3,
             require_claims=True,
         )
+        return dg.MaterializeResult(value=report, metadata=_structured_source_count_report_metadata(report))
 
     @dg.asset(group_name="hosted_api_refresh")
-    def source_health_report(research_repository: ResearchRepositoryResource) -> dict:
+    def source_health_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
         """Persisted source health report for hosted API source coverage."""
 
         from .source_health import build_source_health_report
 
         repository = research_repository.build_repository()
-        return build_source_health_report(
+        report = build_source_health_report(
             repository,
             source_keys=HOSTED_API_REPORT_KEYS,
             sample_limit=3,
             require_claims=True,
         )
+        return dg.MaterializeResult(value=report, metadata=_source_health_report_metadata(report))
 
     @dg.asset(group_name="entity_resolution")
-    def entity_resolution_report(research_repository: ResearchRepositoryResource) -> dict:
+    def entity_resolution_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
         """Deterministic entity resolution over persisted hosted API chunks."""
 
         from .entity_resolution import resolve_entities_for_repository
@@ -320,7 +470,7 @@ if dg is not None:
                     "qa": structured_source_qa(repository, source_key, sample_limit=2),
                 }
             )
-        return {
+        report = {
             "source_keys": list(HOSTED_API_REPORT_KEYS),
             "sources": reports,
             "totals": {
@@ -337,6 +487,7 @@ if dg is not None:
             ],
             "coverage": repository.coverage_summary(),
         }
+        return dg.MaterializeResult(value=report, metadata=_entity_resolution_report_metadata(report))
 
     @dg.asset_check(asset=source_registry)
     def source_registry_has_phase_one_sources(source_registry: list[dict]) -> dg.AssetCheckResult:
