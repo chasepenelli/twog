@@ -47,6 +47,22 @@ HSA_CONTACT_EMAIL=poppa@bradyandgraffiti.com
 Do not commit or paste `HSA_DATABASE_URL` into chat. Store it directly in
 Dagster+.
 
+The preferred automated path is:
+
+1. Store the managed Postgres URL as the GitHub Actions secret
+   `HSA_DATABASE_URL`.
+2. Run the `Configure Dagster Plus Environment` GitHub Actions workflow.
+
+That workflow uses the existing `DAGSTER_CLOUD_API_TOKEN` secret that Dagster+
+created during project setup and writes the production Dagster+ environment
+variables with:
+
+```bash
+uv run dg plus create env HSA_STORAGE_BACKEND postgres --global --scope full --yes
+uv run dg plus create env HSA_DATABASE_URL --from-local-env --global --scope full --yes
+uv run dg plus create env HSA_CONTACT_EMAIL poppa@bradyandgraffiti.com --global --scope full --yes
+```
+
 ## GitHub Actions Settings
 
 No manual GitHub Actions setup should be required for the initial Dagster+
