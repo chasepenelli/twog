@@ -82,6 +82,9 @@ jobs:
             --source uniprot \
             --source rcsb_pdb \
             --source openfda_animal_events \
+            --source icdc \
+            --source geo \
+            --source sra \
             --source openalex \
             --source pubmed \
             --source europe_pmc \
