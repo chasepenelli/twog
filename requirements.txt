@@ -1,0 +1,4 @@
+dagster==1.13.2
+dagster-cloud==1.13.2
+pydantic==2.12.5
+psycopg2-binary==2.9.11

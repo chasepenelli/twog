@@ -1,61 +1,77 @@
-# hsa_dagster
+# HSA AutoResearch v2
 
-## Getting started
+Dagster+ deployed ingestion, curation, and orchestration system for canine
+hemangiosarcoma and human angiosarcoma comparative oncology research.
 
-### Installing dependencies
+This repository is the active Dagster+ project for v2. Dagster+ created the
+deployment repo and GitHub Actions workflow; the HSA research system now lives
+inside that generated project layout.
 
-**Option 1: uv**
+## Current System
 
-Ensure [`uv`](https://docs.astral.sh/uv/) is installed following their [official documentation](https://docs.astral.sh/uv/getting-started/installation/).
+- Typed research contracts.
+- Local SQLite development storage.
+- Hosted Postgres runtime adapter for Dagster+.
+- Structured API harvesters for PubChem, ChEMBL, UniProt, RCSB PDB, and openFDA
+  animal adverse events.
+- Source-specific claim extraction and curation.
+- Dagster asset graph and executable structured-source job.
+- MCP-ready service boundary.
 
-Create a virtual environment, and install the required dependencies using _sync_:
+## Local Setup
 
 ```bash
 uv sync
+uv run pytest tests/test_ingestion_bridge_contracts.py
 ```
 
-Then, activate the virtual environment:
-
-| OS | Command |
-| --- | --- |
-| MacOS | ```source .venv/bin/activate``` |
-| Windows | ```.venv\Scripts\activate``` |
-
-**Option 2: pip**
-
-Install the python dependencies with [pip](https://pypi.org/project/pip/):
+If using pip instead:
 
 ```bash
-python3 -m venv .venv
+python -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/python -m pytest tests/test_ingestion_bridge_contracts.py
 ```
 
-Then activate the virtual environment:
+## Dagster
 
-| OS | Command |
-| --- | --- |
-| MacOS | ```source .venv/bin/activate``` |
-| Windows | ```.venv\Scripts\activate``` |
-
-Install the required dependencies:
+Validate definitions:
 
 ```bash
-pip install -e ".[dev]"
+uv run dg check defs
 ```
 
-### Running Dagster
-
-Start the Dagster UI web server:
+Run locally:
 
 ```bash
-dg dev
+uv run dg dev
 ```
 
-Open http://localhost:3000 in your browser to see the project.
+Production deploys are handled by the existing Dagster+ GitHub Actions workflow
+on pushes to `main`.
 
-## Learn more
+## Current Job
 
-To learn more about this template and Dagster in general:
+Dagster job:
 
-- [Dagster Documentation](https://docs.dagster.io/)
-- [Dagster University](https://courses.dagster.io/)
-- [Dagster Slack Community](https://dagster.io/slack)
+```text
+structured_source_pipeline_job
+```
+
+This runs:
+
+```text
+structured source refresh -> claim extraction -> claim curation -> QA report
+```
+
+## Local Structured Pipeline
+
+```bash
+uv run hsa-ingestion-bridge structured-pipeline --source pubchem --limit 1
+```
+
+## Source Standards
+
+Structured source SOPs live in `docs/STRUCTURED_SOURCE_SOPS.md`. Each source has
+an explicit evidence boundary so the system does not overstate what an API
+record can prove.

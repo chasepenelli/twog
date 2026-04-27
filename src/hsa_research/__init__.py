@@ -1,0 +1,2 @@
+"""HSA AutoResearch package namespace."""
+

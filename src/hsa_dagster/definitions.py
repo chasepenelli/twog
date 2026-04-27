@@ -1,8 +1,10 @@
-from pathlib import Path
+"""Dagster+ entrypoint for the HSA AutoResearch v2 assets."""
 
-from dagster import definitions, load_from_defs_folder
+from dagster import definitions
+
+from hsa_research.ingestion_bridge.dagster_assets import defs as ingestion_bridge_defs
 
 
 @definitions
 def defs():
-    return load_from_defs_folder(path_within_project=Path(__file__).parent)
+    return ingestion_bridge_defs
