@@ -38,6 +38,7 @@ from hsa_research.ingestion_bridge.dagster_assets import (
     LITERATURE_FULL_TEXT_SOURCE_KEYS,
     LITERATURE_FULL_TEXT_SOURCE_LIMITS,
 )
+from hsa_research.ingestion_bridge.entity_resolution import normalize_entity_key, resolve_entities_for_repository
 from hsa_research.ingestion_bridge import harvesters_v2
 from hsa_research.ingestion_bridge.harvesters_v2 import (
     AVMAVCTRHarvesterV2,
@@ -282,7 +283,13 @@ def test_structured_source_qa_reports_source_scoped_counts(tmp_path):
     report = build_structured_source_count_report(repo, source_keys=["pubchem", "chembl"], sample_limit=1)
 
     assert report["source_keys"] == ["pubchem", "chembl"]
-    assert report["totals"] == {"raw_records": 1, "research_objects": 1, "document_chunks": 1, "claims": 1}
+    assert report["totals"] == {
+        "raw_records": 1,
+        "research_objects": 1,
+        "document_chunks": 1,
+        "entity_mentions": 0,
+        "claims": 1,
+    }
     assert report["failed_sources"] == ["chembl"]
     assert report["passes_minimum_bar"] is False
     assert report["minimum_bar"] == {"require_claims": True}
@@ -350,6 +357,58 @@ def test_source_health_report_marks_expected_triage_sources(tmp_path):
     assert any("specialized triage agent" in action for action in sra["recommended_actions"])
 
 
+def test_entity_resolution_persists_entities_aliases_and_mentions_idempotently(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:1",
+            content_hash="entity-resolution-raw",
+            source_url="https://pubmed.ncbi.nlm.nih.gov/1/",
+            raw_payload={"pmid": "1"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Entity resolution example",
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            dedupe_key="pmid:1",
+            identifiers={"pmid": "1"},
+        ),
+        raw_record_id,
+    )
+    chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="Adriamycin is discussed with VEGF receptor 2 and KIT, but not kitchen, in human angiosarcoma.",
+            content_hash="entity-resolution-chunk",
+        )
+    )
+
+    result = resolve_entities_for_repository(repo, source_key="pubmed")
+    second_result = resolve_entities_for_repository(repo, source_key="pubmed")
+    entities = repo.list_entities()
+    mentions = repo.list_entity_mentions(source_key="pubmed")
+
+    assert result.errors == []
+    assert result.chunks_seen == 1
+    assert result.mentions_upserted >= 4
+    assert second_result.errors == []
+    assert {entity.canonical_name for entity in entities} >= {"doxorubicin", "KDR", "KIT"}
+    assert len(mentions) == len({mention.mention_id for mention in mentions})
+    assert len(mentions) == len(repo.list_entity_mentions(chunk_id=chunk.id))
+    assert sum(1 for mention in mentions if mention.canonical_name == "KIT") == 1
+    assert normalize_entity_key("compound", "propranolol", {"pubchem_cid": "4946"}) == "pubchem_cid:4946"
+    coverage = repo.coverage_summary()
+    assert coverage["entity_aliases"] >= 1
+    assert coverage["entity_mentions"] == len(mentions)
+    assert repo.source_runtime_summary("pubmed")["entity_mentions"] == len(mentions)
+
+
 def test_structured_pipeline_can_report_empty_selection(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
 
@@ -357,7 +416,13 @@ def test_structured_pipeline_can_report_empty_selection(tmp_path):
 
     assert report["source_keys"] == []
     assert report["sources"] == []
-    assert report["totals"] == {"raw_records": 0, "research_objects": 0, "document_chunks": 0, "claims": 0}
+    assert report["totals"] == {
+        "raw_records": 0,
+        "research_objects": 0,
+        "document_chunks": 0,
+        "entity_mentions": 0,
+        "claims": 0,
+    }
     assert report["errors"] == []
 
 

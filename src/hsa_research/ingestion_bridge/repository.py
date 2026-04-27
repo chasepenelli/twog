@@ -19,8 +19,11 @@ from .contracts import (
     ClaimSearchRequest,
     ClaimSearchResult,
     CommitHypothesisRequest,
+    EntityAlias,
+    EntityMention,
     EvidenceLevel,
     HypothesisDraft,
+    ResolvedEntity,
     RunStatus,
     ScrapeSourceProfileReview,
     ScrapeReviewRecord,
@@ -34,6 +37,35 @@ class ResearchRepository(Protocol):
 
     def get_claim(self, claim_id: UUID) -> ClaimSearchResult | None:
         """Return a single claim by ID."""
+
+    def upsert_entity(self, entity: ResolvedEntity) -> ResolvedEntity:
+        """Persist a canonical resolved entity."""
+
+    def list_entities(
+        self,
+        *,
+        entity_type: str | None = None,
+        query: str | None = None,
+        limit: int | None = None,
+    ) -> list[ResolvedEntity]:
+        """Return canonical resolved entities."""
+
+    def upsert_entity_alias(self, alias: EntityAlias) -> EntityAlias:
+        """Persist a deterministic alias for a resolved entity."""
+
+    def upsert_entity_mention(self, mention: EntityMention) -> EntityMention:
+        """Persist a chunk-level resolved entity mention."""
+
+    def list_entity_mentions(
+        self,
+        *,
+        source_key: str | None = None,
+        object_id: UUID | None = None,
+        chunk_id: UUID | None = None,
+        entity_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[EntityMention]:
+        """Return chunk-level resolved entity mentions."""
 
     def get_candidate(self, request: CandidateDossierRequest) -> CandidateDossier | None:
         """Return a candidate dossier."""
@@ -100,6 +132,9 @@ class InMemoryResearchRepository:
         self.claims = seed_claims()
         self.runs: dict[UUID, AsyncRunHandle] = {}
         self.artifacts: dict[UUID, ArtifactHandle] = {}
+        self.entities: dict[tuple[str, str], ResolvedEntity] = {}
+        self.entity_aliases: dict[tuple[str, str, str], EntityAlias] = {}
+        self.entity_mentions: dict[UUID, EntityMention] = {}
         self.scrape_reviews: dict[UUID, ScrapeReviewRecord] = {}
         self.scrape_profile_reviews: dict[str, ScrapeSourceProfileReview] = {}
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
@@ -144,6 +179,82 @@ class InMemoryResearchRepository:
 
     def get_claim(self, claim_id: UUID) -> ClaimSearchResult | None:
         return next((claim for claim in self.claims if claim.claim_id == claim_id), None)
+
+    def upsert_entity(self, entity: ResolvedEntity) -> ResolvedEntity:
+        key = (entity.entity_type, entity.normalized_key)
+        existing = self.entities.get(key)
+        if existing:
+            entity = entity.model_copy(update={"entity_id": existing.entity_id})
+        self.entities[key] = entity
+        return entity
+
+    def list_entities(
+        self,
+        *,
+        entity_type: str | None = None,
+        query: str | None = None,
+        limit: int | None = None,
+    ) -> list[ResolvedEntity]:
+        entities = list(self.entities.values())
+        if entity_type:
+            entities = [entity for entity in entities if entity.entity_type == entity_type]
+        if query:
+            q = query.lower()
+            entities = [
+                entity
+                for entity in entities
+                if q in entity.canonical_name.lower() or q in entity.normalized_key.lower()
+            ]
+        entities.sort(key=lambda entity: (entity.entity_type, entity.canonical_name))
+        return entities[:limit] if limit is not None else entities
+
+    def upsert_entity_alias(self, alias: EntityAlias) -> EntityAlias:
+        key = (alias.entity_type, alias.alias_normalized, alias.normalized_key)
+        existing = self.entity_aliases.get(key)
+        if existing:
+            alias = alias.model_copy(update={"alias_id": existing.alias_id})
+        self.entity_aliases[key] = alias
+        return alias
+
+    def upsert_entity_mention(self, mention: EntityMention) -> EntityMention:
+        existing = next(
+            (
+                item
+                for item in self.entity_mentions.values()
+                if item.chunk_id == mention.chunk_id
+                and item.entity_type == mention.entity_type
+                and item.normalized_key == mention.normalized_key
+                and item.chunk_char_start == mention.chunk_char_start
+                and item.chunk_char_end == mention.chunk_char_end
+                and item.resolver_name == mention.resolver_name
+            ),
+            None,
+        )
+        if existing:
+            mention = mention.model_copy(update={"mention_id": existing.mention_id})
+        self.entity_mentions[mention.mention_id] = mention
+        return mention
+
+    def list_entity_mentions(
+        self,
+        *,
+        source_key: str | None = None,
+        object_id: UUID | None = None,
+        chunk_id: UUID | None = None,
+        entity_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[EntityMention]:
+        mentions = list(self.entity_mentions.values())
+        if source_key:
+            mentions = [mention for mention in mentions if mention.source_key == source_key]
+        if object_id:
+            mentions = [mention for mention in mentions if mention.research_object_id == object_id]
+        if chunk_id:
+            mentions = [mention for mention in mentions if mention.chunk_id == chunk_id]
+        if entity_type:
+            mentions = [mention for mention in mentions if mention.entity_type == entity_type]
+        mentions.sort(key=lambda mention: (str(mention.research_object_id), mention.chunk_index, mention.chunk_char_start))
+        return mentions[:limit] if limit is not None else mentions
 
     def get_candidate(self, request: CandidateDossierRequest) -> CandidateDossier | None:
         name = request.candidate_name or "propranolol"

@@ -394,12 +394,49 @@ Stop conditions:
 - Recommended actions point to missing raw records, normalized objects, chunks,
   or extraction/curation outputs.
 
+### Run The Deterministic Entity Resolver
+
+Use this after chunks exist and before model-backed enrichment. The resolver
+normalizes entity mentions; it does not infer biology, promote evidence, or
+change source boundaries.
+
+Command:
+
+```bash
+.venv/bin/python -m hsa_research.ingestion_bridge.cli resolve-entities --source pubmed --limit 1000
+```
+
+Resolver profiles:
+- `local`: high-precision local vocabulary from the existing compound, target,
+  biomarker, pathway, and disease dictionaries.
+- `pubtator`: PubTator BioC JSON annotations for PMID-backed publications.
+- `local_plus_pubtator`: run both deterministic sources.
+
+Dagster job:
+- `entity_resolution_job`
+
+Required output:
+- `resolved_entities` has canonical entity rows with `entity_type`,
+  `canonical_name`, and `normalized_key`.
+- `entity_aliases` keeps deterministic aliases for each canonical entity.
+- `entity_mentions` keeps chunk-level spans with `chunk_id`,
+  `research_object_id`, `chunk_index`, `section_label`, resolver provenance, and
+  match rule.
+
+Stop conditions:
+- A stable external ID maps to more than one canonical entity.
+- A mention is linked to multiple entities.
+- The resolver drops source chunk provenance.
+- A resolver profile changes claim curation status or source boundaries.
+
 ### Extract Claims
 
 1. Confirm the source has chunks.
-2. Run source-specific extraction.
-3. Expect structured sources to produce only their allowed claim types.
-4. If extraction returns zero for a structured source, inspect whether the
+2. Run `resolve-entities` or verify the structured pipeline has produced
+   `entity_mentions`.
+3. Run source-specific extraction.
+4. Expect structured sources to produce only their allowed claim types.
+5. If extraction returns zero for a structured source, inspect whether the
    source needs a typed extractor path.
 
 Command:

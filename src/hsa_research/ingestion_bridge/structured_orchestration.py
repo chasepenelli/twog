@@ -8,6 +8,7 @@ from typing import Any
 from .claim_curator import curate_claims_for_repository
 from .claim_extractor import extract_claims_for_repository
 from .contracts import ClaimCurationRequest
+from .entity_resolution import resolve_entities_for_repository
 from .local_ingest import LocalIngestionPipeline
 from .local_store import SQLiteResearchRepository
 from .source_sets import ALL_API_SOURCE_KEYS, STRUCTURED_SOURCE_KEYS
@@ -59,6 +60,7 @@ def run_structured_sources_pipeline(
         for report in reports
         for error in [
             *report.get("ingestion_errors", []),
+            *report.get("entity_resolution", {}).get("errors", []),
             *report.get("extraction", {}).get("errors", []),
             *report.get("curation", {}).get("errors", []),
         ]
@@ -86,6 +88,11 @@ def run_structured_source_pipeline(
     limit = _source_limit(source_key, source_limits)
     pipeline = LocalIngestionPipeline(repository)
     ingestion_results = [result.model_dump(mode="json") for result in pipeline.ingest_source(source_key, limit=limit)]
+    entity_resolution = resolve_entities_for_repository(
+        repository,
+        source_key=source_key,
+        limit=extract_limit,
+    ).model_dump(mode="json")
     extraction = extract_claims_for_repository(
         repository,
         source_key=source_key,
@@ -112,6 +119,7 @@ def run_structured_source_pipeline(
             for result in ingestion_results
             for error in result.get("errors", [])
         ],
+        "entity_resolution": entity_resolution,
         "extraction": extraction,
         "curation": curation,
         "qa": qa,
@@ -168,7 +176,7 @@ def _source_limit(source_key: str, source_limits: Mapping[str, int] | None) -> i
 
 
 def _sum_source_reports(reports: Sequence[dict[str, Any]]) -> dict[str, int]:
-    fields = ("raw_records", "research_objects", "document_chunks", "claims")
+    fields = ("raw_records", "research_objects", "document_chunks", "entity_mentions", "claims")
     return {
         field: sum(report.get("qa", {}).get(field, 0) for report in reports)
         for field in fields
@@ -176,7 +184,7 @@ def _sum_source_reports(reports: Sequence[dict[str, Any]]) -> dict[str, int]:
 
 
 def _sum_runtime_summaries(reports: Sequence[dict[str, Any]]) -> dict[str, int]:
-    fields = ("raw_records", "research_objects", "document_chunks", "claims")
+    fields = ("raw_records", "research_objects", "document_chunks", "entity_mentions", "claims")
     return {
         field: sum(report.get(field, 0) for report in reports)
         for field in fields

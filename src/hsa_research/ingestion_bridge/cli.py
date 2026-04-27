@@ -12,6 +12,7 @@ from .claim_curator import curate_claims_for_repository
 from .claim_extractor import extract_claims_for_repository
 from .contracts import (
     ClaimCurationRequest,
+    EntityResolutionRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
     ScrapeManifestFetchRequest,
@@ -21,6 +22,7 @@ from .contracts import (
     SourceQuery,
     SourceScoutRequest,
 )
+from .entity_resolution import resolve_entities_for_repository
 from .local_ingest import LocalIngestionPipeline
 from .local_store import SQLiteResearchRepository
 from .scraper_bridge import ScrapeBridge, list_scrape_profiles
@@ -138,6 +140,19 @@ def main() -> None:
         "--fail-on-failed-sources",
         action="store_true",
         help="Exit non-zero if the report has failed sources",
+    )
+
+    resolve_entities = subparsers.add_parser(
+        "resolve-entities",
+        help="Run deterministic entity resolution over persisted chunks",
+    )
+    resolve_entities.add_argument("--source", default=None, help="Optional source key filter")
+    resolve_entities.add_argument("--limit", type=int, default=None, help="Maximum chunks to resolve")
+    resolve_entities.add_argument(
+        "--resolver-profile",
+        choices=["local", "pubtator", "local_plus_pubtator"],
+        default="local",
+        help="Deterministic resolver profile to run",
     )
 
     backfill_papers = subparsers.add_parser("backfill-papers", help="Backfill legacy papers JSON")
@@ -302,6 +317,18 @@ def main() -> None:
             min_health_score=args.min_health_score,
             require_claims=not args.no_require_claims,
         )
+    elif args.command == "resolve-entities":
+        request = EntityResolutionRequest(
+            source_key=args.source,
+            limit=args.limit,
+            resolver_profile=args.resolver_profile,
+        )
+        output = resolve_entities_for_repository(
+            repo,
+            source_key=request.source_key,
+            limit=request.limit,
+            resolver_profile=request.resolver_profile,
+        ).model_dump(mode="json")
     elif args.command == "backfill-papers":
         output = backfill_papers_json(
             repo,

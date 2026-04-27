@@ -306,6 +306,47 @@ if dg is not None:
             require_claims=True,
         )
 
+    @dg.asset(group_name="entity_resolution")
+    def entity_resolution_report() -> dict:
+        """Deterministic entity resolution over persisted hosted API chunks."""
+
+        from .entity_resolution import resolve_entities_for_repository
+        from .storage import build_sql_repository
+        from .structured_orchestration import structured_source_qa
+
+        repository = build_sql_repository()
+        reports = []
+        for source_key in HOSTED_API_REPORT_KEYS:
+            resolution = resolve_entities_for_repository(
+                repository,
+                source_key=source_key,
+                limit=1000,
+            ).model_dump(mode="json")
+            reports.append(
+                {
+                    "source_key": source_key,
+                    "resolution": resolution,
+                    "qa": structured_source_qa(repository, source_key, sample_limit=2),
+                }
+            )
+        return {
+            "source_keys": list(HOSTED_API_REPORT_KEYS),
+            "sources": reports,
+            "totals": {
+                "chunks_seen": sum(report["resolution"].get("chunks_seen", 0) for report in reports),
+                "entities_upserted": sum(report["resolution"].get("entities_upserted", 0) for report in reports),
+                "aliases_upserted": sum(report["resolution"].get("aliases_upserted", 0) for report in reports),
+                "mentions_upserted": sum(report["resolution"].get("mentions_upserted", 0) for report in reports),
+                "entity_mentions": sum(report["qa"].get("entity_mentions", 0) for report in reports),
+            },
+            "errors": [
+                f"{report['source_key']}: {error}"
+                for report in reports
+                for error in report["resolution"].get("errors", [])
+            ],
+            "coverage": repository.coverage_summary(),
+        }
+
     @dg.asset_check(asset=source_registry)
     def source_registry_has_phase_one_sources(source_registry: list[dict]) -> dg.AssetCheckResult:
         """Ensure the first bridge has the minimum source backbone."""
@@ -521,6 +562,23 @@ if dg is not None:
             },
         )
 
+    @dg.asset_check(asset=entity_resolution_report)
+    def entity_resolution_has_minimum_outputs(
+        entity_resolution_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure deterministic entity resolution writes first-class mentions."""
+
+        errors = entity_resolution_report.get("errors", [])
+        totals = entity_resolution_report.get("totals", {})
+        return dg.AssetCheckResult(
+            passed=not errors and totals.get("entity_mentions", 0) >= 1,
+            metadata={
+                "errors": errors,
+                "minimum_entity_mentions": 1,
+                "totals": totals,
+            },
+        )
+
     ingestion_bridge_assets = [
         source_registry,
         source_scout_plan,
@@ -541,6 +599,7 @@ if dg is not None:
         literature_full_text_refresh_report,
         structured_source_count_report,
         source_health_report,
+        entity_resolution_report,
     ]
 
     structured_source_pipeline_job = dg.define_asset_job(
@@ -579,6 +638,10 @@ if dg is not None:
         "source_health_report_job",
         selection=dg.AssetSelection.assets(source_health_report),
     )
+    entity_resolution_job = dg.define_asset_job(
+        "entity_resolution_job",
+        selection=dg.AssetSelection.assets(entity_resolution_report),
+    )
     literature_corpus_daily_schedule = dg.ScheduleDefinition(
         job=literature_corpus_harvest_job,
         cron_schedule="0 7 * * *",
@@ -608,6 +671,7 @@ if dg is not None:
             literature_full_text_refresh_has_outputs,
             structured_source_count_report_has_minimum_outputs,
             source_health_report_has_no_failed_sources,
+            entity_resolution_has_minimum_outputs,
         ],
         jobs=[
             structured_source_pipeline_job,
@@ -619,6 +683,7 @@ if dg is not None:
             literature_full_text_refresh_job,
             structured_source_count_report_job,
             source_health_report_job,
+            entity_resolution_job,
         ],
         schedules=[
             literature_corpus_daily_schedule,
@@ -638,6 +703,7 @@ else:
     literature_full_text_refresh_job = None
     structured_source_count_report_job = None
     source_health_report_job = None
+    entity_resolution_job = None
     literature_corpus_daily_schedule = None
     literature_full_text_weekly_schedule = None
     source_health_daily_schedule = None

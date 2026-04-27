@@ -25,8 +25,11 @@ from .contracts import (
     ClaimSearchResult,
     CommitHypothesisRequest,
     DocumentChunk,
+    EntityAlias,
+    EntityMention,
     HypothesisDraft,
     RawSourceRecord,
+    ResolvedEntity,
     ResearchObject,
     ResearchSource,
     ScrapeSourceProfileReview,
@@ -378,6 +381,202 @@ class SQLiteResearchRepository(ResearchRepository):
             return None
         return json.loads(row["payload"])
 
+    def upsert_entity(self, entity: ResolvedEntity) -> ResolvedEntity:
+        payload = entity.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into resolved_entities (
+              entity_id, entity_type, canonical_name, normalized_key,
+              resolver_name, resolver_version, confidence, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(entity_type, normalized_key) do update set
+              canonical_name = excluded.canonical_name,
+              resolver_name = excluded.resolver_name,
+              resolver_version = excluded.resolver_version,
+              confidence = excluded.confidence,
+              payload = excluded.payload,
+              updated_at = current_timestamp
+            """,
+            (
+                str(entity.entity_id),
+                entity.entity_type,
+                entity.canonical_name,
+                entity.normalized_key,
+                entity.resolver_name,
+                entity.resolver_version,
+                entity.confidence,
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        row = self.conn.execute(
+            "select payload from resolved_entities where entity_type = ? and normalized_key = ?",
+            (entity.entity_type, entity.normalized_key),
+        ).fetchone()
+        self.conn.commit()
+        return ResolvedEntity.model_validate(json.loads(row["payload"]))
+
+    def list_entities(
+        self,
+        *,
+        entity_type: str | None = None,
+        query: str | None = None,
+        limit: int | None = None,
+    ) -> list[ResolvedEntity]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if entity_type:
+            clauses.append("entity_type = ?")
+            params.append(entity_type)
+        if query:
+            clauses.append("(lower(canonical_name) like lower(?) or lower(normalized_key) like lower(?))")
+            params.extend((f"%{query}%", f"%{query}%"))
+        sql = "select payload from resolved_entities"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by entity_type, canonical_name"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            ResolvedEntity.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
+    def upsert_entity_alias(self, alias: EntityAlias) -> EntityAlias:
+        payload = alias.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into entity_aliases (
+              alias_id, entity_id, entity_type, alias, alias_normalized,
+              canonical_name, normalized_key, resolver_name, resolver_version, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(entity_type, alias_normalized, normalized_key) do update set
+              entity_id = excluded.entity_id,
+              alias = excluded.alias,
+              canonical_name = excluded.canonical_name,
+              resolver_name = excluded.resolver_name,
+              resolver_version = excluded.resolver_version,
+              payload = excluded.payload,
+              updated_at = current_timestamp
+            """,
+            (
+                str(alias.alias_id),
+                str(alias.entity_id),
+                alias.entity_type,
+                alias.alias,
+                alias.alias_normalized,
+                alias.canonical_name,
+                alias.normalized_key,
+                alias.resolver_name,
+                alias.resolver_version,
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        row = self.conn.execute(
+            """
+            select payload from entity_aliases
+            where entity_type = ? and alias_normalized = ? and normalized_key = ?
+            """,
+            (alias.entity_type, alias.alias_normalized, alias.normalized_key),
+        ).fetchone()
+        self.conn.commit()
+        return EntityAlias.model_validate(json.loads(row["payload"]))
+
+    def upsert_entity_mention(self, mention: EntityMention) -> EntityMention:
+        payload = mention.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into entity_mentions (
+              mention_id, entity_id, object_id, chunk_id, chunk_index,
+              source_key, entity_type, canonical_name, normalized_key,
+              matched_text, matched_alias, chunk_char_start, chunk_char_end,
+              resolver_name, resolver_version, confidence, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(chunk_id, entity_type, normalized_key, chunk_char_start, chunk_char_end, resolver_name) do update set
+              entity_id = excluded.entity_id,
+              canonical_name = excluded.canonical_name,
+              matched_text = excluded.matched_text,
+              matched_alias = excluded.matched_alias,
+              confidence = excluded.confidence,
+              payload = excluded.payload,
+              updated_at = current_timestamp
+            """,
+            (
+                str(mention.mention_id),
+                str(mention.entity_id) if mention.entity_id else None,
+                str(mention.research_object_id),
+                str(mention.chunk_id),
+                mention.chunk_index,
+                mention.source_key,
+                mention.entity_type,
+                mention.canonical_name,
+                mention.normalized_key,
+                mention.matched_text,
+                mention.matched_alias,
+                mention.chunk_char_start,
+                mention.chunk_char_end,
+                mention.resolver_name,
+                mention.resolver_version,
+                mention.confidence,
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        row = self.conn.execute(
+            """
+            select payload from entity_mentions
+            where chunk_id = ? and entity_type = ? and normalized_key = ?
+              and chunk_char_start = ? and chunk_char_end = ? and resolver_name = ?
+            """,
+            (
+                str(mention.chunk_id),
+                mention.entity_type,
+                mention.normalized_key,
+                mention.chunk_char_start,
+                mention.chunk_char_end,
+                mention.resolver_name,
+            ),
+        ).fetchone()
+        self.conn.commit()
+        return EntityMention.model_validate(json.loads(row["payload"]))
+
+    def list_entity_mentions(
+        self,
+        *,
+        source_key: str | None = None,
+        object_id: UUID | None = None,
+        chunk_id: UUID | None = None,
+        entity_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[EntityMention]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if source_key:
+            clauses.append("source_key = ?")
+            params.append(source_key)
+        if object_id:
+            clauses.append("object_id = ?")
+            params.append(str(object_id))
+        if chunk_id:
+            clauses.append("chunk_id = ?")
+            params.append(str(chunk_id))
+        if entity_type:
+            clauses.append("entity_type = ?")
+            params.append(entity_type)
+        sql = "select payload from entity_mentions"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by object_id, chunk_index, chunk_char_start"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            EntityMention.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
     def upsert_document_chunk(self, chunk: DocumentChunk) -> DocumentChunk:
         payload = chunk.model_dump(mode="json")
         self.conn.execute(
@@ -455,6 +654,9 @@ class SQLiteResearchRepository(ResearchRepository):
         object_count = self.conn.execute("select count(*) as count from research_objects").fetchone()["count"]
         chunk_count = self.conn.execute("select count(*) as count from document_chunks").fetchone()["count"]
         claims_count = self.conn.execute("select count(*) as count from claims").fetchone()["count"]
+        entity_count = self.conn.execute("select count(*) as count from resolved_entities").fetchone()["count"]
+        entity_alias_count = self.conn.execute("select count(*) as count from entity_aliases").fetchone()["count"]
+        entity_mention_count = self.conn.execute("select count(*) as count from entity_mentions").fetchone()["count"]
         scrape_review_count = self.conn.execute("select count(*) as count from scrape_review_records").fetchone()["count"]
         scrape_profile_review_count = self.conn.execute(
             "select count(*) as count from scrape_source_profile_reviews"
@@ -493,6 +695,9 @@ class SQLiteResearchRepository(ResearchRepository):
             "research_objects": object_count,
             "document_chunks": chunk_count,
             "claims": claims_count,
+            "resolved_entities": entity_count,
+            "entity_aliases": entity_alias_count,
+            "entity_mentions": entity_mention_count,
             "scrape_review_records": scrape_review_count,
             "scrape_source_profile_reviews": scrape_profile_review_count,
             "claim_curation": claim_curation,
@@ -627,6 +832,10 @@ class SQLiteResearchRepository(ResearchRepository):
             """,
             (source_key,),
         ).fetchone()["count"]
+        entity_mentions = self.conn.execute(
+            "select count(*) as count from entity_mentions where source_key = ?",
+            (source_key,),
+        ).fetchone()["count"]
         claim_status = {
             row["status"]: row["count"]
             for row in self.conn.execute(
@@ -684,6 +893,7 @@ class SQLiteResearchRepository(ResearchRepository):
             "raw_records": raw_records,
             "research_objects": research_objects,
             "document_chunks": document_chunks,
+            "entity_mentions": entity_mentions,
             "claims": claims,
             "claim_status": claim_status,
             "claim_types": claim_types,
@@ -1196,6 +1406,76 @@ class SQLiteResearchRepository(ResearchRepository):
               on document_chunks(object_id, chunk_index);
             create index if not exists document_chunks_hash_idx
               on document_chunks(content_hash);
+
+            create table if not exists resolved_entities (
+              entity_id text primary key,
+              entity_type text not null,
+              canonical_name text not null,
+              normalized_key text not null,
+              resolver_name text not null,
+              resolver_version text not null,
+              confidence real not null default 1,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp,
+              unique (entity_type, normalized_key)
+            );
+
+            create index if not exists resolved_entities_type_key_idx
+              on resolved_entities(entity_type, normalized_key);
+            create index if not exists resolved_entities_name_idx
+              on resolved_entities(canonical_name);
+
+            create table if not exists entity_aliases (
+              alias_id text primary key,
+              entity_id text not null,
+              entity_type text not null,
+              alias text not null,
+              alias_normalized text not null,
+              canonical_name text not null,
+              normalized_key text not null,
+              resolver_name text not null,
+              resolver_version text not null,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp,
+              unique (entity_type, alias_normalized, normalized_key)
+            );
+
+            create index if not exists entity_aliases_alias_idx
+              on entity_aliases(alias_normalized);
+            create index if not exists entity_aliases_entity_idx
+              on entity_aliases(entity_id);
+
+            create table if not exists entity_mentions (
+              mention_id text primary key,
+              entity_id text,
+              object_id text not null,
+              chunk_id text not null,
+              chunk_index integer not null,
+              source_key text,
+              entity_type text not null,
+              canonical_name text not null,
+              normalized_key text not null,
+              matched_text text not null,
+              matched_alias text not null,
+              chunk_char_start integer not null,
+              chunk_char_end integer not null,
+              resolver_name text not null,
+              resolver_version text not null,
+              confidence real not null default 1,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp,
+              unique (chunk_id, entity_type, normalized_key, chunk_char_start, chunk_char_end, resolver_name)
+            );
+
+            create index if not exists entity_mentions_source_idx
+              on entity_mentions(source_key, entity_type);
+            create index if not exists entity_mentions_chunk_idx
+              on entity_mentions(chunk_id, chunk_char_start);
+            create index if not exists entity_mentions_entity_idx
+              on entity_mentions(entity_id);
 
             create table if not exists claims (
               claim_id text primary key,

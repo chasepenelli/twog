@@ -340,10 +340,18 @@ The scout returns prioritized source recommendations, starter `SourceQuery` cont
 ### Phase 2: Claim Layer
 
 - Chunk legal text and abstracts.
-- Extract entity mentions.
-- Normalize high-value entities.
+- Resolve deterministic entity mentions against local and external vocabularies.
 - Extract first claim types.
 - Add claim review workflow and QA checks.
+
+### Phase 2.5: Deterministic Entity Resolution
+
+- Persist `resolved_entities`, `entity_aliases`, and `entity_mentions`.
+- Run the local deterministic resolver before claim extraction.
+- Keep PubTator BioC JSON as an opt-in external deterministic resolver profile.
+- Store resolver name, resolver version, normalized ID, match rule, span offsets,
+  source chunk, and payload hash for auditability.
+- Leave ambiguous or unresolved mentions reviewable instead of guessing.
 
 ### Phase 3: Canine and Chemistry Expansion
 

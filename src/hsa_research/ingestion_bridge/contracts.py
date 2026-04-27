@@ -246,6 +246,72 @@ class EntityRef(StrictBaseModel):
     role: str | None = None
 
 
+class ResolvedEntity(StrictBaseModel):
+    entity_id: UUID = Field(default_factory=uuid4)
+    entity_type: str
+    canonical_name: str
+    normalized_key: str
+    external_ids: dict[str, str] = Field(default_factory=dict)
+    resolver_name: str
+    resolver_version: str
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EntityAlias(StrictBaseModel):
+    alias_id: UUID = Field(default_factory=uuid4)
+    entity_id: UUID
+    entity_type: str
+    alias: str
+    alias_normalized: str
+    canonical_name: str
+    normalized_key: str
+    resolver_name: str
+    resolver_version: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EntityMention(StrictBaseModel):
+    mention_id: UUID = Field(default_factory=uuid4)
+    entity_id: UUID | None = None
+    research_object_id: UUID
+    chunk_id: UUID
+    chunk_index: int
+    section_label: str | None = None
+    source_key: str | None = None
+    entity_type: str
+    canonical_name: str
+    normalized_key: str
+    matched_text: str
+    matched_alias: str
+    chunk_char_start: int = Field(ge=0)
+    chunk_char_end: int = Field(ge=0)
+    external_ids: dict[str, str] = Field(default_factory=dict)
+    resolver_name: str
+    resolver_version: str
+    match_rule: str
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EntityResolutionRequest(StrictBaseModel):
+    source_key: str | None = None
+    limit: int | None = Field(default=None, ge=1)
+    resolver_profile: Literal["local", "pubtator", "local_plus_pubtator"] = "local"
+
+
+class EntityResolutionResult(StrictBaseModel):
+    resolver_name: str
+    resolver_version: str
+    resolver_profile: str
+    chunks_seen: int = 0
+    chunks_with_mentions: int = 0
+    entities_upserted: int = 0
+    aliases_upserted: int = 0
+    mentions_upserted: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
 class ClaimSearchRequest(StrictBaseModel):
     query: str | None = None
     species: str | None = None
