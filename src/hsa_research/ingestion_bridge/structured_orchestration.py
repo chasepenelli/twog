@@ -10,15 +10,7 @@ from .claim_extractor import extract_claims_for_repository
 from .contracts import ClaimCurationRequest
 from .local_ingest import LocalIngestionPipeline
 from .local_store import SQLiteResearchRepository
-
-
-STRUCTURED_SOURCE_KEYS = (
-    "pubchem",
-    "chembl",
-    "uniprot",
-    "rcsb_pdb",
-    "openfda_animal_events",
-)
+from .source_sets import ALL_API_SOURCE_KEYS, STRUCTURED_SOURCE_KEYS
 
 DEFAULT_STRUCTURED_SOURCE_LIMITS = {
     "pubchem": 10,

@@ -25,9 +25,10 @@ from .local_ingest import LocalIngestionPipeline
 from .local_store import SQLiteResearchRepository
 from .scraper_bridge import ScrapeBridge, list_scrape_profiles
 from .source_scout import scout_sources_for_repository
+from .source_health import build_source_health_report
 from .storage import build_sql_repository
+from .source_sets import ALL_API_SOURCE_KEYS, STRUCTURED_SOURCE_KEYS
 from .structured_orchestration import (
-    STRUCTURED_SOURCE_KEYS,
     build_structured_source_count_report,
     run_structured_sources_pipeline,
 )
@@ -100,6 +101,40 @@ def main() -> None:
         help="Require records, objects, and chunks, but do not require claims per source",
     )
     structured_report.add_argument(
+        "--fail-on-failed-sources",
+        action="store_true",
+        help="Exit non-zero if the report has failed sources",
+    )
+
+    source_health = subparsers.add_parser(
+        "source-health",
+        help="Report persisted source health, risks, and recommended actions",
+    )
+    source_health.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="Source key; repeat to report multiple. Defaults to all hosted API sources.",
+    )
+    source_health.add_argument("--sample-limit", type=int, default=5, help="Maximum sample claims per source")
+    source_health.add_argument(
+        "--metadata-claim-limit",
+        type=int,
+        default=500,
+        help="Maximum claims per source to inspect for metadata status summaries",
+    )
+    source_health.add_argument(
+        "--min-health-score",
+        type=float,
+        default=0.65,
+        help="Minimum health score for the hard source-health bar",
+    )
+    source_health.add_argument(
+        "--no-require-claims",
+        action="store_true",
+        help="Require records, objects, and chunks, but do not require claims per source",
+    )
+    source_health.add_argument(
         "--fail-on-failed-sources",
         action="store_true",
         help="Exit non-zero if the report has failed sources",
@@ -255,6 +290,16 @@ def main() -> None:
             repo,
             source_keys=selected_sources,
             sample_limit=args.sample_limit,
+            require_claims=not args.no_require_claims,
+        )
+    elif args.command == "source-health":
+        selected_sources = args.source or list(ALL_API_SOURCE_KEYS)
+        output = build_source_health_report(
+            repo,
+            source_keys=selected_sources,
+            sample_limit=args.sample_limit,
+            metadata_claim_limit=args.metadata_claim_limit,
+            min_health_score=args.min_health_score,
             require_claims=not args.no_require_claims,
         )
     elif args.command == "backfill-papers":

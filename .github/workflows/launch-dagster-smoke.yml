@@ -14,6 +14,7 @@ on:
           - "literature_clinical_smoke_job"
           - "all_api_smoke_job"
           - "structured_source_count_report_job"
+          - "source_health_report_job"
           - "structured_source_pipeline_job"
 
 jobs:
@@ -73,7 +74,7 @@ jobs:
       - name: Print hosted structured-source count report
         run: |
           validation_flags=""
-          if [ "$DAGSTER_CLOUD_JOB" = "literature_clinical_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "all_api_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "structured_source_count_report_job" ]; then
+          if [ "$DAGSTER_CLOUD_JOB" = "literature_clinical_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "all_api_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "structured_source_count_report_job" ] || [ "$DAGSTER_CLOUD_JOB" = "source_health_report_job" ]; then
             validation_flags="--fail-on-failed-sources"
           fi
           uv run python -m hsa_research.ingestion_bridge.cli structured-report \
@@ -93,4 +94,12 @@ jobs:
             --source clinicaltrials_gov \
             --sample-limit 2 \
             $validation_flags
+        shell: bash
+
+      - name: Print hosted source health report
+        if: ${{ inputs.job == 'all_api_smoke_job' || inputs.job == 'source_health_report_job' }}
+        run: |
+          uv run python -m hsa_research.ingestion_bridge.cli source-health \
+            --sample-limit 2 \
+            --fail-on-failed-sources
         shell: bash

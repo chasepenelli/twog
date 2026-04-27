@@ -17,6 +17,12 @@ from .query_policy import (
     build_target_structure_source_queries,
 )
 from .source_registry import get_initial_sources
+from .source_sets import (
+    ALL_API_SOURCE_KEYS,
+    CANINE_DATA_OMICS_SOURCE_KEYS,
+    LITERATURE_CLINICAL_SOURCE_KEYS,
+    STRUCTURED_SOURCE_KEYS,
+)
 
 try:
     import dagster as dg
@@ -25,31 +31,10 @@ except ImportError:  # pragma: no cover - Dagster is optional until the orchestr
 
 
 STRUCTURED_SOURCE_SMOKE_KEYS = ("pubchem",)
-STRUCTURED_SOURCE_MULTISOURCE_SMOKE_KEYS = (
-    "pubchem",
-    "chembl",
-    "uniprot",
-    "rcsb_pdb",
-    "openfda_animal_events",
-)
-CANINE_DATA_OMICS_SMOKE_KEYS = (
-    "icdc",
-    "geo",
-    "sra",
-)
-LITERATURE_CLINICAL_SMOKE_KEYS = (
-    "openalex",
-    "pubmed",
-    "europe_pmc",
-    "crossref",
-    "pmc_oa",
-    "clinicaltrials_gov",
-)
-ALL_API_SMOKE_KEYS = (
-    *STRUCTURED_SOURCE_MULTISOURCE_SMOKE_KEYS,
-    *CANINE_DATA_OMICS_SMOKE_KEYS,
-    *LITERATURE_CLINICAL_SMOKE_KEYS,
-)
+STRUCTURED_SOURCE_MULTISOURCE_SMOKE_KEYS = STRUCTURED_SOURCE_KEYS
+CANINE_DATA_OMICS_SMOKE_KEYS = CANINE_DATA_OMICS_SOURCE_KEYS
+LITERATURE_CLINICAL_SMOKE_KEYS = LITERATURE_CLINICAL_SOURCE_KEYS
+ALL_API_SMOKE_KEYS = ALL_API_SOURCE_KEYS
 HOSTED_API_REPORT_KEYS = ALL_API_SMOKE_KEYS
 
 
@@ -270,6 +255,21 @@ if dg is not None:
             require_claims=True,
         )
 
+    @dg.asset(group_name="hosted_api_refresh")
+    def source_health_report() -> dict:
+        """Persisted source health report for hosted API source coverage."""
+
+        from .source_health import build_source_health_report
+        from .storage import build_sql_repository
+
+        repository = build_sql_repository()
+        return build_source_health_report(
+            repository,
+            source_keys=HOSTED_API_REPORT_KEYS,
+            sample_limit=3,
+            require_claims=True,
+        )
+
     @dg.asset_check(asset=source_registry)
     def source_registry_has_phase_one_sources(source_registry: list[dict]) -> dg.AssetCheckResult:
         """Ensure the first bridge has the minimum source backbone."""
@@ -412,6 +412,23 @@ if dg is not None:
             },
         )
 
+    @dg.asset_check(asset=source_health_report)
+    def source_health_report_has_no_failed_sources(
+        source_health_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure persisted source health has no hard source failures."""
+
+        failed_sources = source_health_report.get("failed_sources", [])
+        return dg.AssetCheckResult(
+            passed=not failed_sources,
+            metadata={
+                "failed_sources": failed_sources,
+                "watch_sources": source_health_report.get("watch_sources", []),
+                "summary": source_health_report.get("summary", {}),
+                "totals": source_health_report.get("totals", {}),
+            },
+        )
+
     ingestion_bridge_assets = [
         source_registry,
         source_scout_plan,
@@ -429,6 +446,7 @@ if dg is not None:
         literature_clinical_smoke_report,
         all_api_smoke_report,
         structured_source_count_report,
+        source_health_report,
     ]
 
     structured_source_pipeline_job = dg.define_asset_job(
@@ -455,6 +473,10 @@ if dg is not None:
         "structured_source_count_report_job",
         selection=dg.AssetSelection.assets(structured_source_count_report),
     )
+    source_health_report_job = dg.define_asset_job(
+        "source_health_report_job",
+        selection=dg.AssetSelection.assets(source_health_report),
+    )
 
     defs = dg.Definitions(
         assets=ingestion_bridge_assets,
@@ -466,6 +488,7 @@ if dg is not None:
             literature_clinical_smoke_has_minimum_outputs,
             all_api_smoke_has_minimum_outputs,
             structured_source_count_report_has_minimum_outputs,
+            source_health_report_has_no_failed_sources,
         ],
         jobs=[
             structured_source_pipeline_job,
@@ -474,6 +497,7 @@ if dg is not None:
             literature_clinical_smoke_job,
             all_api_smoke_job,
             structured_source_count_report_job,
+            source_health_report_job,
         ],
     )
 
@@ -485,6 +509,7 @@ else:
     literature_clinical_smoke_job = None
     all_api_smoke_job = None
     structured_source_count_report_job = None
+    source_health_report_job = None
     defs = None
 
 

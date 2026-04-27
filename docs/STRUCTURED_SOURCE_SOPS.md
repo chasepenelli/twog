@@ -298,6 +298,35 @@ Required QA output:
 - Sparse scholarly source-context claims remain `needs_review`.
 - Licensed full-text sources can produce `full_text` chunks and typed claims.
 
+### Run Source Health
+
+Use this after a smoke run or scheduled refresh. It is stricter than coverage:
+every source gets a health status, score, risks, and recommended actions.
+
+Command:
+
+```bash
+.venv/bin/python -m hsa_research.ingestion_bridge.cli source-health --fail-on-failed-sources
+```
+
+Dagster job:
+- `source_health_report_job`
+
+Health status:
+- `healthy`: required records, objects, chunks, claims, samples, and promoted
+  claim signals are present.
+- `watch`: hard persisted outputs are present, but QA found review-heavy,
+  context-only, or otherwise weak evidence signals.
+- `failing`: required persisted outputs are missing or the score is below the
+  minimum health bar.
+
+Stop conditions:
+- Any source appears in `failed_sources`.
+- Any source that should produce typed evidence only appears in `watch` because
+  all sampled claims are source-context triage claims.
+- Recommended actions point to missing raw records, normalized objects, chunks,
+  or extraction/curation outputs.
+
 ### Extract Claims
 
 1. Confirm the source has chunks.

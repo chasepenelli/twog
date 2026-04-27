@@ -59,6 +59,7 @@ from hsa_research.ingestion_bridge import scraper_bridge
 from hsa_research.ingestion_bridge.scraper_bridge import ScrapeBridge, list_scrape_profiles
 from hsa_research.ingestion_bridge.service import HSAResearchService
 from hsa_research.ingestion_bridge.source_scout import SourceScoutAgent
+from hsa_research.ingestion_bridge.source_health import build_source_health_report
 from hsa_research.ingestion_bridge.structured_orchestration import (
     build_structured_source_count_report,
     run_structured_sources_pipeline,
@@ -68,6 +69,56 @@ from hsa_research.ingestion_bridge.structured_orchestration import (
 
 def make_service(tmp_path):
     return HSAResearchService(SQLiteResearchRepository(tmp_path / "hsa.sqlite3"))
+
+
+def _seed_minimal_source_claim(
+    repo: SQLiteResearchRepository,
+    source_key: str,
+    *,
+    curation_status: str = "promote",
+    extraction_status: str = "typed",
+) -> None:
+    raw_record = RawSourceRecord(
+        source_key=source_key,
+        source_record_id=f"{source_key}:1",
+        content_hash=f"{source_key}-raw",
+        source_url=f"https://example.org/{source_key}/1",
+        raw_payload={"source_key": source_key},
+    )
+    raw_record_id = repo.upsert_raw_record(raw_record)
+    research_object = ResearchObject(
+        object_type="publication",
+        title=f"{source_key} source record",
+        canonical_url=f"https://example.org/{source_key}/1",
+        source_key=source_key,
+        raw_record_id=raw_record_id,
+        dedupe_key=f"{source_key}:1",
+    )
+    object_id = repo.upsert_research_object(research_object, raw_record_id)
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=f"{source_key} mentions canine hemangiosarcoma and human angiosarcoma context.",
+            content_hash=f"{source_key}-chunk",
+        )
+    )
+    repo.upsert_claim(
+        ClaimSearchResult(
+            claim_id=uuid4(),
+            statement=f"{source_key} provides source context for canine HSA research.",
+            claim_type=ClaimType.OTHER,
+            direction=ClaimDirection.NEUTRAL,
+            confidence=0.7,
+            evidence_level=EvidenceLevel.REVIEW,
+            source_object_id=object_id,
+            source_title=f"{source_key} source record",
+            source_url=f"https://example.org/{source_key}/1",
+            support_count=1,
+            metadata={"curation_status": curation_status, "extraction_status": extraction_status},
+        )
+    )
 
 
 def test_search_claims_uses_typed_contracts(tmp_path):
@@ -242,6 +293,32 @@ def test_structured_source_qa_reports_source_scoped_counts(tmp_path):
 
     assert source_health_report["failed_sources"] == []
     assert source_health_report["minimum_bar"] == {"require_claims": False}
+
+
+def test_source_health_report_separates_failed_and_watch_sources(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    _seed_minimal_source_claim(
+        repo,
+        "pubchem",
+        curation_status="needs_review",
+        extraction_status="source_context",
+    )
+
+    report = build_source_health_report(repo, source_keys=["pubchem", "chembl"], sample_limit=1)
+    pubchem = next(source for source in report["sources"] if source["source_key"] == "pubchem")
+    chembl = next(source for source in report["sources"] if source["source_key"] == "chembl")
+
+    assert report["source_keys"] == ["pubchem", "chembl"]
+    assert report["summary"] == {"sources": 2, "healthy": 0, "watch": 1, "failing": 1}
+    assert report["failed_sources"] == ["chembl"]
+    assert report["watch_sources"] == ["pubchem"]
+    assert pubchem["health_status"] == "watch"
+    assert pubchem["health_score"] >= report["minimum_bar"]["min_health_score"]
+    assert pubchem["passes_minimum_bar"] is True
+    assert pubchem["claim_metadata"]["extraction_status"] == {"source_context": 1}
+    assert any("source-context" in risk for risk in pubchem["risks"])
+    assert chembl["health_status"] == "failing"
+    assert chembl["passes_minimum_bar"] is False
 
 
 def test_structured_pipeline_can_report_empty_selection(tmp_path):
