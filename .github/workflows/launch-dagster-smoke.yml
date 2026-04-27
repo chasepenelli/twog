@@ -87,6 +87,5 @@ jobs:
             --source crossref \
             --source clinicaltrials_gov \
             --sample-limit 2 \
-            --no-require-claims \
             $validation_flags
         shell: bash

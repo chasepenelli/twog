@@ -147,6 +147,46 @@ QA checks:
 - Matched drug appears in title/metadata.
 - Safety statement includes the responsible-use limitation.
 
+### Scholarly Metadata APIs
+
+Sources:
+- `openalex`
+- `pubmed`
+- `europe_pmc`
+- `crossref`
+- `pmc_oa`
+
+Allowed use:
+- Publication metadata, abstracts where available, and legal full-text chunks
+  where licensing allows it.
+- HSA, human angiosarcoma, vascular sarcoma, and comparative oncology source
+  triage.
+- Low-confidence source-context claims when a relevant sparse record has no
+  target, compound, pathway, or biomarker terms.
+
+Not allowed:
+- Treating a title-only metadata record as proof of mechanism or efficacy.
+- Promoting sparse source-context claims into biological claims without deeper
+  extraction.
+
+Required gates:
+- Comparative oncology policy must remain enabled by default.
+- Normalized objects must retain DOI, PMID, PMCID, source URL, and source
+  policy metadata when present.
+- Every hosted smoke source must produce raw records, research objects, chunks,
+  and at least one claim.
+
+Allowed claims:
+- Source-context `OTHER` claims for sparse but relevant scholarly records.
+- Typed biological claims only when the chunk text contains the required
+  compound, target, biomarker, pathway, safety, or translation terms.
+
+QA checks:
+- Europe PMC and Crossref must not pass hosted smoke validation with zero
+  claims.
+- Sparse source-context samples must clearly state they are triage context, not
+  efficacy or mechanism.
+
 ## Task SOPs
 
 ### Add Or Modify A Structured Harvester

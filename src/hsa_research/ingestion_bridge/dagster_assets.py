@@ -243,7 +243,7 @@ if dg is not None:
             repository,
             source_keys=HOSTED_API_REPORT_KEYS,
             sample_limit=3,
-            require_claims=False,
+            require_claims=True,
         )
 
     @dg.asset_check(asset=source_registry)
@@ -434,4 +434,4 @@ else:
 
 def _has_minimum_ingested_source_outputs(report: dict) -> bool:
     qa = report.get("qa", {})
-    return all(qa.get(field, 0) >= 1 for field in ("raw_records", "research_objects", "document_chunks"))
+    return all(qa.get(field, 0) >= 1 for field in ("raw_records", "research_objects", "document_chunks", "claims"))

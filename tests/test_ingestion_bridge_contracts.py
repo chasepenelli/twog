@@ -1277,6 +1277,39 @@ def test_local_claim_extractor_handles_human_angiosarcoma_analogs(tmp_path):
     assert any(claim.metadata.get("context_key") == "human_angiosarcoma_analog" for claim in claims)
 
 
+def test_local_claim_extractor_creates_sparse_scholarly_context_claims(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+
+    europe_pmc_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Primary vaginal angiosarcoma case report",
+            source_key="europe_pmc",
+        )
+    )
+    crossref_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Vascular sarcoma clinical series",
+            source_key="crossref",
+        )
+    )
+    for object_id, text in (
+        (europe_pmc_id, "Primary vaginal angiosarcoma case report."),
+        (crossref_id, "Vascular sarcoma clinical series."),
+    ):
+        for chunk in chunk_text(object_id, text, section_label="title_abstract"):
+            repo.upsert_document_chunk(chunk)
+
+    result = extract_claims_for_repository(repo, limit=10)
+    claims = repo.search_claims(ClaimSearchRequest(query="source context", min_confidence=0.1, include_drafts=True, limit=10))
+    statements = [claim.statement for claim in claims]
+
+    assert result.claims_written == 2
+    assert any("Europe PMC record provides human angiosarcoma" in statement for statement in statements)
+    assert any("Crossref record provides human angiosarcoma" in statement for statement in statements)
+
+
 def test_local_claim_extractor_creates_structured_chembl_claims(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
     title = "TOCERANIB IC50 against Vascular endothelial growth factor receptor 2"

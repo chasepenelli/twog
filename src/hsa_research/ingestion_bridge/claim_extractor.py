@@ -109,7 +109,7 @@ BIOMARKERS = {
 }
 
 PATHWAY_TERMS = {
-    "angiogenesis": ("angiogenesis", "angiogenic", "vascular"),
+    "angiogenesis": ("angiogenesis", "angiogenic"),
     "PI3K/AKT/mTOR": ("pi3k", "akt", "mtor"),
     "immune checkpoint": ("cd47", "sirpa", "checkpoint", "macrophage"),
     "epigenetic regulation": ("hdac", "histone deacetylase", "epigenetic"),
@@ -136,6 +136,8 @@ TRANSLATION_TERMS = (
     "comparative oncology",
     "translational",
 )
+
+SCHOLARLY_SOURCE_KEYS = {"current_papers", "pubmed", "europe_pmc", "openalex", "crossref", "pmc_oa"}
 
 
 class LocalRuleClaimExtractor:
@@ -299,6 +301,24 @@ class LocalRuleClaimExtractor:
                         ],
                     )
                 )
+
+        if not claims and obj and obj.source_key in SCHOLARLY_SOURCE_KEYS:
+            claims.append(
+                self._claim(
+                    chunk,
+                    obj,
+                    context=context,
+                    rule_key=f"source-context:{context['context_key']}",
+                    statement=(
+                        f"{_source_label(obj.source_key)} record provides {context['evidence_label']} "
+                        "source context relevant to HSA evidence triage."
+                    ),
+                    claim_type=ClaimType.OTHER,
+                    direction=ClaimDirection.NEUTRAL,
+                    confidence=0.3,
+                    entities=[disease_entity],
+                )
+            )
 
         return _dedupe_claims(claims)
 
@@ -657,6 +677,17 @@ def _openfda_species_scope(species: str | None) -> str | None:
     if str(species or "").lower() == "dog":
         return "canine"
     return str(species).lower() if species else None
+
+
+def _source_label(source_key: str) -> str:
+    return {
+        "current_papers": "Literature",
+        "pubmed": "PubMed",
+        "europe_pmc": "Europe PMC",
+        "openalex": "OpenAlex",
+        "crossref": "Crossref",
+        "pmc_oa": "PMC OA",
+    }.get(source_key, source_key)
 
 
 def _normalize_context(text: str) -> str:
