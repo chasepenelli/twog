@@ -21,6 +21,11 @@ on:
           - "embedding_index_job"
           - "embedding_maintenance_job"
           - "structured_source_pipeline_job"
+      timeout_seconds:
+        description: "Maximum seconds to wait for the Dagster run before failing and requesting termination"
+        type: string
+        required: true
+        default: "2700"
 
 jobs:
   launch_dagster_smoke:
@@ -34,9 +39,10 @@ jobs:
       DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
       DAGSTER_CLOUD_LOCATION: "hsa-dagster"
       DAGSTER_CLOUD_JOB: ${{ inputs.job }}
-      DAGSTER_CLOUD_RUN_TIMEOUT_SECONDS: "2700"
+      DAGSTER_CLOUD_RUN_TIMEOUT_SECONDS: ${{ inputs.timeout_seconds }}
       DAGSTER_CLOUD_RUN_STATUS_INTERVAL_SECONDS: "15"
       DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS: "60"
+      DAGSTER_CLOUD_TERMINATE_POLICY_ON_TIMEOUT: "SAFE_TERMINATE"
       HSA_STORAGE_BACKEND: "postgres"
       HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
@@ -192,14 +198,40 @@ jobs:
             if [ "$SECONDS" -ge "$deadline" ]; then
               echo "::error::Timed out after ${timeout_seconds}s waiting for Dagster run $run_id. Last status: $status."
               echo "Dagster run URL: $run_url"
+              echo "::warning::Requesting Dagster run termination with policy ${DAGSTER_CLOUD_TERMINATE_POLICY_ON_TIMEOUT}."
+              uv run python .github/scripts/dagster_cloud_run_control.py \
+                --url "$DAGSTER_CLOUD_URL" \
+                --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+                --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
+                --timeout-seconds "$DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS" \
+                terminate \
+                --run-id "$run_id" \
+                --policy "$DAGSTER_CLOUD_TERMINATE_POLICY_ON_TIMEOUT" || true
               if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
                 echo "- Final status before timeout: \`$status\`" >> "$GITHUB_STEP_SUMMARY"
+                echo "- Termination requested with policy: \`$DAGSTER_CLOUD_TERMINATE_POLICY_ON_TIMEOUT\`" >> "$GITHUB_STEP_SUMMARY"
               fi
               exit 124
             fi
 
             sleep "$interval_seconds"
           done
+        shell: bash
+
+      - name: Request hosted run termination after workflow failure
+        if: ${{ always() && steps.launch.outputs.run_id != '' && (failure() || cancelled()) }}
+        timeout-minutes: 2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          uv run python .github/scripts/dagster_cloud_run_control.py \
+            --url "$DAGSTER_CLOUD_URL" \
+            --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+            --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
+            --timeout-seconds "$DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS" \
+            terminate \
+            --run-id "$DAGSTER_CLOUD_RUN_ID" \
+            --policy "$DAGSTER_CLOUD_TERMINATE_POLICY_ON_TIMEOUT"
         shell: bash
 
       - name: Print final hosted run status

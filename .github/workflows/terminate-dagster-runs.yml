@@ -1,0 +1,63 @@
+name: Terminate Dagster Runs
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_ids:
+        description: "Dagster run IDs to terminate, separated by spaces, commas, or new lines"
+        type: string
+        required: true
+      terminate_policy:
+        description: "Dagster termination policy"
+        type: choice
+        required: true
+        default: "SAFE_TERMINATE"
+        options:
+          - "SAFE_TERMINATE"
+          - "MARK_AS_CANCELED_IMMEDIATELY"
+      deployment:
+        description: "Dagster Cloud deployment"
+        type: string
+        required: true
+        default: "prod"
+
+jobs:
+  terminate_dagster_runs:
+    name: Terminate Dagster Runs
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    env:
+      DAGSTER_CLOUD_URL: "https://twogbio.dagster.cloud"
+      DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
+      DAGSTER_CLOUD_DEPLOYMENT: ${{ inputs.deployment }}
+      DAGSTER_CLOUD_RUN_IDS: ${{ inputs.run_ids }}
+      DAGSTER_CLOUD_TERMINATE_POLICY: ${{ inputs.terminate_policy }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Validate required secrets
+        run: |
+          if [ -z "$DAGSTER_PLUS_ENV_API_TOKEN" ]; then
+            echo "::error::DAGSTER_PLUS_ENV_API_TOKEN is not configured."
+            exit 1
+          fi
+        shell: bash
+
+      - name: Terminate Dagster runs
+        run: |
+          set -euo pipefail
+          python .github/scripts/dagster_cloud_run_control.py \
+            --url "$DAGSTER_CLOUD_URL" \
+            --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+            --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
+            terminate \
+            --run-id "$DAGSTER_CLOUD_RUN_IDS" \
+            --policy "$DAGSTER_CLOUD_TERMINATE_POLICY"
+        shell: bash

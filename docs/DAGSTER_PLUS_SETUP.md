@@ -152,8 +152,8 @@ The smoke workflow avoids the unbounded waiter:
 1. Launch the job without `--wait`.
 2. Capture and print the Dagster run id and Dagster+ run URL.
 3. Poll `dagster-cloud run status` with a per-query timeout.
-4. Stop after `DAGSTER_CLOUD_RUN_TIMEOUT_SECONDS` and fail with the last known
-   status.
+4. Stop after `DAGSTER_CLOUD_RUN_TIMEOUT_SECONDS`, request `SAFE_TERMINATE` for
+   the accepted Dagster run, and fail with the last known status.
 
 Default timeout controls live in `.github/workflows/launch-dagster-smoke.yml`:
 
@@ -161,11 +161,18 @@ Default timeout controls live in `.github/workflows/launch-dagster-smoke.yml`:
 DAGSTER_CLOUD_RUN_TIMEOUT_SECONDS=2700
 DAGSTER_CLOUD_RUN_STATUS_INTERVAL_SECONDS=15
 DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS=60
+DAGSTER_CLOUD_TERMINATE_POLICY_ON_TIMEOUT=SAFE_TERMINATE
 ```
 
-If Actions times out but Dagster+ has already accepted the launch, the hosted
-run may still be active. Use the printed Dagster+ run URL to inspect logs or
-cancel the run in Dagster+.
+The workflow also exposes a `timeout_seconds` dispatch input so long-running
+jobs can be tested without changing the file. For the full-text lane, prefer a
+shorter manual timeout while hardening the hosted path.
+
+If a run is already stuck in Dagster+, use the manual GitHub Actions workflow
+`Terminate Dagster Runs`. It calls Dagster Cloud GraphQL `terminateRuns` with the
+GitHub secret `DAGSTER_PLUS_ENV_API_TOKEN`. Start with `SAFE_TERMINATE`. Use
+`MARK_AS_CANCELED_IMMEDIATELY` only when the UI still shows a stale run after a
+safe termination request and the run must be cleared from orchestration state.
 
 ## Notes
 
