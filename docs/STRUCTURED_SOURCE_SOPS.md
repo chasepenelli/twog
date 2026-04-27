@@ -278,6 +278,14 @@ Command:
 Dagster job:
 - `structured_source_pipeline_job`
 
+Dagster schedule:
+- `structured_source_pipeline_weekly_schedule`
+- Cron: `0 2 * * 1`
+- Timezone: `America/Denver`
+- Default status: running.
+- Purpose: refresh PubChem, ChEMBL, UniProt, RCSB PDB, and OpenFDA animal
+  event sources weekly without mixing them into the daily literature corpus.
+
 Dagster asset check:
 - `structured_source_pipeline_has_minimum_outputs`
 
@@ -297,6 +305,15 @@ Required QA output:
   object, document chunk, and claim.
 - Sparse scholarly source-context claims remain `needs_review`.
 - Licensed full-text sources can produce `full_text` chunks and typed claims.
+
+Dagster schedule:
+- `all_api_smoke_weekly_schedule`
+- Cron: `0 3 * * 2`
+- Timezone: `America/Denver`
+- Default status: running.
+- Purpose: lightweight API reachability across every implemented source,
+  including clinical, omics, and canine sources that do not yet have deeper
+  scheduled refresh lanes.
 
 ### Run The Literature Corpus Harvest
 
@@ -332,7 +349,8 @@ Organization standard:
 
 Dagster schedule:
 - `literature_corpus_daily_schedule`
-- Cron: `0 7 * * *`
+- Cron: `0 1 * * *`
+- Timezone: `America/Denver`
 - Default status: running after the first hosted corpus run completed cleanly.
 
 ### Run The Full-Text Literature Refresh
@@ -359,7 +377,8 @@ Required QA output:
 
 Dagster schedule:
 - `literature_full_text_weekly_schedule`
-- Cron: `0 8 * * 0`
+- Cron: `0 2 * * 0`
+- Timezone: `America/Denver`
 - Default status: stopped until the full-text lane has a clean hosted run.
 
 ### Run Source Health
@@ -375,6 +394,12 @@ Command:
 
 Dagster job:
 - `source_health_report_job`
+
+Dagster schedule:
+- `source_health_daily_schedule`
+- Cron: `15 6 * * *`
+- Timezone: `America/Denver`
+- Default status: running after embedding maintenance.
 
 Health status:
 - `healthy`: required records, objects, chunks, claims, samples, and promoted

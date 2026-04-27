@@ -44,6 +44,7 @@ CANINE_DATA_OMICS_SMOKE_KEYS = CANINE_DATA_OMICS_SOURCE_KEYS
 LITERATURE_CLINICAL_SMOKE_KEYS = LITERATURE_CLINICAL_SOURCE_KEYS
 ALL_API_SMOKE_KEYS = ALL_API_SOURCE_KEYS
 HOSTED_API_REPORT_KEYS = ALL_API_SMOKE_KEYS
+SCHEDULE_TIMEZONE = "America/Denver"
 
 _STRUCTURED_SOURCE_COUNT_TABLE_COLUMNS = (
     "source_key",
@@ -938,20 +939,54 @@ if dg is not None:
         "embedding_maintenance_job",
         selection=dg.AssetSelection.assets(embedding_maintenance_report),
     )
+    structured_source_pipeline_weekly_schedule = dg.ScheduleDefinition(
+        name="structured_source_pipeline_weekly_schedule",
+        job=structured_source_pipeline_job,
+        cron_schedule="0 2 * * 1",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
+    )
     literature_corpus_daily_schedule = dg.ScheduleDefinition(
+        name="literature_corpus_daily_schedule",
         job=literature_corpus_harvest_job,
-        cron_schedule="0 7 * * *",
+        cron_schedule="0 1 * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
         default_status=dg.DefaultScheduleStatus.RUNNING,
     )
     literature_full_text_weekly_schedule = dg.ScheduleDefinition(
+        name="literature_full_text_weekly_schedule",
         job=literature_full_text_refresh_job,
-        cron_schedule="0 8 * * 0",
+        cron_schedule="0 2 * * 0",
+        execution_timezone=SCHEDULE_TIMEZONE,
         default_status=dg.DefaultScheduleStatus.STOPPED,
     )
+    all_api_smoke_weekly_schedule = dg.ScheduleDefinition(
+        name="all_api_smoke_weekly_schedule",
+        job=all_api_smoke_job,
+        cron_schedule="0 3 * * 2",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
+    )
+    embedding_index_daily_schedule = dg.ScheduleDefinition(
+        name="embedding_index_daily_schedule",
+        job=embedding_index_job,
+        cron_schedule="0 5 * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
+    )
+    embedding_maintenance_daily_schedule = dg.ScheduleDefinition(
+        name="embedding_maintenance_daily_schedule",
+        job=embedding_maintenance_job,
+        cron_schedule="45 5 * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
+    )
     source_health_daily_schedule = dg.ScheduleDefinition(
+        name="source_health_daily_schedule",
         job=source_health_report_job,
-        cron_schedule="0 9 * * *",
-        default_status=dg.DefaultScheduleStatus.STOPPED,
+        cron_schedule="15 6 * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
     )
 
     defs = dg.Definitions(
@@ -986,8 +1021,12 @@ if dg is not None:
             embedding_maintenance_job,
         ],
         schedules=[
+            structured_source_pipeline_weekly_schedule,
             literature_corpus_daily_schedule,
             literature_full_text_weekly_schedule,
+            all_api_smoke_weekly_schedule,
+            embedding_index_daily_schedule,
+            embedding_maintenance_daily_schedule,
             source_health_daily_schedule,
         ],
         resources={
@@ -1009,8 +1048,12 @@ else:
     entity_resolution_job = None
     embedding_index_job = None
     embedding_maintenance_job = None
+    structured_source_pipeline_weekly_schedule = None
     literature_corpus_daily_schedule = None
     literature_full_text_weekly_schedule = None
+    all_api_smoke_weekly_schedule = None
+    embedding_index_daily_schedule = None
+    embedding_maintenance_daily_schedule = None
     source_health_daily_schedule = None
     defs = None
 

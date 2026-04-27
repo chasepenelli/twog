@@ -172,6 +172,21 @@ deleted rows, active coverage, missing chunks, and the repository coverage
 snapshot. Run this after `embedding_index_job` before using scheduled retrieval
 or RAG workflows.
 
+Dagster schedules use `America/Denver` and intentionally stay staggered rather
+than chained. The initial production cadence is:
+
+- `literature_corpus_daily_schedule`: `0 1 * * *`, running.
+- `structured_source_pipeline_weekly_schedule`: `0 2 * * 1`, running.
+- `literature_full_text_weekly_schedule`: `0 2 * * 0`, stopped until the
+  full-text lane has a clean hosted run.
+- `all_api_smoke_weekly_schedule`: `0 3 * * 2`, running.
+- `embedding_index_daily_schedule`: `0 5 * * *`, running.
+- `embedding_maintenance_daily_schedule`: `45 5 * * *`, running.
+- `source_health_daily_schedule`: `15 6 * * *`, running.
+
+No sensors, chained graph job, or source/date partitions are part of this
+first schedule pass.
+
 CLI smoke check:
 
 ```bash
@@ -357,6 +372,16 @@ Current executable scaffold:
 - `embedding_maintenance_has_clean_coverage`: asset check that accepts an empty
   store, but requires active-model embeddings for every live chunk once chunks
   exist.
+- `structured_source_pipeline_weekly_schedule`: weekly structured API refresh.
+- `literature_corpus_daily_schedule`: daily metadata/abstract literature
+  corpus harvest.
+- `literature_full_text_weekly_schedule`: stopped weekly full-text lane until a
+  hosted full-text run is clean.
+- `all_api_smoke_weekly_schedule`: weekly all-source API heartbeat.
+- `embedding_index_daily_schedule`: daily deterministic embedding refresh.
+- `embedding_maintenance_daily_schedule`: daily orphan cleanup and active-model
+  coverage gate.
+- `source_health_daily_schedule`: daily post-maintenance source health report.
 
 Dagster executable assets receive a `research_repository` resource instead of
 constructing storage directly. The resource reads:
