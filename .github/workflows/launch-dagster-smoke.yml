@@ -18,6 +18,7 @@ on:
           - "structured_source_count_report_job"
           - "source_health_report_job"
           - "entity_resolution_job"
+          - "embedding_index_job"
           - "structured_source_pipeline_job"
 
 jobs:
@@ -32,6 +33,9 @@ jobs:
       DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
       DAGSTER_CLOUD_LOCATION: "hsa-dagster"
       DAGSTER_CLOUD_JOB: ${{ inputs.job }}
+      DAGSTER_CLOUD_RUN_TIMEOUT_SECONDS: "2700"
+      DAGSTER_CLOUD_RUN_STATUS_INTERVAL_SECONDS: "15"
+      DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS: "60"
       HSA_STORAGE_BACKEND: "postgres"
       HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
@@ -63,16 +67,150 @@ jobs:
       - name: Install project dependencies
         run: uv sync
 
-      - name: Launch smoke job and wait
+      - name: Launch smoke job
+        id: launch
+        timeout-minutes: 5
         run: |
-          uv run dagster-cloud job launch \
+          set -euo pipefail
+
+          launch_tags='{"github_workflow":"launch-dagster-smoke","github_run_id":"'"$GITHUB_RUN_ID"'","github_run_attempt":"'"$GITHUB_RUN_ATTEMPT"'","dagster_job":"'"$DAGSTER_CLOUD_JOB"'"}'
+
+          set +e
+          launch_output="$(
+            timeout 5m uv run dagster-cloud job launch \
+              --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+              --organization "$DAGSTER_CLOUD_ORGANIZATION" \
+              --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
+              --location "$DAGSTER_CLOUD_LOCATION" \
+              --job "$DAGSTER_CLOUD_JOB" \
+              --tags "$launch_tags" \
+              2>&1
+          )"
+          launch_exit=$?
+          set -e
+
+          printf '%s\n' "$launch_output"
+
+          if [ "$launch_exit" -ne 0 ]; then
+            if [ "$launch_exit" -eq 124 ]; then
+              echo "::error::Timed out after 5 minutes while launching Dagster job '$DAGSTER_CLOUD_JOB'."
+            else
+              echo "::error::Dagster job launch failed with exit code $launch_exit."
+            fi
+            exit "$launch_exit"
+          fi
+
+          run_id="$(printf '%s\n' "$launch_output" | grep -Eo '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' | tail -n 1 || true)"
+          if [ -z "$run_id" ]; then
+            echo "::error::Unable to parse Dagster run id from launch output."
+            exit 1
+          fi
+
+          run_url="$DAGSTER_CLOUD_URL/$DAGSTER_CLOUD_DEPLOYMENT/runs/$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "DAGSTER_CLOUD_RUN_ID=$run_id" >> "$GITHUB_ENV"
+          echo "Launched Dagster run: $run_id"
+          echo "Dagster run URL: $run_url"
+
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "### Dagster smoke run"
+              echo "- Job: \`$DAGSTER_CLOUD_JOB\`"
+              echo "- Run ID: \`$run_id\`"
+              echo "- URL: $run_url"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+        shell: bash
+
+      - name: Wait for hosted smoke run
+        timeout-minutes: 50
+        run: |
+          set -euo pipefail
+
+          run_id="${DAGSTER_CLOUD_RUN_ID:?DAGSTER_CLOUD_RUN_ID was not set by the launch step}"
+          timeout_seconds="$DAGSTER_CLOUD_RUN_TIMEOUT_SECONDS"
+          interval_seconds="$DAGSTER_CLOUD_RUN_STATUS_INTERVAL_SECONDS"
+          query_timeout_seconds="$DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS"
+          deadline=$((SECONDS + timeout_seconds))
+          run_url="$DAGSTER_CLOUD_URL/$DAGSTER_CLOUD_DEPLOYMENT/runs/$run_id"
+          status="UNKNOWN"
+
+          echo "Polling Dagster run $run_id for up to ${timeout_seconds}s every ${interval_seconds}s."
+          echo "Each status query is capped at ${query_timeout_seconds}s."
+          echo "Dagster run URL: $run_url"
+
+          while true; do
+            set +e
+            status_output="$(
+              timeout "${query_timeout_seconds}s" uv run dagster-cloud run status "$run_id" \
+                --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+                --organization "$DAGSTER_CLOUD_ORGANIZATION" \
+                --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
+                2>&1
+            )"
+            status_exit=$?
+            set -e
+
+            if [ "$status_exit" -eq 0 ]; then
+              status="$(printf '%s\n' "$status_output" | tr -d '\r' | awk 'NF {last=$0} END {print last}' | tr -d '[:space:]')"
+              if [ -z "$status" ]; then
+                status="UNKNOWN"
+                echo "::warning::Dagster status query returned no status text."
+              fi
+            else
+              status="UNKNOWN"
+              if [ "$status_exit" -eq 124 ]; then
+                echo "::warning::Dagster status query timed out after ${query_timeout_seconds}s."
+              else
+                echo "::warning::Dagster status query failed with exit code $status_exit."
+              fi
+              printf '%s\n' "$status_output"
+            fi
+
+            timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "[$timestamp] Dagster run $run_id status: $status"
+
+            case "$status" in
+              SUCCESS)
+                echo "Dagster run $run_id finished successfully."
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  echo "- Final status: \`$status\`" >> "$GITHUB_STEP_SUMMARY"
+                fi
+                exit 0
+                ;;
+              FAILURE|CANCELED)
+                echo "::error::Dagster run $run_id finished with terminal status $status."
+                echo "Dagster run URL: $run_url"
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  echo "- Final status: \`$status\`" >> "$GITHUB_STEP_SUMMARY"
+                fi
+                exit 1
+                ;;
+            esac
+
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::Timed out after ${timeout_seconds}s waiting for Dagster run $run_id. Last status: $status."
+              echo "Dagster run URL: $run_url"
+              if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                echo "- Final status before timeout: \`$status\`" >> "$GITHUB_STEP_SUMMARY"
+              fi
+              exit 124
+            fi
+
+            sleep "$interval_seconds"
+          done
+        shell: bash
+
+      - name: Print final hosted run status
+        if: ${{ always() && steps.launch.outputs.run_id != '' }}
+        run: |
+          set -euo pipefail
+          run_url="$DAGSTER_CLOUD_URL/$DAGSTER_CLOUD_DEPLOYMENT/runs/$DAGSTER_CLOUD_RUN_ID"
+          echo "Dagster run URL: $run_url"
+          timeout "${DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS}s" uv run dagster-cloud run status "$DAGSTER_CLOUD_RUN_ID" \
             --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
             --organization "$DAGSTER_CLOUD_ORGANIZATION" \
-            --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
-            --location "$DAGSTER_CLOUD_LOCATION" \
-            --job "$DAGSTER_CLOUD_JOB" \
-            --wait \
-            --interval 10
+            --deployment "$DAGSTER_CLOUD_DEPLOYMENT" || true
         shell: bash
 
       - name: Print hosted structured-source count report

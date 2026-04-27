@@ -136,6 +136,37 @@ Before the Dagster+ environment variables are wired, run the manual GitHub
 Actions workflow `Validate Hosted Postgres`. It uses the `HSA_DATABASE_URL`
 GitHub secret directly and runs a small structured-source pipeline against Neon.
 
+## Hosted Smoke Launch Workflow
+
+Use the manual GitHub Actions workflow `Launch Dagster Smoke Job` to launch a
+hosted Dagster+ smoke job from Actions.
+
+The local `dagster-cloud` CLI currently exposes `dagster-cloud job launch
+--wait`, but the installed 1.13.2 implementation has no wait timeout. It polls
+until Dagster+ returns `SUCCESS`, `FAILURE`, or `CANCELED`, so a hosted run that
+stays queued or a status endpoint that keeps erroring can leave
+`workflow_dispatch` runs waiting until the outer GitHub Actions timeout.
+
+The smoke workflow avoids the unbounded waiter:
+
+1. Launch the job without `--wait`.
+2. Capture and print the Dagster run id and Dagster+ run URL.
+3. Poll `dagster-cloud run status` with a per-query timeout.
+4. Stop after `DAGSTER_CLOUD_RUN_TIMEOUT_SECONDS` and fail with the last known
+   status.
+
+Default timeout controls live in `.github/workflows/launch-dagster-smoke.yml`:
+
+```text
+DAGSTER_CLOUD_RUN_TIMEOUT_SECONDS=2700
+DAGSTER_CLOUD_RUN_STATUS_INTERVAL_SECONDS=15
+DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS=60
+```
+
+If Actions times out but Dagster+ has already accepted the launch, the hosted
+run may still be active. Use the printed Dagster+ run URL to inspect logs or
+cancel the run in Dagster+.
+
 ## Notes
 
 - Dagster+ Serverless is the preferred first deployment mode.
