@@ -44,6 +44,9 @@ CANINE_DATA_OMICS_SMOKE_KEYS = CANINE_DATA_OMICS_SOURCE_KEYS
 LITERATURE_CLINICAL_SMOKE_KEYS = LITERATURE_CLINICAL_SOURCE_KEYS
 ALL_API_SMOKE_KEYS = ALL_API_SOURCE_KEYS
 HOSTED_API_REPORT_KEYS = ALL_API_SMOKE_KEYS
+LITERATURE_FULL_TEXT_SMOKE_LIMITS = {
+    source_key: 1 for source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS
+}
 SCHEDULE_TIMEZONE = "America/Denver"
 
 _STRUCTURED_SOURCE_COUNT_TABLE_COLUMNS = (
@@ -253,6 +256,51 @@ if dg is not None:
             "passes_minimum_bar": bool(report.get("passes_minimum_bar", False)),
         }
 
+    def _run_literature_full_text_refresh(
+        research_repository: ResearchRepositoryResource,
+        *,
+        source_keys: Sequence[str],
+        source_limits: Mapping[str, int],
+        extract_limit: int,
+        curate_limit: int,
+    ) -> dict:
+        from .structured_orchestration import run_structured_sources_pipeline
+
+        repository = research_repository.build_repository()
+        return run_structured_sources_pipeline(
+            repository,
+            source_keys=source_keys,
+            source_limits=source_limits,
+            extract_limit=extract_limit,
+            curate_limit=curate_limit,
+        )
+
+    def _full_text_check_result(
+        report: Mapping[str, Any],
+        *,
+        source_limits: Mapping[str, int],
+    ) -> dg.AssetCheckResult:
+        source_reports = report.get("sources", [])
+        failed_sources = [
+            source_report["source_key"]
+            for source_report in source_reports
+            if (
+                not _has_minimum_ingested_source_outputs(source_report)
+                or not _has_required_full_text_outputs(source_report)
+            )
+        ]
+        errors = report.get("errors", [])
+        return dg.AssetCheckResult(
+            passed=not failed_sources and not errors,
+            metadata={
+                "failed_sources": failed_sources,
+                "errors": errors,
+                "source_keys": report.get("source_keys", []),
+                "source_limits": dict(source_limits),
+                "totals": report.get("totals", {}),
+            },
+        )
+
     @dg.asset(group_name="ingestion_bridge_v2")
     def source_registry() -> list[dict]:
         """Canonical source registry for ingestion."""
@@ -453,15 +501,48 @@ if dg is not None:
     def literature_full_text_refresh_report(research_repository: ResearchRepositoryResource) -> dict:
         """Bounded hosted full-text ingestion for licensed open-access sources."""
 
-        from .structured_orchestration import run_structured_sources_pipeline
-
-        repository = research_repository.build_repository()
-        return run_structured_sources_pipeline(
-            repository,
+        return _run_literature_full_text_refresh(
+            research_repository,
             source_keys=LITERATURE_FULL_TEXT_SOURCE_KEYS,
             source_limits=LITERATURE_FULL_TEXT_SOURCE_LIMITS,
             extract_limit=1000,
             curate_limit=1000,
+        )
+
+    @dg.asset(group_name="literature_full_text_refresh")
+    def europe_pmc_full_text_refresh_report(research_repository: ResearchRepositoryResource) -> dict:
+        """Single-source hosted full-text refresh for Europe PMC."""
+
+        return _run_literature_full_text_refresh(
+            research_repository,
+            source_keys=("europe_pmc",),
+            source_limits={"europe_pmc": LITERATURE_FULL_TEXT_SOURCE_LIMITS["europe_pmc"]},
+            extract_limit=500,
+            curate_limit=500,
+        )
+
+    @dg.asset(group_name="literature_full_text_refresh")
+    def pmc_oa_full_text_refresh_report(research_repository: ResearchRepositoryResource) -> dict:
+        """Single-source hosted full-text refresh for PMC OA."""
+
+        return _run_literature_full_text_refresh(
+            research_repository,
+            source_keys=("pmc_oa",),
+            source_limits={"pmc_oa": LITERATURE_FULL_TEXT_SOURCE_LIMITS["pmc_oa"]},
+            extract_limit=500,
+            curate_limit=500,
+        )
+
+    @dg.asset(group_name="literature_full_text_refresh")
+    def literature_full_text_smoke_report(research_repository: ResearchRepositoryResource) -> dict:
+        """Fast hosted full-text validation with one record per full-text source."""
+
+        return _run_literature_full_text_refresh(
+            research_repository,
+            source_keys=LITERATURE_FULL_TEXT_SOURCE_KEYS,
+            source_limits=LITERATURE_FULL_TEXT_SMOKE_LIMITS,
+            extract_limit=250,
+            curate_limit=250,
         )
 
     @dg.asset(group_name="structured_source_refresh")
@@ -743,25 +824,42 @@ if dg is not None:
     ) -> dg.AssetCheckResult:
         """Ensure the bounded full-text lane writes persisted outputs."""
 
-        source_reports = literature_full_text_refresh_report.get("sources", [])
-        failed_sources = [
-            report["source_key"]
-            for report in source_reports
-            if (
-                not _has_minimum_ingested_source_outputs(report)
-                or not _has_required_full_text_outputs(report)
-            )
-        ]
-        errors = literature_full_text_refresh_report.get("errors", [])
-        return dg.AssetCheckResult(
-            passed=not failed_sources and not errors,
-            metadata={
-                "failed_sources": failed_sources,
-                "errors": errors,
-                "source_keys": literature_full_text_refresh_report.get("source_keys", []),
-                "source_limits": LITERATURE_FULL_TEXT_SOURCE_LIMITS,
-                "totals": literature_full_text_refresh_report.get("totals", {}),
-            },
+        return _full_text_check_result(
+            literature_full_text_refresh_report,
+            source_limits=LITERATURE_FULL_TEXT_SOURCE_LIMITS,
+        )
+
+    @dg.asset_check(asset=europe_pmc_full_text_refresh_report)
+    def europe_pmc_full_text_refresh_has_outputs(
+        europe_pmc_full_text_refresh_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure the Europe PMC full-text lane writes persisted outputs."""
+
+        return _full_text_check_result(
+            europe_pmc_full_text_refresh_report,
+            source_limits={"europe_pmc": LITERATURE_FULL_TEXT_SOURCE_LIMITS["europe_pmc"]},
+        )
+
+    @dg.asset_check(asset=pmc_oa_full_text_refresh_report)
+    def pmc_oa_full_text_refresh_has_outputs(
+        pmc_oa_full_text_refresh_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure the PMC OA full-text lane writes persisted outputs."""
+
+        return _full_text_check_result(
+            pmc_oa_full_text_refresh_report,
+            source_limits={"pmc_oa": LITERATURE_FULL_TEXT_SOURCE_LIMITS["pmc_oa"]},
+        )
+
+    @dg.asset_check(asset=literature_full_text_smoke_report)
+    def literature_full_text_smoke_has_outputs(
+        literature_full_text_smoke_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure the fast full-text smoke lane writes persisted outputs."""
+
+        return _full_text_check_result(
+            literature_full_text_smoke_report,
+            source_limits=LITERATURE_FULL_TEXT_SMOKE_LIMITS,
         )
 
     @dg.asset_check(asset=structured_source_count_report)
@@ -889,6 +987,9 @@ if dg is not None:
         all_api_smoke_report,
         literature_corpus_harvest_report,
         literature_full_text_refresh_report,
+        europe_pmc_full_text_refresh_report,
+        pmc_oa_full_text_refresh_report,
+        literature_full_text_smoke_report,
         structured_source_count_report,
         source_health_report,
         entity_resolution_report,
@@ -923,6 +1024,18 @@ if dg is not None:
     literature_full_text_refresh_job = dg.define_asset_job(
         "literature_full_text_refresh_job",
         selection=dg.AssetSelection.assets(literature_full_text_refresh_report),
+    )
+    europe_pmc_full_text_refresh_job = dg.define_asset_job(
+        "europe_pmc_full_text_refresh_job",
+        selection=dg.AssetSelection.assets(europe_pmc_full_text_refresh_report),
+    )
+    pmc_oa_full_text_refresh_job = dg.define_asset_job(
+        "pmc_oa_full_text_refresh_job",
+        selection=dg.AssetSelection.assets(pmc_oa_full_text_refresh_report),
+    )
+    literature_full_text_smoke_job = dg.define_asset_job(
+        "literature_full_text_smoke_job",
+        selection=dg.AssetSelection.assets(literature_full_text_smoke_report),
     )
     structured_source_count_report_job = dg.define_asset_job(
         "structured_source_count_report_job",
@@ -1005,6 +1118,9 @@ if dg is not None:
             all_api_smoke_has_minimum_outputs,
             literature_corpus_harvest_has_hundreds_of_records,
             literature_full_text_refresh_has_outputs,
+            europe_pmc_full_text_refresh_has_outputs,
+            pmc_oa_full_text_refresh_has_outputs,
+            literature_full_text_smoke_has_outputs,
             structured_source_count_report_has_minimum_outputs,
             source_health_report_has_no_failed_sources,
             entity_resolution_has_minimum_outputs,
@@ -1019,6 +1135,9 @@ if dg is not None:
             all_api_smoke_job,
             literature_corpus_harvest_job,
             literature_full_text_refresh_job,
+            europe_pmc_full_text_refresh_job,
+            pmc_oa_full_text_refresh_job,
+            literature_full_text_smoke_job,
             structured_source_count_report_job,
             source_health_report_job,
             entity_resolution_job,
@@ -1048,6 +1167,9 @@ else:
     all_api_smoke_job = None
     literature_corpus_harvest_job = None
     literature_full_text_refresh_job = None
+    europe_pmc_full_text_refresh_job = None
+    pmc_oa_full_text_refresh_job = None
+    literature_full_text_smoke_job = None
     structured_source_count_report_job = None
     source_health_report_job = None
     entity_resolution_job = None

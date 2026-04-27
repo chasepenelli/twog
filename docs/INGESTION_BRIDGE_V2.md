@@ -194,6 +194,11 @@ than chained. The initial production cadence is:
 - `embedding_maintenance_daily_schedule`: `45 5 * * *`, running.
 - `source_health_daily_schedule`: `15 6 * * *`, running.
 
+Full-text hosted debugging also exposes source-specific jobs:
+`literature_full_text_smoke_job`, `europe_pmc_full_text_refresh_job`, and
+`pmc_oa_full_text_refresh_job`. Use these before the combined weekly refresh
+when a source-specific parser, API, or runtime issue needs isolation.
+
 No sensors, chained graph job, or source/date partitions are part of this
 first schedule pass.
 

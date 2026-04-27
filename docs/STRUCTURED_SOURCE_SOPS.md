@@ -365,9 +365,21 @@ GitHub Actions workflow:
 Launch Dagster Smoke Job -> literature_full_text_refresh_job
 ```
 
+For faster diagnosis, run the single-source lanes first:
+
+```text
+Launch Dagster Smoke Job -> literature_full_text_smoke_job
+Launch Dagster Smoke Job -> europe_pmc_full_text_refresh_job
+Launch Dagster Smoke Job -> pmc_oa_full_text_refresh_job
+```
+
 Sources and per-query limits:
 - `europe_pmc`: 10
 - `pmc_oa`: 3
+
+Single-source full-text jobs use the same source-specific limits as the combined
+refresh. `literature_full_text_smoke_job` uses one record per source and is the
+preferred hosted readiness check before the combined refresh.
 
 Required QA output:
 - Every full-text source has raw records, research objects, document chunks, and

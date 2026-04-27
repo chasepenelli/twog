@@ -15,6 +15,9 @@ on:
           - "all_api_smoke_job"
           - "literature_corpus_harvest_job"
           - "literature_full_text_refresh_job"
+          - "europe_pmc_full_text_refresh_job"
+          - "pmc_oa_full_text_refresh_job"
+          - "literature_full_text_smoke_job"
           - "structured_source_count_report_job"
           - "source_health_report_job"
           - "entity_resolution_job"
@@ -284,10 +287,14 @@ jobs:
           )
           if [ "$DAGSTER_CLOUD_JOB" = "literature_corpus_harvest_job" ]; then
             sources=(openalex pubmed crossref)
-          elif [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ]; then
+          elif [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_smoke_job" ]; then
             sources=(europe_pmc pmc_oa)
+          elif [ "$DAGSTER_CLOUD_JOB" = "europe_pmc_full_text_refresh_job" ]; then
+            sources=(europe_pmc)
+          elif [ "$DAGSTER_CLOUD_JOB" = "pmc_oa_full_text_refresh_job" ]; then
+            sources=(pmc_oa)
           fi
-          if [ "$DAGSTER_CLOUD_JOB" = "literature_clinical_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "all_api_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_corpus_harvest_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "structured_source_count_report_job" ] || [ "$DAGSTER_CLOUD_JOB" = "source_health_report_job" ]; then
+          if [ "$DAGSTER_CLOUD_JOB" = "literature_clinical_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "all_api_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_corpus_harvest_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "europe_pmc_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "pmc_oa_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "structured_source_count_report_job" ] || [ "$DAGSTER_CLOUD_JOB" = "source_health_report_job" ]; then
             validation_flags="--fail-on-failed-sources"
           fi
           source_args=()
@@ -301,13 +308,17 @@ jobs:
         shell: bash
 
       - name: Print hosted source health report
-        if: ${{ inputs.job == 'all_api_smoke_job' || inputs.job == 'literature_corpus_harvest_job' || inputs.job == 'literature_full_text_refresh_job' || inputs.job == 'source_health_report_job' }}
+        if: ${{ inputs.job == 'all_api_smoke_job' || inputs.job == 'literature_corpus_harvest_job' || inputs.job == 'literature_full_text_refresh_job' || inputs.job == 'europe_pmc_full_text_refresh_job' || inputs.job == 'pmc_oa_full_text_refresh_job' || inputs.job == 'literature_full_text_smoke_job' || inputs.job == 'source_health_report_job' }}
         run: |
           sources=()
           if [ "$DAGSTER_CLOUD_JOB" = "literature_corpus_harvest_job" ]; then
             sources=(openalex pubmed crossref)
-          elif [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ]; then
+          elif [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_smoke_job" ]; then
             sources=(europe_pmc pmc_oa)
+          elif [ "$DAGSTER_CLOUD_JOB" = "europe_pmc_full_text_refresh_job" ]; then
+            sources=(europe_pmc)
+          elif [ "$DAGSTER_CLOUD_JOB" = "pmc_oa_full_text_refresh_job" ]; then
+            sources=(pmc_oa)
           fi
           source_args=()
           for source in "${sources[@]}"; do

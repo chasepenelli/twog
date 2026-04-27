@@ -156,6 +156,40 @@ def test_dagster_structured_asset_uses_injected_repository(monkeypatch):
     assert result == {"repository": "injected", "source_keys": dagster_asset_module.STRUCTURED_SOURCE_SMOKE_KEYS}
 
 
+def test_dagster_full_text_source_specific_assets_use_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    def fake_pipeline(repository, **kwargs):
+        assert repository is sentinel_repository
+        return kwargs
+
+    monkeypatch.setattr(structured_orchestration, "run_structured_sources_pipeline", fake_pipeline)
+
+    europe_pmc_report = dagster_asset_module.europe_pmc_full_text_refresh_report.node_def.compute_fn.decorated_fn(
+        FakeRepositoryResource()
+    )
+    pmc_oa_report = dagster_asset_module.pmc_oa_full_text_refresh_report.node_def.compute_fn.decorated_fn(
+        FakeRepositoryResource()
+    )
+    smoke_report = dagster_asset_module.literature_full_text_smoke_report.node_def.compute_fn.decorated_fn(
+        FakeRepositoryResource()
+    )
+
+    assert calls == ["build_repository", "build_repository", "build_repository"]
+    assert europe_pmc_report["source_keys"] == ("europe_pmc",)
+    assert europe_pmc_report["source_limits"] == {"europe_pmc": 10}
+    assert pmc_oa_report["source_keys"] == ("pmc_oa",)
+    assert pmc_oa_report["source_limits"] == {"pmc_oa": 3}
+    assert smoke_report["source_keys"] == dagster_asset_module.LITERATURE_FULL_TEXT_SOURCE_KEYS
+    assert smoke_report["source_limits"] == {"europe_pmc": 1, "pmc_oa": 1}
+
+
 def test_dagster_metadata_table_rows_encode_nested_values():
     rows = dagster_asset_module._compact_table_rows(
         [
