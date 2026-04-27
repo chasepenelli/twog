@@ -24,6 +24,16 @@ except ImportError:  # pragma: no cover - Dagster is optional until the orchestr
     dg = None  # type: ignore[assignment]
 
 
+STRUCTURED_SOURCE_SMOKE_KEYS = ("pubchem",)
+STRUCTURED_SOURCE_MULTISOURCE_SMOKE_KEYS = (
+    "pubchem",
+    "chembl",
+    "uniprot",
+    "rcsb_pdb",
+    "openfda_animal_events",
+)
+
+
 def build_source_queries() -> list[SourceQuery]:
     """Create the starter query set for implemented ingestion sources."""
 
@@ -172,10 +182,26 @@ if dg is not None:
         repository = build_sql_repository()
         return run_structured_sources_pipeline(
             repository,
-            source_keys=["pubchem"],
+            source_keys=STRUCTURED_SOURCE_SMOKE_KEYS,
             source_limits={"pubchem": 1},
             extract_limit=50,
             curate_limit=50,
+        )
+
+    @dg.asset(group_name="structured_source_refresh")
+    def structured_source_multisource_smoke_report() -> dict:
+        """Small hosted-runtime validation run across all structured API harvesters."""
+
+        from .storage import build_sql_repository
+        from .structured_orchestration import run_structured_sources_pipeline
+
+        repository = build_sql_repository()
+        return run_structured_sources_pipeline(
+            repository,
+            source_keys=STRUCTURED_SOURCE_MULTISOURCE_SMOKE_KEYS,
+            source_limits={source_key: 1 for source_key in STRUCTURED_SOURCE_MULTISOURCE_SMOKE_KEYS},
+            extract_limit=250,
+            curate_limit=250,
         )
 
     @dg.asset_check(asset=source_registry)
@@ -230,6 +256,30 @@ if dg is not None:
             },
         )
 
+    @dg.asset_check(asset=structured_source_multisource_smoke_report)
+    def structured_source_multisource_smoke_has_minimum_outputs(
+        structured_source_multisource_smoke_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure each structured API source can write records, chunks, and claims."""
+
+        source_reports = structured_source_multisource_smoke_report.get("sources", [])
+        failed_sources = [
+            report["source_key"]
+            for report in source_reports
+            if not report.get("qa", {}).get("passes_minimum_bar", False)
+        ]
+        errors = structured_source_multisource_smoke_report.get("errors", [])
+        passed = not failed_sources and not errors
+        return dg.AssetCheckResult(
+            passed=passed,
+            metadata={
+                "failed_sources": failed_sources,
+                "errors": errors,
+                "source_keys": structured_source_multisource_smoke_report.get("source_keys", []),
+                "totals": structured_source_multisource_smoke_report.get("totals", {}),
+            },
+        )
+
     ingestion_bridge_assets = [
         source_registry,
         source_scout_plan,
@@ -243,6 +293,7 @@ if dg is not None:
         coverage_snapshot,
         structured_source_pipeline_report,
         structured_source_smoke_report,
+        structured_source_multisource_smoke_report,
     ]
 
     structured_source_pipeline_job = dg.define_asset_job(
@@ -253,6 +304,10 @@ if dg is not None:
         "structured_source_smoke_job",
         selection=dg.AssetSelection.assets(structured_source_smoke_report),
     )
+    structured_source_multisource_smoke_job = dg.define_asset_job(
+        "structured_source_multisource_smoke_job",
+        selection=dg.AssetSelection.assets(structured_source_multisource_smoke_report),
+    )
 
     defs = dg.Definitions(
         assets=ingestion_bridge_assets,
@@ -260,12 +315,18 @@ if dg is not None:
             source_registry_has_phase_one_sources,
             structured_source_pipeline_has_minimum_outputs,
             structured_source_smoke_has_minimum_outputs,
+            structured_source_multisource_smoke_has_minimum_outputs,
         ],
-        jobs=[structured_source_pipeline_job, structured_source_smoke_job],
+        jobs=[
+            structured_source_pipeline_job,
+            structured_source_smoke_job,
+            structured_source_multisource_smoke_job,
+        ],
     )
 
 else:
     ingestion_bridge_assets = []
     structured_source_pipeline_job = None
     structured_source_smoke_job = None
+    structured_source_multisource_smoke_job = None
     defs = None

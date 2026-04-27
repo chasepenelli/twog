@@ -2,6 +2,16 @@ name: Launch Dagster Smoke Job
 
 on:
   workflow_dispatch:
+    inputs:
+      job:
+        description: "Dagster job to launch"
+        type: choice
+        required: true
+        default: "structured_source_smoke_job"
+        options:
+          - "structured_source_smoke_job"
+          - "structured_source_multisource_smoke_job"
+          - "structured_source_pipeline_job"
 
 jobs:
   launch_dagster_smoke:
@@ -13,7 +23,7 @@ jobs:
       DAGSTER_CLOUD_DEPLOYMENT: "prod"
       DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
       DAGSTER_CLOUD_LOCATION: "hsa-dagster"
-      DAGSTER_CLOUD_JOB: "structured_source_smoke_job"
+      DAGSTER_CLOUD_JOB: ${{ inputs.job }}
 
     steps:
       - name: Checkout
