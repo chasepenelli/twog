@@ -40,6 +40,13 @@ EVIDENCE_BONUS = {
     "unknown": 0.0,
 }
 
+REVIEW_ONLY_CONTEXT_KEYS = {
+    "canine_hsa",
+    "human_angiosarcoma_analog",
+    "canine_human_comparative",
+    "comparative_oncology",
+}
+
 
 class ClaimCuratorAgent:
     """Review, dedupe, and promote draft claims into a cleaner claim layer."""
@@ -240,10 +247,20 @@ def _score_with_reasons(claim: ClaimSearchResult, support_count: int) -> tuple[f
         score += support_bonus
         reasons.append(f"{support_count} matching draft claims add support")
 
+    if claim.metadata.get("section_label") == "full_text":
+        snippet_length = len(str(claim.metadata.get("evidence_snippet") or ""))
+        if snippet_length >= 220:
+            score += 0.05
+            reasons.append("licensed full-text chunk has substantive snippet")
+
     non_disease_entities = [entity for entity in claim.entities if entity.entity_type != "disease"]
     if len(non_disease_entities) >= 2:
         score += 0.04
         reasons.append("claim links multiple non-disease entities")
+
+    if _is_review_only_context_claim(claim):
+        score = min(score, 0.49)
+        reasons.append("source-context triage claim is review-only")
 
     if len(claim.statement) < 35:
         score -= 0.1
@@ -261,6 +278,8 @@ def _decision_for_claim(
         return ClaimCurationDecision.NEEDS_REVIEW
     if claim.confidence < 0.2 or len(claim.statement) < 35:
         return ClaimCurationDecision.REJECT
+    if _is_review_only_context_claim(claim):
+        return ClaimCurationDecision.NEEDS_REVIEW
     if curation_score >= promote_threshold:
         return ClaimCurationDecision.PROMOTE
     return ClaimCurationDecision.NEEDS_REVIEW
@@ -272,3 +291,11 @@ def _curated_confidence(claim: ClaimSearchResult, curation_score: float) -> floa
 
 def _enum_value(value: object) -> str:
     return value.value if hasattr(value, "value") else str(value)
+
+
+def _is_review_only_context_claim(claim: ClaimSearchResult) -> bool:
+    return (
+        _enum_value(claim.claim_type) == "other"
+        and str(claim.metadata.get("rule_key") or "").startswith("source-context:")
+        and claim.metadata.get("context_key") in REVIEW_ONLY_CONTEXT_KEYS
+    )

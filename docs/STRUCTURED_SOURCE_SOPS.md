@@ -182,6 +182,8 @@ Allowed claims:
 - Source-context `OTHER` claims for sparse but relevant scholarly records.
 - Typed biological claims only when the chunk text contains the required
   compound, target, biomarker, pathway, safety, or translation terms.
+- Source-context claims are review-only triage claims; they should not be
+  auto-promoted as biological evidence.
 
 QA checks:
 - Europe PMC and Crossref must not pass hosted smoke validation with zero

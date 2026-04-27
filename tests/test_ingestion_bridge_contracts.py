@@ -1514,6 +1514,39 @@ def test_claim_curator_agent_promotes_supported_draft_claim(tmp_path):
     assert any(claim.metadata["curation_status"] == "promote" for claim in visible_claims)
 
 
+def test_claim_curator_keeps_pmc_oa_source_context_review_only(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Licensed full text source context",
+            source_key="pmc_oa",
+        )
+    )
+    text = "Human angiosarcoma source context. " + ("Licensed full text background. " * 12)
+    for index in range(6):
+        repo.upsert_document_chunk(
+            DocumentChunk(
+                research_object_id=object_id,
+                chunk_index=index,
+                section_label="full_text",
+                text_content=text,
+                content_hash=f"pmc-oa-source-context-{index}",
+            )
+        )
+
+    extract_claims_for_repository(repo, source_key="pmc_oa")
+    result = ClaimCuratorAgent(repo).curate(ClaimCurationRequest(source_key="pmc_oa", limit=20, promote_threshold=0.5))
+    review_decisions = [item for item in result.decisions if item.decision == "needs_review"]
+
+    assert result.promoted == 0
+    assert result.needs_review == 1
+    assert result.merged_duplicates == 5
+    assert review_decisions
+    assert "source-context triage claim is review-only" in review_decisions[0].reasons
+    assert "licensed full-text chunk has substantive snippet" in review_decisions[0].reasons
+
+
 def test_source_scout_prioritizes_zero_coverage_bridges(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
     pipeline = LocalIngestionPipeline(repo)
