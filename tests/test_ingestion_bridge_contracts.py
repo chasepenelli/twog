@@ -1,6 +1,10 @@
 import xml.etree.ElementTree as ET
 from uuid import uuid4
 
+import pytest
+
+from hsa_research.ingestion_bridge import dagster_assets as dagster_asset_module
+from hsa_research.ingestion_bridge import storage, structured_orchestration
 from hsa_research.ingestion_bridge.contracts import (
     BoltzRunRequest,
     CandidateDossierRequest,
@@ -38,6 +42,7 @@ from hsa_research.ingestion_bridge.dagster_assets import (
     LITERATURE_FULL_TEXT_SOURCE_KEYS,
     LITERATURE_FULL_TEXT_SOURCE_LIMITS,
 )
+from hsa_research.ingestion_bridge.dagster_resources import ResearchRepositoryResource
 from hsa_research.ingestion_bridge.entity_resolution import normalize_entity_key, resolve_entities_for_repository
 from hsa_research.ingestion_bridge import harvesters_v2
 from hsa_research.ingestion_bridge.harvesters_v2 import (
@@ -74,6 +79,53 @@ from hsa_research.ingestion_bridge.structured_orchestration import (
 
 def make_service(tmp_path):
     return HSAResearchService(SQLiteResearchRepository(tmp_path / "hsa.sqlite3"))
+
+
+def test_research_repository_resource_uses_hsa_sqlite_path(monkeypatch, tmp_path):
+    db_path = tmp_path / "dagster-resource.sqlite3"
+    monkeypatch.setenv("HSA_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("HSA_SQLITE_PATH", str(db_path))
+    monkeypatch.delenv("HSA_DATABASE_URL", raising=False)
+
+    repo = ResearchRepositoryResource().build_repository()
+    try:
+        assert isinstance(repo, SQLiteResearchRepository)
+        assert repo.db_path == db_path
+        assert repo.coverage_summary()["claims"] >= 1
+    finally:
+        repo.conn.close()
+
+
+def test_research_repository_resource_rejects_memory_backend():
+    with pytest.raises(RuntimeError, match="sqlite or postgres storage"):
+        ResearchRepositoryResource(storage_backend="memory").build_repository()
+
+
+def test_dagster_structured_asset_uses_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    def fail_direct_factory():
+        raise AssertionError("dagster assets must use the injected repository resource")
+
+    def fake_pipeline(repository, **kwargs):
+        assert repository is sentinel_repository
+        return {"repository": "injected", "source_keys": kwargs["source_keys"]}
+
+    monkeypatch.setattr(storage, "build_sql_repository", fail_direct_factory)
+    monkeypatch.setattr(structured_orchestration, "run_structured_sources_pipeline", fake_pipeline)
+
+    result = dagster_asset_module.structured_source_smoke_report.node_def.compute_fn.decorated_fn(
+        FakeRepositoryResource()
+    )
+
+    assert calls == ["build_repository"]
+    assert result == {"repository": "injected", "source_keys": dagster_asset_module.STRUCTURED_SOURCE_SMOKE_KEYS}
 
 
 def _seed_minimal_source_claim(

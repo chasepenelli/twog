@@ -237,15 +237,23 @@ Asset checks should enforce:
 Current executable scaffold:
 
 - `structured_source_pipeline_report`: runs structured source refresh,
-  extraction, curation, and QA through the local SQLite repository.
+  extraction, curation, and QA through the configured repository resource.
 - `structured_source_pipeline_job`: Dagster job for the structured-source
   pipeline.
 - `structured_source_pipeline_has_minimum_outputs`: asset check that fails when
   a structured source produces no objects or no claims, or when extraction or
   curation reports errors.
 
+Dagster executable assets receive a `research_repository` resource instead of
+constructing storage directly. The resource reads:
+
+- `HSA_STORAGE_BACKEND`: `sqlite` by default, or `postgres` for hosted durable
+  runs.
+- `HSA_SQLITE_PATH`: optional local SQLite path for Dagster assets.
+- `HSA_DATABASE_URL`: required when `HSA_STORAGE_BACKEND=postgres`.
+
 The executable scaffold intentionally calls the same orchestration function as
-the CLI command:
+the CLI command after the repository resource has built the storage adapter:
 
 ```bash
 .venv/bin/python -m hsa_research.ingestion_bridge.cli structured-pipeline

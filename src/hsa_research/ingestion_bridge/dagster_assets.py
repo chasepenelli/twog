@@ -57,6 +57,7 @@ def build_source_queries() -> list[SourceQuery]:
 
 
 if dg is not None:
+    from .dagster_resources import ResearchRepositoryResource
 
     @dg.asset(group_name="ingestion_bridge_v2")
     def source_registry() -> list[dict]:
@@ -171,23 +172,21 @@ if dg is not None:
         }
 
     @dg.asset(group_name="structured_source_refresh")
-    def structured_source_pipeline_report() -> dict:
+    def structured_source_pipeline_report(research_repository: ResearchRepositoryResource) -> dict:
         """Executable structured-source refresh, extraction, curation, and QA report."""
 
-        from .storage import build_sql_repository
         from .structured_orchestration import run_structured_sources_pipeline
 
-        repository = build_sql_repository()
+        repository = research_repository.build_repository()
         return run_structured_sources_pipeline(repository)
 
     @dg.asset(group_name="structured_source_refresh")
-    def structured_source_smoke_report() -> dict:
+    def structured_source_smoke_report(research_repository: ResearchRepositoryResource) -> dict:
         """Small hosted-runtime validation run against a single structured source."""
 
-        from .storage import build_sql_repository
         from .structured_orchestration import run_structured_sources_pipeline
 
-        repository = build_sql_repository()
+        repository = research_repository.build_repository()
         return run_structured_sources_pipeline(
             repository,
             source_keys=STRUCTURED_SOURCE_SMOKE_KEYS,
@@ -197,13 +196,12 @@ if dg is not None:
         )
 
     @dg.asset(group_name="structured_source_refresh")
-    def structured_source_multisource_smoke_report() -> dict:
+    def structured_source_multisource_smoke_report(research_repository: ResearchRepositoryResource) -> dict:
         """Small hosted-runtime validation run across all structured API harvesters."""
 
-        from .storage import build_sql_repository
         from .structured_orchestration import run_structured_sources_pipeline
 
-        repository = build_sql_repository()
+        repository = research_repository.build_repository()
         return run_structured_sources_pipeline(
             repository,
             source_keys=STRUCTURED_SOURCE_MULTISOURCE_SMOKE_KEYS,
@@ -213,13 +211,12 @@ if dg is not None:
         )
 
     @dg.asset(group_name="literature_clinical_refresh")
-    def literature_clinical_smoke_report() -> dict:
+    def literature_clinical_smoke_report(research_repository: ResearchRepositoryResource) -> dict:
         """Small hosted-runtime validation run across literature and clinical APIs."""
 
-        from .storage import build_sql_repository
         from .structured_orchestration import run_structured_sources_pipeline
 
-        repository = build_sql_repository()
+        repository = research_repository.build_repository()
         return run_structured_sources_pipeline(
             repository,
             source_keys=LITERATURE_CLINICAL_SMOKE_KEYS,
@@ -229,13 +226,12 @@ if dg is not None:
         )
 
     @dg.asset(group_name="hosted_api_refresh")
-    def all_api_smoke_report() -> dict:
+    def all_api_smoke_report(research_repository: ResearchRepositoryResource) -> dict:
         """Small hosted-runtime validation run across every implemented API harvester."""
 
-        from .storage import build_sql_repository
         from .structured_orchestration import run_structured_sources_pipeline
 
-        repository = build_sql_repository()
+        repository = research_repository.build_repository()
         return run_structured_sources_pipeline(
             repository,
             source_keys=ALL_API_SMOKE_KEYS,
@@ -245,13 +241,12 @@ if dg is not None:
         )
 
     @dg.asset(group_name="literature_corpus_harvest")
-    def literature_corpus_harvest_report() -> dict:
+    def literature_corpus_harvest_report(research_repository: ResearchRepositoryResource) -> dict:
         """Hundreds-scale hosted literature ingestion across metadata and abstract sources."""
 
-        from .storage import build_sql_repository
         from .structured_orchestration import run_structured_sources_pipeline
 
-        repository = build_sql_repository()
+        repository = research_repository.build_repository()
         return run_structured_sources_pipeline(
             repository,
             source_keys=LITERATURE_CORPUS_SOURCE_KEYS,
@@ -261,13 +256,12 @@ if dg is not None:
         )
 
     @dg.asset(group_name="literature_full_text_refresh")
-    def literature_full_text_refresh_report() -> dict:
+    def literature_full_text_refresh_report(research_repository: ResearchRepositoryResource) -> dict:
         """Bounded hosted full-text ingestion for licensed open-access sources."""
 
-        from .storage import build_sql_repository
         from .structured_orchestration import run_structured_sources_pipeline
 
-        repository = build_sql_repository()
+        repository = research_repository.build_repository()
         return run_structured_sources_pipeline(
             repository,
             source_keys=LITERATURE_FULL_TEXT_SOURCE_KEYS,
@@ -277,13 +271,12 @@ if dg is not None:
         )
 
     @dg.asset(group_name="structured_source_refresh")
-    def structured_source_count_report() -> dict:
+    def structured_source_count_report(research_repository: ResearchRepositoryResource) -> dict:
         """Persisted count report for hosted API source coverage."""
 
-        from .storage import build_sql_repository
         from .structured_orchestration import build_structured_source_count_report
 
-        repository = build_sql_repository()
+        repository = research_repository.build_repository()
         return build_structured_source_count_report(
             repository,
             source_keys=HOSTED_API_REPORT_KEYS,
@@ -292,13 +285,12 @@ if dg is not None:
         )
 
     @dg.asset(group_name="hosted_api_refresh")
-    def source_health_report() -> dict:
+    def source_health_report(research_repository: ResearchRepositoryResource) -> dict:
         """Persisted source health report for hosted API source coverage."""
 
         from .source_health import build_source_health_report
-        from .storage import build_sql_repository
 
-        repository = build_sql_repository()
+        repository = research_repository.build_repository()
         return build_source_health_report(
             repository,
             source_keys=HOSTED_API_REPORT_KEYS,
@@ -307,14 +299,13 @@ if dg is not None:
         )
 
     @dg.asset(group_name="entity_resolution")
-    def entity_resolution_report() -> dict:
+    def entity_resolution_report(research_repository: ResearchRepositoryResource) -> dict:
         """Deterministic entity resolution over persisted hosted API chunks."""
 
         from .entity_resolution import resolve_entities_for_repository
-        from .storage import build_sql_repository
         from .structured_orchestration import structured_source_qa
 
-        repository = build_sql_repository()
+        repository = research_repository.build_repository()
         reports = []
         for source_key in HOSTED_API_REPORT_KEYS:
             resolution = resolve_entities_for_repository(
@@ -690,6 +681,9 @@ if dg is not None:
             literature_full_text_weekly_schedule,
             source_health_daily_schedule,
         ],
+        resources={
+            "research_repository": ResearchRepositoryResource(),
+        },
     )
 
 else:
