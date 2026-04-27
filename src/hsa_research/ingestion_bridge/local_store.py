@@ -380,12 +380,16 @@ class SQLiteResearchRepository(ResearchRepository):
 
     def get_document_chunk(self, chunk_id: UUID) -> DocumentChunk | None:
         row = self.conn.execute(
-            "select payload from document_chunks where chunk_id = ?",
+            "select chunk_id, object_id, payload from document_chunks where chunk_id = ?",
             (str(chunk_id),),
         ).fetchone()
         if row is None:
             return None
-        return DocumentChunk.model_validate(json.loads(row["payload"]))
+        return document_chunk_from_payload(
+            json.loads(row["payload"]),
+            chunk_id=row["chunk_id"],
+            object_id=row["object_id"],
+        )
 
     def get_raw_record_payload(self, raw_record_id: UUID) -> dict[str, Any] | None:
         row = self.conn.execute(
@@ -625,7 +629,21 @@ class SQLiteResearchRepository(ResearchRepository):
             ),
         )
         self.conn.commit()
-        return chunk
+        row = self.conn.execute(
+            """
+            select chunk_id, object_id, payload
+            from document_chunks
+            where object_id = ? and chunk_index = ?
+            """,
+            (str(chunk.research_object_id), chunk.chunk_index),
+        ).fetchone()
+        if row is None:
+            return chunk
+        return document_chunk_from_payload(
+            json.loads(row["payload"]),
+            chunk_id=row["chunk_id"],
+            object_id=row["object_id"],
+        )
 
     def list_document_chunks(
         self,
@@ -635,7 +653,7 @@ class SQLiteResearchRepository(ResearchRepository):
         limit: int | None = None,
     ) -> list[DocumentChunk]:
         params: list[object] = []
-        sql = "select dc.payload from document_chunks dc"
+        sql = "select dc.chunk_id, dc.object_id, dc.payload from document_chunks dc"
         if source_key or object_type:
             sql += " join research_objects ro on ro.object_id = dc.object_id"
         clauses: list[str] = []
@@ -655,7 +673,11 @@ class SQLiteResearchRepository(ResearchRepository):
             sql += " limit ?"
             params.append(limit)
         return [
-            DocumentChunk.model_validate(json.loads(row["payload"]))
+            document_chunk_from_payload(
+                json.loads(row["payload"]),
+                chunk_id=row["chunk_id"],
+                object_id=row["object_id"],
+            )
             for row in self.conn.execute(sql, params).fetchall()
         ]
 
@@ -694,7 +716,11 @@ class SQLiteResearchRepository(ResearchRepository):
 
         fetch_limit = min(max(request.limit * 20, request.limit), 500)
         sql = f"""
-            select dc.payload as chunk_payload, ro.payload as object_payload
+            select
+              dc.chunk_id as chunk_id,
+              dc.object_id as chunk_object_id,
+              dc.payload as chunk_payload,
+              ro.payload as object_payload
             from document_chunks dc
             join research_objects ro on ro.object_id = dc.object_id
             where {' and '.join(clauses)}
@@ -704,7 +730,11 @@ class SQLiteResearchRepository(ResearchRepository):
         rows = self.conn.execute(sql, [*params, fetch_limit]).fetchall()
         results: list[ResearchChunkSearchResult] = []
         for row in rows:
-            chunk = DocumentChunk.model_validate(json.loads(row["chunk_payload"]))
+            chunk = document_chunk_from_payload(
+                json.loads(row["chunk_payload"]),
+                chunk_id=row["chunk_id"],
+                object_id=row["chunk_object_id"],
+            )
             obj = ResearchObject.model_validate(json.loads(row["object_payload"]))
             score = keyword_chunk_score(request.query, terms, chunk, obj)
             if score <= 0.0:
@@ -1899,6 +1929,18 @@ def build_research_object_dedupe_key(obj: ResearchObject) -> str:
     if obj.title:
         return f"title:{(obj.source_key or 'unknown').lower()}:{obj.title.strip().lower()}"
     return f"object:{obj.id}"
+
+
+def document_chunk_from_payload(payload: dict[str, Any], *, chunk_id: object, object_id: object) -> DocumentChunk:
+    """Hydrate a chunk with stable table IDs, even if older payload JSON drifted."""
+
+    return DocumentChunk.model_validate(
+        {
+            **payload,
+            "id": str(chunk_id),
+            "research_object_id": str(object_id),
+        }
+    )
 
 
 def _claim_visible_in_search(claim: ClaimSearchResult, *, include_drafts: bool) -> bool:

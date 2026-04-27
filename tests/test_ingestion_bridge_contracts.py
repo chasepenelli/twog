@@ -2347,6 +2347,58 @@ def test_service_retrieval_smoke_can_require_embeddings(tmp_path):
     assert result.errors == ["expected embedding search, got keyword"]
 
 
+def test_document_chunk_upsert_preserves_readable_stable_chunk_id(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Stable chunk id retrieval example",
+            source_key="pubmed",
+            dedupe_key="pubmed:stable-chunk-id",
+        )
+    )
+    original_chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="Original text.",
+            content_hash="stable-chunk-original",
+        )
+    )
+    replacement_chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="VEGFA angiogenesis stable chunk context.",
+            content_hash="stable-chunk-replacement",
+        )
+    )
+
+    search = service.search_research_chunks(
+        ResearchChunkSearchRequest(query="VEGFA angiogenesis", source_key="pubmed", limit=1)
+    )
+    index_embeddings_for_repository(repo, source_key="pubmed", embedding_model="local-hash-test")
+    smoke = service.run_retrieval_smoke(
+        RetrievalSmokeRequest(
+            query="VEGFA angiogenesis",
+            source_key="pubmed",
+            embedding_model="local-hash-test",
+            require_embedding=True,
+        )
+    )
+
+    assert replacement_chunk.id == original_chunk.id
+    assert repo.get_document_chunk(replacement_chunk.id) is not None
+    assert search.results[0].chunk.id == original_chunk.id
+    assert smoke.passed is True
+    assert smoke.selected_chunk_id == original_chunk.id
+    assert smoke.chunk_context is not None
+    assert smoke.chunk_context.chunk.content_hash == "stable-chunk-replacement"
+
+
 def test_mcp_retrieval_tool_helpers_dump_bounded_read_results(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
     service = HSAResearchService(repo)

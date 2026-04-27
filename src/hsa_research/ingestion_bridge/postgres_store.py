@@ -39,7 +39,7 @@ from .contracts import (
     TextEmbeddingSearchResult,
     ValidationRequest,
 )
-from .local_store import build_research_object_dedupe_key
+from .local_store import build_research_object_dedupe_key, document_chunk_from_payload
 from .repository import ResearchRepository, cosine_similarity, keyword_chunk_score, keyword_terms, seed_claims
 
 
@@ -322,10 +322,17 @@ class PostgresResearchRepository(ResearchRepository):
         return ResearchObject.model_validate(_payload(row))
 
     def get_document_chunk(self, chunk_id: UUID) -> DocumentChunk | None:
-        row = self._fetchone("select payload from document_chunks where chunk_id = %s", (str(chunk_id),))
+        row = self._fetchone(
+            "select chunk_id, object_id, payload from document_chunks where chunk_id = %s",
+            (str(chunk_id),),
+        )
         if row is None:
             return None
-        return DocumentChunk.model_validate(_payload(row))
+        return document_chunk_from_payload(
+            _payload(row),
+            chunk_id=row["chunk_id"],
+            object_id=row["object_id"],
+        )
 
     def get_raw_record_payload(self, raw_record_id: UUID) -> dict[str, Any] | None:
         row = self._fetchone("select payload from raw_source_records where raw_record_id = %s", (str(raw_record_id),))
@@ -552,7 +559,21 @@ class PostgresResearchRepository(ResearchRepository):
                 self._json(payload),
             ),
         )
-        return chunk
+        row = self._fetchone(
+            """
+            select chunk_id, object_id, payload
+            from document_chunks
+            where object_id = %s and chunk_index = %s
+            """,
+            (str(chunk.research_object_id), chunk.chunk_index),
+        )
+        if row is None:
+            return chunk
+        return document_chunk_from_payload(
+            _payload(row),
+            chunk_id=row["chunk_id"],
+            object_id=row["object_id"],
+        )
 
     def list_document_chunks(
         self,
@@ -562,7 +583,7 @@ class PostgresResearchRepository(ResearchRepository):
         limit: int | None = None,
     ) -> list[DocumentChunk]:
         params: list[object] = []
-        sql = "select dc.payload from document_chunks dc"
+        sql = "select dc.chunk_id, dc.object_id, dc.payload from document_chunks dc"
         if source_key or object_type:
             sql += " join research_objects ro on ro.object_id = dc.object_id"
         clauses: list[str] = []
@@ -581,7 +602,14 @@ class PostgresResearchRepository(ResearchRepository):
         if limit is not None:
             sql += " limit %s"
             params.append(limit)
-        return [DocumentChunk.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
+        return [
+            document_chunk_from_payload(
+                _payload(row),
+                chunk_id=row["chunk_id"],
+                object_id=row["object_id"],
+            )
+            for row in self._fetchall(sql, params)
+        ]
 
     def search_research_chunks(self, request: ResearchChunkSearchRequest) -> list[ResearchChunkSearchResult]:
         terms = keyword_terms(request.query)
@@ -619,7 +647,11 @@ class PostgresResearchRepository(ResearchRepository):
         fetch_limit = min(max(request.limit * 20, request.limit), 500)
         rows = self._fetchall(
             f"""
-            select dc.payload as chunk_payload, ro.payload as object_payload
+            select
+              dc.chunk_id as chunk_id,
+              dc.object_id as chunk_object_id,
+              dc.payload as chunk_payload,
+              ro.payload as object_payload
             from document_chunks dc
             join research_objects ro on ro.object_id = dc.object_id
             where {' and '.join(clauses)}
@@ -630,7 +662,11 @@ class PostgresResearchRepository(ResearchRepository):
         )
         results: list[ResearchChunkSearchResult] = []
         for row in rows:
-            chunk = DocumentChunk.model_validate(_payload({"payload": row["chunk_payload"]}))
+            chunk = document_chunk_from_payload(
+                _payload({"payload": row["chunk_payload"]}),
+                chunk_id=row["chunk_id"],
+                object_id=row["chunk_object_id"],
+            )
             obj = ResearchObject.model_validate(_payload({"payload": row["object_payload"]}))
             score = keyword_chunk_score(request.query, terms, chunk, obj)
             if score <= 0.0:
