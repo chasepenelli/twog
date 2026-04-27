@@ -132,8 +132,29 @@ Repository adapters expose:
 
 `embedding_coverage` compares stored embeddings against durable
 `document_chunks`, optionally scoped by source, object type, or model. This
-lets the ingestion layer measure retrieval readiness before CLI, Dagster, or
-MCP wiring exists.
+lets the ingestion layer measure retrieval readiness for CLI, Dagster, and MCP
+read tools.
+
+Retrieval read contracts expose chunks and object context without exposing raw
+vectors:
+
+- `search_research_chunks` embeds the query with an available stored embedding
+  model, calls `search_text_embeddings`, hydrates matching chunks and research
+  objects, and falls back to bounded keyword search only when semantic search
+  returns no hits.
+- `get_chunk_context` returns one chunk, nearby sibling chunks, its canonical
+  research object, and resolved entity mentions.
+- `get_research_object` returns a canonical object plus a bounded chunk list.
+
+All retrieval tools cap result counts and returned chunk text length. Raw
+embedding vectors remain an internal storage/search detail.
+
+Dagster now exposes this local retrieval foundation through
+`embedding_index_report`, which builds the configured repository resource and
+runs `index_embeddings_for_repository` over stored chunks using the
+deterministic `local-hash-v1` model. `embedding_index_job` materializes only
+that report. Its asset check passes for an empty local store, but once chunks
+exist it requires at least one readable embedding and a clean error list.
 
 ## Claim Types
 
@@ -193,6 +214,9 @@ MCP is the clean conversational interface. These tools are the v0 contract:
 | Tool | Mode | Purpose |
 | --- | --- | --- |
 | `search_claims` | read | Search evidence-backed claims by query, target, compound, species, evidence type, confidence |
+| `search_research_chunks` | read | Search chunk retrieval context using embeddings first, with bounded keyword fallback |
+| `get_chunk_context` | read | Return a chunk with nearby sibling chunks and resolved entity mentions |
+| `get_research_object` | read | Return a canonical research object and bounded stored chunks |
 | `curate_claims` | write | Run the claim curator agent to dedupe, review, and promote draft claims |
 | `scout_sources` | read | Run the source scout agent to prioritize ingestion gaps and starter source queries |
 | `get_candidate` | read | Return a candidate dossier with evidence, lineage, validation state, and risk flags |
@@ -216,6 +240,8 @@ MCP resources:
 
 ```text
 claim://{claim_id}
+chunk://{chunk_id}
+research-object://{research_object_id}
 candidate://{candidate_id}
 hypothesis://{hypothesis_id}
 run://{run_id}
@@ -245,6 +271,9 @@ source_registry
   -> tag_assignments
   -> coverage_snapshot
 ```
+
+`embedding_index_report` is an executable side report over persisted chunks and
+available entity mentions; it does not block claim extraction.
 
 Initial partitions:
 
@@ -279,6 +308,11 @@ Current executable scaffold:
 - `structured_source_pipeline_has_minimum_outputs`: asset check that fails when
   a structured source produces no objects or no claims, or when extraction or
   curation reports errors.
+- `embedding_index_report`: runs the deterministic local embedding indexer over
+  persisted chunks and reports embedding coverage.
+- `embedding_index_job`: Dagster job for the local embedding index report.
+- `embedding_index_has_minimum_outputs`: asset check that accepts an empty
+  store, but requires at least one embedding once chunks exist.
 
 Dagster executable assets receive a `research_repository` resource instead of
 constructing storage directly. The resource reads:
@@ -301,6 +335,7 @@ assets that already return stable dictionaries:
 - `structured_source_count_report`
 - `source_health_report`
 - `entity_resolution_report`
+- `embedding_index_report`
 
 Each asset materializes with the full report preserved as the Dagster value so
 existing asset checks can continue reading the same contract. The attached

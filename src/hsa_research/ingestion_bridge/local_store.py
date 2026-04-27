@@ -30,6 +30,8 @@ from .contracts import (
     EntityMention,
     HypothesisDraft,
     RawSourceRecord,
+    ResearchChunkSearchRequest,
+    ResearchChunkSearchResult,
     ResolvedEntity,
     ResearchObject,
     ResearchSource,
@@ -41,7 +43,7 @@ from .contracts import (
     TextEmbeddingSearchResult,
     ValidationRequest,
 )
-from .repository import ResearchRepository, cosine_similarity, seed_claims
+from .repository import ResearchRepository, cosine_similarity, keyword_chunk_score, keyword_terms, seed_claims
 
 
 DEFAULT_LOCAL_DB_PATH = Path(
@@ -376,6 +378,15 @@ class SQLiteResearchRepository(ResearchRepository):
             return None
         return ResearchObject.model_validate(json.loads(row["payload"]))
 
+    def get_document_chunk(self, chunk_id: UUID) -> DocumentChunk | None:
+        row = self.conn.execute(
+            "select payload from document_chunks where chunk_id = ?",
+            (str(chunk_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return DocumentChunk.model_validate(json.loads(row["payload"]))
+
     def get_raw_record_payload(self, raw_record_id: UUID) -> dict[str, Any] | None:
         row = self.conn.execute(
             "select payload from raw_source_records where raw_record_id = ?",
@@ -646,6 +657,80 @@ class SQLiteResearchRepository(ResearchRepository):
         return [
             DocumentChunk.model_validate(json.loads(row["payload"]))
             for row in self.conn.execute(sql, params).fetchall()
+        ]
+
+    def search_research_chunks(self, request: ResearchChunkSearchRequest) -> list[ResearchChunkSearchResult]:
+        terms = keyword_terms(request.query)
+        if not terms:
+            return []
+
+        params: list[object] = []
+        clauses: list[str] = []
+        if request.research_object_id:
+            clauses.append("dc.object_id = ?")
+            params.append(str(request.research_object_id))
+        if request.source_key:
+            clauses.append("ro.source_key = ?")
+            params.append(request.source_key)
+        if request.object_type:
+            clauses.append("ro.object_type = ?")
+            params.append(str(request.object_type))
+
+        term_clauses: list[str] = []
+        for term in terms:
+            like_term = f"%{term}%"
+            term_clauses.append(
+                """
+                (
+                  lower(dc.text_content) like ?
+                  or lower(coalesce(dc.section_label, '')) like ?
+                  or lower(coalesce(ro.title, '')) like ?
+                  or lower(coalesce(ro.abstract, '')) like ?
+                )
+                """
+            )
+            params.extend([like_term, like_term, like_term, like_term])
+        clauses.append("(" + " or ".join(term_clauses) + ")")
+
+        fetch_limit = min(max(request.limit * 20, request.limit), 500)
+        sql = f"""
+            select dc.payload as chunk_payload, ro.payload as object_payload
+            from document_chunks dc
+            join research_objects ro on ro.object_id = dc.object_id
+            where {' and '.join(clauses)}
+            order by dc.object_id, dc.chunk_index
+            limit ?
+        """
+        rows = self.conn.execute(sql, [*params, fetch_limit]).fetchall()
+        results: list[ResearchChunkSearchResult] = []
+        for row in rows:
+            chunk = DocumentChunk.model_validate(json.loads(row["chunk_payload"]))
+            obj = ResearchObject.model_validate(json.loads(row["object_payload"]))
+            score = keyword_chunk_score(request.query, terms, chunk, obj)
+            if score <= 0.0:
+                continue
+            if request.min_score is not None and score < request.min_score:
+                continue
+            results.append(
+                ResearchChunkSearchResult(
+                    rank=1,
+                    chunk=chunk,
+                    research_object=obj,
+                    score=score,
+                    match_type="keyword",
+                )
+            )
+
+        results.sort(
+            key=lambda result: (
+                -(result.score or 0.0),
+                str(result.chunk.research_object_id),
+                result.chunk.chunk_index,
+            )
+        )
+        return [
+            result.model_copy(update={"rank": index})
+            for index, result in enumerate(results[: request.limit], start=1)
         ]
 
     def upsert_text_embedding(self, embedding: TextEmbedding) -> TextEmbedding:

@@ -207,6 +207,28 @@ if dg is not None:
             ),
         }
 
+    def _embedding_index_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        embedding_coverage = report.get("embedding_coverage", {})
+        totals = report.get("totals", {})
+        errors = report.get("errors", [])
+        return {
+            "embedding_model": report.get("embedding_model"),
+            "source_key": report.get("source_key"),
+            "chunks_seen": totals.get("chunks_seen", 0),
+            "embeddings_created": totals.get("embeddings_created", 0),
+            "embeddings_updated": totals.get("embeddings_updated", 0),
+            "embeddings_skipped": totals.get("embeddings_skipped", 0),
+            "error_count": len(errors),
+            "errors": dg.MetadataValue.json(errors),
+            "total_chunks": embedding_coverage.get("total_chunks", 0),
+            "embedded_chunks": embedding_coverage.get("embedded_chunks", 0),
+            "missing_chunks": embedding_coverage.get("missing_chunks", 0),
+            "coverage_ratio": embedding_coverage.get("coverage_ratio", 0.0),
+            "embedding_models": dg.MetadataValue.json(embedding_coverage.get("embedding_models", {})),
+            "coverage": dg.MetadataValue.json(report.get("coverage", {})),
+            "passes_minimum_bar": bool(report.get("passes_minimum_bar", False)),
+        }
+
     @dg.asset(group_name="ingestion_bridge_v2")
     def source_registry() -> list[dict]:
         """Canonical source registry for ingestion."""
@@ -489,6 +511,41 @@ if dg is not None:
         }
         return dg.MaterializeResult(value=report, metadata=_entity_resolution_report_metadata(report))
 
+    @dg.asset(group_name="embedding_index")
+    def embedding_index_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
+        """Deterministic local embedding index over persisted document chunks."""
+
+        from .embeddings import index_embeddings_for_repository
+
+        repository = research_repository.build_repository()
+        result = index_embeddings_for_repository(repository)
+        embedding_coverage = repository.embedding_coverage(embedding_model=result.embedding_model)
+        coverage = embedding_coverage.model_dump(mode="json")
+        totals = {
+            "chunks_seen": result.chunks_seen,
+            "embeddings_created": result.embeddings_created,
+            "embeddings_updated": result.embeddings_updated,
+            "embeddings_skipped": result.embeddings_skipped,
+            "total_chunks": coverage["total_chunks"],
+            "embedded_chunks": coverage["embedded_chunks"],
+            "missing_chunks": coverage["missing_chunks"],
+        }
+        errors = list(result.errors)
+        passes_minimum_bar = not errors and (
+            (coverage["total_chunks"] == 0 and result.chunks_seen == 0 and coverage["embedded_chunks"] == 0)
+            or (coverage["total_chunks"] > 0 and result.chunks_seen >= 1 and coverage["embedded_chunks"] >= 1)
+        )
+        report = {
+            "embedding_model": result.embedding_model,
+            "source_key": result.source_key,
+            "totals": totals,
+            "errors": errors,
+            "embedding_coverage": coverage,
+            "coverage": repository.coverage_summary(),
+            "passes_minimum_bar": passes_minimum_bar,
+        }
+        return dg.MaterializeResult(value=report, metadata=_embedding_index_report_metadata(report))
+
     @dg.asset_check(asset=source_registry)
     def source_registry_has_phase_one_sources(source_registry: list[dict]) -> dg.AssetCheckResult:
         """Ensure the first bridge has the minimum source backbone."""
@@ -721,6 +778,34 @@ if dg is not None:
             },
         )
 
+    @dg.asset_check(asset=embedding_index_report)
+    def embedding_index_has_minimum_outputs(
+        embedding_index_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure stored chunks can produce at least one deterministic embedding."""
+
+        errors = embedding_index_report.get("errors", [])
+        totals = embedding_index_report.get("totals", {})
+        embedding_coverage = embedding_index_report.get("embedding_coverage", {})
+        total_chunks = embedding_coverage.get("total_chunks", 0)
+        embedded_chunks = embedding_coverage.get("embedded_chunks", 0)
+        passed = not errors and (
+            (total_chunks == 0 and totals.get("chunks_seen", 0) == 0 and embedded_chunks == 0)
+            or (total_chunks > 0 and totals.get("chunks_seen", 0) >= 1 and embedded_chunks >= 1)
+        )
+        return dg.AssetCheckResult(
+            passed=passed,
+            metadata={
+                "errors": errors,
+                "minimum_contract": {
+                    "when_chunks_exist": "at_least_one_embedding",
+                    "when_no_chunks_exist": "zero_chunks_zero_embeddings",
+                },
+                "totals": totals,
+                "embedding_coverage": embedding_coverage,
+            },
+        )
+
     ingestion_bridge_assets = [
         source_registry,
         source_scout_plan,
@@ -742,6 +827,7 @@ if dg is not None:
         structured_source_count_report,
         source_health_report,
         entity_resolution_report,
+        embedding_index_report,
     ]
 
     structured_source_pipeline_job = dg.define_asset_job(
@@ -784,6 +870,10 @@ if dg is not None:
         "entity_resolution_job",
         selection=dg.AssetSelection.assets(entity_resolution_report),
     )
+    embedding_index_job = dg.define_asset_job(
+        "embedding_index_job",
+        selection=dg.AssetSelection.assets(embedding_index_report),
+    )
     literature_corpus_daily_schedule = dg.ScheduleDefinition(
         job=literature_corpus_harvest_job,
         cron_schedule="0 7 * * *",
@@ -814,6 +904,7 @@ if dg is not None:
             structured_source_count_report_has_minimum_outputs,
             source_health_report_has_no_failed_sources,
             entity_resolution_has_minimum_outputs,
+            embedding_index_has_minimum_outputs,
         ],
         jobs=[
             structured_source_pipeline_job,
@@ -826,6 +917,7 @@ if dg is not None:
             structured_source_count_report_job,
             source_health_report_job,
             entity_resolution_job,
+            embedding_index_job,
         ],
         schedules=[
             literature_corpus_daily_schedule,
@@ -849,6 +941,7 @@ else:
     structured_source_count_report_job = None
     source_health_report_job = None
     entity_resolution_job = None
+    embedding_index_job = None
     literature_corpus_daily_schedule = None
     literature_full_text_weekly_schedule = None
     source_health_daily_schedule = None

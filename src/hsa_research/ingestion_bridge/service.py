@@ -14,19 +14,29 @@ from .contracts import (
     BoltzRunRequest,
     CandidateDossier,
     CandidateDossierRequest,
+    ChunkContextRequest,
+    ChunkContextResult,
     ClaimCurationRequest,
     ClaimCurationResult,
     ClaimSearchRequest,
     ClaimSearchResults,
     CommitHypothesisRequest,
+    DocumentChunk,
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
+    ResearchChunkSearchRequest,
+    ResearchChunkSearchResult,
+    ResearchChunkSearchResults,
+    ResearchObjectReadRequest,
+    ResearchObjectReadResult,
     SourceScoutRequest,
     SourceScoutResult,
+    TextEmbeddingSearchRequest,
     ValidationRequest,
 )
 from .claim_curator import ClaimCuratorAgent
+from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, LocalDeterministicEmbeddingProvider
 from .repository import ResearchRepository
 from .source_scout import SourceScoutAgent
 from .storage import build_research_repository
@@ -62,6 +72,79 @@ class HSAResearchService:
 
     def get_claim(self, claim_id: UUID):
         return self.repository.get_claim(claim_id)
+
+    def search_research_chunks(self, request: ResearchChunkSearchRequest) -> ResearchChunkSearchResults:
+        embedding_model = self._select_embedding_model(request)
+        embedding_results = self._search_chunks_with_embeddings(request, embedding_model)
+        if embedding_results:
+            return ResearchChunkSearchResults(
+                results=embedding_results,
+                total=len(embedding_results),
+                query=request,
+                search_mode="embedding",
+                embedding_model=embedding_model,
+            )
+
+        keyword_results: list[ResearchChunkSearchResult] = []
+        if request.include_keyword_fallback:
+            keyword_results = [
+                self._truncate_search_result(result, request.max_chunk_chars)
+                for result in self.repository.search_research_chunks(request)
+            ]
+        return ResearchChunkSearchResults(
+            results=keyword_results,
+            total=len(keyword_results),
+            query=request,
+            search_mode="keyword" if keyword_results else "none",
+            embedding_model=embedding_model,
+        )
+
+    def get_chunk_context(self, request: ChunkContextRequest) -> ChunkContextResult | None:
+        chunk = self.repository.get_document_chunk(request.chunk_id)
+        if chunk is None:
+            return None
+
+        research_object = self.repository.get_research_object(chunk.research_object_id)
+        sibling_chunks = self.repository.list_document_chunks(object_id=chunk.research_object_id)
+        sibling_chunks.sort(key=lambda item: item.chunk_index)
+        before = [
+            item
+            for item in sibling_chunks
+            if item.chunk_index < chunk.chunk_index
+        ][-request.window :]
+        after = [
+            item
+            for item in sibling_chunks
+            if item.chunk_index > chunk.chunk_index
+        ][: request.window]
+        mentions = (
+            self.repository.list_entity_mentions(chunk_id=chunk.id)
+            if request.include_entity_mentions
+            else []
+        )
+        return ChunkContextResult(
+            chunk=_truncate_chunk(chunk, request.max_chunk_chars),
+            research_object=research_object,
+            before_chunks=[_truncate_chunk(item, request.max_chunk_chars) for item in before],
+            after_chunks=[_truncate_chunk(item, request.max_chunk_chars) for item in after],
+            entity_mentions=mentions,
+        )
+
+    def get_research_object(self, request: ResearchObjectReadRequest) -> ResearchObjectReadResult | None:
+        research_object = self.repository.get_research_object(request.research_object_id)
+        if research_object is None:
+            return None
+
+        chunks: list[DocumentChunk] = []
+        if request.include_chunks and request.max_chunks > 0:
+            chunks = [
+                _truncate_chunk(chunk, request.max_chunk_chars)
+                for chunk in self.repository.list_document_chunks(
+                    object_id=request.research_object_id,
+                    limit=request.max_chunks,
+                )
+            ]
+        return ResearchObjectReadResult(research_object=research_object, chunks=chunks)
 
     def curate_claims(self, request: ClaimCurationRequest) -> ClaimCurationResult:
         if not hasattr(self.repository, "list_claims") or not hasattr(self.repository, "upsert_claim"):
@@ -164,6 +247,102 @@ class HSAResearchService:
     def set_model_profile(self, profile: ModelProfile) -> ModelProfile:
         self.model_profiles[profile.profile_key] = profile
         return profile
+
+    def _select_embedding_model(self, request: ResearchChunkSearchRequest) -> str:
+        if request.embedding_model:
+            return request.embedding_model
+        coverage = self.repository.embedding_coverage(
+            source_key=request.source_key,
+            object_type=str(request.object_type) if request.object_type else None,
+        )
+        if coverage.embedding_models:
+            return max(coverage.embedding_models.items(), key=lambda item: item[1])[0]
+        return LOCAL_HASH_EMBEDDING_MODEL
+
+    def _search_chunks_with_embeddings(
+        self,
+        request: ResearchChunkSearchRequest,
+        embedding_model: str,
+    ) -> list[ResearchChunkSearchResult]:
+        query_vector = self._embed_query_for_model(request, embedding_model)
+        if not any(query_vector):
+            return []
+        embedding_hits = self.repository.search_text_embeddings(
+            TextEmbeddingSearchRequest(
+                query_embedding=query_vector,
+                embedding_model=embedding_model,
+                source_key=request.source_key,
+                research_object_id=request.research_object_id,
+                object_type=request.object_type,
+                min_score=request.min_score,
+                limit=request.limit,
+            )
+        )
+
+        results: list[ResearchChunkSearchResult] = []
+        seen_chunks: set[UUID] = set()
+        for hit in embedding_hits:
+            chunk = self.repository.get_document_chunk(hit.embedding.chunk_id)
+            if chunk is None or chunk.id in seen_chunks:
+                continue
+            research_object = self.repository.get_research_object(chunk.research_object_id)
+            seen_chunks.add(chunk.id)
+            results.append(
+                ResearchChunkSearchResult(
+                    rank=len(results) + 1,
+                    chunk=_truncate_chunk(chunk, request.max_chunk_chars),
+                    research_object=research_object,
+                    score=hit.score,
+                    match_type="embedding",
+                    text_truncated=len(chunk.text_content) > request.max_chunk_chars,
+                )
+            )
+        return results
+
+    def _embed_query_for_model(self, request: ResearchChunkSearchRequest, embedding_model: str) -> list[float]:
+        dimensions = None
+        existing = self.repository.list_text_embeddings(
+            embedding_model=embedding_model,
+            source_key=request.source_key,
+            research_object_id=request.research_object_id,
+            object_type=str(request.object_type) if request.object_type else None,
+            limit=1,
+        )
+        if existing:
+            dimensions = existing[0].embedding_dimensions
+        provider = LocalDeterministicEmbeddingProvider(
+            embedding_model=embedding_model,
+            dimensions=dimensions or LocalDeterministicEmbeddingProvider().embedding_dimensions,
+        )
+        return provider.embed_text(request.query)
+
+    @staticmethod
+    def _truncate_search_result(
+        result: ResearchChunkSearchResult,
+        max_chunk_chars: int,
+    ) -> ResearchChunkSearchResult:
+        truncated = _truncate_chunk(result.chunk, max_chunk_chars)
+        return result.model_copy(
+            update={
+                "chunk": truncated,
+                "text_truncated": len(result.chunk.text_content) > max_chunk_chars,
+            }
+        )
+
+
+def _truncate_chunk(chunk: DocumentChunk, max_chars: int) -> DocumentChunk:
+    if len(chunk.text_content) <= max_chars:
+        return chunk
+    return chunk.model_copy(
+        update={
+            "text_content": chunk.text_content[:max_chars],
+            "metadata": {
+                **chunk.metadata,
+                "text_truncated": True,
+                "original_text_chars": len(chunk.text_content),
+            },
+        }
+    )
 
 
 _SERVICE: HSAResearchService | None = None

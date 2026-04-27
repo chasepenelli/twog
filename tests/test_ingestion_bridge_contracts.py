@@ -9,17 +9,21 @@ from hsa_research.ingestion_bridge import storage, structured_orchestration
 from hsa_research.ingestion_bridge.contracts import (
     BoltzRunRequest,
     CandidateDossierRequest,
+    ChunkContextRequest,
     ClaimDirection,
     ClaimSearchRequest,
     ClaimSearchResult,
     ClaimType,
     CommitHypothesisRequest,
     DocumentChunk,
+    EmbeddingCoverageSummary,
     EntityMention,
     EvidenceLevel,
     HypothesisProposalRequest,
     RawSourceRecord,
+    ResearchChunkSearchRequest,
     ResearchObject,
+    ResearchObjectReadRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
     ScrapeManifestFetchRequest,
@@ -49,6 +53,7 @@ from hsa_research.ingestion_bridge.dagster_assets import (
 from hsa_research.ingestion_bridge.dagster_resources import ResearchRepositoryResource
 from hsa_research.ingestion_bridge.entity_resolution import normalize_entity_key, resolve_entities_for_repository
 from hsa_research.ingestion_bridge.embeddings import (
+    EmbeddingIndexResult,
     LocalDeterministicEmbeddingProvider,
     build_chunk_embedding_text,
     index_embeddings_for_repository,
@@ -73,6 +78,7 @@ from hsa_research.ingestion_bridge.harvesters_v2 import (
 )
 from hsa_research.ingestion_bridge.local_ingest import LocalIngestionPipeline
 from hsa_research.ingestion_bridge.local_store import SQLiteResearchRepository
+from hsa_research.ingestion_bridge import mcp_server
 from hsa_research.ingestion_bridge.query_policy import build_scholarly_source_queries, infer_comparative_scope
 from hsa_research.ingestion_bridge import scraper_bridge
 from hsa_research.ingestion_bridge.scraper_bridge import ScrapeBridge, list_scrape_profiles
@@ -88,6 +94,14 @@ from hsa_research.ingestion_bridge.structured_orchestration import (
 
 def make_service(tmp_path):
     return HSAResearchService(SQLiteResearchRepository(tmp_path / "hsa.sqlite3"))
+
+
+def _contains_key(value, key: str) -> bool:
+    if isinstance(value, dict):
+        return key in value or any(_contains_key(item, key) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_key(item, key) for item in value)
+    return False
 
 
 def test_research_repository_resource_uses_hsa_sqlite_path(monkeypatch, tmp_path):
@@ -220,6 +234,95 @@ def test_dagster_count_report_asset_returns_materialize_result_with_report_value
     table_row = result.metadata["source_count_table"].records[0].data
     assert json.loads(table_row["claim_status"]) == {"promote": 1}
     assert json.loads(table_row["claim_types"]) == {"other": 1}
+
+
+def test_dagster_embedding_index_asset_uses_injected_repository(monkeypatch):
+    calls = []
+
+    class FakeRepository:
+        def embedding_coverage(self, *, embedding_model=None, **kwargs):
+            calls.append(("embedding_coverage", embedding_model, kwargs))
+            return EmbeddingCoverageSummary(
+                embedding_model=embedding_model,
+                total_chunks=1,
+                embedded_chunks=1,
+                missing_chunks=0,
+                coverage_ratio=1.0,
+                embedding_models={embedding_model: 1},
+            )
+
+        def coverage_summary(self):
+            calls.append(("coverage_summary",))
+            return {"document_chunks": 1, "text_embeddings": 1}
+
+    sentinel_repository = FakeRepository()
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append(("build_repository",))
+            return sentinel_repository
+
+    def fake_index_embeddings_for_repository(repository, **kwargs):
+        assert repository is sentinel_repository
+        assert kwargs == {}
+        calls.append(("index_embeddings_for_repository",))
+        return EmbeddingIndexResult(
+            embedding_model="local-hash-v1",
+            chunks_seen=1,
+            embeddings_created=1,
+        )
+
+    monkeypatch.setattr(
+        "hsa_research.ingestion_bridge.embeddings.index_embeddings_for_repository",
+        fake_index_embeddings_for_repository,
+    )
+
+    result = dagster_asset_module.embedding_index_report.node_def.compute_fn.decorated_fn(
+        FakeRepositoryResource()
+    )
+
+    assert calls == [
+        ("build_repository",),
+        ("index_embeddings_for_repository",),
+        ("embedding_coverage", "local-hash-v1", {}),
+        ("coverage_summary",),
+    ]
+    assert isinstance(result, dagster_asset_module.dg.MaterializeResult)
+    assert result.value["embedding_model"] == "local-hash-v1"
+    assert result.value["totals"]["chunks_seen"] == 1
+    assert result.value["totals"]["embeddings_created"] == 1
+    assert result.value["embedding_coverage"]["embedded_chunks"] == 1
+    assert result.value["passes_minimum_bar"] is True
+    assert result.metadata["embedded_chunks"] == 1
+    assert result.metadata["passes_minimum_bar"] is True
+
+
+def test_dagster_embedding_index_check_requires_embedding_when_chunks_exist():
+    failing_result = dagster_asset_module.embedding_index_has_minimum_outputs.node_def.compute_fn.decorated_fn(
+        {
+            "errors": [],
+            "totals": {"chunks_seen": 1},
+            "embedding_coverage": {"total_chunks": 1, "embedded_chunks": 0},
+        }
+    )
+    empty_store_result = dagster_asset_module.embedding_index_has_minimum_outputs.node_def.compute_fn.decorated_fn(
+        {
+            "errors": [],
+            "totals": {"chunks_seen": 0},
+            "embedding_coverage": {"total_chunks": 0, "embedded_chunks": 0},
+        }
+    )
+    populated_store_result = dagster_asset_module.embedding_index_has_minimum_outputs.node_def.compute_fn.decorated_fn(
+        {
+            "errors": [],
+            "totals": {"chunks_seen": 3},
+            "embedding_coverage": {"total_chunks": 3, "embedded_chunks": 3},
+        }
+    )
+
+    assert failing_result.passed is False
+    assert empty_store_result.passed is True
+    assert populated_store_result.passed is True
 
 
 def _seed_minimal_source_claim(
@@ -1999,6 +2102,203 @@ def test_sqlite_text_embedding_search_uses_json_vectors_and_upserts_by_chunk_mod
     assert updated.content_hash == "embedding-search-0-updated"
     assert len(repo.list_text_embeddings(embedding_model="unit-embedding-v1")) == 2
     assert updated_results[0].embedding.embedding_id == first.embedding_id
+
+
+def test_service_search_research_chunks_uses_embeddings_without_returning_vectors(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="VEGFA angiogenesis in canine hemangiosarcoma",
+            source_key="pubmed",
+            dedupe_key="pubmed:retrieval-embedding",
+        )
+    )
+    vegf_chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="VEGFA angiogenesis VEGFA angiogenesis in canine hemangiosarcoma.",
+            content_hash="retrieval-embedding-vegf",
+        )
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=1,
+            section_label="methods",
+            text_content="Doxorubicin cardiotoxicity monitoring in dogs.",
+            content_hash="retrieval-embedding-dox",
+        )
+    )
+    index_embeddings_for_repository(repo, source_key="pubmed", embedding_model="local-hash-test")
+
+    results = service.search_research_chunks(
+        ResearchChunkSearchRequest(
+            query="VEGFA angiogenesis",
+            source_key="pubmed",
+            embedding_model="local-hash-test",
+            limit=2,
+        )
+    )
+    payload = results.model_dump(mode="json")
+
+    assert results.search_mode == "embedding"
+    assert results.results[0].match_type == "embedding"
+    assert results.results[0].chunk.id == vegf_chunk.id
+    assert not _contains_key(payload, "embedding")
+
+
+def test_service_search_research_chunks_falls_back_to_keyword_and_bounds_text(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Keyword fallback retrieval example",
+            abstract="VEGFA angiogenesis context for canine HSA.",
+            source_key="pubmed",
+            dedupe_key="pubmed:retrieval-keyword",
+        )
+    )
+    chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="VEGFA angiogenesis " + ("canine hemangiosarcoma " * 20),
+            content_hash="retrieval-keyword-vegf",
+        )
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=1,
+            section_label="methods",
+            text_content="Chemotherapy dosing schedule.",
+            content_hash="retrieval-keyword-other",
+        )
+    )
+
+    results = service.search_research_chunks(
+        ResearchChunkSearchRequest(
+            query="VEGFA angiogenesis",
+            source_key="pubmed",
+            limit=5,
+            max_chunk_chars=220,
+        )
+    )
+
+    assert results.search_mode == "keyword"
+    assert results.results[0].match_type == "keyword"
+    assert results.results[0].chunk.id == chunk.id
+    assert len(results.results[0].chunk.text_content) == 220
+    assert results.results[0].text_truncated is True
+
+
+def test_service_get_chunk_context_and_research_object_are_bounded(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Chunk context example",
+            source_key="pubmed",
+            dedupe_key="pubmed:retrieval-context",
+        )
+    )
+    chunks = [
+        repo.upsert_document_chunk(
+            DocumentChunk(
+                research_object_id=object_id,
+                chunk_index=index,
+                section_label=f"section-{index}",
+                text_content=text,
+                content_hash=f"retrieval-context-{index}",
+            )
+        )
+        for index, text in enumerate(
+            [
+                "Background chunk about canine hemangiosarcoma.",
+                "Middle chunk mentions VEGFA receptor signaling in canine hemangiosarcoma.",
+                "Follow-up chunk about translational validation.",
+            ]
+        )
+    ]
+    repo.upsert_entity_mention(
+        EntityMention(
+            research_object_id=object_id,
+            chunk_id=chunks[1].id,
+            chunk_index=1,
+            section_label="section-1",
+            source_key="pubmed",
+            entity_type="target",
+            canonical_name="VEGFA",
+            normalized_key="target:vegfa",
+            matched_text="VEGFA",
+            matched_alias="VEGFA",
+            chunk_char_start=22,
+            chunk_char_end=27,
+            resolver_name="unit",
+            resolver_version="1",
+            match_rule="unit",
+        )
+    )
+
+    context = service.get_chunk_context(
+        ChunkContextRequest(chunk_id=chunks[1].id, window=1, max_chunk_chars=220)
+    )
+    object_result = service.get_research_object(
+        ResearchObjectReadRequest(research_object_id=object_id, max_chunks=2, max_chunk_chars=220)
+    )
+
+    assert context is not None
+    assert context.chunk.id == chunks[1].id
+    assert [chunk.id for chunk in context.before_chunks] == [chunks[0].id]
+    assert [chunk.id for chunk in context.after_chunks] == [chunks[2].id]
+    assert context.entity_mentions[0].canonical_name == "VEGFA"
+    assert object_result is not None
+    assert object_result.research_object.id == object_id
+    assert [chunk.id for chunk in object_result.chunks] == [chunks[0].id, chunks[1].id]
+
+
+def test_mcp_retrieval_tool_helpers_dump_bounded_read_results(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="MCP retrieval example",
+            source_key="pubmed",
+            dedupe_key="pubmed:retrieval-mcp",
+        )
+    )
+    chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="Canine hemangiosarcoma retrieval context for MCP.",
+            content_hash="retrieval-mcp-chunk",
+        )
+    )
+    monkeypatch.setattr(mcp_server, "get_service", lambda: service)
+
+    search_payload = mcp_server.search_research_chunks_tool(
+        query="hemangiosarcoma retrieval",
+        source_key="pubmed",
+        limit=1,
+    )
+    chunk_payload = mcp_server.get_chunk_context_tool(str(chunk.id), window=0)
+    object_payload = mcp_server.get_research_object_tool(str(object_id), max_chunks=1)
+
+    assert search_payload["search_mode"] == "keyword"
+    assert search_payload["results"][0]["chunk"]["id"] == str(chunk.id)
+    assert chunk_payload["chunk"]["id"] == str(chunk.id)
+    assert object_payload["research_object"]["id"] == str(object_id)
+    assert len(object_payload["chunks"]) == 1
 
 
 def test_backfill_papers_json_creates_object_and_chunk(tmp_path):

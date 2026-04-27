@@ -14,12 +14,15 @@ from uuid import UUID
 from .contracts import (
     BoltzRunRequest,
     CandidateDossierRequest,
+    ChunkContextRequest,
     ClaimCurationRequest,
     ClaimSearchRequest,
     CommitHypothesisRequest,
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
+    ResearchChunkSearchRequest,
+    ResearchObjectReadRequest,
     SourceScoutRequest,
     ValidationRequest,
 )
@@ -43,6 +46,69 @@ else:
             "and async validation runs. Expensive tools return run handles."
         ),
     )
+
+
+def search_research_chunks_tool(
+    query: str,
+    source_key: str | None = None,
+    research_object_id: str | None = None,
+    object_type: str | None = None,
+    embedding_model: str | None = None,
+    min_score: float | None = None,
+    limit: int = 10,
+    max_chunk_chars: int = 2000,
+    include_keyword_fallback: bool = True,
+) -> dict:
+    """Search retrieval chunks without returning raw embedding vectors."""
+
+    request = ResearchChunkSearchRequest(
+        query=query,
+        source_key=source_key,
+        research_object_id=UUID(research_object_id) if research_object_id else None,
+        object_type=object_type,  # type: ignore[arg-type]
+        embedding_model=embedding_model,
+        min_score=min_score,
+        limit=limit,
+        max_chunk_chars=max_chunk_chars,
+        include_keyword_fallback=include_keyword_fallback,
+    )
+    return get_service().search_research_chunks(request).model_dump(mode="json")
+
+
+def get_chunk_context_tool(
+    chunk_id: str,
+    window: int = 1,
+    max_chunk_chars: int = 4000,
+    include_entity_mentions: bool = True,
+) -> dict:
+    """Return a chunk plus nearby chunks and resolved entity mentions."""
+
+    request = ChunkContextRequest(
+        chunk_id=UUID(chunk_id),
+        window=window,
+        max_chunk_chars=max_chunk_chars,
+        include_entity_mentions=include_entity_mentions,
+    )
+    context = get_service().get_chunk_context(request)
+    return {} if context is None else context.model_dump(mode="json")
+
+
+def get_research_object_tool(
+    research_object_id: str,
+    include_chunks: bool = True,
+    max_chunks: int = 20,
+    max_chunk_chars: int = 2000,
+) -> dict:
+    """Return a canonical research object and bounded stored chunks."""
+
+    request = ResearchObjectReadRequest(
+        research_object_id=UUID(research_object_id),
+        include_chunks=include_chunks,
+        max_chunks=max_chunks,
+        max_chunk_chars=max_chunk_chars,
+    )
+    result = get_service().get_research_object(request)
+    return {} if result is None else result.model_dump(mode="json")
 
 
 if mcp is not None:
@@ -69,6 +135,64 @@ if mcp is not None:
             limit=limit,
         )
         return get_service().search_claims(request).model_dump(mode="json")
+
+    @mcp.tool()
+    def search_research_chunks(
+        query: str,
+        source_key: str | None = None,
+        research_object_id: str | None = None,
+        object_type: str | None = None,
+        embedding_model: str | None = None,
+        min_score: float | None = None,
+        limit: int = 10,
+        max_chunk_chars: int = 2000,
+        include_keyword_fallback: bool = True,
+    ) -> dict:
+        """Search retrieval chunks using embeddings first, with keyword fallback."""
+
+        return search_research_chunks_tool(
+            query=query,
+            source_key=source_key,
+            research_object_id=research_object_id,
+            object_type=object_type,
+            embedding_model=embedding_model,
+            min_score=min_score,
+            limit=limit,
+            max_chunk_chars=max_chunk_chars,
+            include_keyword_fallback=include_keyword_fallback,
+        )
+
+    @mcp.tool()
+    def get_chunk_context(
+        chunk_id: str,
+        window: int = 1,
+        max_chunk_chars: int = 4000,
+        include_entity_mentions: bool = True,
+    ) -> dict:
+        """Return a chunk with nearby chunks and entity context."""
+
+        return get_chunk_context_tool(
+            chunk_id=chunk_id,
+            window=window,
+            max_chunk_chars=max_chunk_chars,
+            include_entity_mentions=include_entity_mentions,
+        )
+
+    @mcp.tool()
+    def get_research_object(
+        research_object_id: str,
+        include_chunks: bool = True,
+        max_chunks: int = 20,
+        max_chunk_chars: int = 2000,
+    ) -> dict:
+        """Return a canonical research object and bounded chunk list."""
+
+        return get_research_object_tool(
+            research_object_id=research_object_id,
+            include_chunks=include_chunks,
+            max_chunks=max_chunks,
+            max_chunk_chars=max_chunk_chars,
+        )
 
     @mcp.tool()
     def curate_claims(
@@ -264,6 +388,18 @@ if mcp is not None:
 
         claim = get_service().get_claim(UUID(claim_id))
         return {} if claim is None else claim.model_dump(mode="json")
+
+    @mcp.resource("chunk://{chunk_id}")
+    def chunk_resource(chunk_id: str) -> dict:
+        """Fetch a retrieval chunk with immediate context as an MCP resource."""
+
+        return get_chunk_context_tool(chunk_id=chunk_id)
+
+    @mcp.resource("research-object://{research_object_id}")
+    def research_object_resource(research_object_id: str) -> dict:
+        """Fetch a canonical research object as an MCP resource."""
+
+        return get_research_object_tool(research_object_id=research_object_id)
 
     @mcp.resource("run://{run_id}")
     def run_resource(run_id: str) -> dict:

@@ -239,6 +239,62 @@ class TextEmbeddingSearchResult(StrictBaseModel):
     score: float = Field(ge=-1.0, le=1.0)
 
 
+class ResearchChunkSearchRequest(StrictBaseModel):
+    query: str = Field(min_length=1, max_length=1000)
+    source_key: str | None = None
+    research_object_id: UUID | None = None
+    object_type: ResearchObjectType | None = None
+    embedding_model: str | None = None
+    min_score: float | None = Field(default=None, ge=-1.0, le=1.0)
+    limit: int = Field(default=10, ge=1, le=50)
+    max_chunk_chars: int = Field(default=2000, ge=200, le=12000)
+    include_keyword_fallback: bool = True
+
+
+class ResearchChunkSearchResult(StrictBaseModel):
+    rank: int = Field(ge=1)
+    chunk: DocumentChunk
+    research_object: ResearchObject | None = None
+    score: float | None = Field(default=None, ge=-1.0, le=1.0)
+    match_type: Literal["embedding", "keyword"]
+    text_truncated: bool = False
+
+
+class ResearchChunkSearchResults(StrictBaseModel):
+    results: list[ResearchChunkSearchResult]
+    total: int = Field(ge=0)
+    query: ResearchChunkSearchRequest
+    search_mode: Literal["embedding", "keyword", "none"]
+    embedding_model: str | None = None
+
+
+class ChunkContextRequest(StrictBaseModel):
+    chunk_id: UUID
+    window: int = Field(default=1, ge=0, le=5)
+    max_chunk_chars: int = Field(default=4000, ge=200, le=12000)
+    include_entity_mentions: bool = True
+
+
+class ChunkContextResult(StrictBaseModel):
+    chunk: DocumentChunk
+    research_object: ResearchObject | None = None
+    before_chunks: list[DocumentChunk] = Field(default_factory=list)
+    after_chunks: list[DocumentChunk] = Field(default_factory=list)
+    entity_mentions: list[EntityMention] = Field(default_factory=list)
+
+
+class ResearchObjectReadRequest(StrictBaseModel):
+    research_object_id: UUID
+    include_chunks: bool = True
+    max_chunks: int = Field(default=20, ge=0, le=100)
+    max_chunk_chars: int = Field(default=2000, ge=200, le=12000)
+
+
+class ResearchObjectReadResult(StrictBaseModel):
+    research_object: ResearchObject
+    chunks: list[DocumentChunk] = Field(default_factory=list)
+
+
 class EmbeddingCoverageSummary(StrictBaseModel):
     source_key: str | None = None
     object_type: str | None = None

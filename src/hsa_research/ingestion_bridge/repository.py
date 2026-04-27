@@ -7,6 +7,7 @@ Database-backed implementations should preserve these method contracts.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import re
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -19,11 +20,15 @@ from .contracts import (
     ClaimSearchRequest,
     ClaimSearchResult,
     CommitHypothesisRequest,
+    DocumentChunk,
     EmbeddingCoverageSummary,
     EntityAlias,
     EntityMention,
     EvidenceLevel,
     HypothesisDraft,
+    ResearchChunkSearchRequest,
+    ResearchChunkSearchResult,
+    ResearchObject,
     ResolvedEntity,
     RunStatus,
     ScrapeSourceProfileReview,
@@ -35,7 +40,28 @@ from .contracts import (
 )
 
 
+_KEYWORD_PATTERN = re.compile(r"[a-z0-9]+(?:[._/-][a-z0-9]+)*")
+
+
 class ResearchRepository(Protocol):
+    def get_research_object(self, object_id: UUID) -> ResearchObject | None:
+        """Return a canonical research object by ID."""
+
+    def get_document_chunk(self, chunk_id: UUID) -> DocumentChunk | None:
+        """Return a single document chunk by ID."""
+
+    def list_document_chunks(
+        self,
+        object_id: UUID | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[DocumentChunk]:
+        """Return document chunks by durable filters."""
+
+    def search_research_chunks(self, request: ResearchChunkSearchRequest) -> list[ResearchChunkSearchResult]:
+        """Search document chunks with keyword matching as a retrieval fallback."""
+
     def search_claims(self, request: ClaimSearchRequest) -> list[ClaimSearchResult]:
         """Search claims by typed filters."""
 
@@ -166,6 +192,8 @@ class InMemoryResearchRepository:
         self.claims = seed_claims()
         self.runs: dict[UUID, AsyncRunHandle] = {}
         self.artifacts: dict[UUID, ArtifactHandle] = {}
+        self.research_objects: dict[UUID, ResearchObject] = {}
+        self.document_chunks: dict[UUID, DocumentChunk] = {}
         self.entities: dict[tuple[str, str], ResolvedEntity] = {}
         self.entity_aliases: dict[tuple[str, str, str], EntityAlias] = {}
         self.entity_mentions: dict[UUID, EntityMention] = {}
@@ -173,6 +201,73 @@ class InMemoryResearchRepository:
         self.scrape_reviews: dict[UUID, ScrapeReviewRecord] = {}
         self.scrape_profile_reviews: dict[str, ScrapeSourceProfileReview] = {}
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
+
+    def get_research_object(self, object_id: UUID) -> ResearchObject | None:
+        return self.research_objects.get(object_id)
+
+    def get_document_chunk(self, chunk_id: UUID) -> DocumentChunk | None:
+        return self.document_chunks.get(chunk_id)
+
+    def list_document_chunks(
+        self,
+        object_id: UUID | None = None,
+        source_key: str | None = None,
+        object_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[DocumentChunk]:
+        chunks = list(self.document_chunks.values())
+        if object_id:
+            chunks = [chunk for chunk in chunks if chunk.research_object_id == object_id]
+        if source_key or object_type:
+            filtered: list[DocumentChunk] = []
+            for chunk in chunks:
+                obj = self.get_research_object(chunk.research_object_id)
+                if source_key and (obj is None or obj.source_key != source_key):
+                    continue
+                if object_type and (obj is None or str(obj.object_type) != object_type):
+                    continue
+                filtered.append(chunk)
+            chunks = filtered
+        chunks.sort(key=lambda chunk: (str(chunk.research_object_id), chunk.chunk_index))
+        return chunks[:limit] if limit is not None else chunks
+
+    def search_research_chunks(self, request: ResearchChunkSearchRequest) -> list[ResearchChunkSearchResult]:
+        terms = keyword_terms(request.query)
+        if not terms:
+            return []
+        chunks = self.list_document_chunks(
+            object_id=request.research_object_id,
+            source_key=request.source_key,
+            object_type=str(request.object_type) if request.object_type else None,
+        )
+        results: list[ResearchChunkSearchResult] = []
+        for chunk in chunks:
+            obj = self.get_research_object(chunk.research_object_id)
+            score = keyword_chunk_score(request.query, terms, chunk, obj)
+            if score <= 0.0:
+                continue
+            if request.min_score is not None and score < request.min_score:
+                continue
+            results.append(
+                ResearchChunkSearchResult(
+                    rank=1,
+                    chunk=chunk,
+                    research_object=obj,
+                    score=score,
+                    match_type="keyword",
+                )
+            )
+        results.sort(
+            key=lambda result: (
+                -(result.score or 0.0),
+                str(result.chunk.research_object_id),
+                result.chunk.chunk_index,
+            )
+        )
+        return [
+            result.model_copy(update={"rank": index})
+            for index, result in enumerate(results[: request.limit], start=1)
+        ]
 
     def search_claims(self, request: ClaimSearchRequest) -> list[ClaimSearchResult]:
         results = list(self.claims)
@@ -582,3 +677,40 @@ def cosine_similarity(left: list[float], right: list[float]) -> float | None:
         return None
     score = sum(left_value * right_value for left_value, right_value in zip(left, right, strict=True))
     return max(min(score / (left_norm * right_norm), 1.0), -1.0)
+
+
+def keyword_terms(query: str) -> list[str]:
+    """Return stable lowercase terms for conservative chunk fallback search."""
+
+    seen: set[str] = set()
+    terms: list[str] = []
+    for term in _KEYWORD_PATTERN.findall(query.lower()):
+        if len(term) < 2 or term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+    return terms
+
+
+def keyword_chunk_score(
+    query: str,
+    terms: list[str],
+    chunk: DocumentChunk,
+    research_object: ResearchObject | None,
+) -> float:
+    """Return a bounded keyword relevance score for one chunk/object pair."""
+
+    if not terms:
+        return 0.0
+    title = research_object.title if research_object and research_object.title else ""
+    abstract = research_object.abstract if research_object and research_object.abstract else ""
+    haystack = f"{title}\n{abstract}\n{chunk.section_label or ''}\n{chunk.text_content}".lower()
+    matches = sum(1 for term in terms if term in haystack)
+    if matches == 0:
+        return 0.0
+
+    query_text = " ".join(query.lower().split())
+    phrase_bonus = 0.2 if query_text and query_text in haystack else 0.0
+    title_bonus = 0.1 * sum(1 for term in terms if term in title.lower())
+    score = (matches / len(terms)) * 0.7 + phrase_bonus + min(title_bonus, 0.1)
+    return min(score, 1.0)
