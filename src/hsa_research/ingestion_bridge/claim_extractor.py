@@ -16,6 +16,7 @@ from .contracts import (
     ClaimSearchResult,
     ClaimType,
     DocumentChunk,
+    EntityMention,
     EntityRef,
     EvidenceLevel,
     ResearchObject,
@@ -600,6 +601,9 @@ def extract_claims_for_repository(
         try:
             obj = repository.get_research_object(chunk.research_object_id)
             claims = extractor.extract_chunk(chunk, obj)
+            entity_mentions = repository.list_entity_mentions(chunk_id=chunk.id)
+            if entity_mentions:
+                claims = [_with_source_entity_mentions(claim, entity_mentions) for claim in claims]
             if claims:
                 result.chunks_with_claims += 1
             result.claims_extracted += len(claims)
@@ -610,6 +614,21 @@ def extract_claims_for_repository(
             result.errors.append(f"{chunk.id}: {exc}")
 
     return result
+
+
+def _with_source_entity_mentions(
+    claim: ClaimSearchResult,
+    entity_mentions: list[EntityMention],
+) -> ClaimSearchResult:
+    metadata = dict(claim.metadata)
+    metadata.update(
+        {
+            "source_entity_mention_ids": [str(mention.mention_id) for mention in entity_mentions],
+            "source_entity_canonical_names": [mention.canonical_name for mention in entity_mentions],
+            "source_entity_types": [mention.entity_type for mention in entity_mentions],
+        }
+    )
+    return claim.model_copy(update={"metadata": metadata})
 
 
 def _clean_entity_name(value: object) -> str | None:

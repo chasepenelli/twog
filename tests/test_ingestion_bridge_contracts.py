@@ -1590,6 +1590,35 @@ def test_local_claim_extractor_creates_draft_claims(tmp_path):
     assert any(claim.metadata.get("extraction_status") == "draft" for claim in claims)
 
 
+def test_local_claim_extractor_attaches_persisted_entity_mentions(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    title = "Propranolol and VEGF in canine hemangiosarcoma"
+    obj_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title=title,
+            abstract="Canine hemangiosarcoma studies discuss propranolol with VEGF and angiogenesis.",
+            source_key="pubmed",
+        )
+    )
+    for chunk in chunk_text(obj_id, title, section_label="title_abstract"):
+        repo.upsert_document_chunk(chunk)
+    resolved = resolve_entities_for_repository(repo, source_key="pubmed")
+    mentions = repo.list_entity_mentions(source_key="pubmed")
+
+    result = extract_claims_for_repository(repo, source_key="pubmed")
+    claims = repo.search_claims(
+        ClaimSearchRequest(query="propranolol", species="canine", min_confidence=0.1, include_drafts=True)
+    )
+
+    assert resolved.mentions_upserted >= 2
+    assert result.claims_written >= 1
+    assert claims
+    assert set(claims[0].metadata["source_entity_mention_ids"]) == {str(mention.mention_id) for mention in mentions}
+    assert set(claims[0].metadata["source_entity_canonical_names"]) >= {"propranolol", "VEGFA"}
+    assert set(claims[0].metadata["source_entity_types"]) >= {"compound", "target"}
+
+
 def test_local_claim_extractor_handles_human_angiosarcoma_analogs(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
     title = "Paclitaxel targets VEGF signaling in human angiosarcoma"
