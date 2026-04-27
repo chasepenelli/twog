@@ -162,6 +162,22 @@ if dg is not None:
         repository = build_sql_repository()
         return run_structured_sources_pipeline(repository)
 
+    @dg.asset(group_name="structured_source_refresh")
+    def structured_source_smoke_report() -> dict:
+        """Small hosted-runtime validation run against a single structured source."""
+
+        from .storage import build_sql_repository
+        from .structured_orchestration import run_structured_sources_pipeline
+
+        repository = build_sql_repository()
+        return run_structured_sources_pipeline(
+            repository,
+            source_keys=["pubchem"],
+            source_limits={"pubchem": 1},
+            extract_limit=50,
+            curate_limit=50,
+        )
+
     @dg.asset_check(asset=source_registry)
     def source_registry_has_phase_one_sources(source_registry: list[dict]) -> dg.AssetCheckResult:
         """Ensure the first bridge has the minimum source backbone."""
@@ -196,6 +212,24 @@ if dg is not None:
             },
         )
 
+    @dg.asset_check(asset=structured_source_smoke_report)
+    def structured_source_smoke_has_minimum_outputs(
+        structured_source_smoke_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure the hosted-runtime smoke run writes at least one PubChem result."""
+
+        totals = structured_source_smoke_report.get("totals", {})
+        errors = structured_source_smoke_report.get("errors", [])
+        passed = not errors and all(totals.get(field, 0) >= 1 for field in ("raw_records", "research_objects", "claims"))
+        return dg.AssetCheckResult(
+            passed=passed,
+            metadata={
+                "errors": errors,
+                "source_keys": structured_source_smoke_report.get("source_keys", []),
+                "totals": totals,
+            },
+        )
+
     ingestion_bridge_assets = [
         source_registry,
         source_scout_plan,
@@ -208,11 +242,16 @@ if dg is not None:
         curated_claims,
         coverage_snapshot,
         structured_source_pipeline_report,
+        structured_source_smoke_report,
     ]
 
     structured_source_pipeline_job = dg.define_asset_job(
         "structured_source_pipeline_job",
         selection=dg.AssetSelection.assets(structured_source_pipeline_report),
+    )
+    structured_source_smoke_job = dg.define_asset_job(
+        "structured_source_smoke_job",
+        selection=dg.AssetSelection.assets(structured_source_smoke_report),
     )
 
     defs = dg.Definitions(
@@ -220,11 +259,13 @@ if dg is not None:
         asset_checks=[
             source_registry_has_phase_one_sources,
             structured_source_pipeline_has_minimum_outputs,
+            structured_source_smoke_has_minimum_outputs,
         ],
-        jobs=[structured_source_pipeline_job],
+        jobs=[structured_source_pipeline_job, structured_source_smoke_job],
     )
 
 else:
     ingestion_bridge_assets = []
     structured_source_pipeline_job = None
+    structured_source_smoke_job = None
     defs = None
