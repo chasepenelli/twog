@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from .source_sets import ALL_API_SOURCE_KEYS, LITERATURE_FULL_TEXT_SOURCE_KEYS, TRIAGE_ONLY_SOURCE_KEYS
-from .structured_orchestration import full_text_source_qa, structured_source_qa
+from .structured_orchestration import full_text_source_qa, full_text_triage_summary, structured_source_qa
 
 
 COUNT_FIELDS = ("raw_records", "research_objects", "document_chunks", "claims")
@@ -41,6 +41,16 @@ def build_source_health_report(
     failed_sources = [report["source_key"] for report in source_reports if not report["passes_minimum_bar"]]
     watch_sources = [report["source_key"] for report in source_reports if report["health_status"] == "watch"]
     triage_sources = [report["source_key"] for report in source_reports if report["health_status"] == "triage"]
+    full_text_triage = [
+        report["full_text_qa"]["triage"]
+        for report in source_reports
+        if report.get("full_text_qa", {}).get("triage")
+    ]
+    full_text_blocking_sources = [
+        report["source_key"]
+        for report in source_reports
+        if report.get("full_text_triage_should_block_schedule")
+    ]
     return {
         "source_keys": selected_sources,
         "sources": source_reports,
@@ -55,6 +65,8 @@ def build_source_health_report(
         "failed_sources": failed_sources,
         "triage_sources": triage_sources,
         "watch_sources": watch_sources,
+        "full_text_triage": full_text_triage,
+        "full_text_blocking_sources": full_text_blocking_sources,
         "passes_minimum_bar": not failed_sources,
         "minimum_bar": {
             "require_claims": require_claims,
@@ -80,9 +92,11 @@ def build_source_health(
     triage_only = source_key in TRIAGE_ONLY_SOURCE_KEYS
     runtime = structured_source_qa(repository, source_key, sample_limit=sample_limit)
     if source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS:
+        full_text_qa = full_text_source_qa(repository, source_key, runtime_summary=runtime)
         runtime = {
             **runtime,
-            "full_text_qa": full_text_source_qa(repository, source_key),
+            "full_text_qa": full_text_qa,
+            **full_text_triage_summary(full_text_qa),
         }
     claim_metadata = _claim_metadata_summary(repository, source_key, limit=metadata_claim_limit)
     health_score, signals, risks, recommended_actions = _score_source(
@@ -204,12 +218,21 @@ def _score_source(
 
     full_text_qa = runtime.get("full_text_qa")
     if full_text_qa:
+        triage = full_text_qa.get("triage") or {}
         if full_text_qa.get("passes_full_text_bar"):
             score += 0.1
             signals.append("full_text_body_chunks_present")
+            if triage.get("action") == "no_action":
+                signals.append("full_text_triage_clear")
         else:
             risks.append("Full-text source lacks persisted body chunks or current-run full-text output.")
             recommended_actions.append("Run the full-text refresh and inspect XML parsing plus section-labeled chunk output.")
+            if triage:
+                risks.append(
+                    f"Full-text triage action: {triage.get('action')} "
+                    f"({triage.get('severity')})."
+                )
+                recommended_actions.extend(triage.get("recommended_next_actions", []))
 
     return round(min(score, 1.0), 3), _dedupe(signals), _dedupe(risks), _dedupe(recommended_actions)
 

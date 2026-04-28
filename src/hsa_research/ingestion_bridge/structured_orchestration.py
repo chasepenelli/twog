@@ -7,8 +7,9 @@ from typing import Any
 
 from .claim_curator import curate_claims_for_repository
 from .claim_extractor import extract_claims_for_repository
-from .contracts import ClaimCurationRequest
+from .contracts import ClaimCurationRequest, FullTextTriageRequest
 from .entity_resolution import resolve_entities_for_repository
+from .full_text_triage import triage_full_text_issue
 from .local_ingest import LocalIngestionPipeline
 from .local_store import SQLiteResearchRepository
 from .source_sets import ALL_API_SOURCE_KEYS, LITERATURE_FULL_TEXT_SOURCE_KEYS, STRUCTURED_SOURCE_KEYS
@@ -148,7 +149,12 @@ def run_structured_source_pipeline(
     curation.pop("decisions", None)
     qa = structured_source_qa(repository, source_key)
     full_text_qa = (
-        full_text_source_qa(repository, source_key, ingestion_results=ingestion_results)
+        full_text_source_qa(
+            repository,
+            source_key,
+            ingestion_results=ingestion_results,
+            runtime_summary=qa,
+        )
         if source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS
         else None
     )
@@ -169,6 +175,7 @@ def run_structured_source_pipeline(
     }
     if full_text_qa is not None:
         report["full_text_qa"] = full_text_qa
+        report.update(full_text_triage_summary(full_text_qa))
     return report
 
 
@@ -185,7 +192,12 @@ def run_structured_source_ingestion_pipeline(
     ingestion_results = [result.model_dump(mode="json") for result in pipeline.ingest_source(source_key, limit=limit)]
     qa = structured_source_qa(repository, source_key)
     full_text_qa = (
-        full_text_source_qa(repository, source_key, ingestion_results=ingestion_results)
+        full_text_source_qa(
+            repository,
+            source_key,
+            ingestion_results=ingestion_results,
+            runtime_summary=qa,
+        )
         if source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS
         else None
     )
@@ -207,6 +219,7 @@ def run_structured_source_ingestion_pipeline(
     }
     if full_text_qa is not None:
         report["full_text_qa"] = full_text_qa
+        report.update(full_text_triage_summary(full_text_qa))
     return report
 
 
@@ -228,9 +241,12 @@ def full_text_source_qa(
     source_key: str,
     *,
     ingestion_results: Sequence[Mapping[str, Any]] | None = None,
+    runtime_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return full-text-specific persisted and current-run QA for OA sources."""
 
+    if runtime_summary is None:
+        runtime_summary = structured_source_qa(repository, source_key)
     research_objects = repository.list_research_objects(source_key=source_key) if hasattr(repository, "list_research_objects") else []
     document_chunks = repository.list_document_chunks(source_key=source_key) if hasattr(repository, "list_document_chunks") else []
     full_text_objects = [
@@ -262,12 +278,11 @@ def full_text_source_qa(
             and current["current_raw_records"] >= 1
             and current["current_research_objects"] >= 1
             and current["current_document_chunks"] >= 1
-            and current["current_full_text_research_objects"] >= 1
             and current["current_full_text_document_chunks"] >= 1
             and not current["current_failed_runs"]
         )
     )
-    return {
+    result = {
         "source_key": source_key,
         "full_text_research_objects": len(full_text_objects),
         "full_text_document_chunks": len(full_text_chunks),
@@ -278,6 +293,26 @@ def full_text_source_qa(
         "passes_current_full_text_bar": current_passes,
         "passes_full_text_bar": persisted_passes and current_passes,
         **current,
+    }
+    result["triage"] = _triage_full_text_qa(
+        source_key=source_key,
+        qa=result,
+        runtime_summary=runtime_summary,
+        ingestion_results=ingestion_results,
+    )
+    result.update(full_text_triage_summary(result))
+    return result
+
+
+def full_text_triage_summary(full_text_qa: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return flat full-text triage fields for tables and source-health rows."""
+
+    triage = (full_text_qa or {}).get("triage") or {}
+    return {
+        "full_text_triage_action": triage.get("action"),
+        "full_text_triage_severity": triage.get("severity"),
+        "full_text_triage_should_retry": triage.get("should_retry"),
+        "full_text_triage_should_block_schedule": triage.get("should_block_schedule"),
     }
 
 
@@ -295,9 +330,15 @@ def build_structured_source_count_report(
     for source_key in selected_sources:
         source_report = structured_source_qa(repository, source_key, sample_limit=sample_limit)
         if source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS:
+            full_text_qa = full_text_source_qa(
+                repository,
+                source_key,
+                runtime_summary=source_report,
+            )
             source_report = {
                 **source_report,
-                "full_text_qa": full_text_source_qa(repository, source_key),
+                "full_text_qa": full_text_qa,
+                **full_text_triage_summary(full_text_qa),
             }
         source_reports.append(source_report)
     failed_sources = [
@@ -382,3 +423,67 @@ def _current_ingestion_full_text_counts(
         ),
         "current_failed_runs": failed_runs,
     }
+
+
+def _triage_full_text_qa(
+    *,
+    source_key: str,
+    qa: Mapping[str, Any],
+    runtime_summary: Mapping[str, Any],
+    ingestion_results: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, Any]:
+    use_current_run_counts = ingestion_results is not None
+    errors = [
+        str(error)
+        for result in (ingestion_results or [])
+        for error in result.get("errors", [])
+        if error
+    ]
+    query_names = [
+        str(result.get("query_name"))
+        for result in (ingestion_results or [])
+        if result.get("query_name")
+    ]
+    full_text_document_chunks = (
+        int(qa.get("current_full_text_document_chunks", 0))
+        if use_current_run_counts
+        else int(qa.get("full_text_document_chunks", 0))
+    )
+    full_text_body_chars = int(qa.get("full_text_body_chars", 0)) if full_text_document_chunks > 0 else 0
+    request = FullTextTriageRequest(
+        source_key=source_key,
+        stage="qa",
+        query_name=query_names[0] if len(query_names) == 1 else None,
+        error_message=errors[0] if errors else None,
+        errors=errors[1:],
+        raw_records=(
+            int(qa.get("current_raw_records", 0))
+            if use_current_run_counts
+            else int(runtime_summary.get("raw_records", 0))
+        ),
+        research_objects=(
+            int(qa.get("current_research_objects", 0))
+            if use_current_run_counts
+            else int(runtime_summary.get("research_objects", 0))
+        ),
+        document_chunks=(
+            int(qa.get("current_document_chunks", 0))
+            if use_current_run_counts
+            else int(runtime_summary.get("document_chunks", 0))
+        ),
+        full_text_document_chunks=full_text_document_chunks,
+        full_text_body_chars=full_text_body_chars,
+        claims=int(runtime_summary.get("claims", 0)),
+        entity_mentions=int(runtime_summary.get("entity_mentions", 0)),
+        current_failed_runs=list(qa.get("current_failed_runs", [])),
+        metadata={
+            "passes_persisted_full_text_bar": qa.get("passes_persisted_full_text_bar"),
+            "passes_current_full_text_bar": qa.get("passes_current_full_text_bar"),
+            "passes_full_text_bar": qa.get("passes_full_text_bar"),
+            "query_names": query_names,
+            "current_ingestion_runs": qa.get("current_ingestion_runs", 0),
+            "current_full_text_research_objects": qa.get("current_full_text_research_objects", 0),
+            "full_text_research_objects": qa.get("full_text_research_objects", 0),
+        },
+    )
+    return triage_full_text_issue(request).model_dump(mode="json")

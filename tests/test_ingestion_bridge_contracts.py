@@ -299,6 +299,8 @@ def test_full_text_ingestion_pipeline_skips_downstream_work(monkeypatch):
     assert source_report["extraction"]["status"] == "skipped"
     assert source_report["curation"]["status"] == "skipped"
     assert source_report["full_text_qa"]["passes_full_text_bar"] is True
+    assert source_report["full_text_qa"]["triage"]["action"] == "no_action"
+    assert source_report["full_text_triage_action"] == "no_action"
 
 
 def test_dagster_metadata_table_rows_encode_nested_values():
@@ -574,17 +576,28 @@ def test_dagster_full_text_check_requires_full_text_body_chunks():
                 "full_text_qa": {
                     "passes_full_text_bar": False,
                     "full_text_document_chunks": 0,
+                    "triage": {
+                        "action": "needs_parser_fix",
+                        "severity": "blocking",
+                        "should_retry": False,
+                        "should_block_schedule": True,
+                        "reasons": ["Records were persisted but no full-text body chunks were written."],
+                        "recommended_next_actions": ["Inspect chunk_text_sections."],
+                    },
                 },
             }
         ],
         "errors": [],
         "totals": {"raw_records": 1, "research_objects": 1, "document_chunks": 1, "claims": 1},
     }
+    annotated = dagster_asset_module._annotate_full_text_report(report, mode="refresh")
 
-    result = dagster_asset_module.literature_full_text_refresh_has_outputs.node_def.compute_fn.decorated_fn(report)
+    result = dagster_asset_module.literature_full_text_refresh_has_outputs.node_def.compute_fn.decorated_fn(annotated)
 
     assert result.passed is False
     assert result.metadata["failed_sources"].data == ["europe_pmc"]
+    assert result.metadata["full_text_blocking_sources"].data == ["europe_pmc"]
+    assert "full_text_triage" in result.metadata
 
 
 def _seed_minimal_source_claim(
@@ -923,8 +936,12 @@ def test_full_text_source_health_requires_body_chunks(tmp_path):
     assert report["failed_sources"] == ["europe_pmc"]
     assert report["passes_minimum_bar"] is False
     assert europe_pmc["full_text_qa"]["passes_full_text_bar"] is False
+    assert europe_pmc["full_text_qa"]["triage"]["action"] == "needs_parser_fix"
+    assert europe_pmc["full_text_triage_action"] == "needs_parser_fix"
     assert europe_pmc["minimum_bar"]["full_text_required_passes"] is False
+    assert report["full_text_blocking_sources"] == ["europe_pmc"]
     assert any("Full-text source lacks" in risk for risk in europe_pmc["risks"])
+    assert any("Full-text triage action: needs_parser_fix" in risk for risk in europe_pmc["risks"])
 
 
 def test_full_text_source_count_report_passes_with_body_chunks(tmp_path):
@@ -937,9 +954,13 @@ def test_full_text_source_count_report_passes_with_body_chunks(tmp_path):
     assert report["failed_sources"] == []
     assert report["passes_minimum_bar"] is True
     assert report["sources"][0]["full_text_qa"]["passes_full_text_bar"] is True
+    assert report["sources"][0]["full_text_triage_action"] == "no_action"
     assert qa["full_text_research_objects"] == 1
     assert qa["full_text_document_chunks"] == 1
-    assert full_text_source_qa(repo, "europe_pmc", ingestion_results=[])["passes_full_text_bar"] is False
+    assert qa["triage"]["action"] == "no_action"
+    current_run_qa = full_text_source_qa(repo, "europe_pmc", ingestion_results=[])
+    assert current_run_qa["passes_full_text_bar"] is False
+    assert current_run_qa["triage"]["action"] == "retry_later"
 
 
 def test_full_text_qa_uses_body_chunks_as_persisted_gate(tmp_path):
@@ -973,11 +994,30 @@ def test_full_text_qa_uses_body_chunks_as_persisted_gate(tmp_path):
     )
 
     qa = full_text_source_qa(repo, "pmc_oa")
+    current_qa = full_text_source_qa(
+        repo,
+        "pmc_oa",
+        ingestion_results=[
+            {
+                "source_key": "pmc_oa",
+                "query_name": "metadata_gap_current_run",
+                "raw_records": 1,
+                "research_objects": 1,
+                "document_chunks": 1,
+                "full_text_research_objects": 0,
+                "section_chunk_counts": {"full_text": 1},
+                "status": "completed",
+                "errors": [],
+            }
+        ],
+    )
 
     assert qa["full_text_research_objects"] == 0
     assert qa["full_text_document_chunks"] == 1
     assert qa["passes_persisted_full_text_bar"] is True
     assert qa["passes_full_text_bar"] is True
+    assert current_qa["passes_current_full_text_bar"] is True
+    assert current_qa["triage"]["action"] == "no_action"
 
 
 def test_full_text_triage_agent_accepts_clean_body_chunks():

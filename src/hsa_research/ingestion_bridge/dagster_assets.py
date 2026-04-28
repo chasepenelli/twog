@@ -60,6 +60,10 @@ _STRUCTURED_SOURCE_COUNT_TABLE_COLUMNS = (
     "passes_minimum_bar",
     "claim_status",
     "claim_types",
+    "full_text_triage_action",
+    "full_text_triage_severity",
+    "full_text_triage_should_retry",
+    "full_text_triage_should_block_schedule",
     "full_text_qa",
 )
 _SOURCE_HEALTH_TABLE_COLUMNS = (
@@ -77,7 +81,22 @@ _SOURCE_HEALTH_TABLE_COLUMNS = (
     "risks",
     "recommended_actions",
     "claim_metadata",
+    "full_text_triage_action",
+    "full_text_triage_severity",
+    "full_text_triage_should_retry",
+    "full_text_triage_should_block_schedule",
     "full_text_qa",
+)
+_FULL_TEXT_TRIAGE_TABLE_COLUMNS = (
+    "source_key",
+    "mode",
+    "passes_full_text_bar",
+    "triage_action",
+    "triage_severity",
+    "should_retry",
+    "should_block_schedule",
+    "reasons",
+    "recommended_next_actions",
 )
 _ENTITY_RESOLUTION_TABLE_COLUMNS = (
     "source_key",
@@ -172,6 +191,8 @@ if dg is not None:
             "triage_sources": dg.MetadataValue.json(report.get("triage_sources", [])),
             "watch_source_count": len(report.get("watch_sources", [])),
             "watch_sources": dg.MetadataValue.json(report.get("watch_sources", [])),
+            "full_text_blocking_sources": dg.MetadataValue.json(report.get("full_text_blocking_sources", [])),
+            "full_text_triage": dg.MetadataValue.json(report.get("full_text_triage", [])),
             "source_health_table": _metadata_table(
                 report.get("sources", []),
                 _SOURCE_HEALTH_TABLE_COLUMNS,
@@ -296,6 +317,12 @@ if dg is not None:
     def _annotate_full_text_report(report: dict, *, mode: str) -> dict:
         report["mode"] = mode
         report["full_text_runtime_config"] = _full_text_runtime_config()
+        report["full_text_triage"] = _full_text_triage_rows(report, mode=mode)
+        report["full_text_blocking_sources"] = [
+            row["source_key"]
+            for row in report["full_text_triage"]
+            if row.get("should_block_schedule")
+        ]
         return report
 
     def _full_text_runtime_config() -> dict[str, str | None]:
@@ -306,6 +333,28 @@ if dg is not None:
             "HSA_PMC_OA_MAX_CANDIDATE_RECORDS",
         )
         return {name: os.getenv(name) for name in env_names}
+
+    def _full_text_triage_rows(report: Mapping[str, Any], *, mode: str) -> list[dict[str, Any]]:
+        rows = []
+        for source_report in report.get("sources", []):
+            full_text_qa = source_report.get("full_text_qa") or {}
+            triage = full_text_qa.get("triage") or {}
+            if not triage:
+                continue
+            rows.append(
+                {
+                    "source_key": source_report.get("source_key"),
+                    "mode": mode,
+                    "passes_full_text_bar": full_text_qa.get("passes_full_text_bar"),
+                    "triage_action": triage.get("action"),
+                    "triage_severity": triage.get("severity"),
+                    "should_retry": triage.get("should_retry"),
+                    "should_block_schedule": triage.get("should_block_schedule"),
+                    "reasons": triage.get("reasons", []),
+                    "recommended_next_actions": triage.get("recommended_next_actions", []),
+                }
+            )
+        return rows
 
     def _full_text_check_result(
         report: Mapping[str, Any],
@@ -329,6 +378,11 @@ if dg is not None:
                 "errors": errors,
                 "source_keys": report.get("source_keys", []),
                 "source_limits": dict(source_limits),
+                "full_text_blocking_sources": report.get("full_text_blocking_sources", []),
+                "full_text_triage": _metadata_table(
+                    report.get("full_text_triage", []),
+                    _FULL_TEXT_TRIAGE_TABLE_COLUMNS,
+                ),
                 "totals": report.get("totals", {}),
             },
         )
@@ -357,6 +411,11 @@ if dg is not None:
                 "source_keys": report.get("source_keys", []),
                 "source_limits": dict(source_limits),
                 "full_text_runtime_config": report.get("full_text_runtime_config", {}),
+                "full_text_blocking_sources": report.get("full_text_blocking_sources", []),
+                "full_text_triage": _metadata_table(
+                    report.get("full_text_triage", []),
+                    _FULL_TEXT_TRIAGE_TABLE_COLUMNS,
+                ),
                 "totals": report.get("totals", {}),
             },
         )
