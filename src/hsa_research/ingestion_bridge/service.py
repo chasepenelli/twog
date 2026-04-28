@@ -41,6 +41,8 @@ from .contracts import (
     SourceScoutResult,
     TextEmbeddingSearchRequest,
     ValidationRequest,
+    XTopicReviewRequest,
+    XTopicReviewResult,
 )
 from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
@@ -50,6 +52,7 @@ from .full_text_triage import FullTextTriageAgent
 from .repository import ResearchRepository
 from .source_scout import SourceScoutAgent
 from .storage import build_research_repository
+from .x_topic_review import X_TOPIC_REVIEW_AGENT_NAME, X_TOPIC_REVIEW_AGENT_VERSION, XTopicReviewAgent
 
 
 DEFAULT_MODEL_PROFILES: dict[str, ModelProfile] = {
@@ -292,6 +295,23 @@ class HSAResearchService:
                 "blocking_actions": sum(1 for action in result.actions if action.severity == "blocking"),
                 "should_block_schedule": result.should_block_schedule,
                 "schedule_readiness": result.schedule_readiness,
+            },
+        )
+
+    def run_x_topic_review(self, request: XTopicReviewRequest) -> XTopicReviewResult:
+        return AgentRunner(self.repository).run(
+            agent_name=X_TOPIC_REVIEW_AGENT_NAME,
+            agent_version=X_TOPIC_REVIEW_AGENT_VERSION,
+            model_profile=request.model_profile,
+            input_payload=request.model_dump(mode="json"),
+            source_key="x_topic_monitor",
+            dagster_run_id=request.dagster_run_id,
+            execute=lambda: XTopicReviewAgent().run(request),
+            summarize=lambda result: {
+                "actions": len(result.actions),
+                "ingestion_candidate_count": result.ingestion_candidate_count,
+                "needs_human_review_count": result.needs_human_review_count,
+                "rejected_count": result.rejected_count,
             },
         )
 

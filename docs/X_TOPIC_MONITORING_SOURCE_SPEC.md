@@ -265,7 +265,9 @@ content outside the active API plan.
 2. `x_topic_filter_agent` applies deterministic topic, spam, source-link, and
    retention filters. It emits review candidates, not claims.
 3. `x_topic_review_agent` drafts review notes, suggested tags, likely durable
-   follow-up sources, and compliance warnings.
+   follow-up sources, ingestion flags, and compliance warnings. In hosted
+   Dagster this uses OpenRouter by default; deterministic review remains
+   available for local tests and fallback.
 4. Human reviewer accepts, rejects, or places candidates on compliance hold.
 5. `x_topic_promoter` creates `RawSourceRecord`, `ResearchObject`,
    `DocumentChunk`, and tag assignments for accepted signals only.
@@ -293,8 +295,10 @@ Keep the first PR code-light and isolated from full-text parser files.
    Done.
 8. Add Dagster manual review asset/job after local dry-run and fixture tests.
    Done as `x_topic_monitor_review_report` / `x_topic_monitor_review_job`.
-   Do not add schedules until persistence, compliance sync, and manual review
-   promotion are working.
+   The job now fetches candidates, runs `x_topic_review_agent`, and emits an
+   ingestion-recommendation table for durable linked sources. Do not add
+   schedules until persistence, compliance sync, and manual review promotion
+   are working.
 
 Initial acceptance criteria:
 
@@ -315,5 +319,7 @@ defines local retention/review models, scores candidate posts conservatively,
 and converts accepted review candidates into `RawSourceRecord`,
 `ResearchObject`, and `DocumentChunk` contracts without writing to the
 repository. Dagster exposes a manual-only `x_topic_monitor_review_job` that
-returns review candidates and source-health metadata; it does not persist posts
-or promote them as evidence.
+returns review candidates, persists an `x_topic_review_agent` ledger row, and
+surfaces source-ingestion recommendations for linked DOI/PubMed/PMC/NCT/PubChem/
+ChEMBL/UniProt/RCSB/GEO/SRA records. It does not persist posts or promote them
+as evidence.

@@ -12,7 +12,15 @@ import json
 import os
 from typing import Any
 
-from .contracts import FullTextOpsRequest, ClaimCurationRequest, ClaimSearchRequest, ResearchObject, SourceQuery, SourceScoutRequest
+from .contracts import (
+    ClaimCurationRequest,
+    ClaimSearchRequest,
+    FullTextOpsRequest,
+    ResearchObject,
+    SourceQuery,
+    SourceScoutRequest,
+    XTopicReviewRequest,
+)
 from .query_policy import (
     build_canine_data_source_queries,
     build_chemistry_source_queries,
@@ -117,6 +125,16 @@ _X_TOPIC_CANDIDATE_TABLE_COLUMNS = (
     "review_status",
     "matched_terms",
     "durable_links",
+)
+_X_TOPIC_REVIEW_TABLE_COLUMNS = (
+    "post_id",
+    "query_name",
+    "action",
+    "severity",
+    "recommended_sources",
+    "identifiers",
+    "links",
+    "reason",
 )
 _ENTITY_RESOLUTION_TABLE_COLUMNS = (
     "source_key",
@@ -352,12 +370,22 @@ if dg is not None:
 
     def _x_topic_monitor_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
         errors = report.get("errors", [])
+        agent_review = report.get("agent_review") or {}
         return {
             "source_key": report.get("source_key"),
             "provider": report.get("provider"),
             "query_count": len(report.get("queries", [])),
             "raw_tweet_count": dg.MetadataValue.int(int(report.get("raw_tweet_count", 0))),
             "candidate_count": dg.MetadataValue.int(int(report.get("candidate_count", 0))),
+            "agent_run_id": agent_review.get("agent_run_id"),
+            "review_action_count": len(agent_review.get("actions", [])),
+            "ingestion_candidate_count": dg.MetadataValue.int(
+                int(agent_review.get("ingestion_candidate_count", 0))
+            ),
+            "needs_human_review_count": dg.MetadataValue.int(
+                int(agent_review.get("needs_human_review_count", 0))
+            ),
+            "rejected_count": dg.MetadataValue.int(int(agent_review.get("rejected_count", 0))),
             "manual_review_required": bool(report.get("manual_review_required", True)),
             "error_count": len(errors),
             "errors": dg.MetadataValue.json(errors),
@@ -365,7 +393,46 @@ if dg is not None:
                 report.get("candidates", []),
                 _X_TOPIC_CANDIDATE_TABLE_COLUMNS,
             ),
+            "ingestion_recommendations": _metadata_table(
+                _x_topic_review_action_rows(agent_review.get("actions", [])),
+                _X_TOPIC_REVIEW_TABLE_COLUMNS,
+            ),
         }
+
+    def _x_topic_review_action_rows(actions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        rows = []
+        for action in actions:
+            links = action.get("ingestible_links", [])
+            rows.append(
+                {
+                    "post_id": action.get("source_record_id"),
+                    "query_name": action.get("query_name"),
+                    "action": action.get("action"),
+                    "severity": action.get("severity"),
+                    "recommended_sources": sorted(
+                        {
+                            link.get("recommended_source_key")
+                            for link in links
+                            if isinstance(link, Mapping) and link.get("recommended_source_key")
+                        }
+                    ),
+                    "identifiers": [
+                        {
+                            "type": link.get("identifier_type"),
+                            "value": link.get("identifier"),
+                        }
+                        for link in links
+                        if isinstance(link, Mapping) and link.get("identifier")
+                    ],
+                    "links": [
+                        link.get("url")
+                        for link in links
+                        if isinstance(link, Mapping) and link.get("url")
+                    ],
+                    "reason": action.get("reason"),
+                }
+            )
+        return rows
 
     def _run_literature_full_text_refresh(
         research_repository: ResearchRepositoryResource,
@@ -942,9 +1009,12 @@ if dg is not None:
         return dg.MaterializeResult(value=report, metadata=_full_text_ops_report_metadata(report))
 
     @dg.asset(group_name="social_monitoring")
-    def x_topic_monitor_review_report() -> dg.MaterializeResult:
-        """Manual TwitterAPI.io topic-monitoring review report."""
+    def x_topic_monitor_review_report(
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual TwitterAPI.io topic monitoring plus agent source-review report."""
 
+        from .service import HSAResearchService
         from .x_topic_monitor import (
             TWITTERAPI_IO_MAX_SINGLE_PAGE_RESULTS,
             X_TOPIC_SOURCE_KEY,
@@ -957,6 +1027,13 @@ if dg is not None:
         max_results = int(os.getenv("HSA_X_TOPIC_MAX_RESULTS", str(TWITTERAPI_IO_MAX_SINGLE_PAGE_RESULTS)))
         query_name_filter = os.getenv("HSA_X_TOPIC_QUERY_NAME")
         retention_mode = os.getenv("HSA_X_RETENTION_MODE", "store_metadata_only")
+        review_mode = os.getenv("HSA_X_TOPIC_REVIEW_MODE", "openrouter_required")
+        review_models = [
+            model.strip()
+            for model in os.getenv("HSA_X_TOPIC_REVIEW_MODELS", "").split(",")
+            if model.strip()
+        ]
+        max_review_candidates = int(os.getenv("HSA_X_TOPIC_REVIEW_MAX_CANDIDATES", "20"))
         queries = [
             query
             for query in build_default_source_queries()
@@ -1016,6 +1093,22 @@ if dg is not None:
             "manual_review_required": True,
             "errors": errors,
         }
+        repository = research_repository.build_repository()
+        agent_review = HSAResearchService(repository).run_x_topic_review(
+            XTopicReviewRequest(
+                provider_report=report,
+                recent_run_limit=5,
+                max_candidates=max_review_candidates,
+                review_mode=review_mode,  # type: ignore[arg-type]
+                review_models=review_models,
+                metadata={
+                    "provider": provider_name,
+                    "query_name_filter": query_name_filter,
+                    "retention_mode": retention_mode,
+                },
+            )
+        )
+        report["agent_review"] = agent_review.model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_x_topic_monitor_report_metadata(report))
 
     @dg.op(

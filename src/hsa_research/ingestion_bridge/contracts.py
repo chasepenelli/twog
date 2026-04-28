@@ -117,6 +117,30 @@ FullTextOpsActionName = Literal[
 
 AgentSeverity = Literal["info", "watch", "blocking"]
 
+XTopicReviewActionName = Literal[
+    "flag_for_ingestion",
+    "queue_source_followup",
+    "needs_link_review",
+    "needs_human_review",
+    "reject_noise",
+    "compliance_hold",
+    "skip_no_durable_source",
+]
+
+XTopicIdentifierType = Literal[
+    "doi",
+    "pmid",
+    "pmcid",
+    "nct",
+    "pubchem",
+    "chembl",
+    "uniprot",
+    "rcsb_pdb",
+    "geo",
+    "sra",
+    "unknown",
+]
+
 
 class AgentRunRecord(StrictBaseModel):
     agent_run_id: UUID = Field(default_factory=uuid4)
@@ -177,6 +201,58 @@ class FullTextOpsResult(StrictBaseModel):
         "keep_stopped",
         "blocked",
     ] = "keep_stopped"
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class XTopicLinkedSource(StrictBaseModel):
+    url: str
+    recommended_source_key: str | None = None
+    identifier_type: XTopicIdentifierType = "unknown"
+    identifier: str | None = None
+    should_ingest: bool = False
+    reason: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class XTopicReviewAction(StrictBaseModel):
+    source_record_id: str
+    query_name: str | None = None
+    username: str | None = None
+    action: XTopicReviewActionName
+    severity: AgentSeverity
+    reason: str
+    ingestible_links: list[XTopicLinkedSource] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class XTopicReviewRequest(StrictBaseModel):
+    provider_report: dict[str, Any] | None = None
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+    recent_run_limit: int = Field(default=5, ge=0, le=50)
+    max_candidates: int = Field(default=20, ge=1, le=100)
+    model_profile: str = "reviewer"
+    review_mode: Literal[
+        "external_required",
+        "openrouter_required",
+        "openrouter_compare",
+        "deterministic_only",
+    ] = "openrouter_required"
+    review_models: list[str] = Field(default_factory=list, max_length=10)
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class XTopicReviewResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    agent_name: str = "x_topic_review_agent"
+    model_profile: str = "reviewer"
+    actions: list[XTopicReviewAction] = Field(default_factory=list)
+    ingestion_candidate_count: int = 0
+    needs_human_review_count: int = 0
+    rejected_count: int = 0
     evidence: dict[str, Any] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

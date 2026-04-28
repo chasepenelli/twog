@@ -28,6 +28,7 @@ from .contracts import (
     RetrievalSmokeRequest,
     SourceScoutRequest,
     ValidationRequest,
+    XTopicReviewRequest,
 )
 from .service import get_service
 
@@ -215,6 +216,33 @@ def run_full_text_ops_tool(
         metadata=metadata or {},
     )
     return get_service().run_full_text_ops(request).model_dump(mode="json")
+
+
+def run_x_topic_review_tool(
+    provider_report: dict | None = None,
+    candidates: list[dict] | None = None,
+    recent_run_limit: int = 5,
+    max_candidates: int = 20,
+    model_profile: str = "reviewer",
+    review_mode: str = "openrouter_required",
+    review_models: list[str] | None = None,
+    dagster_run_id: str | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """Run the recommend-only X topic review agent."""
+
+    request = XTopicReviewRequest(
+        provider_report=provider_report,
+        candidates=candidates or [],
+        recent_run_limit=recent_run_limit,
+        max_candidates=max_candidates,
+        model_profile=model_profile,
+        review_mode=review_mode,  # type: ignore[arg-type]
+        review_models=review_models or [],
+        dagster_run_id=dagster_run_id,
+        metadata=metadata or {},
+    )
+    return get_service().run_x_topic_review(request).model_dump(mode="json")
 
 
 def get_agent_run_tool(agent_run_id: str) -> dict:
@@ -419,6 +447,32 @@ if mcp is not None:
             source_health_report=source_health_report,
             full_text_report=full_text_report,
             recent_run_limit=recent_run_limit,
+            model_profile=model_profile,
+            review_mode=review_mode,
+            review_models=review_models,
+            dagster_run_id=dagster_run_id,
+            metadata=metadata,
+        )
+
+    @mcp.tool()
+    def run_x_topic_review(
+        provider_report: dict | None = None,
+        candidates: list[dict] | None = None,
+        recent_run_limit: int = 5,
+        max_candidates: int = 20,
+        model_profile: str = "reviewer",
+        review_mode: str = "openrouter_required",
+        review_models: list[str] | None = None,
+        dagster_run_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Run the X topic review agent and persist its recommendations."""
+
+        return run_x_topic_review_tool(
+            provider_report=provider_report,
+            candidates=candidates,
+            recent_run_limit=recent_run_limit,
+            max_candidates=max_candidates,
             model_profile=model_profile,
             review_mode=review_mode,
             review_models=review_models,

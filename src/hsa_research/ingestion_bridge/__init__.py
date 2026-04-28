@@ -31,6 +31,10 @@ from .contracts import (
     SourceScoutRequest,
     SourceScoutResult,
     ValidationRequest,
+    XTopicLinkedSource,
+    XTopicReviewAction,
+    XTopicReviewRequest,
+    XTopicReviewResult,
 )
 from .claim_curator import ClaimCuratorAgent, curate_claims_for_repository
 from .embeddings import (
@@ -58,6 +62,7 @@ from .local_store import SQLiteResearchRepository
 from .postgres_store import PostgresResearchRepository
 from .source_scout import SourceScoutAgent, scout_sources_for_repository
 from .storage import build_research_repository, build_sql_repository
+from .x_topic_review import XTopicReviewAgent
 
 __all__ = [
     "ArtifactHandle",
@@ -106,6 +111,11 @@ __all__ = [
     "SourceScoutRequest",
     "SourceScoutResult",
     "ValidationRequest",
+    "XTopicLinkedSource",
+    "XTopicReviewAction",
+    "XTopicReviewAgent",
+    "XTopicReviewRequest",
+    "XTopicReviewResult",
     "build_scholarly_source_queries",
     "build_chunk_embedding_text",
     "build_research_repository",

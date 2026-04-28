@@ -47,6 +47,10 @@ from hsa_research.ingestion_bridge.contracts import (
     ClaimCurationRequest,
     SourceScoutRequest,
     RunStatus,
+    XTopicLinkedSource,
+    XTopicReviewAction,
+    XTopicReviewRequest,
+    XTopicReviewResult,
 )
 from hsa_research.ingestion_bridge.backfill import backfill_deep_dives, backfill_papers_json
 from hsa_research.ingestion_bridge.claim_curator import ClaimCuratorAgent
@@ -100,6 +104,7 @@ from hsa_research.ingestion_bridge.query_policy import build_scholarly_source_qu
 from hsa_research.ingestion_bridge.repository import InMemoryResearchRepository
 from hsa_research.ingestion_bridge import scraper_bridge
 from hsa_research.ingestion_bridge import x_topic_monitor
+from hsa_research.ingestion_bridge import x_topic_review
 from hsa_research.ingestion_bridge.scraper_bridge import ScrapeBridge, list_scrape_profiles
 from hsa_research.ingestion_bridge import service as service_module
 from hsa_research.ingestion_bridge.service import HSAResearchService
@@ -2580,6 +2585,7 @@ def test_twitterapi_io_provider_requires_key(monkeypatch):
 
 def test_dagster_x_topic_monitor_review_asset_uses_twitterapi_io(monkeypatch):
     calls = []
+    repo = InMemoryResearchRepository()
 
     class FakeTwitterApiIoProvider:
         def search(self, request):
@@ -2602,18 +2608,28 @@ def test_dagster_x_topic_monitor_review_asset_uses_twitterapi_io(monkeypatch):
                 ],
             )
 
+    class FakeRepositoryResource:
+        def build_repository(self):
+            return repo
+
     monkeypatch.setenv("HSA_X_TOPIC_QUERY_NAME", "x_trial_monitoring")
     monkeypatch.setenv("HSA_X_TOPIC_MAX_RESULTS", "10")
+    monkeypatch.setenv("HSA_X_TOPIC_REVIEW_MODE", "deterministic_only")
     monkeypatch.setattr(x_topic_monitor, "TwitterApiIoProvider", FakeTwitterApiIoProvider)
 
-    result = dagster_asset_module.x_topic_monitor_review_report.node_def.compute_fn.decorated_fn()
+    result = dagster_asset_module.x_topic_monitor_review_report.node_def.compute_fn.decorated_fn(
+        FakeRepositoryResource()
+    )
 
     assert calls == ["x_trial_monitoring"]
     assert result.value["provider"] == "twitterapi_io"
     assert result.value["raw_tweet_count"] == 2
     assert result.value["candidate_count"] == 1
     assert result.value["candidates"][0]["post_id"] == "123"
+    assert result.value["agent_review"]["ingestion_candidate_count"] == 1
+    assert result.value["agent_review"]["actions"][0]["action"] == "flag_for_ingestion"
     assert result.value["manual_review_required"] is True
+    assert repo.list_agent_runs(agent_name="x_topic_review_agent", status="completed")
     assert dagster_asset_module.x_topic_monitor_review_job is not None
 
 
@@ -2642,6 +2658,143 @@ def test_x_topic_monitor_normalizes_post_for_manual_review():
     assert "canine hemangiosarcoma" in candidate.matched_terms
     assert candidate.durable_links == ["https://pubmed.ncbi.nlm.nih.gov/123456/"]
     assert candidate.quality_score > 0.5
+
+
+def test_x_topic_review_contracts_validate():
+    linked_source = XTopicLinkedSource(
+        url="https://pubmed.ncbi.nlm.nih.gov/123456/",
+        recommended_source_key="pubmed",
+        identifier_type="pmid",
+        identifier="123456",
+        should_ingest=True,
+        reason="PubMed record.",
+    )
+    action = XTopicReviewAction(
+        source_record_id="123",
+        query_name="x_trial_monitoring",
+        action="flag_for_ingestion",
+        severity="watch",
+        reason="Linked PubMed record should be harvested.",
+        ingestible_links=[linked_source],
+    )
+    result = XTopicReviewResult(actions=[action])
+
+    assert XTopicReviewRequest().review_mode == "openrouter_required"
+    assert result.actions[0].ingestible_links[0].identifier_type == "pmid"
+    with pytest.raises(ValueError):
+        XTopicReviewAction(source_record_id="123", action="bad", severity="watch", reason="bad")
+    with pytest.raises(ValueError):
+        XTopicLinkedSource(url="https://example.com", identifier_type="bad", reason="bad")
+
+
+def test_x_topic_review_agent_flags_ingestible_links_and_skips_social_only():
+    result = x_topic_review.XTopicReviewAgent().run(
+        XTopicReviewRequest(
+            review_mode="deterministic_only",
+            candidates=[
+                {
+                    "post_id": "123",
+                    "query_name": "x_trial_monitoring",
+                    "username": "vetonc",
+                    "quality_score": 0.7,
+                    "durable_links": ["https://pubmed.ncbi.nlm.nih.gov/123456/"],
+                    "matched_terms": ["canine hemangiosarcoma"],
+                },
+                {
+                    "post_id": "456",
+                    "query_name": "x_disease_monitoring",
+                    "username": "owner",
+                    "quality_score": 0.4,
+                    "durable_links": [],
+                    "matched_terms": ["angiosarcoma"],
+                },
+            ],
+        )
+    )
+
+    assert result.ingestion_candidate_count == 1
+    assert result.rejected_count == 1
+    assert result.actions[0].action == "flag_for_ingestion"
+    assert result.actions[0].ingestible_links[0].recommended_source_key == "pubmed"
+    assert result.actions[0].ingestible_links[0].identifier == "123456"
+    assert result.actions[1].action == "skip_no_durable_source"
+
+
+def test_x_topic_review_openrouter_preserves_deterministic_ingestion_guardrail(monkeypatch):
+    def fake_review_model(model_name, review_payload):
+        assert model_name == "anthropic/claude-sonnet-test"
+        assert review_payload["candidates"][0]["durable_links"] == [
+            "https://doi.org/10.7717/peerj.4375"
+        ]
+        return {
+            "text": json.dumps(
+                {
+                    "actions": [
+                        {
+                            "source_record_id": "123",
+                            "query_name": "x_disease_monitoring",
+                            "username": "vetonc",
+                            "action": "needs_human_review",
+                            "severity": "watch",
+                            "reason": "Model wants a human pass.",
+                            "ingestible_links": [],
+                            "evidence_refs": ["candidate:123"],
+                            "metadata": {},
+                        }
+                    ],
+                    "evidence": {"review_summary": "reviewed"},
+                    "errors": [],
+                }
+            ),
+            "metadata": {"model_name": "anthropic/claude-sonnet-test", "usage": {"cost": 0.01}},
+        }
+
+    monkeypatch.setattr(x_topic_review, "_openrouter_review_model", fake_review_model)
+
+    result = x_topic_review.XTopicReviewAgent().run(
+        XTopicReviewRequest(
+            review_mode="openrouter_required",
+            review_models=["anthropic/claude-sonnet-test"],
+            candidates=[
+                {
+                    "post_id": "123",
+                    "query_name": "x_disease_monitoring",
+                    "username": "vetonc",
+                    "quality_score": 0.7,
+                    "durable_links": ["https://doi.org/10.7717/peerj.4375"],
+                }
+            ],
+        )
+    )
+
+    assert result.ingestion_candidate_count == 1
+    assert [action.action for action in result.actions] == ["needs_human_review", "flag_for_ingestion"]
+    assert result.actions[1].ingestible_links[0].recommended_source_key == "crossref"
+    assert result.evidence["model_reviews"][0]["status"] == "completed"
+
+
+def test_service_x_topic_review_creates_agent_run(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "x-topic-agent.sqlite3", seed=False)
+
+    result = HSAResearchService(repo).run_x_topic_review(
+        XTopicReviewRequest(
+            review_mode="deterministic_only",
+            candidates=[
+                {
+                    "post_id": "123",
+                    "query_name": "x_trial_monitoring",
+                    "quality_score": 0.7,
+                    "durable_links": ["https://clinicaltrials.gov/study/NCT12345678"],
+                }
+            ],
+        )
+    )
+
+    assert result.agent_run_id is not None
+    assert result.actions[0].ingestible_links[0].recommended_source_key == "clinicaltrials_gov"
+    runs = repo.list_agent_runs(agent_name="x_topic_review_agent", status="completed", source_key="x_topic_monitor")
+    assert runs
+    assert runs[0].summary["ingestion_candidate_count"] == 1
 
 
 def test_x_topic_monitor_requires_review_before_storage_contracts():

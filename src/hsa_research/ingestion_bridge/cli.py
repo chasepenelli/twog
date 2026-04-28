@@ -26,6 +26,7 @@ from .contracts import (
     ScrapeReviewRequest,
     SourceQuery,
     SourceScoutRequest,
+    XTopicReviewRequest,
 )
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, maintain_embedding_index
 from .entity_resolution import resolve_entities_for_repository
@@ -213,6 +214,37 @@ def main() -> None:
         help="OpenRouter model id; repeat to compare multiple models",
     )
     full_text_ops.add_argument("--fail-on-blocking", action="store_true")
+
+    x_topic_review = subparsers.add_parser(
+        "x-topic-review",
+        help="Run the recommend-only X topic review agent over candidate JSON",
+    )
+    x_topic_review.add_argument(
+        "--provider-report",
+        default=None,
+        help="Path to a JSON provider report from x_topic_monitor_review_report",
+    )
+    x_topic_review.add_argument(
+        "--candidate-json",
+        action="append",
+        default=[],
+        help="Candidate JSON object; repeat to review multiple candidates without a provider report",
+    )
+    x_topic_review.add_argument("--recent-run-limit", type=int, default=5, help="Recent agent runs to include")
+    x_topic_review.add_argument("--max-candidates", type=int, default=20, help="Maximum candidates to review")
+    x_topic_review.add_argument("--model-profile", default="reviewer", help="Logical model profile")
+    x_topic_review.add_argument(
+        "--review-mode",
+        choices=("external_required", "openrouter_required", "openrouter_compare", "deterministic_only"),
+        default="openrouter_required",
+        help="Whether review is external, OpenRouter-backed, comparative, or deterministic only",
+    )
+    x_topic_review.add_argument(
+        "--review-model",
+        action="append",
+        default=[],
+        help="OpenRouter model id; repeat to compare multiple models",
+    )
 
     agent_runs = subparsers.add_parser("agent-runs", help="List or fetch persisted agent runs")
     agent_runs.add_argument("--id", default=None, help="Optional agent_run_id to fetch")
@@ -473,6 +505,22 @@ def main() -> None:
                 source_keys=args.source,
                 partition_date=args.partition_date,
                 recent_run_limit=args.recent_run_limit,
+                model_profile=args.model_profile,
+                review_mode=args.review_mode,
+                review_models=args.review_model,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "x-topic-review":
+        provider_report = None
+        if args.provider_report:
+            provider_report = json.loads(Path(args.provider_report).read_text())
+        candidates = [json.loads(candidate) for candidate in args.candidate_json]
+        output = HSAResearchService(repo).run_x_topic_review(
+            XTopicReviewRequest(
+                provider_report=provider_report,
+                candidates=candidates,
+                recent_run_limit=args.recent_run_limit,
+                max_candidates=args.max_candidates,
                 model_profile=args.model_profile,
                 review_mode=args.review_mode,
                 review_models=args.review_model,
