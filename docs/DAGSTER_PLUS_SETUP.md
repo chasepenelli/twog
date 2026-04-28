@@ -184,11 +184,13 @@ jobs can be tested without changing the file. For the full-text lane, prefer a
 shorter manual timeout while hardening the hosted path.
 
 Use `x_topic_monitor_review_job` for a bounded TwitterAPI.io topic-monitoring
-review run. It requires `TWITTERAPI_IO_KEY` and, by default,
-`OPENROUTER_API_KEY` in GitHub Actions and Dagster+ environment variables. The
-job fetches candidates, runs `x_topic_review_agent`, flags linked primary
-sources that should be harvested through the normal API lanes, and does not
-persist or promote social posts as evidence.
+review run. It requires `TWITTERAPI_IO_KEY` and attempts OpenRouter review by
+default when `OPENROUTER_API_KEY` is available. The job fetches candidates,
+runs `x_topic_review_agent`, flags linked primary sources that should be
+harvested through the normal API lanes, and does not persist or promote social
+posts as evidence. The hosted default is resilient: if the model call fails,
+the deterministic link-mapping guardrail still returns a report and records the
+model error in agent evidence.
 
 Partitioned full-text source/date assets should still be launched from Dagster+
 directly or by the running `literature_full_text_source_date_daily_schedule`.

@@ -96,10 +96,6 @@ jobs:
             echo "::error::TWITTERAPI_IO_KEY is required for x_topic_monitor_review_job."
             exit 1
           fi
-          if [ "$DAGSTER_CLOUD_JOB" = "x_topic_monitor_review_job" ] && [ -z "$OPENROUTER_API_KEY" ]; then
-            echo "::error::OPENROUTER_API_KEY is required for the default X topic review agent mode."
-            exit 1
-          fi
         shell: bash
 
       - name: Install project dependencies

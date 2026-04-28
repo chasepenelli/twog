@@ -266,8 +266,8 @@ content outside the active API plan.
    retention filters. It emits review candidates, not claims.
 3. `x_topic_review_agent` drafts review notes, suggested tags, likely durable
    follow-up sources, ingestion flags, and compliance warnings. In hosted
-   Dagster this uses OpenRouter by default; deterministic review remains
-   available for local tests and fallback.
+   Dagster this attempts OpenRouter by default; deterministic review remains
+   available for local tests and as the guardrail fallback.
 4. Human reviewer accepts, rejects, or places candidates on compliance hold.
 5. `x_topic_promoter` creates `RawSourceRecord`, `ResearchObject`,
    `DocumentChunk`, and tag assignments for accepted signals only.
