@@ -24,10 +24,16 @@ on:
           - "structured_source_count_report_job"
           - "source_health_report_job"
           - "full_text_ops_agent_job"
+          - "full_text_source_date_ops_job"
           - "entity_resolution_job"
           - "embedding_index_job"
           - "embedding_maintenance_job"
           - "structured_source_pipeline_job"
+      config_json:
+        description: "Optional Dagster run config JSON"
+        type: string
+        required: false
+        default: ""
       timeout_seconds:
         description: "Maximum seconds to wait for the Dagster run before failing and requesting termination"
         type: string
@@ -46,6 +52,7 @@ jobs:
       DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
       DAGSTER_CLOUD_LOCATION: "hsa-dagster"
       DAGSTER_CLOUD_JOB: ${{ inputs.job }}
+      DAGSTER_CLOUD_CONFIG_JSON: ${{ inputs.config_json }}
       DAGSTER_CLOUD_RUN_TIMEOUT_SECONDS: ${{ inputs.timeout_seconds }}
       DAGSTER_CLOUD_RUN_STATUS_INTERVAL_SECONDS: "15"
       DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS: "60"
@@ -88,17 +95,23 @@ jobs:
           set -euo pipefail
 
           launch_tags='{"github_workflow":"launch-dagster-smoke","github_run_id":"'"$GITHUB_RUN_ID"'","github_run_attempt":"'"$GITHUB_RUN_ATTEMPT"'","dagster_job":"'"$DAGSTER_CLOUD_JOB"'"}'
+          launch_args=(
+            uv run dagster-cloud job launch
+            --api-token "$DAGSTER_PLUS_ENV_API_TOKEN"
+            --organization "$DAGSTER_CLOUD_ORGANIZATION"
+            --deployment "$DAGSTER_CLOUD_DEPLOYMENT"
+            --location "$DAGSTER_CLOUD_LOCATION"
+            --job "$DAGSTER_CLOUD_JOB"
+            --tags "$launch_tags"
+          )
+          if [ -n "$DAGSTER_CLOUD_CONFIG_JSON" ]; then
+            printf '%s' "$DAGSTER_CLOUD_CONFIG_JSON" | python -m json.tool >/dev/null
+            launch_args+=(--config-json "$DAGSTER_CLOUD_CONFIG_JSON")
+          fi
 
           set +e
           launch_output="$(
-            timeout 5m uv run dagster-cloud job launch \
-              --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
-              --organization "$DAGSTER_CLOUD_ORGANIZATION" \
-              --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
-              --location "$DAGSTER_CLOUD_LOCATION" \
-              --job "$DAGSTER_CLOUD_JOB" \
-              --tags "$launch_tags" \
-              2>&1
+            timeout 5m "${launch_args[@]}" 2>&1
           )"
           launch_exit=$?
           set -e
@@ -132,6 +145,9 @@ jobs:
               echo "- Job: \`$DAGSTER_CLOUD_JOB\`"
               echo "- Run ID: \`$run_id\`"
               echo "- URL: $run_url"
+              if [ -n "$DAGSTER_CLOUD_CONFIG_JSON" ]; then
+                echo "- Config JSON supplied: yes"
+              fi
             } >> "$GITHUB_STEP_SUMMARY"
           fi
         shell: bash
@@ -292,7 +308,7 @@ jobs:
           )
           if [ "$DAGSTER_CLOUD_JOB" = "literature_corpus_harvest_job" ]; then
             sources=(openalex pubmed crossref)
-          elif [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_ingest_smoke_job" ]; then
+          elif [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_ingest_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "full_text_source_date_ops_job" ]; then
             sources=(europe_pmc pmc_oa)
           elif [ "$DAGSTER_CLOUD_JOB" = "europe_pmc_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "europe_pmc_full_text_ingest_job" ]; then
             sources=(europe_pmc)
@@ -302,7 +318,7 @@ jobs:
           if [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_ingest_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "europe_pmc_full_text_ingest_job" ] || [ "$DAGSTER_CLOUD_JOB" = "pmc_oa_full_text_ingest_job" ]; then
             claim_flags="--no-require-claims"
           fi
-          if [ "$DAGSTER_CLOUD_JOB" = "literature_clinical_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "all_api_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_corpus_harvest_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "europe_pmc_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "pmc_oa_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_ingest_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "europe_pmc_full_text_ingest_job" ] || [ "$DAGSTER_CLOUD_JOB" = "pmc_oa_full_text_ingest_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "structured_source_count_report_job" ] || [ "$DAGSTER_CLOUD_JOB" = "source_health_report_job" ]; then
+          if [ "$DAGSTER_CLOUD_JOB" = "literature_clinical_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "all_api_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_corpus_harvest_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "europe_pmc_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "pmc_oa_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_ingest_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "europe_pmc_full_text_ingest_job" ] || [ "$DAGSTER_CLOUD_JOB" = "pmc_oa_full_text_ingest_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "full_text_source_date_ops_job" ] || [ "$DAGSTER_CLOUD_JOB" = "structured_source_count_report_job" ] || [ "$DAGSTER_CLOUD_JOB" = "source_health_report_job" ]; then
             validation_flags="--fail-on-failed-sources"
           fi
           source_args=()
@@ -317,13 +333,13 @@ jobs:
         shell: bash
 
       - name: Print hosted source health report
-        if: ${{ inputs.job == 'all_api_smoke_job' || inputs.job == 'literature_corpus_harvest_job' || inputs.job == 'literature_full_text_refresh_job' || inputs.job == 'europe_pmc_full_text_refresh_job' || inputs.job == 'pmc_oa_full_text_refresh_job' || inputs.job == 'literature_full_text_ingest_smoke_job' || inputs.job == 'europe_pmc_full_text_ingest_job' || inputs.job == 'pmc_oa_full_text_ingest_job' || inputs.job == 'literature_full_text_smoke_job' || inputs.job == 'source_health_report_job' }}
+        if: ${{ inputs.job == 'all_api_smoke_job' || inputs.job == 'literature_corpus_harvest_job' || inputs.job == 'literature_full_text_refresh_job' || inputs.job == 'europe_pmc_full_text_refresh_job' || inputs.job == 'pmc_oa_full_text_refresh_job' || inputs.job == 'literature_full_text_ingest_smoke_job' || inputs.job == 'europe_pmc_full_text_ingest_job' || inputs.job == 'pmc_oa_full_text_ingest_job' || inputs.job == 'literature_full_text_smoke_job' || inputs.job == 'full_text_source_date_ops_job' || inputs.job == 'source_health_report_job' }}
         run: |
           sources=()
           claim_flags=""
           if [ "$DAGSTER_CLOUD_JOB" = "literature_corpus_harvest_job" ]; then
             sources=(openalex pubmed crossref)
-          elif [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_ingest_smoke_job" ]; then
+          elif [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "literature_full_text_ingest_smoke_job" ] || [ "$DAGSTER_CLOUD_JOB" = "full_text_source_date_ops_job" ]; then
             sources=(europe_pmc pmc_oa)
           elif [ "$DAGSTER_CLOUD_JOB" = "europe_pmc_full_text_refresh_job" ] || [ "$DAGSTER_CLOUD_JOB" = "europe_pmc_full_text_ingest_job" ]; then
             sources=(europe_pmc)

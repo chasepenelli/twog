@@ -176,10 +176,34 @@ The workflow also exposes a `timeout_seconds` dispatch input so long-running
 jobs can be tested without changing the file. For the full-text lane, prefer a
 shorter manual timeout while hardening the hosted path.
 
-Partitioned full-text source/date jobs should be launched from Dagster+ directly
-or by the stopped `literature_full_text_source_date_daily_schedule`. The current
-GitHub smoke workflow uses `dagster-cloud job launch`, which does not expose a
-partition-key option in the installed CLI.
+Partitioned full-text source/date assets should still be launched from Dagster+
+directly or by the stopped `literature_full_text_source_date_daily_schedule`.
+The current GitHub smoke workflow uses `dagster-cloud job launch`, which does
+not expose a partition-key option in the installed CLI.
+
+For agent-reviewed manual validation from GitHub Actions, launch
+`full_text_source_date_ops_job` with `config_json`. This is a config-driven
+manual job, not the partitioned asset run. It runs one source/date full-text
+slice, persists the ingested data, then passes that report into
+`FullTextOpsAgent` so the agent can recommend whether the lane is ready.
+
+Example `config_json`:
+
+```json
+{
+  "ops": {
+    "full_text_source_date_ops": {
+      "config": {
+        "source_key": "europe_pmc",
+        "partition_date": "2026-04-27",
+        "source_limit": 25,
+        "extract_limit": 100,
+        "curate_limit": 100
+      }
+    }
+  }
+}
+```
 
 If a run is already stuck in Dagster+, use the manual GitHub Actions workflow
 `Terminate Dagster Runs`. It calls Dagster Cloud GraphQL `terminateRuns` with the

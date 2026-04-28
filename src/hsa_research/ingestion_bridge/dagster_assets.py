@@ -415,6 +415,40 @@ if dg is not None:
             },
         )
 
+    def _run_literature_full_text_source_date_report(
+        research_repository: ResearchRepositoryResource,
+        *,
+        source_key: str,
+        partition_date: str,
+        source_limit: int,
+        extract_limit: int,
+        curate_limit: int,
+    ) -> dict:
+        from .structured_orchestration import run_structured_sources_pipeline
+
+        if source_key not in LITERATURE_FULL_TEXT_SOURCE_KEYS:
+            valid_sources = ", ".join(LITERATURE_FULL_TEXT_SOURCE_KEYS)
+            raise ValueError(f"source_key must be one of {valid_sources}; got {source_key!r}")
+        if source_limit < 1:
+            raise ValueError(f"source_limit must be positive; got {source_limit!r}")
+        if extract_limit < 1:
+            raise ValueError(f"extract_limit must be positive; got {extract_limit!r}")
+        if curate_limit < 1:
+            raise ValueError(f"curate_limit must be positive; got {curate_limit!r}")
+
+        repository = research_repository.build_repository()
+        report = run_structured_sources_pipeline(
+            repository,
+            source_keys=(source_key,),
+            source_limits={source_key: source_limit},
+            extract_limit=extract_limit,
+            curate_limit=curate_limit,
+            partition_date=partition_date,
+        )
+        report = _annotate_full_text_report(report, mode="source_date_partition")
+        report["partition_date"] = partition_date
+        return report
+
     def _annotate_full_text_report(report: dict, *, mode: str) -> dict:
         report["mode"] = mode
         report["full_text_runtime_config"] = _full_text_runtime_config()
@@ -880,6 +914,89 @@ if dg is not None:
         result = HSAResearchService(repository).run_full_text_ops(FullTextOpsRequest())
         report = result.model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_full_text_ops_report_metadata(report))
+
+    @dg.op(
+        required_resource_keys={"research_repository"},
+        config_schema={
+            "source_key": dg.Field(
+                str,
+                default_value="europe_pmc",
+                description="Full-text source to validate.",
+            ),
+            "partition_date": dg.Field(
+                str,
+                description="Publication-date partition to validate as YYYY-MM-DD.",
+            ),
+            "source_limit": dg.Field(
+                int,
+                default_value=25,
+                description="Maximum source records to fetch for the manual validation run.",
+            ),
+            "extract_limit": dg.Field(
+                int,
+                default_value=100,
+                description="Maximum chunks to extract claims from.",
+            ),
+            "curate_limit": dg.Field(
+                int,
+                default_value=100,
+                description="Maximum claims to curate.",
+            ),
+        },
+    )
+    def full_text_source_date_ops(context) -> dict:
+        """Run one full-text source/date slice and feed the report into FullTextOpsAgent."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        source_key = config["source_key"]
+        partition_date = config["partition_date"]
+        research_repository = context.resources.research_repository
+        partition_report = _run_literature_full_text_source_date_report(
+            research_repository,
+            source_key=source_key,
+            partition_date=partition_date,
+            source_limit=config["source_limit"],
+            extract_limit=config["extract_limit"],
+            curate_limit=config["curate_limit"],
+        )
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).run_full_text_ops(
+            FullTextOpsRequest(
+                source_keys=(source_key,),
+                partition_date=partition_date,
+                full_text_report=partition_report,
+            )
+        )
+        ops_report = result.model_dump(mode="json")
+        context.add_output_metadata(
+            {
+                "source_key": source_key,
+                "partition_date": partition_date,
+                "agent_run_id": ops_report.get("agent_run_id"),
+                "action_count": len(ops_report.get("actions", [])),
+                "blocking_count": sum(
+                    1
+                    for action in ops_report.get("actions", [])
+                    if action.get("severity") in {"warning", "critical"}
+                ),
+                "schedule_readiness": ops_report.get("schedule_readiness"),
+                "should_block_schedule": ops_report.get("should_block_schedule"),
+                "full_text_triage": _metadata_table(
+                    partition_report.get("full_text_triage", []),
+                    _FULL_TEXT_TRIAGE_TABLE_COLUMNS,
+                ),
+                "recommendations": _metadata_table(
+                    ops_report.get("actions", []),
+                    _FULL_TEXT_OPS_ACTION_TABLE_COLUMNS,
+                ),
+            }
+        )
+        return {
+            "partition_report": partition_report,
+            "ops_report": ops_report,
+        }
 
     @dg.asset(group_name="entity_resolution")
     def entity_resolution_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
@@ -1417,6 +1534,13 @@ if dg is not None:
         "full_text_ops_agent_job",
         selection=dg.AssetSelection.assets(full_text_ops_agent_report),
     )
+    full_text_source_date_ops_job = dg.JobDefinition(
+        name="full_text_source_date_ops_job",
+        graph_def=dg.GraphDefinition(
+            name="full_text_source_date_ops_graph",
+            node_defs=[full_text_source_date_ops],
+        ),
+    )
     entity_resolution_job = dg.define_asset_job(
         "entity_resolution_job",
         selection=dg.AssetSelection.assets(entity_resolution_report),
@@ -1529,6 +1653,7 @@ if dg is not None:
             structured_source_count_report_job,
             source_health_report_job,
             full_text_ops_agent_job,
+            full_text_source_date_ops_job,
             entity_resolution_job,
             embedding_index_job,
             embedding_maintenance_job,
@@ -1567,6 +1692,7 @@ else:
     structured_source_count_report_job = None
     source_health_report_job = None
     full_text_ops_agent_job = None
+    full_text_source_date_ops_job = None
     entity_resolution_job = None
     embedding_index_job = None
     embedding_maintenance_job = None

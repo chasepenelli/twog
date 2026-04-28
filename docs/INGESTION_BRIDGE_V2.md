@@ -522,6 +522,14 @@ It returns structured recommendations such as `run_ingest_smoke`,
 `full_text_ops_agent_report` / `full_text_ops_agent_job`, intentionally manual
 only until the recommendations are trusted in hosted runs.
 
+`full_text_source_date_ops_job` is the manual hosted bridge for source/date
+validation while the Dagster Cloud CLI lacks partition-key launch support. It
+accepts `source_key` and `partition_date` run config, executes one source/date
+full-text slice, and passes that report directly into `FullTextOpsAgent` so the
+recommendation is backed by current partition evidence. It is manual only and
+does not replace the partitioned `literature_full_text_source_date_job` or its
+stopped daily schedule.
+
 ## Build Phases
 
 ### Phase 0: Foundation
