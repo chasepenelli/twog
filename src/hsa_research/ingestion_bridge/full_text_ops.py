@@ -18,12 +18,10 @@ from .source_sets import LITERATURE_FULL_TEXT_SOURCE_KEYS
 
 FULL_TEXT_OPS_AGENT_NAME = "full_text_ops_agent"
 FULL_TEXT_OPS_AGENT_VERSION = "v1"
+DEFAULT_OPENROUTER_REVIEW_MODEL = "~anthropic/claude-sonnet-latest"
 DEFAULT_OPENROUTER_COMPARE_MODELS = (
-    "openai/gpt-5.1",
-    "anthropic/claude-sonnet-4.5",
-    "anthropic/claude-opus-4.5",
+    DEFAULT_OPENROUTER_REVIEW_MODEL,
 )
-DEFAULT_OPENROUTER_REVIEW_MODEL = DEFAULT_OPENROUTER_COMPARE_MODELS[0]
 
 _SOURCE_INGEST_JOBS = {
     "europe_pmc": "europe_pmc_full_text_ingest_job",

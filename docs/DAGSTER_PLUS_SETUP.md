@@ -215,8 +215,12 @@ Review that packet from a ChatGPT Pro/Codex session, compare it to
 `deterministic_guardrail_result`, and only then decide whether to enable the
 stopped schedule.
 
-To compare hosted model reviewers through OpenRouter, set the GitHub Actions
-secret `OPENROUTER_API_KEY` and use `review_mode=openrouter_compare`:
+To run hosted model review through OpenRouter, set the GitHub Actions secret
+`OPENROUTER_API_KEY` and use `review_mode=openrouter_required` or
+`review_mode=openrouter_compare`. By default, hosted OpenRouter review uses
+`~anthropic/claude-sonnet-latest`, which currently resolves to the latest
+available Claude Sonnet model and will move forward when a newer Sonnet is
+released.
 
 ```json
 {
@@ -228,21 +232,16 @@ secret `OPENROUTER_API_KEY` and use `review_mode=openrouter_compare`:
         "source_limit": 25,
         "extract_limit": 100,
         "curate_limit": 100,
-        "review_mode": "openrouter_compare",
-        "review_models": [
-          "openai/gpt-5.1",
-          "anthropic/claude-sonnet-4.5",
-          "anthropic/claude-opus-4.5"
-        ]
+        "review_mode": "openrouter_required"
       }
     }
   }
 }
 ```
 
-Each model's structured result is stored in
-`agent_runs.output_payload.evidence.model_reviews` alongside the deterministic
-guardrail result.
+For an intentional benchmark, pass `review_models` explicitly. Each model's
+structured result is stored in `agent_runs.output_payload.evidence.model_reviews`
+alongside the deterministic guardrail result.
 
 If a run is already stuck in Dagster+, use the manual GitHub Actions workflow
 `Terminate Dagster Runs`. It calls Dagster Cloud GraphQL `terminateRuns` with the

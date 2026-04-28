@@ -1120,6 +1120,18 @@ def test_full_text_ops_openrouter_compare_records_each_model(monkeypatch, tmp_pa
     assert all(review["status"] == "completed" for review in result.evidence["model_reviews"])
 
 
+def test_full_text_ops_openrouter_defaults_to_sonnet_latest(monkeypatch):
+    monkeypatch.delenv("HSA_FULL_TEXT_OPS_MODEL", raising=False)
+    monkeypatch.delenv("HSA_FULL_TEXT_OPS_REVIEW_MODELS", raising=False)
+
+    assert full_text_ops._review_models(FullTextOpsRequest(review_mode="openrouter_required")) == [
+        "~anthropic/claude-sonnet-latest"
+    ]
+    assert full_text_ops._review_models(FullTextOpsRequest(review_mode="openrouter_compare")) == [
+        "~anthropic/claude-sonnet-latest"
+    ]
+
+
 def test_full_text_ops_openrouter_compare_persists_model_failures(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "full-text-ops-openrouter-failures.sqlite3", seed=False)
     _seed_full_text_source_claim(repo, "europe_pmc")
