@@ -190,7 +190,8 @@ than chained. The initial production cadence is:
 - `literature_full_text_weekly_schedule`: `0 2 * * 0`, stopped until the
   full-text lane has a clean hosted run.
 - `literature_full_text_source_date_daily_schedule`: `30 2 * * *`, running
-  after a clean Sonnet-reviewed `pmc_oa` source/date ops run on 2026-04-28.
+  after clean Sonnet-reviewed `pmc_oa` and `europe_pmc` source/date ops runs on
+  2026-04-28.
 - `all_api_smoke_weekly_schedule`: `0 3 * * 2`, running.
 - `embedding_index_daily_schedule`: `0 5 * * *`, running.
 - `embedding_maintenance_daily_schedule`: `45 5 * * *`, running.
