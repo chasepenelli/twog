@@ -60,6 +60,7 @@ jobs:
       HSA_STORAGE_BACKEND: "postgres"
       HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
     steps:
       - name: Checkout
@@ -82,6 +83,12 @@ jobs:
           if [ -z "$HSA_DATABASE_URL" ]; then
             echo "::error::HSA_DATABASE_URL is not configured."
             exit 1
+          fi
+          if printf '%s' "$DAGSTER_CLOUD_CONFIG_JSON" | grep -q 'openrouter_'; then
+            if [ -z "$OPENROUTER_API_KEY" ]; then
+              echo "::error::OPENROUTER_API_KEY is required for OpenRouter review modes."
+              exit 1
+            fi
           fi
         shell: bash
 

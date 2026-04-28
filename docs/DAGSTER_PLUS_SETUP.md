@@ -92,6 +92,7 @@ These improve rate limits or unlock later compute paths:
 NCBI_API_KEY=<free NCBI key>
 OPENFDA_API_KEY=<free openFDA key>
 RUNPOD_API_KEY=<later GPU jobs>
+OPENROUTER_API_KEY=<optional hosted model-review comparison>
 ```
 
 ## Hosted Database
@@ -209,6 +210,35 @@ persists a typed review packet in `agent_runs.output_payload.evidence.review_pac
 Review that packet from a ChatGPT Pro/Codex session, compare it to
 `deterministic_guardrail_result`, and only then decide whether to enable the
 stopped schedule.
+
+To compare hosted model reviewers through OpenRouter, set the GitHub Actions
+secret `OPENROUTER_API_KEY` and use `review_mode=openrouter_compare`:
+
+```json
+{
+  "ops": {
+    "full_text_source_date_ops": {
+      "config": {
+        "source_key": "pmc_oa",
+        "partition_date": "2026-04-27",
+        "source_limit": 25,
+        "extract_limit": 100,
+        "curate_limit": 100,
+        "review_mode": "openrouter_compare",
+        "review_models": [
+          "openai/gpt-5.1",
+          "anthropic/claude-sonnet-4.5",
+          "anthropic/claude-opus-4.5"
+        ]
+      }
+    }
+  }
+}
+```
+
+Each model's structured result is stored in
+`agent_runs.output_payload.evidence.model_reviews` alongside the deterministic
+guardrail result.
 
 If a run is already stuck in Dagster+, use the manual GitHub Actions workflow
 `Terminate Dagster Runs`. It calls Dagster Cloud GraphQL `terminateRuns` with the

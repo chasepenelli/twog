@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import json
+import os
+import re
 from typing import Any
+import urllib.error
+import urllib.request
 
 from .contracts import FullTextOpsAction, FullTextOpsRequest, FullTextOpsResult
 from .repository import ResearchRepository
@@ -13,6 +18,12 @@ from .source_sets import LITERATURE_FULL_TEXT_SOURCE_KEYS
 
 FULL_TEXT_OPS_AGENT_NAME = "full_text_ops_agent"
 FULL_TEXT_OPS_AGENT_VERSION = "v1"
+DEFAULT_OPENROUTER_COMPARE_MODELS = (
+    "openai/gpt-5.1",
+    "anthropic/claude-sonnet-4.5",
+    "anthropic/claude-opus-4.5",
+)
+DEFAULT_OPENROUTER_REVIEW_MODEL = DEFAULT_OPENROUTER_COMPARE_MODELS[0]
 
 _SOURCE_INGEST_JOBS = {
     "europe_pmc": "europe_pmc_full_text_ingest_job",
@@ -134,6 +145,13 @@ class FullTextOpsAgent:
             full_text_report=full_text_report,
             recent_runs=recent_runs,
         )
+        if request.review_mode in {"openrouter_required", "openrouter_compare"}:
+            return _run_openrouter_reviews(
+                request=request,
+                deterministic_result=deterministic_result,
+                review_payload=review_payload,
+            )
+
         return _external_review_required_result(
             request=request,
             deterministic_result=deterministic_result,
@@ -456,3 +474,204 @@ def _external_review_required_result(
             "evidence": evidence,
         }
     )
+
+
+def _run_openrouter_reviews(
+    *,
+    request: FullTextOpsRequest,
+    deterministic_result: FullTextOpsResult,
+    review_payload: dict[str, Any],
+) -> FullTextOpsResult:
+    models = _review_models(request)
+    reviews: list[dict[str, Any]] = []
+    selected: FullTextOpsResult | None = None
+    selected_model: str | None = None
+    errors: list[str] = []
+
+    for model_name in models:
+        try:
+            review = _openrouter_review_model(model_name, review_payload)
+            raw_payload = _parse_json_object(review["text"])
+            raw_payload.setdefault("agent_name", FULL_TEXT_OPS_AGENT_NAME)
+            raw_payload.setdefault("model_profile", request.model_profile)
+            raw_payload.setdefault("errors", [])
+            result = FullTextOpsResult.model_validate(raw_payload)
+            guarded_result = _apply_deterministic_guardrails(result, deterministic_result)
+            reviews.append(
+                {
+                    "model_name": model_name,
+                    "status": "completed",
+                    "metadata": review.get("metadata", {}),
+                    "result": guarded_result.model_dump(mode="json"),
+                }
+            )
+            if selected is None:
+                selected = guarded_result
+                selected_model = model_name
+        except Exception as exc:
+            message = f"{model_name}: {exc}"
+            errors.append(message)
+            reviews.append({"model_name": model_name, "status": "failed", "error": str(exc)})
+
+    if selected is None:
+        raise RuntimeError(f"OpenRouter full-text ops review failed for all models: {errors}")
+
+    evidence = {
+        **selected.evidence,
+        "review_mode": request.review_mode,
+        "selected_model": selected_model,
+        "model_reviews": reviews,
+        "review_packet": review_payload,
+        "deterministic_guardrail_schedule_readiness": deterministic_result.schedule_readiness,
+        "deterministic_guardrail_actions": [
+            action.model_dump(mode="json") for action in deterministic_result.actions
+        ],
+    }
+    return selected.model_copy(
+        update={
+            "evidence": evidence,
+            "errors": [*selected.errors, *errors],
+        }
+    )
+
+
+def _review_models(request: FullTextOpsRequest) -> list[str]:
+    if request.review_models:
+        return request.review_models
+    configured = os.getenv("HSA_FULL_TEXT_OPS_REVIEW_MODELS")
+    if configured:
+        return [model.strip() for model in configured.split(",") if model.strip()]
+    if request.review_mode == "openrouter_compare":
+        return list(DEFAULT_OPENROUTER_COMPARE_MODELS)
+    return [os.getenv("HSA_FULL_TEXT_OPS_MODEL", DEFAULT_OPENROUTER_REVIEW_MODEL)]
+
+
+def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) -> dict[str, Any]:
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is required for OpenRouter review mode.")
+    payload = {
+        "model": model_name,
+        "temperature": float(os.getenv("HSA_FULL_TEXT_OPS_TEMPERATURE", "0")),
+        "max_tokens": int(os.getenv("HSA_FULL_TEXT_OPS_MAX_TOKENS", "2000")),
+        "messages": [
+            {"role": "system", "content": _FULL_TEXT_OPS_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(review_payload, sort_keys=True, default=str)},
+        ],
+    }
+    request = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": os.getenv("OPENROUTER_HTTP_REFERER", "https://github.com/chasepenelli/hsa-dagster"),
+            "X-Title": os.getenv("OPENROUTER_APP_TITLE", "hsa-dagster"),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=float(os.getenv("HSA_FULL_TEXT_OPS_TIMEOUT_SECONDS", "120")),
+        ) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenRouter HTTP {error.code}: {body}") from error
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"OpenRouter request failed: {error}") from error
+
+    choices = response_payload.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"OpenRouter response had no choices: {response_payload}")
+    message = choices[0].get("message") or {}
+    text = message.get("content") or ""
+    if not text:
+        raise RuntimeError(f"OpenRouter response had no text content: {response_payload}")
+    return {
+        "text": text,
+        "metadata": {
+            "provider": "openrouter",
+            "model_name": response_payload.get("model", model_name),
+            "requested_model": model_name,
+            "request_id": response_payload.get("id"),
+            "usage": response_payload.get("usage", {}),
+        },
+    }
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    stripped = text.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
+    if fenced:
+        stripped = fenced.group(1).strip()
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        parsed = json.loads(stripped[start : end + 1])
+    if not isinstance(parsed, dict):
+        raise RuntimeError("OpenRouter model response must be a JSON object.")
+    return parsed
+
+
+def _apply_deterministic_guardrails(
+    model_result: FullTextOpsResult,
+    deterministic_result: FullTextOpsResult,
+) -> FullTextOpsResult:
+    actions = list(model_result.actions)
+    existing = {(action.source_key, action.action, action.partition_date) for action in actions}
+    for action in deterministic_result.actions:
+        key = (action.source_key, action.action, action.partition_date)
+        if action.severity == "blocking" and key not in existing:
+            actions.append(action)
+            existing.add(key)
+        if action.action == "keep_schedule_stopped" and key not in existing:
+            actions.append(action)
+            existing.add(key)
+
+    readiness = model_result.schedule_readiness
+    if deterministic_result.schedule_readiness != "ready_to_enable" and readiness == "ready_to_enable":
+        readiness = deterministic_result.schedule_readiness
+    if deterministic_result.schedule_readiness == "blocked":
+        readiness = "blocked"
+
+    should_block = (
+        model_result.should_block_schedule
+        or deterministic_result.should_block_schedule
+        or any(action.severity == "blocking" or action.action == "keep_schedule_stopped" for action in actions)
+    )
+    evidence = {
+        **model_result.evidence,
+        "deterministic_guardrail_schedule_readiness": deterministic_result.schedule_readiness,
+        "deterministic_guardrail_actions": [
+            action.model_dump(mode="json") for action in deterministic_result.actions
+        ],
+    }
+    return model_result.model_copy(
+        update={
+            "actions": actions,
+            "schedule_readiness": readiness,
+            "should_block_schedule": should_block,
+            "evidence": evidence,
+        }
+    )
+
+
+_FULL_TEXT_OPS_SYSTEM_PROMPT = """You are a scientific operations reviewer for a canine HSA literature ingestion system.
+
+Review the provided source health, full-text triage, source/date validation evidence, and recent agent run history.
+Return only a JSON object matching the supplied output contract. Do not include markdown.
+
+Rules:
+- Recommend operational actions only; do not claim to have launched jobs or changed schedules.
+- Cite concrete evidence paths in evidence_refs.
+- Do not invent source counts, dates, or source state.
+- You may add judgment beyond the deterministic guardrail result, especially human-review, parser, license, or batch-size concerns.
+- You may not mark the schedule ready when the deterministic guardrail says a source is missing clean source/date evidence or has a blocking issue.
+- Prefer conservative recommendations when evidence is incomplete.
+"""

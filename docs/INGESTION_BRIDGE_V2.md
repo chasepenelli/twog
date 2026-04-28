@@ -530,6 +530,14 @@ API spend is required. The hosted job keeps the schedule stopped until that
 external review is performed. `deterministic_only` exists for tests and
 break-glass debugging, not normal hosted operations.
 
+For automated comparison runs, `review_mode=openrouter_compare` sends the same
+review packet to a bounded set of OpenRouter models and stores each model's
+typed recommendation in `agent_runs.output_payload.evidence.model_reviews`.
+Default comparison models are `openai/gpt-5.1`,
+`anthropic/claude-sonnet-4.5`, and `anthropic/claude-opus-4.5`. The
+deterministic guardrail is still applied to every model result, so an unvalidated
+or blocking lane cannot be marked ready by a single model.
+
 `full_text_source_date_ops_job` is the manual hosted bridge for source/date
 validation while the Dagster Cloud CLI lacks partition-key launch support. It
 accepts `source_key` and `partition_date` run config, executes one source/date

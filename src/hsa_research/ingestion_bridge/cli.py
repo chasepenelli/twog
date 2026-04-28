@@ -201,9 +201,15 @@ def main() -> None:
     full_text_ops.add_argument("--model-profile", default="reviewer", help="Logical model profile")
     full_text_ops.add_argument(
         "--review-mode",
-        choices=("external_required", "deterministic_only"),
+        choices=("external_required", "openrouter_required", "openrouter_compare", "deterministic_only"),
         default="external_required",
-        help="Whether external ChatGPT Pro review is required or deterministic checks are returned directly",
+        help="Whether review is external, OpenRouter-backed, comparative, or deterministic only",
+    )
+    full_text_ops.add_argument(
+        "--review-model",
+        action="append",
+        default=[],
+        help="OpenRouter model id; repeat to compare multiple models",
     )
     full_text_ops.add_argument("--fail-on-blocking", action="store_true")
 
@@ -458,6 +464,7 @@ def main() -> None:
                 recent_run_limit=args.recent_run_limit,
                 model_profile=args.model_profile,
                 review_mode=args.review_mode,
+                review_models=args.review_model,
             )
         ).model_dump(mode="json")
     elif args.command == "agent-runs":

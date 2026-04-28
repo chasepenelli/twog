@@ -58,8 +58,8 @@ DEFAULT_MODEL_PROFILES: dict[str, ModelProfile] = {
     "reviewer": ModelProfile(
         profile_key="reviewer",
         provider="other",
-        model_name="chatgpt-pro-5x",
-        purpose="External ChatGPT Pro scientific and operational review",
+        model_name="openrouter:compare",
+        purpose="Scientific and operational review through external ChatGPT Pro or OpenRouter",
     ),
     "cheap_classifier": ModelProfile(profile_key="cheap_classifier", provider="openai", purpose="Fast classification"),
     "long_context_reviewer": ModelProfile(

@@ -945,7 +945,12 @@ if dg is not None:
             "review_mode": dg.Field(
                 str,
                 default_value="external_required",
-                description="FullTextOps review mode: external_required or deterministic_only.",
+                description="FullTextOps review mode: external_required, openrouter_required, openrouter_compare, or deterministic_only.",
+            ),
+            "review_models": dg.Field(
+                [str],
+                default_value=[],
+                description="OpenRouter model ids to review with when using an OpenRouter review mode.",
             ),
         },
     )
@@ -973,6 +978,7 @@ if dg is not None:
                 partition_date=partition_date,
                 full_text_report=partition_report,
                 review_mode=config["review_mode"],
+                review_models=config["review_models"],
             )
         )
         ops_report = result.model_dump(mode="json")
