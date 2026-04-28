@@ -2720,6 +2720,37 @@ def test_x_topic_review_agent_flags_ingestible_links_and_skips_social_only():
     assert result.actions[1].action == "skip_no_durable_source"
 
 
+def test_x_topic_review_resolves_short_links_before_classification(monkeypatch):
+    monkeypatch.setattr(
+        x_topic_review,
+        "_follow_redirects",
+        lambda url: "https://pubmed.ncbi.nlm.nih.gov/123456/",
+    )
+
+    result = x_topic_review.XTopicReviewAgent().run(
+        XTopicReviewRequest(
+            review_mode="deterministic_only",
+            candidates=[
+                {
+                    "post_id": "123",
+                    "query_name": "x_disease_monitoring",
+                    "quality_score": 0.7,
+                    "durable_links": ["https://go.ufl.edu/r2uqpua"],
+                }
+            ],
+        )
+    )
+
+    link = result.actions[0].ingestible_links[0]
+    assert result.ingestion_candidate_count == 1
+    assert result.actions[0].action == "flag_for_ingestion"
+    assert link.url == "https://pubmed.ncbi.nlm.nih.gov/123456/"
+    assert link.recommended_source_key == "pubmed"
+    assert link.identifier == "123456"
+    assert link.metadata["original_url"] == "https://go.ufl.edu/r2uqpua"
+    assert link.metadata["resolved"] is True
+
+
 def test_x_topic_review_openrouter_preserves_deterministic_ingestion_guardrail(monkeypatch):
     def fake_review_model(model_name, review_payload):
         assert model_name == "anthropic/claude-sonnet-test"

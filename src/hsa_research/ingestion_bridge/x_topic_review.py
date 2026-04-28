@@ -65,6 +65,13 @@ _SOURCE_PATTERNS = (
 )
 
 _DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
+_RESOLVABLE_SHORT_LINK_HOSTS = (
+    "go.ufl.edu",
+    "bit.ly",
+    "tinyurl.com",
+    "t.co",
+    "x.com",
+)
 
 
 class XTopicReviewAgent:
@@ -175,7 +182,8 @@ def _review_candidate(candidate: Mapping[str, Any]) -> XTopicReviewAction:
 
 
 def _classify_link(url: str) -> XTopicLinkedSource:
-    normalized = url.strip()
+    original_url = url.strip()
+    normalized, resolution_metadata = _resolve_review_link(original_url)
     parsed = urllib.parse.urlparse(normalized)
     host_path = f"{parsed.netloc}{parsed.path}".lower()
 
@@ -188,6 +196,7 @@ def _classify_link(url: str) -> XTopicLinkedSource:
             identifier=doi,
             should_ingest=True,
             reason="DOI link can be followed through Crossref/OpenAlex and, when open, full-text sources.",
+            metadata=resolution_metadata,
         )
 
     for source_key, identifier_type, marker, pattern in _SOURCE_PATTERNS:
@@ -202,6 +211,7 @@ def _classify_link(url: str) -> XTopicLinkedSource:
             identifier=identifier.upper() if identifier_type in {"pmcid", "nct", "chembl", "geo", "sra"} and identifier else identifier,
             should_ingest=True,
             reason=f"URL maps to implemented source `{source_key}`.",
+            metadata=resolution_metadata,
         )
 
     if any(marker in host_path for marker in ("nih.gov", "ncbi.nlm.nih.gov", "fda.gov", ".edu")):
@@ -212,6 +222,7 @@ def _classify_link(url: str) -> XTopicLinkedSource:
             identifier=None,
             should_ingest=False,
             reason="Credible domain but no implemented source identifier was detected; human link review needed.",
+            metadata=resolution_metadata,
         )
 
     return XTopicLinkedSource(
@@ -221,7 +232,49 @@ def _classify_link(url: str) -> XTopicLinkedSource:
         identifier=None,
         should_ingest=False,
         reason="Link does not map to an implemented ingestion source.",
+        metadata=resolution_metadata,
     )
+
+
+def _resolve_review_link(url: str) -> tuple[str, dict[str, Any]]:
+    metadata: dict[str, Any] = {"original_url": url, "resolved": False}
+    if os.getenv("HSA_X_TOPIC_RESOLVE_LINKS", "true").strip().lower() not in {"1", "true", "yes"}:
+        metadata["resolution_status"] = "disabled"
+        return url, metadata
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.netloc.lower()
+    should_resolve = any(host == item or host.endswith(f".{item}") for item in _RESOLVABLE_SHORT_LINK_HOSTS)
+    if not should_resolve:
+        metadata["resolution_status"] = "not_short_link"
+        return url, metadata
+    try:
+        resolved_url = _follow_redirects(url)
+    except Exception as exc:
+        metadata["resolution_status"] = "failed"
+        metadata["resolution_error"] = str(exc)
+        return url, metadata
+    metadata["resolved_url"] = resolved_url
+    metadata["resolved"] = resolved_url != url
+    metadata["resolution_status"] = "resolved" if resolved_url != url else "unchanged"
+    return resolved_url, metadata
+
+
+def _follow_redirects(url: str) -> str:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": os.getenv(
+                "HSA_X_TOPIC_LINK_RESOLVER_USER_AGENT",
+                "hsa-dagster/0.1 link resolver; contact poppa@bradyandgraffiti.com",
+            )
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(
+        request,
+        timeout=float(os.getenv("HSA_X_TOPIC_LINK_RESOLVE_TIMEOUT_SECONDS", "10")),
+    ) as response:
+        return response.geturl()
 
 
 def _extract_doi(url: str) -> str | None:
