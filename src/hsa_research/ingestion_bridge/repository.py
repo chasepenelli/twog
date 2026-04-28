@@ -12,6 +12,7 @@ from typing import Protocol
 from uuid import UUID, uuid4
 
 from .contracts import (
+    AgentRunRecord,
     ArtifactHandle,
     AsyncRunHandle,
     CandidateDossier,
@@ -163,6 +164,33 @@ class ResearchRepository(Protocol):
     def get_artifact(self, artifact_id: UUID) -> ArtifactHandle | None:
         """Return artifact metadata."""
 
+    def create_agent_run(self, record: AgentRunRecord) -> AgentRunRecord:
+        """Persist a newly started agent run."""
+
+    def finish_agent_run(
+        self,
+        agent_run_id: UUID,
+        *,
+        status: str,
+        output_payload: dict,
+        summary: dict,
+        errors: list[str],
+    ) -> AgentRunRecord | None:
+        """Mark an agent run terminal and persist its output payload."""
+
+    def get_agent_run(self, agent_run_id: UUID) -> AgentRunRecord | None:
+        """Return a persisted agent run."""
+
+    def list_agent_runs(
+        self,
+        *,
+        agent_name: str | None = None,
+        status: str | None = None,
+        source_key: str | None = None,
+        limit: int = 50,
+    ) -> list[AgentRunRecord]:
+        """Return recent agent runs by durable filters."""
+
     def upsert_artifact(self, artifact: ArtifactHandle) -> ArtifactHandle:
         """Persist artifact metadata."""
 
@@ -222,6 +250,7 @@ class InMemoryResearchRepository:
         self.scrape_reviews: dict[UUID, ScrapeReviewRecord] = {}
         self.scrape_profile_reviews: dict[str, ScrapeSourceProfileReview] = {}
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
+        self.agent_runs: dict[UUID, AgentRunRecord] = {}
 
     def get_research_object(self, object_id: UUID) -> ResearchObject | None:
         return self.research_objects.get(object_id)
@@ -644,6 +673,55 @@ class InMemoryResearchRepository:
 
     def get_artifact(self, artifact_id: UUID) -> ArtifactHandle | None:
         return self.artifacts.get(artifact_id)
+
+    def create_agent_run(self, record: AgentRunRecord) -> AgentRunRecord:
+        self.agent_runs[record.agent_run_id] = record
+        return record
+
+    def finish_agent_run(
+        self,
+        agent_run_id: UUID,
+        *,
+        status: str,
+        output_payload: dict,
+        summary: dict,
+        errors: list[str],
+    ) -> AgentRunRecord | None:
+        record = self.agent_runs.get(agent_run_id)
+        if record is None:
+            return None
+        updated = record.model_copy(
+            update={
+                "status": status,
+                "completed_at": datetime.now(UTC),
+                "output_payload": output_payload,
+                "summary": summary,
+                "errors": errors,
+            }
+        )
+        self.agent_runs[agent_run_id] = updated
+        return updated
+
+    def get_agent_run(self, agent_run_id: UUID) -> AgentRunRecord | None:
+        return self.agent_runs.get(agent_run_id)
+
+    def list_agent_runs(
+        self,
+        *,
+        agent_name: str | None = None,
+        status: str | None = None,
+        source_key: str | None = None,
+        limit: int = 50,
+    ) -> list[AgentRunRecord]:
+        runs = list(self.agent_runs.values())
+        if agent_name:
+            runs = [run for run in runs if run.agent_name == agent_name]
+        if status:
+            runs = [run for run in runs if str(run.status) == status]
+        if source_key:
+            runs = [run for run in runs if run.source_key == source_key]
+        runs.sort(key=lambda run: run.started_at, reverse=True)
+        return runs[:limit]
 
     def upsert_artifact(self, artifact: ArtifactHandle) -> ArtifactHandle:
         self.artifacts[artifact.artifact_id] = artifact

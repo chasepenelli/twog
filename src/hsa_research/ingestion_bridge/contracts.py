@@ -102,6 +102,79 @@ class ToolMode(str, Enum):
     ASYNC_COMPUTE = "async_compute"
 
 
+FullTextOpsActionName = Literal[
+    "mark_clean",
+    "run_ingest_smoke",
+    "run_full_text_smoke",
+    "run_source_date_partition",
+    "reduce_batch_size",
+    "inspect_parser",
+    "inspect_license",
+    "keep_schedule_stopped",
+    "ready_to_enable_schedule",
+    "needs_human_review",
+]
+
+AgentSeverity = Literal["info", "watch", "blocking"]
+
+
+class AgentRunRecord(StrictBaseModel):
+    agent_run_id: UUID = Field(default_factory=uuid4)
+    agent_name: str
+    agent_version: str = "v1"
+    model_profile: str = "deterministic"
+    status: RunStatus = RunStatus.QUEUED
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    completed_at: datetime | None = None
+    source_key: str | None = None
+    partition_date: str | None = None
+    dagster_run_id: str | None = None
+    input_payload: dict[str, Any] = Field(default_factory=dict)
+    output_payload: dict[str, Any] = Field(default_factory=dict)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FullTextOpsRequest(StrictBaseModel):
+    source_keys: list[str] = Field(default_factory=list)
+    partition_date: str | None = None
+    source_health_report: dict[str, Any] | None = None
+    full_text_report: dict[str, Any] | None = None
+    recent_run_limit: int = Field(default=10, ge=0, le=100)
+    model_profile: str = "reviewer"
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FullTextOpsAction(StrictBaseModel):
+    source_key: str
+    action: FullTextOpsActionName
+    severity: AgentSeverity
+    reason: str
+    dagster_job_name: str | None = None
+    partition_date: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FullTextOpsResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    agent_name: str = "full_text_ops_agent"
+    model_profile: str = "reviewer"
+    actions: list[FullTextOpsAction] = Field(default_factory=list)
+    should_block_schedule: bool = False
+    schedule_readiness: Literal[
+        "ready_to_enable",
+        "needs_partition_validation",
+        "keep_stopped",
+        "blocked",
+    ] = "keep_stopped"
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ResearchSource(StrictBaseModel):
     source_key: str = Field(description="Stable source key, e.g. openalex")
     display_name: str

@@ -10,6 +10,7 @@ from __future__ import annotations
 from uuid import UUID, uuid4
 
 from .contracts import (
+    AgentRunRecord,
     AsyncRunHandle,
     BoltzRunRequest,
     CandidateDossier,
@@ -24,6 +25,8 @@ from .contracts import (
     DocumentChunk,
     FullTextTriageRequest,
     FullTextTriageResult,
+    FullTextOpsRequest,
+    FullTextOpsResult,
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
@@ -39,8 +42,10 @@ from .contracts import (
     TextEmbeddingSearchRequest,
     ValidationRequest,
 )
+from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, LocalDeterministicEmbeddingProvider
+from .full_text_ops import FULL_TEXT_OPS_AGENT_NAME, FULL_TEXT_OPS_AGENT_VERSION, FullTextOpsAgent
 from .full_text_triage import FullTextTriageAgent
 from .repository import ResearchRepository
 from .source_scout import SourceScoutAgent
@@ -218,15 +223,90 @@ class HSAResearchService:
     def curate_claims(self, request: ClaimCurationRequest) -> ClaimCurationResult:
         if not hasattr(self.repository, "list_claims") or not hasattr(self.repository, "upsert_claim"):
             raise RuntimeError("Claim curation requires a SQL repository")
-        return ClaimCuratorAgent(self.repository).curate(request)
+        return AgentRunner(self.repository).run(
+            agent_name="claim_curator_agent",
+            model_profile=request.model_profile,
+            input_payload=request.model_dump(mode="json"),
+            source_key=request.source_key,
+            execute=lambda: ClaimCuratorAgent(self.repository).curate(request),
+            summarize=lambda result: {
+                "claims_seen": result.claims_seen,
+                "promoted": result.promoted,
+                "merged_duplicates": result.merged_duplicates,
+                "needs_review": result.needs_review,
+                "rejected": result.rejected,
+                "dry_run": result.dry_run,
+            },
+        )
 
     def scout_sources(self, request: SourceScoutRequest) -> SourceScoutResult:
         if not hasattr(self.repository, "coverage_summary"):
             raise RuntimeError("Source scouting requires a SQL repository")
-        return SourceScoutAgent(self.repository).scout(request)
+        return AgentRunner(self.repository).run(
+            agent_name="source_scout_agent",
+            model_profile=request.model_profile,
+            input_payload=request.model_dump(mode="json"),
+            execute=lambda: SourceScoutAgent(self.repository).scout(request),
+            summarize=lambda result: {
+                "focus": result.focus,
+                "recommendations": len(result.recommendations),
+                "errors": len(result.errors),
+            },
+        )
 
     def triage_full_text_issue(self, request: FullTextTriageRequest) -> FullTextTriageResult:
-        return FullTextTriageAgent().triage(request)
+        return AgentRunner(self.repository).run(
+            agent_name=FullTextTriageAgent.triage_name,
+            model_profile=request.model_profile,
+            input_payload=request.model_dump(mode="json"),
+            source_key=request.source_key,
+            partition_date=request.metadata.get("partition_date"),
+            execute=lambda: FullTextTriageAgent().triage(request),
+            summarize=lambda result: {
+                "source_key": result.source_key,
+                "action": result.action,
+                "severity": result.severity,
+                "should_retry": result.should_retry,
+                "should_block_schedule": result.should_block_schedule,
+            },
+        )
+
+    def run_full_text_ops(self, request: FullTextOpsRequest) -> FullTextOpsResult:
+        source_key = request.source_keys[0] if len(request.source_keys) == 1 else None
+        return AgentRunner(self.repository).run(
+            agent_name=FULL_TEXT_OPS_AGENT_NAME,
+            agent_version=FULL_TEXT_OPS_AGENT_VERSION,
+            model_profile=request.model_profile,
+            input_payload=request.model_dump(mode="json"),
+            source_key=source_key,
+            partition_date=request.partition_date,
+            dagster_run_id=request.dagster_run_id,
+            execute=lambda: FullTextOpsAgent(self.repository).run(request),
+            summarize=lambda result: {
+                "actions": len(result.actions),
+                "blocking_actions": sum(1 for action in result.actions if action.severity == "blocking"),
+                "should_block_schedule": result.should_block_schedule,
+                "schedule_readiness": result.schedule_readiness,
+            },
+        )
+
+    def get_agent_run(self, agent_run_id: UUID) -> AgentRunRecord | None:
+        return self.repository.get_agent_run(agent_run_id)
+
+    def list_agent_runs(
+        self,
+        *,
+        agent_name: str | None = None,
+        status: str | None = None,
+        source_key: str | None = None,
+        limit: int = 50,
+    ) -> list[AgentRunRecord]:
+        return self.repository.list_agent_runs(
+            agent_name=agent_name,
+            status=status,
+            source_key=source_key,
+            limit=limit,
+        )
 
     def get_candidate(self, request: CandidateDossierRequest) -> CandidateDossier | None:
         return self.repository.get_candidate(request)

@@ -1,6 +1,7 @@
 """Ingestion Bridge v2 contracts and service adapters."""
 
 from .contracts import (
+    AgentRunRecord,
     ArtifactHandle,
     AsyncRunHandle,
     BackfillResult,
@@ -15,6 +16,9 @@ from .contracts import (
     DocumentChunk,
     FullTextTriageRequest,
     FullTextTriageResult,
+    FullTextOpsAction,
+    FullTextOpsRequest,
+    FullTextOpsResult,
     HypothesisDraft,
     HypothesisProposalRequest,
     IngestionResult,
@@ -47,6 +51,7 @@ from .harvesters_v2 import (
 from .local_ingest import LocalIngestionPipeline
 from .claim_extractor import LocalRuleClaimExtractor, extract_claims_for_repository
 from .full_text_triage import FullTextTriageAgent, triage_full_text_issue
+from .full_text_ops import FullTextOpsAgent
 from .query_policy import build_scholarly_source_queries, comparative_required_query
 from .service import HSAResearchService, get_service
 from .local_store import SQLiteResearchRepository
@@ -56,6 +61,7 @@ from .storage import build_research_repository, build_sql_repository
 
 __all__ = [
     "ArtifactHandle",
+    "AgentRunRecord",
     "AsyncRunHandle",
     "BackfillResult",
     "CandidateDossier",
@@ -72,6 +78,10 @@ __all__ = [
     "FullTextTriageAgent",
     "FullTextTriageRequest",
     "FullTextTriageResult",
+    "FullTextOpsAction",
+    "FullTextOpsAgent",
+    "FullTextOpsRequest",
+    "FullTextOpsResult",
     "HypothesisDraft",
     "HypothesisProposalRequest",
     "HSAResearchService",

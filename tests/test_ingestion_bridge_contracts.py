@@ -8,6 +8,7 @@ import pytest
 from hsa_research.ingestion_bridge import dagster_assets as dagster_asset_module
 from hsa_research.ingestion_bridge import storage, structured_orchestration
 from hsa_research.ingestion_bridge.contracts import (
+    AgentRunRecord,
     BoltzRunRequest,
     CandidateDossierRequest,
     ChunkContextRequest,
@@ -21,6 +22,9 @@ from hsa_research.ingestion_bridge.contracts import (
     EntityMention,
     EvidenceLevel,
     FullTextTriageRequest,
+    FullTextOpsAction,
+    FullTextOpsRequest,
+    FullTextOpsResult,
     HypothesisProposalRequest,
     RawSourceRecord,
     ResearchChunkSearchRequest,
@@ -40,12 +44,15 @@ from hsa_research.ingestion_bridge.contracts import (
     ValidationRequest,
     ClaimCurationRequest,
     SourceScoutRequest,
+    RunStatus,
 )
 from hsa_research.ingestion_bridge.backfill import backfill_deep_dives, backfill_papers_json
 from hsa_research.ingestion_bridge.claim_curator import ClaimCuratorAgent
 from hsa_research.ingestion_bridge.claim_extractor import LocalRuleClaimExtractor, extract_claims_for_repository
 from hsa_research.ingestion_bridge.chunker import chunk_text
 from hsa_research.ingestion_bridge.full_text_triage import FullTextTriageAgent
+from hsa_research.ingestion_bridge import full_text_ops
+from hsa_research.ingestion_bridge.full_text_ops import FullTextOpsAgent
 from hsa_research.ingestion_bridge.dagster_assets import (
     ALL_API_SMOKE_KEYS,
     HOSTED_API_REPORT_KEYS,
@@ -87,8 +94,10 @@ from hsa_research.ingestion_bridge.local_ingest import LocalIngestionPipeline
 from hsa_research.ingestion_bridge.local_store import SQLiteResearchRepository
 from hsa_research.ingestion_bridge import mcp_server
 from hsa_research.ingestion_bridge.query_policy import build_scholarly_source_queries, infer_comparative_scope
+from hsa_research.ingestion_bridge.repository import InMemoryResearchRepository
 from hsa_research.ingestion_bridge import scraper_bridge
 from hsa_research.ingestion_bridge.scraper_bridge import ScrapeBridge, list_scrape_profiles
+from hsa_research.ingestion_bridge import service as service_module
 from hsa_research.ingestion_bridge.service import HSAResearchService
 from hsa_research.ingestion_bridge.source_scout import SourceScoutAgent
 from hsa_research.ingestion_bridge.source_health import build_source_health_report
@@ -132,6 +141,65 @@ def test_research_repository_resource_rejects_memory_backend():
         ResearchRepositoryResource(storage_backend="memory").build_repository()
 
 
+def test_agent_run_and_full_text_ops_contracts_validate():
+    record = AgentRunRecord(
+        agent_name="full_text_ops_agent",
+        model_profile="reviewer",
+        status=RunStatus.RUNNING,
+        source_key="europe_pmc",
+        input_payload={"source_keys": ["europe_pmc"]},
+    )
+    action = FullTextOpsAction(
+        source_key="europe_pmc",
+        action="run_source_date_partition",
+        severity="watch",
+        reason="Partition evidence is missing.",
+        dagster_job_name="literature_full_text_source_date_job",
+        partition_date="2026-04-27",
+    )
+    result = FullTextOpsResult(actions=[action], schedule_readiness="needs_partition_validation")
+
+    assert record.status == "running"
+    assert result.actions[0].action == "run_source_date_partition"
+    with pytest.raises(ValueError):
+        FullTextOpsAction(source_key="europe_pmc", action="bad", severity="watch", reason="bad")
+    with pytest.raises(ValueError):
+        FullTextOpsAction(source_key="europe_pmc", action="mark_clean", severity="bad", reason="bad")
+    with pytest.raises(ValueError):
+        AgentRunRecord(agent_name="x", status="bad")
+
+
+def test_agent_run_repository_roundtrip_sqlite_and_memory(tmp_path):
+    sqlite_repo = SQLiteResearchRepository(tmp_path / "agent-runs.sqlite3", seed=False)
+    memory_repo = InMemoryResearchRepository()
+
+    for repo in (sqlite_repo, memory_repo):
+        record = repo.create_agent_run(
+            AgentRunRecord(
+                agent_name="full_text_ops_agent",
+                model_profile="reviewer",
+                status=RunStatus.RUNNING,
+                source_key="europe_pmc",
+                partition_date="2026-04-27",
+                input_payload={"source_keys": ["europe_pmc"]},
+            )
+        )
+        finished = repo.finish_agent_run(
+            record.agent_run_id,
+            status="completed",
+            output_payload={"schedule_readiness": "ready_to_enable"},
+            summary={"actions": 1},
+            errors=[],
+        )
+
+        assert finished is not None
+        assert finished.status == "completed"
+        assert finished.completed_at is not None
+        assert repo.get_agent_run(record.agent_run_id).summary == {"actions": 1}
+        assert repo.list_agent_runs(agent_name="full_text_ops_agent", status="completed", source_key="europe_pmc")
+        assert repo.list_agent_runs(agent_name="source_scout_agent") == []
+
+
 def test_dagster_structured_asset_uses_injected_repository(monkeypatch):
     sentinel_repository = object()
     calls = []
@@ -157,6 +225,45 @@ def test_dagster_structured_asset_uses_injected_repository(monkeypatch):
 
     assert calls == ["build_repository"]
     assert result == {"repository": "injected", "source_keys": dagster_asset_module.STRUCTURED_SOURCE_SMOKE_KEYS}
+
+
+def test_dagster_full_text_ops_asset_uses_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    class FakeService:
+        def __init__(self, repository):
+            assert repository is sentinel_repository
+
+        def run_full_text_ops(self, request):
+            assert isinstance(request, FullTextOpsRequest)
+            return FullTextOpsResult(
+                agent_run_id=uuid4(),
+                actions=[
+                    FullTextOpsAction(
+                        source_key="europe_pmc",
+                        action="run_source_date_partition",
+                        severity="watch",
+                        reason="Partition evidence is missing.",
+                    )
+                ],
+                schedule_readiness="needs_partition_validation",
+            )
+
+    monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
+
+    result = dagster_asset_module.full_text_ops_agent_report.node_def.compute_fn.decorated_fn(
+        FakeRepositoryResource()
+    )
+
+    assert calls == ["build_repository"]
+    assert result.value["agent_name"] == "full_text_ops_agent"
+    assert result.metadata["action_count"] == 1
 
 
 def test_dagster_full_text_source_specific_assets_use_injected_repository(monkeypatch):
@@ -835,6 +942,145 @@ def _seed_full_text_source_claim(repo: SQLiteResearchRepository, source_key: str
             metadata={"curation_status": "promote", "extraction_status": "typed"},
         )
     )
+
+
+def test_service_existing_agents_create_agent_run_ledger_rows(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "agent-service.sqlite3", seed=True)
+    _seed_full_text_source_claim(repo, "europe_pmc")
+    _seed_minimal_source_claim(repo, "pubmed", curation_status="uncurated", extraction_status="draft")
+    service = HSAResearchService(repo)
+
+    triage = service.triage_full_text_issue(
+        FullTextTriageRequest(
+            source_key="europe_pmc",
+            full_text_document_chunks=1,
+            full_text_body_chars=250,
+        )
+    )
+    scout = service.scout_sources(SourceScoutRequest(max_recommendations=2))
+    curation = service.curate_claims(ClaimCurationRequest(limit=5, dry_run=True))
+
+    assert triage.action == "no_action"
+    assert scout.recommendations
+    assert curation.claims_seen >= 1
+    assert repo.list_agent_runs(agent_name="full_text_triage_agent", status="completed")
+    assert repo.list_agent_runs(agent_name="source_scout_agent", status="completed")
+    assert repo.list_agent_runs(agent_name="claim_curator_agent", status="completed")
+
+
+def test_service_failed_agent_execution_records_failed_run(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "agent-failure.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+
+    def fail_run(self, request):
+        raise RuntimeError("forced full-text ops failure")
+
+    monkeypatch.setattr(full_text_ops.FullTextOpsAgent, "run", fail_run)
+
+    with pytest.raises(RuntimeError, match="forced full-text ops failure"):
+        service.run_full_text_ops(FullTextOpsRequest())
+
+    runs = repo.list_agent_runs(agent_name="full_text_ops_agent", status="failed")
+    assert len(runs) == 1
+    assert runs[0].errors == ["forced full-text ops failure"]
+
+
+def test_full_text_ops_ready_when_health_and_partition_are_clean(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "full-text-ops-ready.sqlite3", seed=False)
+    _seed_full_text_source_claim(repo, "europe_pmc")
+    _seed_full_text_source_claim(repo, "pmc_oa")
+    partition_report = {
+        "mode": "source_date_partition",
+        "partition_date": "2026-04-27",
+        "sources": [
+            {"source_key": "europe_pmc", "full_text_qa": {"passes_full_text_bar": True}},
+            {"source_key": "pmc_oa", "full_text_qa": {"current_empty_passes": True}},
+        ],
+        "errors": [],
+    }
+
+    result = FullTextOpsAgent(repo).run(
+        FullTextOpsRequest(
+            partition_date="2026-04-27",
+            full_text_report=partition_report,
+        )
+    )
+
+    assert result.schedule_readiness == "ready_to_enable"
+    assert result.should_block_schedule is False
+    assert any(action.action == "ready_to_enable_schedule" for action in result.actions)
+    assert {action.action for action in result.actions if action.source_key != "all"} == {"mark_clean"}
+
+
+def test_full_text_ops_requests_partition_or_ingest_when_validation_is_missing(tmp_path):
+    clean_repo = SQLiteResearchRepository(tmp_path / "full-text-ops-partition.sqlite3", seed=False)
+    _seed_full_text_source_claim(clean_repo, "europe_pmc")
+
+    partition_result = FullTextOpsAgent(clean_repo).run(
+        FullTextOpsRequest(source_keys=["europe_pmc"], partition_date="2026-04-27")
+    )
+
+    assert partition_result.schedule_readiness == "needs_partition_validation"
+    assert any(action.action == "run_source_date_partition" for action in partition_result.actions)
+
+    empty_repo = SQLiteResearchRepository(tmp_path / "full-text-ops-empty.sqlite3", seed=False)
+    ingest_result = FullTextOpsAgent(empty_repo).run(FullTextOpsRequest(source_keys=["europe_pmc"]))
+
+    assert ingest_result.schedule_readiness == "keep_stopped"
+    assert any(action.action == "run_ingest_smoke" for action in ingest_result.actions)
+
+
+def test_full_text_ops_maps_triage_actions_to_recommendations(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "full-text-ops-triage.sqlite3", seed=False)
+    report = {
+        "source_keys": ["europe_pmc", "pmc_oa"],
+        "sources": [
+            {
+                "source_key": "europe_pmc",
+                "raw_records": 1,
+                "research_objects": 1,
+                "document_chunks": 1,
+                "full_text_qa": {
+                    "passes_full_text_bar": False,
+                    "triage": {"action": "needs_parser_fix", "severity": "blocking"},
+                },
+            },
+            {
+                "source_key": "pmc_oa",
+                "raw_records": 1,
+                "research_objects": 1,
+                "document_chunks": 1,
+                "full_text_qa": {
+                    "passes_full_text_bar": False,
+                    "triage": {"action": "needs_license_review", "severity": "blocking"},
+                },
+            },
+        ],
+    }
+
+    result = FullTextOpsAgent(repo).run(
+        FullTextOpsRequest(source_keys=["europe_pmc", "pmc_oa"], source_health_report=report)
+    )
+
+    assert result.schedule_readiness == "blocked"
+    assert result.should_block_schedule is True
+    assert {action.action for action in result.actions} >= {"inspect_parser", "inspect_license"}
+
+
+def test_full_text_ops_service_is_recommend_only(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "full-text-ops-recommend-only.sqlite3", seed=False)
+    _seed_full_text_source_claim(repo, "europe_pmc")
+    claims_before = len(repo.list_claims(source_key="europe_pmc", include_seed_claims=True))
+    source_queries_before = repo.list_source_queries(source_key="europe_pmc")
+
+    result = HSAResearchService(repo).run_full_text_ops(
+        FullTextOpsRequest(source_keys=["europe_pmc"], partition_date="2026-04-27")
+    )
+
+    assert result.agent_run_id is not None
+    assert len(repo.list_claims(source_key="europe_pmc", include_seed_claims=True)) == claims_before
+    assert repo.list_source_queries(source_key="europe_pmc") == source_queries_before
+    assert repo.list_agent_runs(agent_name="full_text_ops_agent", status="completed")
 
 
 def test_search_claims_uses_typed_contracts(tmp_path):
@@ -3381,6 +3627,25 @@ def test_mcp_full_text_triage_helper_dumps_action(monkeypatch, tmp_path):
     assert payload["action"] == "reduce_batch_size"
     assert payload["should_retry"] is True
     assert payload["should_block_schedule"] is True
+
+
+def test_mcp_agent_run_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "mcp-agent-runs.sqlite3", seed=False)
+    _seed_full_text_source_claim(repo, "europe_pmc")
+    service = HSAResearchService(repo)
+    monkeypatch.setattr(mcp_server, "get_service", lambda: service)
+
+    payload = mcp_server.run_full_text_ops_tool(
+        source_keys=["europe_pmc"],
+        partition_date="2026-04-27",
+    )
+    run_payload = mcp_server.get_agent_run_tool(payload["agent_run_id"])
+    runs_payload = mcp_server.list_agent_runs_tool(agent_name="full_text_ops_agent")
+
+    assert payload["agent_run_id"]
+    assert payload["actions"]
+    assert run_payload["agent_run_id"] == payload["agent_run_id"]
+    assert runs_payload[0]["agent_run_id"] == payload["agent_run_id"]
 
 
 def test_mcp_retrieval_smoke_helper_dumps_full_read_chain(monkeypatch, tmp_path):

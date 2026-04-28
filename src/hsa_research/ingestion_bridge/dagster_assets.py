@@ -12,7 +12,7 @@ import json
 import os
 from typing import Any
 
-from .contracts import ClaimCurationRequest, ClaimSearchRequest, ResearchObject, SourceQuery, SourceScoutRequest
+from .contracts import FullTextOpsRequest, ClaimCurationRequest, ClaimSearchRequest, ResearchObject, SourceQuery, SourceScoutRequest
 from .query_policy import (
     build_canine_data_source_queries,
     build_chemistry_source_queries,
@@ -99,6 +99,15 @@ _FULL_TEXT_TRIAGE_TABLE_COLUMNS = (
     "should_block_schedule",
     "reasons",
     "recommended_next_actions",
+)
+_FULL_TEXT_OPS_ACTION_TABLE_COLUMNS = (
+    "source_key",
+    "action",
+    "severity",
+    "reason",
+    "dagster_job_name",
+    "partition_date",
+    "evidence_refs",
 )
 _ENTITY_RESOLUTION_TABLE_COLUMNS = (
     "source_key",
@@ -311,6 +320,25 @@ if dg is not None:
             "embedding_models": dg.MetadataValue.json(embedding_coverage.get("embedding_models", {})),
             "coverage": dg.MetadataValue.json(report.get("coverage", {})),
             "passes_minimum_bar": bool(report.get("passes_minimum_bar", False)),
+        }
+
+    def _full_text_ops_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        actions = report.get("actions", [])
+        blocking_actions = [
+            action
+            for action in actions
+            if action.get("severity") == "blocking" or action.get("action") == "keep_schedule_stopped"
+        ]
+        return {
+            "agent_run_id": report.get("agent_run_id"),
+            "action_count": len(actions),
+            "blocking_action_count": len(blocking_actions),
+            "should_block_schedule": bool(report.get("should_block_schedule", False)),
+            "schedule_readiness": report.get("schedule_readiness"),
+            "error_count": len(report.get("errors", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "evidence": dg.MetadataValue.json(report.get("evidence", {})),
+            "actions": _metadata_table(actions, _FULL_TEXT_OPS_ACTION_TABLE_COLUMNS),
         }
 
     def _run_literature_full_text_refresh(
@@ -842,6 +870,17 @@ if dg is not None:
         )
         return dg.MaterializeResult(value=report, metadata=_source_health_report_metadata(report))
 
+    @dg.asset(group_name="agent_ops")
+    def full_text_ops_agent_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
+        """Recommend-only full-text ops agent report over persisted hosted state."""
+
+        from .service import HSAResearchService
+
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).run_full_text_ops(FullTextOpsRequest())
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_full_text_ops_report_metadata(report))
+
     @dg.asset(group_name="entity_resolution")
     def entity_resolution_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
         """Deterministic entity resolution over persisted hosted API chunks."""
@@ -1304,6 +1343,7 @@ if dg is not None:
         literature_full_text_source_date_report,
         structured_source_count_report,
         source_health_report,
+        full_text_ops_agent_report,
         entity_resolution_report,
         embedding_index_report,
         embedding_maintenance_report,
@@ -1372,6 +1412,10 @@ if dg is not None:
     source_health_report_job = dg.define_asset_job(
         "source_health_report_job",
         selection=dg.AssetSelection.assets(source_health_report),
+    )
+    full_text_ops_agent_job = dg.define_asset_job(
+        "full_text_ops_agent_job",
+        selection=dg.AssetSelection.assets(full_text_ops_agent_report),
     )
     entity_resolution_job = dg.define_asset_job(
         "entity_resolution_job",
@@ -1484,6 +1528,7 @@ if dg is not None:
             literature_full_text_source_date_job,
             structured_source_count_report_job,
             source_health_report_job,
+            full_text_ops_agent_job,
             entity_resolution_job,
             embedding_index_job,
             embedding_maintenance_job,
@@ -1521,6 +1566,7 @@ else:
     literature_full_text_source_date_job = None
     structured_source_count_report_job = None
     source_health_report_job = None
+    full_text_ops_agent_job = None
     entity_resolution_job = None
     embedding_index_job = None
     embedding_maintenance_job = None

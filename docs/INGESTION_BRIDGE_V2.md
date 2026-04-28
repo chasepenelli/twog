@@ -466,6 +466,13 @@ Each tool or model call should log:
 - Dagster run ID or RunPod job ID
 - created by and created at
 
+`agent_runs` is the durable ledger for agent execution. Each service-level agent
+call writes the typed input payload, terminal output payload, summary, status,
+source key, partition date, Dagster run id when supplied, and errors. The first
+implementation is recommend-only and deterministic: no Claude/OpenAI calls are
+made by the ledger or full-text ops agent, and agents do not mutate schedules or
+launch retries.
+
 ## Model Profiles
 
 No model gateway is required in v1. Agents should reference simple logical profiles:
@@ -504,6 +511,16 @@ The source scout inspects local coverage and proposes the next ingestion bridges
 - FDA Green Book for veterinary drug label context.
 
 The scout returns prioritized source recommendations, starter `SourceQuery` contracts, and implementation notes. This should drive source-by-source harvester work without requiring a full Dagster deployment yet.
+
+## Full-Text Ops Agent
+
+The full-text ops agent reviews Europe PMC and PMC OA full-text health,
+triage, optional source/date partition reports, and recent related agent runs.
+It returns structured recommendations such as `run_ingest_smoke`,
+`run_source_date_partition`, `inspect_parser`, `inspect_license`, or
+`ready_to_enable_schedule`. Its Dagster surface is
+`full_text_ops_agent_report` / `full_text_ops_agent_job`, intentionally manual
+only until the recommendations are trusted in hosted runs.
 
 ## Build Phases
 

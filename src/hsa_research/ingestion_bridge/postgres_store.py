@@ -14,6 +14,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from .contracts import (
+    AgentRunRecord,
     ArtifactHandle,
     AsyncRunHandle,
     CandidateDossier,
@@ -1260,6 +1261,100 @@ class PostgresResearchRepository(ResearchRepository):
             return None
         return ArtifactHandle.model_validate(_payload(row))
 
+    def create_agent_run(self, record: AgentRunRecord) -> AgentRunRecord:
+        payload = record.model_dump(mode="json")
+        self._execute(
+            """
+            insert into agent_runs (
+              agent_run_id, agent_name, agent_version, model_profile, status,
+              source_key, partition_date, dagster_run_id, started_at,
+              completed_at, payload
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict(agent_run_id) do update set
+              agent_name = excluded.agent_name,
+              agent_version = excluded.agent_version,
+              model_profile = excluded.model_profile,
+              status = excluded.status,
+              source_key = excluded.source_key,
+              partition_date = excluded.partition_date,
+              dagster_run_id = excluded.dagster_run_id,
+              started_at = excluded.started_at,
+              completed_at = excluded.completed_at,
+              payload = excluded.payload,
+              updated_at = now()
+            """,
+            (
+                str(record.agent_run_id),
+                record.agent_name,
+                record.agent_version,
+                record.model_profile,
+                str(record.status),
+                record.source_key,
+                record.partition_date,
+                record.dagster_run_id,
+                record.started_at,
+                record.completed_at,
+                self._json(payload),
+            ),
+        )
+        return record
+
+    def finish_agent_run(
+        self,
+        agent_run_id: UUID,
+        *,
+        status: str,
+        output_payload: dict,
+        summary: dict,
+        errors: list[str],
+    ) -> AgentRunRecord | None:
+        record = self.get_agent_run(agent_run_id)
+        if record is None:
+            return None
+        updated = record.model_copy(
+            update={
+                "status": status,
+                "completed_at": datetime.now(UTC),
+                "output_payload": output_payload,
+                "summary": summary,
+                "errors": errors,
+            }
+        )
+        return self.create_agent_run(updated)
+
+    def get_agent_run(self, agent_run_id: UUID) -> AgentRunRecord | None:
+        row = self._fetchone("select payload from agent_runs where agent_run_id = %s", (str(agent_run_id),))
+        if row is None:
+            return None
+        return AgentRunRecord.model_validate(_payload(row))
+
+    def list_agent_runs(
+        self,
+        *,
+        agent_name: str | None = None,
+        status: str | None = None,
+        source_key: str | None = None,
+        limit: int = 50,
+    ) -> list[AgentRunRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if agent_name:
+            clauses.append("agent_name = %s")
+            params.append(agent_name)
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        if source_key:
+            clauses.append("source_key = %s")
+            params.append(source_key)
+        sql = "select payload from agent_runs"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by created_at desc limit %s"
+        params.append(limit)
+        return [AgentRunRecord.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
+
     def upsert_artifact(self, artifact: ArtifactHandle) -> ArtifactHandle:
         payload = artifact.model_dump(mode="json")
         self._execute(
@@ -1633,6 +1728,27 @@ class PostgresResearchRepository(ResearchRepository):
             );
 
             create index if not exists async_runs_status_idx on async_runs(status, updated_at desc);
+
+            create table if not exists agent_runs (
+              agent_run_id text primary key,
+              agent_name text not null,
+              agent_version text not null,
+              model_profile text not null,
+              status text not null,
+              source_key text,
+              partition_date text,
+              dagster_run_id text,
+              started_at timestamptz not null,
+              completed_at timestamptz,
+              payload jsonb not null,
+              created_at timestamptz not null default now(),
+              updated_at timestamptz not null default now()
+            );
+
+            create index if not exists agent_runs_name_status_idx
+              on agent_runs(agent_name, status, created_at desc);
+            create index if not exists agent_runs_source_idx
+              on agent_runs(source_key, created_at desc);
 
             create table if not exists artifacts (
               artifact_id text primary key,

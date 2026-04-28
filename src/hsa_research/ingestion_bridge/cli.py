@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from uuid import UUID
 
 from .backfill import backfill_deep_dives, backfill_papers_json
 from .claim_curator import curate_claims_for_repository
@@ -14,6 +15,7 @@ from .contracts import (
     ClaimCurationRequest,
     EntityResolutionRequest,
     FullTextTriageRequest,
+    FullTextOpsRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
@@ -183,6 +185,28 @@ def main() -> None:
     triage_full_text.add_argument("--http-status", type=int, default=None)
     triage_full_text.add_argument("--model-profile", default="cheap_classifier")
     triage_full_text.add_argument("--fail-on-blocking", action="store_true")
+
+    full_text_ops = subparsers.add_parser(
+        "full-text-ops",
+        help="Run the recommend-only full-text ops agent",
+    )
+    full_text_ops.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="Full-text source key; repeat to inspect multiple. Defaults to Europe PMC and PMC OA.",
+    )
+    full_text_ops.add_argument("--partition-date", default=None, help="Optional YYYY-MM-DD partition to validate")
+    full_text_ops.add_argument("--recent-run-limit", type=int, default=10, help="Recent agent runs to include")
+    full_text_ops.add_argument("--model-profile", default="reviewer", help="Logical model profile")
+    full_text_ops.add_argument("--fail-on-blocking", action="store_true")
+
+    agent_runs = subparsers.add_parser("agent-runs", help="List or fetch persisted agent runs")
+    agent_runs.add_argument("--id", default=None, help="Optional agent_run_id to fetch")
+    agent_runs.add_argument("--agent-name", default=None, help="Optional agent name filter")
+    agent_runs.add_argument("--status", default=None, help="Optional status filter")
+    agent_runs.add_argument("--source", default=None, help="Optional source key filter")
+    agent_runs.add_argument("--limit", type=int, default=50, help="Maximum runs to return")
 
     retrieval_smoke = subparsers.add_parser(
         "retrieval-smoke",
@@ -420,6 +444,30 @@ def main() -> None:
                 model_profile=args.model_profile,
             )
         ).model_dump(mode="json")
+    elif args.command == "full-text-ops":
+        output = HSAResearchService(repo).run_full_text_ops(
+            FullTextOpsRequest(
+                source_keys=args.source,
+                partition_date=args.partition_date,
+                recent_run_limit=args.recent_run_limit,
+                model_profile=args.model_profile,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "agent-runs":
+        service = HSAResearchService(repo)
+        if args.id:
+            record = service.get_agent_run(UUID(args.id))
+            output = {} if record is None else record.model_dump(mode="json")
+        else:
+            output = [
+                run.model_dump(mode="json")
+                for run in service.list_agent_runs(
+                    agent_name=args.agent_name,
+                    status=args.status,
+                    source_key=args.source,
+                    limit=args.limit,
+                )
+            ]
     elif args.command == "retrieval-smoke":
         output = HSAResearchService(repo).run_retrieval_smoke(
             RetrievalSmokeRequest(
@@ -478,8 +526,7 @@ def main() -> None:
             limit=args.limit,
         ).model_dump(mode="json")
     elif args.command == "curate-claims":
-        curation = curate_claims_for_repository(
-            repo,
+        curation = HSAResearchService(repo).curate_claims(
             ClaimCurationRequest(
                 source_key=args.source,
                 query=args.query,
@@ -495,8 +542,7 @@ def main() -> None:
             curation.pop("decisions", None)
         output = curation
     elif args.command == "scout-sources":
-        scout = scout_sources_for_repository(
-            repo,
+        scout = HSAResearchService(repo).scout_sources(
             SourceScoutRequest(
                 focus=args.focus,
                 max_phase=args.max_phase,

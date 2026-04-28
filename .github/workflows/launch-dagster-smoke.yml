@@ -23,6 +23,7 @@ on:
           - "literature_full_text_smoke_job"
           - "structured_source_count_report_job"
           - "source_health_report_job"
+          - "full_text_ops_agent_job"
           - "entity_resolution_job"
           - "embedding_index_job"
           - "embedding_maintenance_job"

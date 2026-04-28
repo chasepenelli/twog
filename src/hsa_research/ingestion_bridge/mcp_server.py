@@ -19,6 +19,7 @@ from .contracts import (
     ClaimSearchRequest,
     CommitHypothesisRequest,
     FullTextTriageRequest,
+    FullTextOpsRequest,
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
@@ -187,6 +188,57 @@ def triage_full_text_issue_tool(
     return get_service().triage_full_text_issue(request).model_dump(mode="json")
 
 
+def run_full_text_ops_tool(
+    source_keys: list[str] | None = None,
+    partition_date: str | None = None,
+    source_health_report: dict | None = None,
+    full_text_report: dict | None = None,
+    recent_run_limit: int = 10,
+    model_profile: str = "reviewer",
+    dagster_run_id: str | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """Run the recommend-only full-text ops agent."""
+
+    request = FullTextOpsRequest(
+        source_keys=source_keys or [],
+        partition_date=partition_date,
+        source_health_report=source_health_report,
+        full_text_report=full_text_report,
+        recent_run_limit=recent_run_limit,
+        model_profile=model_profile,
+        dagster_run_id=dagster_run_id,
+        metadata=metadata or {},
+    )
+    return get_service().run_full_text_ops(request).model_dump(mode="json")
+
+
+def get_agent_run_tool(agent_run_id: str) -> dict:
+    """Return a persisted agent run."""
+
+    record = get_service().get_agent_run(UUID(agent_run_id))
+    return {} if record is None else record.model_dump(mode="json")
+
+
+def list_agent_runs_tool(
+    agent_name: str | None = None,
+    status: str | None = None,
+    source_key: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Return recent persisted agent runs."""
+
+    return [
+        run.model_dump(mode="json")
+        for run in get_service().list_agent_runs(
+            agent_name=agent_name,
+            status=status,
+            source_key=source_key,
+            limit=limit,
+        )
+    ]
+
+
 if mcp is not None:
 
     @mcp.tool()
@@ -340,6 +392,52 @@ if mcp is not None:
             http_status=http_status,
             model_profile=model_profile,
             metadata=metadata,
+        )
+
+    @mcp.tool()
+    def run_full_text_ops(
+        source_keys: list[str] | None = None,
+        partition_date: str | None = None,
+        source_health_report: dict | None = None,
+        full_text_report: dict | None = None,
+        recent_run_limit: int = 10,
+        model_profile: str = "reviewer",
+        dagster_run_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Run the recommend-only full-text ops agent and persist its agent run."""
+
+        return run_full_text_ops_tool(
+            source_keys=source_keys,
+            partition_date=partition_date,
+            source_health_report=source_health_report,
+            full_text_report=full_text_report,
+            recent_run_limit=recent_run_limit,
+            model_profile=model_profile,
+            dagster_run_id=dagster_run_id,
+            metadata=metadata,
+        )
+
+    @mcp.tool()
+    def get_agent_run(agent_run_id: str) -> dict:
+        """Return a persisted agent run."""
+
+        return get_agent_run_tool(agent_run_id)
+
+    @mcp.tool()
+    def list_agent_runs(
+        agent_name: str | None = None,
+        status: str | None = None,
+        source_key: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return recent persisted agent runs."""
+
+        return list_agent_runs_tool(
+            agent_name=agent_name,
+            status=status,
+            source_key=source_key,
+            limit=limit,
         )
 
     @mcp.tool()
@@ -555,6 +653,12 @@ if mcp is not None:
 
         handle = get_service().get_run_status(UUID(run_id))
         return {} if handle is None else handle.model_dump(mode="json")
+
+    @mcp.resource("agent-run://{agent_run_id}")
+    def agent_run_resource(agent_run_id: str) -> dict:
+        """Fetch a persisted agent run as an MCP resource."""
+
+        return get_agent_run_tool(agent_run_id)
 
     @mcp.resource("artifact://{artifact_id}")
     def artifact_resource(artifact_id: str) -> dict:
