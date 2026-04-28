@@ -121,6 +121,44 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [ "$DAGSTER_CLOUD_JOB" = "x_linked_article_followup_job" ] && [ -z "$DAGSTER_CLOUD_CONFIG_JSON" ] && [ -n "$HSA_X_LINKED_ARTICLE_URLS" ]; then
+          DAGSTER_CLOUD_CONFIG_JSON="$(
+          python - <<'PY'
+          import json
+          import os
+
+          raw = os.environ["HSA_X_LINKED_ARTICLE_URLS"].strip()
+          parsed = None
+          if raw.startswith("["):
+              try:
+                  loaded = json.loads(raw)
+              except json.JSONDecodeError:
+                  loaded = None
+              if isinstance(loaded, list):
+                  parsed = [str(item).strip() for item in loaded if str(item).strip()]
+          urls = parsed or [
+              item.strip()
+              for item in raw.replace("\n", ",").replace("\r", ",").split(",")
+              if item.strip()
+          ]
+          config = {
+              "ops": {
+                  "x_linked_article_followup_report": {
+                      "config": {
+                          "urls": urls,
+                          "approved_by": os.environ.get("HSA_X_LINKED_ARTICLE_APPROVED_BY"),
+                          "approval_note": os.environ.get("HSA_X_LINKED_ARTICLE_APPROVAL_NOTE"),
+                          "fetch": True,
+                          "parse": True,
+                      }
+                  }
+              }
+          }
+          print(json.dumps(config))
+          PY
+          )"
+          fi
+
           launch_tags='{"github_workflow":"launch-dagster-smoke","github_run_id":"'"$GITHUB_RUN_ID"'","github_run_attempt":"'"$GITHUB_RUN_ATTEMPT"'","dagster_job":"'"$DAGSTER_CLOUD_JOB"'"}'
           launch_args=(
             uv run dagster-cloud job launch
