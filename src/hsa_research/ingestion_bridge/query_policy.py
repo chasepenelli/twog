@@ -162,6 +162,11 @@ def expand_with_comparative_policy(query_text: str, style: ComparativeQueryStyle
 def build_scholarly_source_queries() -> list[SourceQuery]:
     """Create starter queries that always include human analog coverage."""
 
+    unpaywall_disease_query = (
+        '"canine hemangiosarcoma" OR "canine haemangiosarcoma" OR "dog hemangiosarcoma" OR '
+        '"dog haemangiosarcoma" OR "human angiosarcoma" OR angiosarcoma OR hemangiosarcoma OR '
+        'haemangiosarcoma OR hemangioendothelioma OR haemangioendothelioma OR "vascular sarcoma"'
+    )
     return [
         SourceQuery(
             source_key="pubmed",
@@ -218,6 +223,14 @@ def build_scholarly_source_queries() -> list[SourceQuery]:
             query_text=disease_analog_query("pmc"),
             query_params={"comparative_policy": "required", "license_required": True},
             track="legal_full_text",
+        ),
+        SourceQuery(
+            source_key="unpaywall",
+            query_name="oa_discovery_hsa_titles",
+            query_text=unpaywall_disease_query,
+            query_params={"is_oa": True},
+            track="open_access_discovery",
+            active=False,
         ),
     ]
 

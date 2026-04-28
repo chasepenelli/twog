@@ -14,6 +14,7 @@ jobs:
       DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
       HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
       HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS: "8"
       HSA_FULL_TEXT_REQUEST_ATTEMPTS: "1"
@@ -110,5 +111,16 @@ jobs:
               --target-path .
           else
             echo "::warning::OPENROUTER_API_KEY is not configured as a GitHub Actions secret; OpenRouter review modes will not run in Dagster+."
+          fi
+
+          if [ -n "$TWITTERAPI_IO_KEY" ]; then
+            uv run dg plus create env TWITTERAPI_IO_KEY \
+              --from-local-env \
+              --global \
+              --scope full \
+              --yes \
+              --target-path .
+          else
+            echo "::warning::TWITTERAPI_IO_KEY is not configured as a GitHub Actions secret; X topic monitoring will stay disabled in Dagster+."
           fi
         shell: bash

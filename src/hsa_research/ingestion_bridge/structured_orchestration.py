@@ -283,7 +283,7 @@ def full_text_source_qa(
     full_text_chunks = [
         chunk
         for chunk in document_chunks
-        if chunk.section_label == "full_text" and chunk.text_content.strip()
+        if _is_full_text_section_label(chunk.section_label) and chunk.text_content.strip()
     ]
     title_abstract_chunks = [
         chunk
@@ -454,11 +454,23 @@ def _current_ingestion_full_text_counts(
             int(result.get("full_text_research_objects", 0)) for result in ingestion_results
         ),
         "current_full_text_document_chunks": sum(
-            int((result.get("section_chunk_counts") or {}).get("full_text", 0))
+            _full_text_section_chunk_count(result.get("section_chunk_counts") or {})
             for result in ingestion_results
         ),
         "current_failed_runs": failed_runs,
     }
+
+
+def _is_full_text_section_label(section_label: str | None) -> bool:
+    return bool(section_label == "full_text" or (section_label or "").startswith("full_text:"))
+
+
+def _full_text_section_chunk_count(section_chunk_counts: Mapping[str, Any]) -> int:
+    return sum(
+        int(count)
+        for section_label, count in section_chunk_counts.items()
+        if _is_full_text_section_label(str(section_label))
+    )
 
 
 def _triage_full_text_qa(

@@ -30,6 +30,7 @@ from hsa_research.ingestion_bridge.contracts import (
     RawSourceRecord,
     ResearchChunkSearchRequest,
     ResearchObject,
+    ResearchObjectType,
     ResearchObjectReadRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
@@ -90,6 +91,7 @@ from hsa_research.ingestion_bridge.harvesters_v2 import (
     RCSBPDBHarvesterV2,
     SRAHarvesterV2,
     UniProtHarvesterV2,
+    UnpaywallHarvesterV2,
 )
 from hsa_research.ingestion_bridge.local_ingest import LocalIngestionPipeline
 from hsa_research.ingestion_bridge.local_store import SQLiteResearchRepository
@@ -97,6 +99,7 @@ from hsa_research.ingestion_bridge import mcp_server
 from hsa_research.ingestion_bridge.query_policy import build_scholarly_source_queries, infer_comparative_scope
 from hsa_research.ingestion_bridge.repository import InMemoryResearchRepository
 from hsa_research.ingestion_bridge import scraper_bridge
+from hsa_research.ingestion_bridge import x_topic_monitor
 from hsa_research.ingestion_bridge.scraper_bridge import ScrapeBridge, list_scrape_profiles
 from hsa_research.ingestion_bridge import service as service_module
 from hsa_research.ingestion_bridge.service import HSAResearchService
@@ -1377,6 +1380,8 @@ def test_local_pipeline_initializes_sources_and_queries(tmp_path):
     assert coverage["sources"] >= 4
     assert coverage["source_queries"] >= 4
     assert any(query.query_name == "licensed_full_text_hsa" for query in repo.list_source_queries("pmc_oa"))
+    unpaywall_queries = repo.list_source_queries("unpaywall", active_only=False)
+    assert any(query.query_name == "oa_discovery_hsa_titles" and not query.active for query in unpaywall_queries)
     assert any(
         query.query_name == "human_vascular_sarcoma_trials"
         for query in repo.list_source_queries("clinicaltrials_gov")
@@ -1593,7 +1598,7 @@ def test_full_text_qa_uses_body_chunks_as_persisted_gate(tmp_path):
         DocumentChunk(
             research_object_id=object_id,
             chunk_index=0,
-            section_label="full_text",
+            section_label="full_text:results",
             text_content="Full text body mentions canine hemangiosarcoma.",
             content_hash="pmc-oa-metadata-gap-chunk",
         )
@@ -1611,7 +1616,7 @@ def test_full_text_qa_uses_body_chunks_as_persisted_gate(tmp_path):
                 "research_objects": 1,
                 "document_chunks": 1,
                 "full_text_research_objects": 0,
-                "section_chunk_counts": {"full_text": 1},
+                "section_chunk_counts": {"full_text:results": 1},
                 "status": "completed",
                 "errors": [],
             }
@@ -1813,10 +1818,125 @@ def test_openalex_v2_normalizer_produces_raw_and_research_object():
     assert record.research_object.metadata["harvester"] == "v2"
 
 
+def test_unpaywall_v2_normalizer_preserves_oa_location_metadata():
+    record = UnpaywallHarvesterV2().normalize(
+        {
+            "score": 0.42,
+            "snippet": "<b>Angiosarcoma</b> open access title match",
+            "response": {
+                "doi": "https://doi.org/10.1234/HSA.OA",
+                "doi_url": "https://doi.org/10.1234/HSA.OA",
+                "title": "Human angiosarcoma open access review",
+                "year": 2026,
+                "published_date": "2026-04-01",
+                "publisher": "Example Publisher",
+                "journal_name": "Example Journal",
+                "genre": "journal-article",
+                "is_oa": True,
+                "oa_status": "gold",
+                "journal_is_in_doaj": True,
+                "best_oa_location": {
+                    "url_for_landing_page": "https://example.org/article",
+                    "url_for_pdf": "https://example.org/article.pdf",
+                    "license": "cc-by",
+                    "host_type": "publisher",
+                    "version": "publishedVersion",
+                },
+                "oa_locations": [
+                    {
+                        "url_for_landing_page": "https://example.org/article",
+                        "license": "cc-by",
+                        "host_type": "publisher",
+                    }
+                ],
+                "z_authors": [{"given": "Ada", "family": "Lovelace"}],
+            },
+        }
+    )
+
+    assert record.raw_record.source_key == "unpaywall"
+    assert record.research_object.identifiers["doi"] == "10.1234/hsa.oa"
+    assert record.research_object.canonical_url == "https://example.org/article"
+    assert record.research_object.metadata["best_oa_location"]["url_for_pdf"] == "https://example.org/article.pdf"
+    assert record.research_object.metadata["authors"] == ["Ada Lovelace"]
+    assert record.research_object.metadata["ingestion_policy"]["matched_concepts"] == ["human_angiosarcoma"]
+    assert UnpaywallHarvesterV2().chunk_section_label(record) == "oa_discovery_metadata"
+
+
+def test_unpaywall_v2_fetch_uses_title_search_endpoint(monkeypatch):
+    calls = []
+
+    def fake_get_json(url, params, **kwargs):
+        calls.append((url, params, kwargs))
+        return {
+            "results": [
+                {
+                    "score": 1.0,
+                    "response": {
+                        "doi": "10.1234/example",
+                        "title": "Canine hemangiosarcoma open access paper",
+                        "is_oa": True,
+                        "best_oa_location": {"url_for_landing_page": "https://example.org/paper"},
+                    },
+                }
+            ]
+        }
+
+    monkeypatch.setattr(harvesters_v2, "_get_json", fake_get_json)
+
+    records = UnpaywallHarvesterV2().fetch(
+        '"canine hemangiosarcoma"',
+        limit=1,
+        email="contact@example.org",
+        is_oa=True,
+    )
+
+    assert len(records) == 1
+    assert calls == [
+        (
+            "https://api.unpaywall.org/v2/search/",
+            {"query": '"canine hemangiosarcoma"', "is_oa": "true", "email": "contact@example.org"},
+            {"timeout_seconds": harvesters_v2.DEFAULT_REQUEST_TIMEOUT_SECONDS, "attempts": harvesters_v2.DEFAULT_REQUEST_ATTEMPTS},
+        )
+    ]
+
+
+def test_unpaywall_v2_fetch_uses_doi_endpoint_for_doi_queries(monkeypatch):
+    calls = []
+
+    def fake_get_json(url, params, **kwargs):
+        calls.append((url, params, kwargs))
+        return {
+            "doi": "10.1234/example",
+            "title": "Human angiosarcoma open access DOI record",
+            "is_oa": True,
+            "best_oa_location": {"url_for_landing_page": "https://example.org/doi-record"},
+        }
+
+    monkeypatch.setattr(harvesters_v2, "_get_json", fake_get_json)
+
+    records = UnpaywallHarvesterV2().fetch(
+        "https://doi.org/10.1234/example",
+        limit=1,
+        email="contact@example.org",
+    )
+
+    assert len(records) == 1
+    assert records[0].research_object.identifiers["doi"] == "10.1234/example"
+    assert calls == [
+        (
+            "https://api.unpaywall.org/v2/10.1234%2Fexample",
+            {"email": "contact@example.org"},
+            {"timeout_seconds": harvesters_v2.DEFAULT_REQUEST_TIMEOUT_SECONDS, "attempts": harvesters_v2.DEFAULT_REQUEST_ATTEMPTS},
+        )
+    ]
+
+
 def test_scholarly_query_policy_always_includes_human_angiosarcoma():
     queries = build_scholarly_source_queries()
     pubmed_query = next(query for query in queries if query.source_key == "pubmed" and query.query_name == "comparative_hsa_required")
     pmc_query = next(query for query in queries if query.source_key == "pmc_oa")
+    unpaywall_query = next(query for query in queries if query.source_key == "unpaywall")
 
     assert queries
     assert all("angiosarcoma" in query.query_text.lower() for query in queries)
@@ -1824,6 +1944,8 @@ def test_scholarly_query_policy_always_includes_human_angiosarcoma():
     assert "angiosarcoma[tiab]" in pubmed_query.query_text
     assert "[tiab]" in pmc_query.query_text
     assert "comparative oncology" not in pmc_query.query_text.lower()
+    assert unpaywall_query.query_params == {"is_oa": True}
+    assert unpaywall_query.active is False
 
 
 def test_comparative_scope_does_not_match_angiosarcoma_inside_hemangiosarcoma():
@@ -1908,13 +2030,20 @@ def test_europe_pmc_v2_normalizer_can_store_licensed_full_text():
     harvester = EuropePMCHarvesterV2()
 
     assert record.raw_record.raw_payload["full_text"] == "Results Human angiosarcoma full text mentions VEGF and propranolol."
+    assert record.raw_record.raw_payload["full_text_sections"] == [
+        {
+            "section_label": "full_text:results",
+            "title": "Results",
+            "text": "Results Human angiosarcoma full text mentions VEGF and propranolol.",
+        }
+    ]
     assert record.research_object.metadata["full_text_available"] is True
     assert record.research_object.metadata["body_only_match"] is True
     assert record.research_object.metadata["body_ingestion_policy"]["matched_concepts"] == ["human_angiosarcoma"]
     assert harvester.chunk_section_label(record) == "full_text"
     assert "full text mentions VEGF" in harvester.text_for_chunking(record)
     sections = harvester.chunk_text_sections(record)
-    assert [section_label for section_label, _text in sections] == ["title_abstract", "full_text"]
+    assert [section_label for section_label, _text in sections] == ["title_abstract", "full_text:results"]
     assert "Sparse abstract" in sections[0][1]
     assert "Sparse abstract" not in sections[1][1]
     assert "full text mentions VEGF" in sections[1][1]
@@ -2029,6 +2158,13 @@ def test_pmc_oa_v2_normalizer_extracts_license_and_full_text():
 
     assert record.raw_record.source_key == "pmc_oa"
     assert record.raw_record.raw_payload["full_text"] == "Results Canine hemangiosarcoma full text mentions VEGF and propranolol."
+    assert record.raw_record.raw_payload["full_text_sections"] == [
+        {
+            "section_label": "full_text:results",
+            "title": "Results",
+            "text": "Results Canine hemangiosarcoma full text mentions VEGF and propranolol.",
+        }
+    ]
     assert record.research_object.identifiers["pmcid"] == "PMC999999"
     assert record.research_object.identifiers["doi"] == "10.1234/pmc.test"
     assert record.research_object.metadata["journal"] == "Example Journal"
@@ -2039,6 +2175,48 @@ def test_pmc_oa_v2_normalizer_extracts_license_and_full_text():
         "canine_hsa",
         "human_angiosarcoma",
     ]
+
+
+def test_pmc_oa_v2_normalizer_splits_jats_body_sections():
+    record = PMCOAHarvesterV2().normalize(
+        """
+        <article xmlns="http://jats.nlm.nih.gov">
+          <front>
+            <article-meta>
+              <article-id pub-id-type="pmc">PMC3</article-id>
+              <title-group><article-title>Canine hemangiosarcoma</article-title></title-group>
+              <abstract><p>Short abstract.</p></abstract>
+            </article-meta>
+          </front>
+          <body>
+            <sec>
+              <title>Materials and Methods</title>
+              <p>Cells were profiled with a canine hemangiosarcoma assay.</p>
+            </sec>
+            <sec>
+              <title>Results</title>
+              <p>Human angiosarcoma VEGF signaling was compared.</p>
+            </sec>
+            <sec>
+              <title>References</title>
+              <p>Reference text should not become a body chunk.</p>
+            </sec>
+          </body>
+        </article>
+        """,
+        oa_metadata={"oa_license": "CC BY"},
+    )
+
+    sections = PMCOAHarvesterV2().chunk_text_sections(record)
+
+    assert [section_label for section_label, _text in sections] == [
+        "title_abstract",
+        "full_text:methods",
+        "full_text:results",
+    ]
+    assert "canine hemangiosarcoma assay" in sections[1][1]
+    assert "VEGF signaling" in sections[2][1]
+    assert all("Reference text" not in text for _section_label, text in sections)
 
 
 def test_pmc_oa_v2_chunks_full_text_not_just_abstract():
@@ -2256,6 +2434,11 @@ def test_hosted_literature_smoke_includes_pmc_oa():
     assert "pmc_oa" in HOSTED_API_REPORT_KEYS
 
 
+def test_unpaywall_is_registered_for_manual_oa_discovery():
+    assert HARVESTERS_V2["unpaywall"] is UnpaywallHarvesterV2
+    assert "unpaywall" not in HOSTED_API_REPORT_KEYS
+
+
 def test_literature_corpus_harvest_targets_hundreds_of_papers():
     assert LITERATURE_CORPUS_SOURCE_KEYS == (
         "openalex",
@@ -2290,6 +2473,199 @@ def test_all_api_smoke_covers_every_hosted_report_source():
         "pmc_oa",
         "clinicaltrials_gov",
     }
+
+
+def test_x_topic_monitor_builds_official_api_request_only():
+    request = x_topic_monitor.build_recent_search_request(
+        x_topic_monitor.XTopicRequest(
+            query='"canine hemangiosarcoma"',
+            query_name="x_disease_monitoring",
+            max_results=10,
+        )
+    )
+
+    assert request.method == "GET"
+    assert request.url.startswith("https://api.x.com/2/tweets/search/recent?")
+    assert request.params["query"] == '"canine hemangiosarcoma" lang:en -is:retweet'
+    assert request.headers["Authorization"] == "Bearer <X_BEARER_TOKEN>"
+    assert request.billable is True
+    assert any("Official X API" in note for note in request.notes)
+
+
+def test_x_topic_monitor_builds_twitterapi_io_request():
+    request = x_topic_monitor.build_twitterapi_io_search_request(
+        x_topic_monitor.XTopicRequest(
+            query='"canine hemangiosarcoma"',
+            query_name="x_disease_monitoring",
+            max_results=10,
+        )
+    )
+
+    assert request.method == "GET"
+    assert request.url.startswith("https://api.twitterapi.io/twitter/tweet/advanced_search?")
+    assert request.params["query"] == '"canine hemangiosarcoma" lang:en -filter:retweets'
+    assert request.params["queryType"] == "Latest"
+    assert request.headers["x-api-key"] == "<TWITTERAPI_IO_KEY>"
+    assert request.billable is True
+
+
+def test_twitterapi_io_provider_searches_and_normalizes_candidates():
+    calls = []
+
+    def fake_transport(url, params, headers, timeout_seconds):
+        calls.append((url, params, headers, timeout_seconds))
+        return {
+            "tweets": [
+                {
+                    "id": "123",
+                    "url": "https://x.com/vetonc/status/123",
+                    "text": "New canine hemangiosarcoma trial links to PubMed.",
+                    "createdAt": "2026-04-28T10:00:00Z",
+                    "lang": "en",
+                    "conversationId": "789",
+                    "retweetCount": 1,
+                    "replyCount": 2,
+                    "likeCount": 3,
+                    "quoteCount": 4,
+                    "viewCount": 500,
+                    "author": {"id": "456", "userName": "vetonc", "name": "Vet Onc"},
+                    "entities": {
+                        "urls": [
+                            {"expanded_url": "https://pubmed.ncbi.nlm.nih.gov/123456/"},
+                        ]
+                    },
+                }
+            ],
+            "has_next_page": False,
+            "next_cursor": "",
+        }
+
+    result = x_topic_monitor.TwitterApiIoProvider(
+        api_key="test-key",
+        transport=fake_transport,
+        timeout_seconds=12.0,
+    ).search(
+        x_topic_monitor.XTopicRequest(
+            query='"canine hemangiosarcoma"',
+            query_name="x_trial_monitoring",
+            max_results=10,
+        )
+    )
+
+    assert calls == [
+        (
+            "https://api.twitterapi.io/twitter/tweet/advanced_search",
+            {"query": '"canine hemangiosarcoma" lang:en -filter:retweets', "queryType": "Latest", "cursor": ""},
+            {"x-api-key": "test-key"},
+            12.0,
+        )
+    ]
+    assert result.provider == "twitterapi_io"
+    assert result.raw_tweet_count == 1
+    assert len(result.candidates) == 1
+    assert result.candidates[0].canonical_url == "https://x.com/vetonc/status/123"
+    assert result.candidates[0].username == "vetonc"
+    assert result.candidates[0].durable_links == ["https://pubmed.ncbi.nlm.nih.gov/123456/"]
+    assert result.candidates[0].metadata["provider_payload"]["provider"] == "twitterapi_io"
+
+
+def test_twitterapi_io_provider_requires_key(monkeypatch):
+    monkeypatch.delenv("TWITTERAPI_IO_KEY", raising=False)
+
+    with pytest.raises(ValueError):
+        x_topic_monitor.TwitterApiIoProvider().search(
+            x_topic_monitor.XTopicRequest(query='"canine hemangiosarcoma"')
+        )
+
+
+def test_dagster_x_topic_monitor_review_asset_uses_twitterapi_io(monkeypatch):
+    calls = []
+
+    class FakeTwitterApiIoProvider:
+        def search(self, request):
+            calls.append(request.query_name)
+            assert request.max_results == 10
+            return x_topic_monitor.XTopicProviderResult(
+                provider="twitterapi_io",
+                query_name=request.query_name,
+                raw_tweet_count=2,
+                candidates=[
+                    x_topic_monitor.XTopicReviewCandidate(
+                        source_record_id="123",
+                        canonical_url="https://x.com/vetonc/status/123",
+                        username="vetonc",
+                        matched_query_name=request.query_name,
+                        matched_terms=["canine hemangiosarcoma", "trial"],
+                        durable_links=["https://pubmed.ncbi.nlm.nih.gov/123456/"],
+                        quality_score=0.7,
+                    )
+                ],
+            )
+
+    monkeypatch.setenv("HSA_X_TOPIC_QUERY_NAME", "x_trial_monitoring")
+    monkeypatch.setenv("HSA_X_TOPIC_MAX_RESULTS", "10")
+    monkeypatch.setattr(x_topic_monitor, "TwitterApiIoProvider", FakeTwitterApiIoProvider)
+
+    result = dagster_asset_module.x_topic_monitor_review_report.node_def.compute_fn.decorated_fn()
+
+    assert calls == ["x_trial_monitoring"]
+    assert result.value["provider"] == "twitterapi_io"
+    assert result.value["raw_tweet_count"] == 2
+    assert result.value["candidate_count"] == 1
+    assert result.value["candidates"][0]["post_id"] == "123"
+    assert result.value["manual_review_required"] is True
+    assert dagster_asset_module.x_topic_monitor_review_job is not None
+
+
+def test_x_topic_monitor_normalizes_post_for_manual_review():
+    candidate = x_topic_monitor.normalize_post_payload(
+        {
+            "id": "123",
+            "author_id": "456",
+            "author": {"username": "vetonc"},
+            "conversation_id": "789",
+            "created_at": "2026-04-28T10:00:00Z",
+            "lang": "en",
+            "text": "New canine hemangiosarcoma trial links to PubMed.",
+            "entities": {
+                "urls": [
+                    {"expanded_url": "https://pubmed.ncbi.nlm.nih.gov/123456/"},
+                ]
+            },
+        },
+        query_name="x_trial_monitoring",
+    )
+
+    assert candidate.source_record_id == "123"
+    assert candidate.canonical_url == "https://x.com/vetonc/status/123"
+    assert candidate.review_status == x_topic_monitor.XReviewStatus.NEEDS_REVIEW
+    assert "canine hemangiosarcoma" in candidate.matched_terms
+    assert candidate.durable_links == ["https://pubmed.ncbi.nlm.nih.gov/123456/"]
+    assert candidate.quality_score > 0.5
+
+
+def test_x_topic_monitor_requires_review_before_storage_contracts():
+    payload = {
+        "id": "123",
+        "author_id": "456",
+        "author": {"username": "vetonc"},
+        "created_at": "2026-04-28T10:00:00Z",
+        "lang": "en",
+        "text": "Canine hemangiosarcoma signal.",
+    }
+    candidate = x_topic_monitor.normalize_post_payload(payload, query_name="x_disease_monitoring")
+
+    with pytest.raises(ValueError):
+        x_topic_monitor.to_research_record(candidate, payload, accepted_by="operator")
+
+    accepted = candidate.model_copy(update={"review_status": x_topic_monitor.XReviewStatus.ACCEPTED_SIGNAL})
+    record = x_topic_monitor.to_research_record(accepted, payload, accepted_by="operator")
+
+    assert record.raw_record.source_key == "x_topic_monitor"
+    assert record.research_object.object_type == ResearchObjectType.KNOWLEDGE_ENTRY
+    assert record.research_object.dedupe_key == "x_topic_monitor:post:123"
+    assert record.document_chunk.section_label == "x_topic_signal"
+    assert "text retention mode=store_metadata_only" in record.document_chunk.text_content
 
 
 def test_clinicaltrials_gov_v2_normalizer_extracts_trial_fields():

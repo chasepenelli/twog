@@ -48,6 +48,7 @@ HSA_FULL_TEXT_REQUEST_ATTEMPTS=1
 HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS=120
 HSA_PMC_OA_MAX_CANDIDATE_RECORDS=20
 OPENROUTER_API_KEY=<required for hosted OpenRouter review modes>
+TWITTERAPI_IO_KEY=<optional for X/Twitter topic monitoring>
 ```
 
 Do not commit or paste `HSA_DATABASE_URL` into chat. Store it directly in
@@ -61,7 +62,9 @@ The preferred automated path is:
    permissions as the GitHub Actions secret `DAGSTER_PLUS_ENV_API_TOKEN`.
 3. Store the OpenRouter key as the GitHub Actions secret `OPENROUTER_API_KEY`
    if hosted model-review comparison should run.
-4. Run the `Configure Dagster Plus Environment` GitHub Actions workflow.
+4. Store the TwitterAPI.io key as the GitHub Actions secret `TWITTERAPI_IO_KEY`
+   if X/Twitter topic monitoring should run.
+5. Run the `Configure Dagster Plus Environment` GitHub Actions workflow.
 
 That workflow uses `DAGSTER_PLUS_ENV_API_TOKEN` to write the production Dagster+
 environment variables with:
@@ -73,6 +76,7 @@ uv run dg plus create env HSA_CONTACT_EMAIL poppa@bradyandgraffiti.com --global 
 uv run dg plus create env HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS 8 --global --scope full --yes
 uv run dg plus create env HSA_FULL_TEXT_REQUEST_ATTEMPTS 1 --global --scope full --yes
 uv run dg plus create env HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS 120 --global --scope full --yes
+uv run dg plus create env TWITTERAPI_IO_KEY --from-local-env --global --scope full --yes
 uv run dg plus create env HSA_PMC_OA_MAX_CANDIDATE_RECORDS 20 --global --scope full --yes
 uv run dg plus create env OPENROUTER_API_KEY --from-local-env --global --scope full --yes
 ```

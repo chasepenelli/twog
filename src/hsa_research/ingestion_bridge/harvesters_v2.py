@@ -35,6 +35,20 @@ FULL_TEXT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("HSA_FULL_TEXT_REQUEST_TIMEO
 FULL_TEXT_REQUEST_ATTEMPTS = int(os.getenv("HSA_FULL_TEXT_REQUEST_ATTEMPTS", "1"))
 FULL_TEXT_FETCH_TIME_BUDGET_SECONDS = float(os.getenv("HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS", "360"))
 PMC_OA_MAX_CANDIDATE_RECORDS = int(os.getenv("HSA_PMC_OA_MAX_CANDIDATE_RECORDS", "40"))
+UNPAYWALL_EMAIL = os.getenv("UNPAYWALL_EMAIL") or os.getenv("HSA_CONTACT_EMAIL") or "poppa@bradyandgraffiti.com"
+JATS_SECTION_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("introduction", ("intro", "background", "rationale")),
+    ("methods", ("method", "material", "experimental", "protocol", "statistical analysis")),
+    ("results", ("result", "finding", "observation")),
+    ("discussion", ("discussion", "interpretation")),
+    ("conclusion", ("conclusion", "summary", "future direction")),
+    ("case_report", ("case", "patient", "clinical presentation")),
+    ("abstract", ("abstract",)),
+    ("references", ("reference", "bibliography", "literature cited")),
+    ("acknowledgments", ("acknowledg", "funding", "disclosure", "conflict", "competing interest")),
+    ("supplementary", ("supplement", "appendix")),
+)
+JATS_SECTION_EXCLUDED_KINDS = {"abstract", "references", "acknowledgments", "supplementary"}
 
 CHEMBL_PRIORITY_TARGETS: dict[str, dict[str, str]] = {
     "CHEMBL213": {"gene": "ADRB1", "category": "beta_adrenergic"},
@@ -224,6 +238,124 @@ class OpenAlexHarvesterV2(ScholarlyHarvesterV2):
         return HarvestedRecord(raw_record=raw, research_object=obj)
 
 
+class UnpaywallHarvesterV2(HarvesterV2):
+    """Unpaywall title-search harvester for open-access location discovery."""
+
+    source_key = "unpaywall"
+
+    def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
+        params = dict(params)
+        email = params.pop("email", None) or UNPAYWALL_EMAIL
+        is_oa = params.pop("is_oa", True)
+        require_policy_match = params.pop("require_policy_match", True)
+        timeout_seconds = float(params.pop("timeout_seconds", DEFAULT_REQUEST_TIMEOUT_SECONDS))
+        attempts = int(params.pop("attempts", DEFAULT_REQUEST_ATTEMPTS))
+        doi = _normalize_doi(query_text)
+        if _looks_like_doi(doi):
+            data = _get_json(
+                f"https://api.unpaywall.org/v2/{urllib.parse.quote(str(doi), safe='')}",
+                {"email": email, **params},
+                timeout_seconds=timeout_seconds,
+                attempts=attempts,
+            )
+            records = [self.normalize(data)]
+        else:
+            data = _get_json(
+                "https://api.unpaywall.org/v2/search/",
+                {
+                    "query": query_text,
+                    "is_oa": "true" if _safe_bool(is_oa) else "false",
+                    "email": email,
+                    **params,
+                },
+                timeout_seconds=timeout_seconds,
+                attempts=attempts,
+            )
+            records = [self.normalize(result) for result in (data.get("results") or [])[:limit]]
+        if not require_policy_match:
+            return records
+        return [
+            record
+            for record in records
+            if record.research_object.metadata.get("ingestion_policy", {}).get("matched_concepts")
+        ]
+
+    def normalize(self, result: dict[str, Any]) -> HarvestedRecord:
+        item = result.get("response") if isinstance(result.get("response"), dict) else result
+        doi = _normalize_doi(item.get("doi"))
+        best_location = item.get("best_oa_location") if isinstance(item.get("best_oa_location"), dict) else {}
+        locations = item.get("oa_locations") if isinstance(item.get("oa_locations"), list) else []
+        title = _clean_markup(item.get("title"))
+        snippet = _clean_markup(result.get("snippet"))
+        source_url = (
+            best_location.get("url_for_landing_page")
+            or best_location.get("url")
+            or best_location.get("url_for_pdf")
+            or item.get("doi_url")
+        )
+        identifiers = {
+            "doi": doi,
+            "unpaywall_endpoint_id": item.get("endpoint_id"),
+        }
+        identifiers = {key: str(value) for key, value in identifiers.items() if value}
+        source_record_id = doi or item.get("endpoint_id") or title
+        raw = _raw_record(self.source_key, source_record_id, source_url, result)
+        obj = ResearchObject(
+            object_type=ResearchObjectType.PUBLICATION,
+            title=title,
+            abstract=None,
+            canonical_url=source_url,
+            publication_year=_safe_int(item.get("year")),
+            published_at=item.get("published_date"),
+            source_key=self.source_key,
+            dedupe_key=_dedupe_key(identifiers, self.source_key, source_record_id),
+            identifiers=identifiers,
+            metadata={
+                "publisher": item.get("publisher"),
+                "journal": item.get("journal_name"),
+                "genre": item.get("genre"),
+                "is_oa": item.get("is_oa"),
+                "oa_status": item.get("oa_status"),
+                "has_repository_copy": item.get("has_repository_copy"),
+                "journal_is_oa": item.get("journal_is_oa"),
+                "journal_is_in_doaj": item.get("journal_is_in_doaj"),
+                "best_oa_location": _unpaywall_location_summary(best_location),
+                "oa_location_count": len(locations),
+                "oa_locations": [_unpaywall_location_summary(location) for location in locations[:10]],
+                "authors": _unpaywall_author_names(item.get("z_authors")),
+                "score": result.get("score"),
+                "snippet": snippet,
+                "license_policy": "metadata_and_open_access_location_links",
+                "ingestion_policy": infer_comparative_scope(title, snippet),
+                "harvester": "v2",
+            },
+        )
+        return HarvestedRecord(raw_record=raw, research_object=obj)
+
+    def text_for_chunking(self, record: HarvestedRecord) -> str:
+        metadata = record.research_object.metadata
+        best_location = metadata.get("best_oa_location") if isinstance(metadata.get("best_oa_location"), dict) else {}
+        return "\n\n".join(
+            part
+            for part in (
+                record.research_object.title,
+                metadata.get("snippet"),
+                f"Journal: {metadata.get('journal')}" if metadata.get("journal") else None,
+                f"OA status: {metadata.get('oa_status')}" if metadata.get("oa_status") else None,
+                f"License: {best_location.get('license')}" if best_location.get("license") else None,
+                f"Landing page: {best_location.get('url_for_landing_page')}"
+                if best_location.get("url_for_landing_page")
+                else None,
+                f"PDF: {best_location.get('url_for_pdf')}" if best_location.get("url_for_pdf") else None,
+            )
+            if part
+        )
+
+    def chunk_section_label(self, record: HarvestedRecord) -> str:
+        _ = record
+        return "oa_discovery_metadata"
+
+
 class CrossrefHarvesterV2(ScholarlyHarvesterV2):
     source_key = "crossref"
     query_style = "crossref"
@@ -346,11 +478,13 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
         title = _clean_markup(item.get("title"))
         abstract = _clean_markup(item.get("abstractText"))
         full_text = _jats_full_text(full_text_xml) if full_text_xml else None
+        full_text_sections = _jats_full_text_sections(full_text_xml) if full_text_xml else []
         title_abstract_policy = infer_comparative_scope(title, abstract)
         body_policy = infer_comparative_scope(None, full_text[:8000] if full_text else None)
         payload = item | {
             "full_text_xml": full_text_xml,
             "full_text": full_text,
+            "full_text_sections": full_text_sections,
         }
         raw = _raw_record(self.source_key, source_id, source_url, payload)
         obj = ResearchObject(
@@ -401,8 +535,18 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
             part for part in (record.research_object.title, record.research_object.abstract) if part
         )
         full_text = record.raw_record.raw_payload.get("full_text")
+        full_text_sections = record.raw_record.raw_payload.get("full_text_sections")
         if title_abstract:
             sections.append(("title_abstract", title_abstract))
+        if isinstance(full_text_sections, list) and full_text_sections:
+            for section in full_text_sections:
+                if not isinstance(section, dict):
+                    continue
+                section_label = section.get("section_label")
+                section_text = section.get("text")
+                if section_label and section_text:
+                    sections.append((str(section_label), str(section_text)))
+            return sections
         if full_text:
             sections.append(("full_text", str(full_text)))
         return sections
@@ -603,7 +747,9 @@ class PMCOAHarvesterV2(ScholarlyHarvesterV2):
                 if (text := _xml_join_text(node))
             )
         )
-        full_text = _clean_multiline_text(_xml_join_text(_find_first(article, ".//{*}body")))
+        body = _find_first(article, ".//{*}body")
+        full_text = _clean_multiline_text(_xml_join_text(body))
+        full_text_sections = _jats_body_sections(body)
         pub_date = _jats_pub_date(article)
         source_url = f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/" if pmcid else None
         license_info = {
@@ -616,6 +762,7 @@ class PMCOAHarvesterV2(ScholarlyHarvesterV2):
             "license": license_info,
             "article_xml": xml_text,
             "full_text": full_text,
+            "full_text_sections": full_text_sections,
             "abstract": abstract,
         }
         raw = _raw_record(self.source_key, pmcid, source_url, payload)
@@ -666,8 +813,18 @@ class PMCOAHarvesterV2(ScholarlyHarvesterV2):
             part for part in (record.research_object.title, record.research_object.abstract) if part
         )
         full_text = record.raw_record.raw_payload.get("full_text")
+        full_text_sections = record.raw_record.raw_payload.get("full_text_sections")
         if title_abstract:
             sections.append(("title_abstract", title_abstract))
+        if isinstance(full_text_sections, list) and full_text_sections:
+            for section in full_text_sections:
+                if not isinstance(section, dict):
+                    continue
+                section_label = section.get("section_label")
+                section_text = section.get("text")
+                if section_label and section_text:
+                    sections.append((str(section_label), str(section_text)))
+            return sections
         if full_text:
             sections.append(("full_text", str(full_text)))
         return sections
@@ -2166,6 +2323,7 @@ HARVESTERS_V2: dict[str, type[HarvesterV2]] = {
     "geo": GEOHarvesterV2,
     "icdc": ICDCHarvesterV2,
     "openalex": OpenAlexHarvesterV2,
+    "unpaywall": UnpaywallHarvesterV2,
     "crossref": CrossrefHarvesterV2,
     "europe_pmc": EuropePMCHarvesterV2,
     "openfda_animal_events": OpenFDAAnimalEventsHarvesterV2,
@@ -2308,6 +2466,10 @@ def _normalize_doi(value: str | None) -> str | None:
     return doi.lower() or None
 
 
+def _looks_like_doi(value: str | None) -> bool:
+    return bool(value and re.match(r"^10\.\d{4,9}/\S+$", value, flags=re.I))
+
+
 def _strip_url_id(value: str | None) -> str | None:
     if not value:
         return None
@@ -2322,6 +2484,42 @@ def _openalex_abstract(index: dict[str, list[int]] | None) -> str | None:
         for position in positions:
             words[position] = word
     return " ".join(words[position] for position in sorted(words))
+
+
+def _unpaywall_location_summary(location: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(location, dict):
+        return {}
+    return {
+        key: location.get(key)
+        for key in (
+            "url",
+            "url_for_landing_page",
+            "url_for_pdf",
+            "license",
+            "host_type",
+            "version",
+            "repository_institution",
+            "evidence",
+            "pmh_id",
+            "oa_date",
+        )
+        if location.get(key) is not None
+    }
+
+
+def _unpaywall_author_names(authors: Any) -> list[str]:
+    if not isinstance(authors, list):
+        return []
+    names: list[str] = []
+    for author in authors[:50]:
+        if not isinstance(author, dict):
+            continue
+        given = author.get("given")
+        family = author.get("family")
+        name = " ".join(part for part in (given, family) if part).strip()
+        if name:
+            names.append(name)
+    return names
 
 
 def _first(value: Any) -> Any:
@@ -2868,6 +3066,53 @@ def _jats_full_text(xml_text: str | None) -> str | None:
         article = root
     body = _find_first(article, ".//{*}body") if article is not None else _find_first(root, ".//{*}body")
     return _clean_multiline_text(_xml_join_text(body)) if body is not None else None
+
+
+def _jats_full_text_sections(xml_text: str | None) -> list[dict[str, str]]:
+    if not xml_text:
+        return []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    article = _find_first(root, ".//{*}article")
+    if article is None and _local_name(root.tag) == "article":
+        article = root
+    body = _find_first(article, ".//{*}body") if article is not None else _find_first(root, ".//{*}body")
+    return _jats_body_sections(body)
+
+
+def _jats_body_sections(body: ET.Element | None) -> list[dict[str, str]]:
+    if body is None:
+        return []
+    sections: list[dict[str, str]] = []
+    for sec in body.findall("./{*}sec"):
+        title = _clean_multiline_text(_xml_join_text(_find_first(sec, "./{*}title")))
+        text = _clean_multiline_text(_xml_join_text(sec))
+        if not text:
+            continue
+        kind = _jats_section_kind(title)
+        if kind in JATS_SECTION_EXCLUDED_KINDS:
+            continue
+        sections.append(
+            {
+                "section_label": f"full_text:{kind}",
+                "title": title or "",
+                "text": text,
+            }
+        )
+    return sections
+
+
+def _jats_section_kind(title: str | None) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+    if not normalized:
+        return "body"
+    for kind, patterns in JATS_SECTION_KIND_PATTERNS:
+        if any(pattern in normalized for pattern in patterns):
+            return kind
+    compact = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
+    return compact[:48] or "body"
 
 
 def _jats_article_ids(article: ET.Element) -> dict[str, str]:

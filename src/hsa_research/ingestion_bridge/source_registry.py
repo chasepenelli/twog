@@ -68,6 +68,22 @@ INITIAL_SOURCES: tuple[ResearchSource, ...] = (
         capabilities=["legal_full_text", "jats_xml", "oai_pmh", "license_metadata"],
     ),
     ResearchSource(
+        source_key="unpaywall",
+        display_name="Unpaywall",
+        source_kind=SourceKind.SCHOLARLY_METADATA,
+        base_url="https://unpaywall.org/",
+        documentation_url="https://support.unpaywall.org/support/solutions/articles/44001977396-how-do-i-use-the-title-search-api-",
+        license_policy="metadata_and_open_access_location_links",
+        requires_api_key=False,
+        priority=55,
+        phase=1,
+        capabilities=["oa_discovery", "doi_resolution", "license_metadata", "full_text_location_links"],
+        notes=(
+            "Use DOI metadata for open-access discovery; keep title-search manual until the public endpoint is stable. "
+            "Do not treat linked PDFs as storable full text until a license-aware fetch lane validates them."
+        ),
+    ),
+    ResearchSource(
         source_key="current_papers",
         display_name="Existing papers table",
         source_kind=SourceKind.INTERNAL,
@@ -86,6 +102,23 @@ INITIAL_SOURCES: tuple[ResearchSource, ...] = (
         priority=70,
         phase=1,
         capabilities=["backfill", "legacy_knowledge_records"],
+    ),
+    ResearchSource(
+        source_key="x_topic_monitor",
+        display_name="X Topic Monitor",
+        source_kind=SourceKind.INTERNAL,
+        base_url="https://x.com/",
+        documentation_url="https://docs.twitterapi.io/api-reference/endpoint/tweet_advanced_search",
+        license_policy="third_party_api_review_queue",
+        requires_api_key=True,
+        enabled=False,
+        priority=95,
+        phase=1,
+        capabilities=["topic_monitoring", "manual_review_queue", "twitterapi_io_advanced_search"],
+        notes=(
+            "Manual review-only social monitoring. Posts are discovery signals, not scientific evidence; "
+            "durable linked sources should be harvested through primary APIs."
+        ),
     ),
     ResearchSource(
         source_key="clinicaltrials_gov",

@@ -109,6 +109,15 @@ _FULL_TEXT_OPS_ACTION_TABLE_COLUMNS = (
     "partition_date",
     "evidence_refs",
 )
+_X_TOPIC_CANDIDATE_TABLE_COLUMNS = (
+    "query_name",
+    "post_id",
+    "username",
+    "quality_score",
+    "review_status",
+    "matched_terms",
+    "durable_links",
+)
 _ENTITY_RESOLUTION_TABLE_COLUMNS = (
     "source_key",
     "chunks_seen",
@@ -339,6 +348,23 @@ if dg is not None:
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "evidence": dg.MetadataValue.json(report.get("evidence", {})),
             "actions": _metadata_table(actions, _FULL_TEXT_OPS_ACTION_TABLE_COLUMNS),
+        }
+
+    def _x_topic_monitor_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        errors = report.get("errors", [])
+        return {
+            "source_key": report.get("source_key"),
+            "provider": report.get("provider"),
+            "query_count": len(report.get("queries", [])),
+            "raw_tweet_count": dg.MetadataValue.int(int(report.get("raw_tweet_count", 0))),
+            "candidate_count": dg.MetadataValue.int(int(report.get("candidate_count", 0))),
+            "manual_review_required": bool(report.get("manual_review_required", True)),
+            "error_count": len(errors),
+            "errors": dg.MetadataValue.json(errors),
+            "candidates": _metadata_table(
+                report.get("candidates", []),
+                _X_TOPIC_CANDIDATE_TABLE_COLUMNS,
+            ),
         }
 
     def _run_literature_full_text_refresh(
@@ -915,6 +941,83 @@ if dg is not None:
         report = result.model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_full_text_ops_report_metadata(report))
 
+    @dg.asset(group_name="social_monitoring")
+    def x_topic_monitor_review_report() -> dg.MaterializeResult:
+        """Manual TwitterAPI.io topic-monitoring review report."""
+
+        from .x_topic_monitor import (
+            TWITTERAPI_IO_MAX_SINGLE_PAGE_RESULTS,
+            X_TOPIC_SOURCE_KEY,
+            TwitterApiIoProvider,
+            XTopicRequest,
+            build_default_source_queries,
+        )
+
+        provider_name = os.getenv("X_TOPIC_PROVIDER", "twitterapi_io")
+        max_results = int(os.getenv("HSA_X_TOPIC_MAX_RESULTS", str(TWITTERAPI_IO_MAX_SINGLE_PAGE_RESULTS)))
+        query_name_filter = os.getenv("HSA_X_TOPIC_QUERY_NAME")
+        retention_mode = os.getenv("HSA_X_RETENTION_MODE", "store_metadata_only")
+        queries = [
+            query
+            for query in build_default_source_queries()
+            if query_name_filter is None or query.query_name == query_name_filter
+        ]
+
+        query_results: list[dict[str, Any]] = []
+        candidate_rows: list[dict[str, Any]] = []
+        errors: list[dict[str, Any] | str] = []
+        raw_tweet_count = 0
+
+        if provider_name != "twitterapi_io":
+            errors.append(f"Unsupported X topic provider: {provider_name}")
+        else:
+            provider = TwitterApiIoProvider()
+            for query in queries:
+                try:
+                    result = provider.search(
+                        XTopicRequest(
+                            query=query.query_text,
+                            query_name=query.query_name,
+                            max_results=max_results,
+                            retention_mode=retention_mode,
+                        )
+                    )
+                except Exception as exc:
+                    errors.append({"query_name": query.query_name, "error": str(exc)})
+                    continue
+                raw_tweet_count += result.raw_tweet_count
+                query_results.append(result.model_dump(mode="json"))
+                for candidate in result.candidates:
+                    review_status = (
+                        candidate.review_status.value
+                        if hasattr(candidate.review_status, "value")
+                        else str(candidate.review_status)
+                    )
+                    candidate_rows.append(
+                        {
+                            "query_name": query.query_name,
+                            "post_id": candidate.source_record_id,
+                            "username": candidate.username,
+                            "quality_score": candidate.quality_score,
+                            "review_status": review_status,
+                            "matched_terms": candidate.matched_terms,
+                            "durable_links": candidate.durable_links,
+                        }
+                    )
+
+        report = {
+            "source_key": X_TOPIC_SOURCE_KEY,
+            "provider": provider_name,
+            "queries": [query.model_dump(mode="json") for query in queries],
+            "query_results": query_results,
+            "raw_tweet_count": raw_tweet_count,
+            "candidate_count": len(candidate_rows),
+            "candidates": candidate_rows,
+            "manual_review_required": True,
+            "errors": errors,
+        }
+        return dg.MaterializeResult(value=report, metadata=_x_topic_monitor_report_metadata(report))
+
     @dg.op(
         required_resource_keys={"research_repository"},
         config_schema={
@@ -1101,7 +1204,7 @@ if dg is not None:
         """Ensure the first bridge has the minimum source backbone."""
 
         source_keys = {source["source_key"] for source in source_registry}
-        required = {"pubmed", "europe_pmc", "openalex", "crossref", "pmc_oa"}
+        required = {"pubmed", "europe_pmc", "openalex", "crossref", "pmc_oa", "unpaywall"}
         missing = sorted(required - source_keys)
         return dg.AssetCheckResult(
             passed=not missing,
@@ -1473,6 +1576,7 @@ if dg is not None:
         structured_source_count_report,
         source_health_report,
         full_text_ops_agent_report,
+        x_topic_monitor_review_report,
         entity_resolution_report,
         embedding_index_report,
         embedding_maintenance_report,
@@ -1545,6 +1649,10 @@ if dg is not None:
     full_text_ops_agent_job = dg.define_asset_job(
         "full_text_ops_agent_job",
         selection=dg.AssetSelection.assets(full_text_ops_agent_report),
+    )
+    x_topic_monitor_review_job = dg.define_asset_job(
+        "x_topic_monitor_review_job",
+        selection=dg.AssetSelection.assets(x_topic_monitor_review_report),
     )
     full_text_source_date_ops_job = dg.JobDefinition(
         name="full_text_source_date_ops_job",
@@ -1665,6 +1773,7 @@ if dg is not None:
             structured_source_count_report_job,
             source_health_report_job,
             full_text_ops_agent_job,
+            x_topic_monitor_review_job,
             full_text_source_date_ops_job,
             entity_resolution_job,
             embedding_index_job,
@@ -1704,6 +1813,7 @@ else:
     structured_source_count_report_job = None
     source_health_report_job = None
     full_text_ops_agent_job = None
+    x_topic_monitor_review_job = None
     full_text_source_date_ops_job = None
     entity_resolution_job = None
     embedding_index_job = None
