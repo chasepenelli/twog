@@ -183,6 +183,11 @@ The workflow also exposes a `timeout_seconds` dispatch input so long-running
 jobs can be tested without changing the file. For the full-text lane, prefer a
 shorter manual timeout while hardening the hosted path.
 
+Use `x_topic_monitor_review_job` for a bounded TwitterAPI.io topic-monitoring
+review run. It requires `TWITTERAPI_IO_KEY` in GitHub Actions and Dagster+
+environment variables, returns manual review candidates, and does not persist
+or promote social posts as evidence.
+
 Partitioned full-text source/date assets should still be launched from Dagster+
 directly or by the running `literature_full_text_source_date_daily_schedule`.
 The current GitHub smoke workflow uses `dagster-cloud job launch`, which does

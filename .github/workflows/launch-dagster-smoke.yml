@@ -24,6 +24,7 @@ on:
           - "structured_source_count_report_job"
           - "source_health_report_job"
           - "full_text_ops_agent_job"
+          - "x_topic_monitor_review_job"
           - "full_text_source_date_ops_job"
           - "entity_resolution_job"
           - "embedding_index_job"
@@ -61,6 +62,7 @@ jobs:
       HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
 
     steps:
       - name: Checkout
@@ -89,6 +91,10 @@ jobs:
               echo "::error::OPENROUTER_API_KEY is required for OpenRouter review modes."
               exit 1
             fi
+          fi
+          if [ "$DAGSTER_CLOUD_JOB" = "x_topic_monitor_review_job" ] && [ -z "$TWITTERAPI_IO_KEY" ]; then
+            echo "::error::TWITTERAPI_IO_KEY is required for x_topic_monitor_review_job."
+            exit 1
           fi
         shell: bash
 
