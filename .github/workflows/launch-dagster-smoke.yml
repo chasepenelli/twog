@@ -41,6 +41,11 @@ on:
         type: string
         required: true
         default: "2700"
+      deployment:
+        description: "Dagster Cloud deployment to launch against"
+        type: string
+        required: true
+        default: "prod"
 
 jobs:
   launch_dagster_smoke:
@@ -50,7 +55,7 @@ jobs:
     env:
       DAGSTER_CLOUD_ORGANIZATION: "twogbio"
       DAGSTER_CLOUD_URL: "https://twogbio.dagster.cloud"
-      DAGSTER_CLOUD_DEPLOYMENT: "prod"
+      DAGSTER_CLOUD_DEPLOYMENT: ${{ inputs.deployment }}
       DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
       DAGSTER_CLOUD_LOCATION: "hsa-dagster"
       DAGSTER_CLOUD_JOB: ${{ inputs.job }}
