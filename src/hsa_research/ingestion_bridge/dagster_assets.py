@@ -1027,7 +1027,7 @@ if dg is not None:
         max_results = int(os.getenv("HSA_X_TOPIC_MAX_RESULTS", str(TWITTERAPI_IO_MAX_SINGLE_PAGE_RESULTS)))
         query_name_filter = os.getenv("HSA_X_TOPIC_QUERY_NAME")
         retention_mode = os.getenv("HSA_X_RETENTION_MODE", "store_metadata_only")
-        review_mode = os.getenv("HSA_X_TOPIC_REVIEW_MODE", "openrouter_compare")
+        review_mode = os.getenv("HSA_X_TOPIC_REVIEW_MODE", "openrouter_required")
         review_models = [
             model.strip()
             for model in os.getenv("HSA_X_TOPIC_REVIEW_MODELS", "").split(",")

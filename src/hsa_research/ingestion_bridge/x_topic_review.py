@@ -507,7 +507,7 @@ def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) ->
     payload = {
         "model": model_name,
         "temperature": float(os.getenv("HSA_X_TOPIC_REVIEW_TEMPERATURE", "0")),
-        "max_tokens": int(os.getenv("HSA_X_TOPIC_REVIEW_MAX_TOKENS", "2500")),
+        "max_tokens": int(os.getenv("HSA_X_TOPIC_REVIEW_MAX_TOKENS", "8000")),
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": _X_TOPIC_REVIEW_SYSTEM_PROMPT},
