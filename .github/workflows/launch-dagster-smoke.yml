@@ -308,6 +308,62 @@ jobs:
             --limit 3
         shell: bash
 
+      - name: Print hosted X topic review summary
+        if: ${{ always() && inputs.job == 'x_topic_monitor_review_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          service = HSAResearchService(build_research_repository())
+          runs = service.list_agent_runs(
+              agent_name="x_topic_review_agent",
+              source_key="x_topic_monitor",
+              limit=3,
+          )
+          summaries = []
+          for run in runs:
+              output = run.output_payload or {}
+              evidence = output.get("evidence", {})
+              summaries.append(
+                  {
+                      "agent_run_id": str(run.agent_run_id),
+                      "status": run.status,
+                      "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+                      "ingestion_candidate_count": output.get("ingestion_candidate_count", 0),
+                      "needs_human_review_count": output.get("needs_human_review_count", 0),
+                      "rejected_count": output.get("rejected_count", 0),
+                      "model_reviews": evidence.get("model_reviews", [])[:5],
+                      "openrouter_errors": evidence.get("openrouter_errors", [])[:5],
+                      "recommendations": [
+                          {
+                              "post_id": action.get("source_record_id"),
+                              "query_name": action.get("query_name"),
+                              "action": action.get("action"),
+                              "severity": action.get("severity"),
+                              "reason": action.get("reason"),
+                              "links": [
+                                  {
+                                      "url": link.get("url"),
+                                      "recommended_source_key": link.get("recommended_source_key"),
+                                      "identifier_type": link.get("identifier_type"),
+                                      "identifier": link.get("identifier"),
+                                      "should_ingest": link.get("should_ingest"),
+                                  }
+                                  for link in action.get("ingestible_links", [])
+                              ],
+                          }
+                          for action in output.get("actions", [])[:20]
+                      ],
+                  }
+              )
+          print(json.dumps(summaries, indent=2, sort_keys=True))
+          PY
+        shell: bash
+
       - name: Print hosted structured-source count report
         if: ${{ inputs.job == 'structured_source_smoke_job' || inputs.job == 'structured_source_multisource_smoke_job' || inputs.job == 'literature_clinical_smoke_job' || inputs.job == 'all_api_smoke_job' || inputs.job == 'literature_corpus_harvest_job' || inputs.job == 'literature_full_text_refresh_job' || inputs.job == 'europe_pmc_full_text_refresh_job' || inputs.job == 'pmc_oa_full_text_refresh_job' || inputs.job == 'literature_full_text_ingest_smoke_job' || inputs.job == 'europe_pmc_full_text_ingest_job' || inputs.job == 'pmc_oa_full_text_ingest_job' || inputs.job == 'literature_full_text_smoke_job' || inputs.job == 'full_text_source_date_ops_job' || inputs.job == 'structured_source_count_report_job' || inputs.job == 'source_health_report_job' || inputs.job == 'structured_source_pipeline_job' }}
         run: |
