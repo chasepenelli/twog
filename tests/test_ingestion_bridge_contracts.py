@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from hsa_research.ingestion_bridge import dagster_assets as dagster_asset_module
+from hsa_research.ingestion_bridge import cli as cli_module
 from hsa_research.ingestion_bridge import storage, structured_orchestration
 from hsa_research.ingestion_bridge.contracts import (
     AgentRunRecord,
@@ -198,6 +199,52 @@ def test_agent_run_repository_roundtrip_sqlite_and_memory(tmp_path):
         assert repo.get_agent_run(record.agent_run_id).summary == {"actions": 1}
         assert repo.list_agent_runs(agent_name="full_text_ops_agent", status="completed", source_key="europe_pmc")
         assert repo.list_agent_runs(agent_name="source_scout_agent") == []
+
+
+def test_model_review_summary_compacts_agent_run_payload():
+    run = {
+        "agent_run_id": "run-1",
+        "agent_name": "full_text_ops_agent",
+        "status": "completed",
+        "source_key": "pmc_oa",
+        "partition_date": "2026-04-27",
+        "completed_at": "2026-04-28T16:51:49Z",
+        "output_payload": {
+            "schedule_readiness": "ready_to_enable",
+            "should_block_schedule": False,
+            "errors": [],
+            "actions": [
+                {"source_key": "all", "action": "ready_to_enable_schedule", "severity": "info", "reason": "clean"}
+            ],
+            "evidence": {
+                "selected_model": "~anthropic/claude-sonnet-latest",
+                "review_packet": {"large": "x" * 10000},
+                "model_reviews": [
+                    {
+                        "model_name": "~anthropic/claude-sonnet-latest",
+                        "status": "completed",
+                        "metadata": {
+                            "requested_model": "~anthropic/claude-sonnet-latest",
+                            "model_name": "anthropic/claude-4.6-sonnet-20260217",
+                            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.01},
+                        },
+                        "result": {
+                            "schedule_readiness": "ready_to_enable",
+                            "should_block_schedule": False,
+                            "actions": [{"action": "ready_to_enable_schedule"}],
+                        },
+                    }
+                ],
+            },
+        },
+    }
+
+    summary = cli_module._model_review_summary(run)
+
+    assert summary["selected_model"] == "~anthropic/claude-sonnet-latest"
+    assert summary["model_reviews"][0]["resolved_model"] == "anthropic/claude-4.6-sonnet-20260217"
+    assert summary["model_reviews"][0]["usage"]["cost"] == 0.01
+    assert not _contains_key(summary, "review_packet")
 
 
 def test_dagster_structured_asset_uses_injected_repository(monkeypatch):

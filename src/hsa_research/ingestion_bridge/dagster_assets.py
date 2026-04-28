@@ -1619,7 +1619,7 @@ if dg is not None:
         job=literature_full_text_source_date_job,
         cron_schedule="30 2 * * *",
         execution_timezone=SCHEDULE_TIMEZONE,
-        default_status=dg.DefaultScheduleStatus.STOPPED,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
         execution_fn=_full_text_source_date_daily_schedule_requests,
     )
 

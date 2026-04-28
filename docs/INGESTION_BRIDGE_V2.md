@@ -189,8 +189,8 @@ than chained. The initial production cadence is:
 - `structured_source_pipeline_weekly_schedule`: `0 2 * * 1`, running.
 - `literature_full_text_weekly_schedule`: `0 2 * * 0`, stopped until the
   full-text lane has a clean hosted run.
-- `literature_full_text_source_date_daily_schedule`: `30 2 * * *`, stopped
-  until source/date partitions are reviewed in Dagster+.
+- `literature_full_text_source_date_daily_schedule`: `30 2 * * *`, running
+  after a clean Sonnet-reviewed `pmc_oa` source/date ops run on 2026-04-28.
 - `all_api_smoke_weekly_schedule`: `0 3 * * 2`, running.
 - `embedding_index_daily_schedule`: `0 5 * * *`, running.
 - `embedding_maintenance_daily_schedule`: `45 5 * * *`, running.
@@ -539,6 +539,15 @@ benchmarks; pass `review_models` explicitly when comparing GPT, Sonnet, Opus, or
 other candidates. The deterministic guardrail is still applied to every model
 result, so an unvalidated or blocking lane cannot be marked ready by a single
 model.
+
+Use `model-review-summary` for post-run inspection instead of dumping full
+`agent_runs` payloads:
+
+```bash
+.venv/bin/python -m hsa_research.ingestion_bridge.cli model-review-summary \
+  --agent-name full_text_ops_agent \
+  --limit 3
+```
 
 `full_text_source_date_ops_job` is the manual hosted bridge for source/date
 validation while the Dagster Cloud CLI lacks partition-key launch support. It

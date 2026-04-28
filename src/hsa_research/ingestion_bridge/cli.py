@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from .backfill import backfill_deep_dives, backfill_papers_json
@@ -219,6 +220,16 @@ def main() -> None:
     agent_runs.add_argument("--status", default=None, help="Optional status filter")
     agent_runs.add_argument("--source", default=None, help="Optional source key filter")
     agent_runs.add_argument("--limit", type=int, default=50, help="Maximum runs to return")
+
+    model_review_summary = subparsers.add_parser(
+        "model-review-summary",
+        help="Print compact model-review summaries from persisted agent runs",
+    )
+    model_review_summary.add_argument("--id", default=None, help="Optional agent_run_id to summarize")
+    model_review_summary.add_argument("--agent-name", default="full_text_ops_agent", help="Agent name filter")
+    model_review_summary.add_argument("--status", default=None, help="Optional status filter")
+    model_review_summary.add_argument("--source", default=None, help="Optional source key filter")
+    model_review_summary.add_argument("--limit", type=int, default=3, help="Maximum runs to summarize")
 
     retrieval_smoke = subparsers.add_parser(
         "retrieval-smoke",
@@ -482,6 +493,21 @@ def main() -> None:
                     limit=args.limit,
                 )
             ]
+    elif args.command == "model-review-summary":
+        service = HSAResearchService(repo)
+        if args.id:
+            record = service.get_agent_run(UUID(args.id))
+            output = {} if record is None else _model_review_summary(record.model_dump(mode="json"))
+        else:
+            output = [
+                _model_review_summary(run.model_dump(mode="json"))
+                for run in service.list_agent_runs(
+                    agent_name=args.agent_name,
+                    status=args.status,
+                    source_key=args.source,
+                    limit=args.limit,
+                )
+            ]
     elif args.command == "retrieval-smoke":
         output = HSAResearchService(repo).run_retrieval_smoke(
             RetrievalSmokeRequest(
@@ -659,6 +685,55 @@ def main() -> None:
     if getattr(args, "fail_on_blocking", False) and output.get("should_block_schedule"):
         print(f"Blocking full-text triage: {output.get('action')}", file=sys.stderr)
         raise SystemExit(1)
+
+
+def _model_review_summary(run: dict[str, Any]) -> dict[str, Any]:
+    output_payload = run.get("output_payload") or {}
+    evidence = output_payload.get("evidence") or {}
+    summary = {
+        "agent_run_id": run.get("agent_run_id"),
+        "agent_name": run.get("agent_name"),
+        "status": run.get("status"),
+        "source_key": run.get("source_key"),
+        "partition_date": run.get("partition_date"),
+        "completed_at": run.get("completed_at"),
+        "schedule_readiness": output_payload.get("schedule_readiness"),
+        "should_block_schedule": output_payload.get("should_block_schedule"),
+        "selected_model": evidence.get("selected_model"),
+        "errors": (output_payload.get("errors") or [])[:5],
+        "actions": [
+            {
+                "source_key": action.get("source_key"),
+                "action": action.get("action"),
+                "severity": action.get("severity"),
+                "reason": action.get("reason"),
+            }
+            for action in (output_payload.get("actions") or [])[:10]
+        ],
+        "model_reviews": [],
+    }
+    for review in (evidence.get("model_reviews") or [])[:10]:
+        metadata = review.get("metadata") or {}
+        usage = metadata.get("usage") or {}
+        result = review.get("result") or {}
+        summary["model_reviews"].append(
+            {
+                "model_name": review.get("model_name"),
+                "status": review.get("status"),
+                "requested_model": metadata.get("requested_model"),
+                "resolved_model": metadata.get("model_name"),
+                "schedule_readiness": result.get("schedule_readiness"),
+                "should_block_schedule": result.get("should_block_schedule"),
+                "actions": [action.get("action") for action in (result.get("actions") or [])],
+                "usage": {
+                    key: usage[key]
+                    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "cost")
+                    if key in usage
+                },
+                "error": review.get("error"),
+            }
+        )
+    return summary
 
 
 if __name__ == "__main__":

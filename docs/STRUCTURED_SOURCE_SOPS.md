@@ -427,7 +427,8 @@ Dagster schedule:
 - `literature_full_text_source_date_daily_schedule`
 - Cron: `30 2 * * *`
 - Timezone: `America/Denver`
-- Default status: stopped until source/date partitions are reviewed in Dagster+.
+- Default status: running after a clean Sonnet-reviewed source/date ops run in
+  Dagster+.
 
 ### Run Source Health
 

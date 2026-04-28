@@ -293,11 +293,11 @@ jobs:
             --fail-on-error
         shell: bash
 
-      - name: Print hosted full-text ops agent run
+      - name: Print hosted full-text ops model-review summary
         if: ${{ always() && (inputs.job == 'full_text_ops_agent_job' || inputs.job == 'full_text_source_date_ops_job') }}
         continue-on-error: true
         run: |
-          uv run python -m hsa_research.ingestion_bridge.cli agent-runs \
+          uv run python -m hsa_research.ingestion_bridge.cli model-review-summary \
             --agent-name full_text_ops_agent \
             --limit 3
         shell: bash
