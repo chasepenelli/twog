@@ -46,6 +46,11 @@ on:
         type: string
         required: true
         default: "prod"
+      x_linked_article_urls:
+        description: "Optional comma/newline/JSON-list URLs for x_linked_article_followup_job manual validation"
+        type: string
+        required: false
+        default: ""
 
 jobs:
   launch_dagster_smoke:
@@ -71,6 +76,7 @@ jobs:
       TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
       HSA_X_LINKED_ARTICLE_APPROVED_BY: "github-actions"
       HSA_X_LINKED_ARTICLE_APPROVAL_NOTE: "Manual smoke workflow dispatch for controlled x_linked_article follow-up."
+      HSA_X_LINKED_ARTICLE_URLS: ${{ inputs.x_linked_article_urls }}
 
     steps:
       - name: Checkout

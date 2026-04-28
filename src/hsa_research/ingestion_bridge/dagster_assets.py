@@ -594,6 +594,47 @@ if dg is not None:
         )
         return {name: os.getenv(name) for name in env_names}
 
+    def _parse_delimited_string_list(value: str | None) -> list[str]:
+        if value is None:
+            return []
+        raw_value = value.strip()
+        if not raw_value:
+            return []
+        if raw_value.startswith("["):
+            try:
+                parsed = json.loads(raw_value)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        normalized = raw_value.replace("\n", ",").replace("\r", ",")
+        return [item.strip() for item in normalized.split(",") if item.strip()]
+
+    def _config_or_env(
+        config: Mapping[str, Any],
+        key: str,
+        env_name: str,
+        default: Any,
+    ) -> Any:
+        value = config.get(key)
+        if value is not None:
+            return value
+        env_value = os.getenv(env_name)
+        if env_value is None or not env_value.strip():
+            return default
+        return env_value
+
+    def _config_or_env_bool(
+        config: Mapping[str, Any],
+        key: str,
+        env_name: str,
+        default: bool,
+    ) -> bool:
+        value = _config_or_env(config, key, env_name, default)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes"}
+
     def _full_text_triage_rows(report: Mapping[str, Any], *, mode: str) -> list[dict[str, Any]]:
         rows = []
         for source_report in report.get("sources", []):
@@ -1143,26 +1184,87 @@ if dg is not None:
         report["agent_review"] = agent_review.model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_x_topic_monitor_report_metadata(report))
 
-    @dg.asset(group_name="social_monitoring")
+    @dg.asset(
+        group_name="social_monitoring",
+        config_schema={
+            "urls": dg.Field(
+                [str],
+                is_required=False,
+                description="Direct x_linked_article URLs to fetch and parse for manual validation.",
+            ),
+            "recent_run_limit": dg.Field(
+                int,
+                is_required=False,
+                description="Recent X topic review agent runs to inspect for queued article URLs.",
+            ),
+            "max_urls": dg.Field(
+                int,
+                is_required=False,
+                description="Maximum candidate URLs to process.",
+            ),
+            "fetch": dg.Field(
+                bool,
+                is_required=False,
+                description="Whether to fetch candidate URLs after approval.",
+            ),
+            "parse": dg.Field(
+                bool,
+                is_required=False,
+                description="Whether to parse fetched snapshots into review records.",
+            ),
+            "approved_by": dg.Field(
+                str,
+                is_required=False,
+                description="Operator approval identity required for controlled fetch.",
+            ),
+            "approval_note": dg.Field(
+                str,
+                is_required=False,
+                description="Operator approval note for the controlled fetch.",
+            ),
+            "robots_policy": dg.Field(
+                str,
+                is_required=False,
+                description="Reviewed robots/TOS policy: unknown, reviewed, disallow, or manual_only.",
+            ),
+        },
+    )
     def x_linked_article_followup_report(
+        context,
         research_repository: ResearchRepositoryResource,
     ) -> dg.MaterializeResult:
         """Controlled scraper follow-up for article links queued by X topic review."""
 
         from .service import HSAResearchService
 
+        config = context.op_config or {}
         repository = research_repository.build_repository()
-        approved_by = os.getenv("HSA_X_LINKED_ARTICLE_APPROVED_BY")
+        direct_urls = config.get("urls") or _parse_delimited_string_list(
+            os.getenv("HSA_X_LINKED_ARTICLE_URLS")
+        )
+        recent_run_limit = int(
+            _config_or_env(config, "recent_run_limit", "HSA_X_LINKED_ARTICLE_RECENT_RUN_LIMIT", 10)
+        )
+        max_urls = int(_config_or_env(config, "max_urls", "HSA_X_LINKED_ARTICLE_MAX_URLS", 10))
+        approved_by = _config_or_env(
+            config, "approved_by", "HSA_X_LINKED_ARTICLE_APPROVED_BY", None
+        )
+        approval_note = _config_or_env(
+            config, "approval_note", "HSA_X_LINKED_ARTICLE_APPROVAL_NOTE", None
+        )
+        robots_policy = _config_or_env(
+            config, "robots_policy", "HSA_X_LINKED_ARTICLE_ROBOTS_POLICY", "reviewed"
+        )
         result = HSAResearchService(repository).run_x_linked_article_followup(
             XLinkedArticleFollowupRequest(
-                recent_run_limit=int(os.getenv("HSA_X_LINKED_ARTICLE_RECENT_RUN_LIMIT", "10")),
-                max_urls=int(os.getenv("HSA_X_LINKED_ARTICLE_MAX_URLS", "10")),
+                urls=direct_urls,
+                recent_run_limit=recent_run_limit,
+                max_urls=max_urls,
                 approved_by=approved_by,
-                approval_note=os.getenv("HSA_X_LINKED_ARTICLE_APPROVAL_NOTE"),
-                fetch=os.getenv("HSA_X_LINKED_ARTICLE_FETCH", "true").strip().lower()
-                in {"1", "true", "yes"},
-                parse=os.getenv("HSA_X_LINKED_ARTICLE_PARSE", "true").strip().lower()
-                in {"1", "true", "yes"},
+                approval_note=approval_note,
+                robots_policy=robots_policy,  # type: ignore[arg-type]
+                fetch=_config_or_env_bool(config, "fetch", "HSA_X_LINKED_ARTICLE_FETCH", True),
+                parse=_config_or_env_bool(config, "parse", "HSA_X_LINKED_ARTICLE_PARSE", True),
             )
         )
         report = result.model_dump(mode="json")
