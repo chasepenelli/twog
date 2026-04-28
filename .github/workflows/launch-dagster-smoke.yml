@@ -309,6 +309,7 @@ jobs:
         shell: bash
 
       - name: Print hosted structured-source count report
+        if: ${{ inputs.job == 'structured_source_smoke_job' || inputs.job == 'structured_source_multisource_smoke_job' || inputs.job == 'literature_clinical_smoke_job' || inputs.job == 'all_api_smoke_job' || inputs.job == 'literature_corpus_harvest_job' || inputs.job == 'literature_full_text_refresh_job' || inputs.job == 'europe_pmc_full_text_refresh_job' || inputs.job == 'pmc_oa_full_text_refresh_job' || inputs.job == 'literature_full_text_ingest_smoke_job' || inputs.job == 'europe_pmc_full_text_ingest_job' || inputs.job == 'pmc_oa_full_text_ingest_job' || inputs.job == 'literature_full_text_smoke_job' || inputs.job == 'full_text_source_date_ops_job' || inputs.job == 'structured_source_count_report_job' || inputs.job == 'source_health_report_job' || inputs.job == 'structured_source_pipeline_job' }}
         run: |
           validation_flags=""
           claim_flags=""
