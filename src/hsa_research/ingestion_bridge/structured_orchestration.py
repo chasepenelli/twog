@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import re
 from typing import Any
 
 from .claim_curator import curate_claims_for_repository
@@ -38,6 +39,7 @@ def run_structured_sources_pipeline(
     curate_limit: int = DEFAULT_CURATE_LIMIT,
     promote_threshold: float = DEFAULT_PROMOTE_THRESHOLD,
     initialize: bool = True,
+    partition_date: str | None = None,
 ) -> dict[str, Any]:
     """Run refresh, extraction, curation, and QA for structured API sources."""
 
@@ -54,6 +56,7 @@ def run_structured_sources_pipeline(
             extract_limit=extract_limit,
             curate_limit=curate_limit,
             promote_threshold=promote_threshold,
+            partition_date=partition_date,
         )
         for source_key in selected_sources
     ]
@@ -69,6 +72,7 @@ def run_structured_sources_pipeline(
     ]
     return {
         "source_keys": selected_sources,
+        "partition_date": partition_date,
         "sources": reports,
         "totals": _sum_source_reports(reports),
         "errors": errors,
@@ -82,6 +86,7 @@ def run_structured_sources_ingestion_pipeline(
     source_keys: Sequence[str] | None = None,
     source_limits: Mapping[str, int] | None = None,
     initialize: bool = True,
+    partition_date: str | None = None,
 ) -> dict[str, Any]:
     """Run only source ingestion and QA, without entity resolution or claim work."""
 
@@ -95,6 +100,7 @@ def run_structured_sources_ingestion_pipeline(
             repository,
             source_key,
             source_limits=source_limits,
+            partition_date=partition_date,
         )
         for source_key in selected_sources
     ]
@@ -106,6 +112,7 @@ def run_structured_sources_ingestion_pipeline(
     return {
         "mode": "ingestion_only",
         "source_keys": selected_sources,
+        "partition_date": partition_date,
         "sources": reports,
         "totals": _sum_source_reports(reports),
         "errors": errors,
@@ -121,12 +128,18 @@ def run_structured_source_pipeline(
     extract_limit: int | None = DEFAULT_EXTRACT_LIMIT,
     curate_limit: int = DEFAULT_CURATE_LIMIT,
     promote_threshold: float = DEFAULT_PROMOTE_THRESHOLD,
+    partition_date: str | None = None,
 ) -> dict[str, Any]:
     """Run one structured source through refresh, extraction, curation, and QA."""
 
     limit = _source_limit(source_key, source_limits)
+    query_param_overrides = source_date_query_params(source_key, partition_date)
+    ingestion_kwargs = _ingestion_partition_kwargs(partition_date, query_param_overrides)
     pipeline = LocalIngestionPipeline(repository)
-    ingestion_results = [result.model_dump(mode="json") for result in pipeline.ingest_source(source_key, limit=limit)]
+    ingestion_results = [
+        result.model_dump(mode="json")
+        for result in pipeline.ingest_source(source_key, limit=limit, **ingestion_kwargs)
+    ]
     entity_resolution = resolve_entities_for_repository(
         repository,
         source_key=source_key,
@@ -154,6 +167,7 @@ def run_structured_source_pipeline(
             source_key,
             ingestion_results=ingestion_results,
             runtime_summary=qa,
+            allow_empty_current_run=partition_date is not None,
         )
         if source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS
         else None
@@ -162,6 +176,8 @@ def run_structured_source_pipeline(
     report = {
         "source_key": source_key,
         "limit": limit,
+        "partition_date": partition_date,
+        "query_param_overrides": query_param_overrides,
         "ingestion": ingestion_results,
         "ingestion_errors": [
             error
@@ -184,12 +200,18 @@ def run_structured_source_ingestion_pipeline(
     source_key: str,
     *,
     source_limits: Mapping[str, int] | None = None,
+    partition_date: str | None = None,
 ) -> dict[str, Any]:
     """Run one source through fetch, normalization, persistence, and QA only."""
 
     limit = _source_limit(source_key, source_limits)
+    query_param_overrides = source_date_query_params(source_key, partition_date)
+    ingestion_kwargs = _ingestion_partition_kwargs(partition_date, query_param_overrides)
     pipeline = LocalIngestionPipeline(repository)
-    ingestion_results = [result.model_dump(mode="json") for result in pipeline.ingest_source(source_key, limit=limit)]
+    ingestion_results = [
+        result.model_dump(mode="json")
+        for result in pipeline.ingest_source(source_key, limit=limit, **ingestion_kwargs)
+    ]
     qa = structured_source_qa(repository, source_key)
     full_text_qa = (
         full_text_source_qa(
@@ -197,6 +219,7 @@ def run_structured_source_ingestion_pipeline(
             source_key,
             ingestion_results=ingestion_results,
             runtime_summary=qa,
+            allow_empty_current_run=partition_date is not None,
         )
         if source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS
         else None
@@ -206,6 +229,8 @@ def run_structured_source_ingestion_pipeline(
         "mode": "ingestion_only",
         "source_key": source_key,
         "limit": limit,
+        "partition_date": partition_date,
+        "query_param_overrides": query_param_overrides,
         "ingestion": ingestion_results,
         "ingestion_errors": [
             error
@@ -242,6 +267,7 @@ def full_text_source_qa(
     *,
     ingestion_results: Sequence[Mapping[str, Any]] | None = None,
     runtime_summary: Mapping[str, Any] | None = None,
+    allow_empty_current_run: bool = False,
 ) -> dict[str, Any]:
     """Return full-text-specific persisted and current-run QA for OA sources."""
 
@@ -271,8 +297,16 @@ def full_text_source_qa(
         and full_text_body_chars >= MIN_FULL_TEXT_BODY_CHARS
     )
     current_run_required = ingestion_results is not None
+    current_empty_passes = (
+        allow_empty_current_run
+        and current_run_required
+        and current["current_ingestion_runs"] >= 1
+        and current["current_raw_records"] == 0
+        and not current["current_failed_runs"]
+    )
     current_passes = (
         not current_run_required
+        or current_empty_passes
         or (
             current["current_ingestion_runs"] >= 1
             and current["current_raw_records"] >= 1
@@ -291,7 +325,9 @@ def full_text_source_qa(
         "minimum_full_text_body_chars": MIN_FULL_TEXT_BODY_CHARS,
         "passes_persisted_full_text_bar": persisted_passes,
         "passes_current_full_text_bar": current_passes,
-        "passes_full_text_bar": persisted_passes and current_passes,
+        "passes_full_text_bar": current_empty_passes or (persisted_passes and current_passes),
+        "allow_empty_current_run": allow_empty_current_run,
+        "current_empty_passes": current_empty_passes,
         **current,
     }
     result["triage"] = _triage_full_text_qa(
@@ -482,8 +518,41 @@ def _triage_full_text_qa(
             "passes_full_text_bar": qa.get("passes_full_text_bar"),
             "query_names": query_names,
             "current_ingestion_runs": qa.get("current_ingestion_runs", 0),
+            "allow_empty_current_run": qa.get("allow_empty_current_run", False),
+            "current_empty_passes": qa.get("current_empty_passes", False),
             "current_full_text_research_objects": qa.get("current_full_text_research_objects", 0),
             "full_text_research_objects": qa.get("full_text_research_objects", 0),
         },
     )
     return triage_full_text_issue(request).model_dump(mode="json")
+
+
+def source_date_query_params(source_key: str, partition_date: str | None) -> dict[str, Any]:
+    """Return harvester query-param overrides for one source/date partition."""
+
+    if partition_date is None:
+        return {}
+    _validate_partition_date(partition_date)
+    if source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS:
+        return {
+            "published_after": partition_date,
+            "published_before": partition_date,
+        }
+    return {}
+
+
+def _ingestion_partition_kwargs(
+    partition_date: str | None,
+    query_param_overrides: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not partition_date:
+        return {}
+    return {
+        "query_param_overrides": dict(query_param_overrides),
+        "query_name_suffix": f"partition_{partition_date}",
+    }
+
+
+def _validate_partition_date(partition_date: str) -> None:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", partition_date):
+        raise ValueError(f"Expected partition_date as YYYY-MM-DD; got {partition_date!r}")

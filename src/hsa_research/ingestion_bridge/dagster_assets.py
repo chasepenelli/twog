@@ -7,6 +7,7 @@ They are intentionally lightweight and deterministic.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import timedelta
 import json
 import os
 from typing import Any
@@ -49,6 +50,7 @@ LITERATURE_FULL_TEXT_SMOKE_LIMITS = {
     source_key: 1 for source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS
 }
 SCHEDULE_TIMEZONE = "America/Denver"
+LITERATURE_FULL_TEXT_PARTITION_START_DATE = "2026-01-01"
 
 _STRUCTURED_SOURCE_COUNT_TABLE_COLUMNS = (
     "source_key",
@@ -144,6 +146,39 @@ def build_source_queries() -> list[SourceQuery]:
 
 if dg is not None:
     from .dagster_resources import ResearchRepositoryResource
+
+    LITERATURE_FULL_TEXT_SOURCE_PARTITIONS = dg.StaticPartitionsDefinition(
+        list(LITERATURE_FULL_TEXT_SOURCE_KEYS)
+    )
+    LITERATURE_FULL_TEXT_DATE_PARTITIONS = dg.DailyPartitionsDefinition(
+        start_date=LITERATURE_FULL_TEXT_PARTITION_START_DATE,
+    )
+    LITERATURE_FULL_TEXT_SOURCE_DATE_PARTITIONS = dg.MultiPartitionsDefinition(
+        {
+            "source": LITERATURE_FULL_TEXT_SOURCE_PARTITIONS,
+            "date": LITERATURE_FULL_TEXT_DATE_PARTITIONS,
+        }
+    )
+
+    def _full_text_source_date_daily_schedule_requests(
+        context: dg.ScheduleEvaluationContext,
+    ) -> list[dg.RunRequest]:
+        scheduled_time = context.scheduled_execution_time
+        if scheduled_time is None:
+            return []
+        partition_date = (scheduled_time.date() - timedelta(days=1)).isoformat()
+        return [
+            dg.RunRequest(
+                run_key=f"{source_key}:{partition_date}",
+                partition_key=dg.MultiPartitionKey(
+                    {
+                        "source": source_key,
+                        "date": partition_date,
+                    }
+                ),
+            )
+            for source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS
+        ]
 
     def _metadata_table(
         rows: Sequence[Mapping[str, Any]],
@@ -314,6 +349,44 @@ if dg is not None:
         )
         return _annotate_full_text_report(report, mode="ingestion_only")
 
+    def _run_literature_full_text_source_date_partition(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        from .structured_orchestration import run_structured_sources_pipeline
+
+        keys = context.multi_partition_key.keys_by_dimension
+        source_key = keys["source"]
+        partition_date = keys["date"]
+        source_limits = {source_key: LITERATURE_FULL_TEXT_SOURCE_LIMITS[source_key]}
+        repository = research_repository.build_repository()
+        report = run_structured_sources_pipeline(
+            repository,
+            source_keys=(source_key,),
+            source_limits=source_limits,
+            extract_limit=500,
+            curate_limit=500,
+            partition_date=partition_date,
+        )
+        report = _annotate_full_text_report(report, mode="source_date_partition")
+        return dg.MaterializeResult(
+            value=report,
+            metadata={
+                "source_key": source_key,
+                "partition_date": partition_date,
+                "source_limits": dg.MetadataValue.json(dict(source_limits)),
+                "totals": dg.MetadataValue.json(report.get("totals", {})),
+                "errors": dg.MetadataValue.json(report.get("errors", [])),
+                "full_text_blocking_sources": dg.MetadataValue.json(
+                    report.get("full_text_blocking_sources", [])
+                ),
+                "full_text_triage": _metadata_table(
+                    report.get("full_text_triage", []),
+                    _FULL_TEXT_TRIAGE_TABLE_COLUMNS,
+                ),
+            },
+        )
+
     def _annotate_full_text_report(report: dict, *, mode: str) -> dict:
         report["mode"] = mode
         report["full_text_runtime_config"] = _full_text_runtime_config()
@@ -411,6 +484,39 @@ if dg is not None:
                 "source_keys": report.get("source_keys", []),
                 "source_limits": dict(source_limits),
                 "full_text_runtime_config": report.get("full_text_runtime_config", {}),
+                "full_text_blocking_sources": report.get("full_text_blocking_sources", []),
+                "full_text_triage": _metadata_table(
+                    report.get("full_text_triage", []),
+                    _FULL_TEXT_TRIAGE_TABLE_COLUMNS,
+                ),
+                "totals": report.get("totals", {}),
+            },
+        )
+
+    def _full_text_partition_check_result(report: Mapping[str, Any]) -> dg.AssetCheckResult:
+        source_reports = report.get("sources", [])
+        failed_sources = []
+        empty_sources = []
+        for source_report in source_reports:
+            full_text_qa = source_report.get("full_text_qa") or {}
+            if full_text_qa.get("current_empty_passes"):
+                empty_sources.append(source_report["source_key"])
+                continue
+            if (
+                not _has_minimum_source_ingestion_outputs(source_report)
+                or not _has_required_full_text_outputs(source_report)
+            ):
+                failed_sources.append(source_report["source_key"])
+        errors = report.get("errors", [])
+        return dg.AssetCheckResult(
+            passed=not failed_sources and not errors,
+            metadata={
+                "mode": report.get("mode"),
+                "partition_date": report.get("partition_date"),
+                "failed_sources": failed_sources,
+                "empty_sources": empty_sources,
+                "errors": errors,
+                "source_keys": report.get("source_keys", []),
                 "full_text_blocking_sources": report.get("full_text_blocking_sources", []),
                 "full_text_triage": _metadata_table(
                     report.get("full_text_triage", []),
@@ -693,6 +799,18 @@ if dg is not None:
             extract_limit=25,
             curate_limit=25,
         )
+
+    @dg.asset(
+        group_name="literature_full_text_partitions",
+        partitions_def=LITERATURE_FULL_TEXT_SOURCE_DATE_PARTITIONS,
+    )
+    def literature_full_text_source_date_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Source/date full-text refresh partition for rerunnable daily slices."""
+
+        return _run_literature_full_text_source_date_partition(context, research_repository)
 
     @dg.asset(group_name="structured_source_refresh")
     def structured_source_count_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
@@ -1044,6 +1162,14 @@ if dg is not None:
             source_limits=LITERATURE_FULL_TEXT_SMOKE_LIMITS,
         )
 
+    @dg.asset_check(asset=literature_full_text_source_date_report)
+    def literature_full_text_source_date_has_outputs(
+        literature_full_text_source_date_report: dict,
+    ) -> dg.AssetCheckResult:
+        """Ensure a full-text source/date partition either writes body chunks or is cleanly empty."""
+
+        return _full_text_partition_check_result(literature_full_text_source_date_report)
+
     @dg.asset_check(asset=structured_source_count_report)
     def structured_source_count_report_has_minimum_outputs(
         structured_source_count_report: dict,
@@ -1175,6 +1301,7 @@ if dg is not None:
         europe_pmc_full_text_ingest_report,
         pmc_oa_full_text_ingest_report,
         literature_full_text_smoke_report,
+        literature_full_text_source_date_report,
         structured_source_count_report,
         source_health_report,
         entity_resolution_report,
@@ -1233,6 +1360,10 @@ if dg is not None:
     literature_full_text_smoke_job = dg.define_asset_job(
         "literature_full_text_smoke_job",
         selection=dg.AssetSelection.assets(literature_full_text_smoke_report),
+    )
+    literature_full_text_source_date_job = dg.define_asset_job(
+        "literature_full_text_source_date_job",
+        selection=dg.AssetSelection.assets(literature_full_text_source_date_report),
     )
     structured_source_count_report_job = dg.define_asset_job(
         "structured_source_count_report_job",
@@ -1303,6 +1434,14 @@ if dg is not None:
         execution_timezone=SCHEDULE_TIMEZONE,
         default_status=dg.DefaultScheduleStatus.RUNNING,
     )
+    literature_full_text_source_date_daily_schedule = dg.ScheduleDefinition(
+        name="literature_full_text_source_date_daily_schedule",
+        job=literature_full_text_source_date_job,
+        cron_schedule="30 2 * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.STOPPED,
+        execution_fn=_full_text_source_date_daily_schedule_requests,
+    )
 
     defs = dg.Definitions(
         assets=ingestion_bridge_assets,
@@ -1321,6 +1460,7 @@ if dg is not None:
             europe_pmc_full_text_ingest_has_outputs,
             pmc_oa_full_text_ingest_has_outputs,
             literature_full_text_smoke_has_outputs,
+            literature_full_text_source_date_has_outputs,
             structured_source_count_report_has_minimum_outputs,
             source_health_report_has_no_failed_sources,
             entity_resolution_has_minimum_outputs,
@@ -1341,6 +1481,7 @@ if dg is not None:
             europe_pmc_full_text_ingest_job,
             pmc_oa_full_text_ingest_job,
             literature_full_text_smoke_job,
+            literature_full_text_source_date_job,
             structured_source_count_report_job,
             source_health_report_job,
             entity_resolution_job,
@@ -1355,6 +1496,7 @@ if dg is not None:
             embedding_index_daily_schedule,
             embedding_maintenance_daily_schedule,
             source_health_daily_schedule,
+            literature_full_text_source_date_daily_schedule,
         ],
         resources={
             "research_repository": ResearchRepositoryResource(),
@@ -1376,6 +1518,7 @@ else:
     europe_pmc_full_text_ingest_job = None
     pmc_oa_full_text_ingest_job = None
     literature_full_text_smoke_job = None
+    literature_full_text_source_date_job = None
     structured_source_count_report_job = None
     source_health_report_job = None
     entity_resolution_job = None
@@ -1384,6 +1527,7 @@ else:
     structured_source_pipeline_weekly_schedule = None
     literature_corpus_daily_schedule = None
     literature_full_text_weekly_schedule = None
+    literature_full_text_source_date_daily_schedule = None
     all_api_smoke_weekly_schedule = None
     embedding_index_daily_schedule = None
     embedding_maintenance_daily_schedule = None

@@ -388,6 +388,19 @@ first when hosted full-text behavior is unclear. `literature_full_text_smoke_job
 uses one record per source plus a tiny extraction and curation pass, and is the
 preferred end-to-end readiness check before the combined refresh.
 
+For ongoing full-text growth, use the partitioned lane:
+
+```text
+Dagster+ -> literature_full_text_source_date_job
+Partition dimensions -> source, date
+Example source/date -> europe_pmc, 2026-04-27
+```
+
+This lane applies source-native publication date filters, writes a suffixed
+query name such as `partition_2026-04-27`, and treats zero-record days as clean
+empty partitions when the source run completed without errors. Keep the daily
+schedule stopped until at least one hosted partition is reviewed in Dagster+.
+
 Required QA output:
 - Every full-text source has raw records, research objects, document chunks, and
   claims.
@@ -411,6 +424,10 @@ Dagster schedule:
 - Cron: `0 2 * * 0`
 - Timezone: `America/Denver`
 - Default status: stopped until the full-text lane has a clean hosted run.
+- `literature_full_text_source_date_daily_schedule`
+- Cron: `30 2 * * *`
+- Timezone: `America/Denver`
+- Default status: stopped until source/date partitions are reviewed in Dagster+.
 
 ### Run Source Health
 

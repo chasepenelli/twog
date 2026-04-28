@@ -281,6 +281,8 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
         query_text, params = self.prepare_query(query_text, params)
         open_access = params.pop("open_access", False)
         fetch_full_text = params.pop("fetch_full_text", open_access)
+        published_after = params.pop("published_after", None)
+        published_before = params.pop("published_before", None)
         full_text_timeout_seconds = float(params.pop("full_text_timeout_seconds", FULL_TEXT_REQUEST_TIMEOUT_SECONDS))
         full_text_attempts = int(params.pop("full_text_attempts", FULL_TEXT_REQUEST_ATTEMPTS))
         full_text_time_budget_seconds = float(
@@ -288,6 +290,7 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
         )
         if open_access and "OPEN_ACCESS:" not in query_text.upper():
             query_text = f"({query_text}) AND OPEN_ACCESS:Y"
+        query_text = _europe_pmc_date_query(query_text, published_after, published_before)
         data = _get_json(
             "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
             {
@@ -495,8 +498,11 @@ class PMCOAHarvesterV2(ScholarlyHarvesterV2):
             params.pop("full_text_time_budget_seconds", FULL_TEXT_FETCH_TIME_BUDGET_SECONDS)
         )
         max_candidate_records = int(params.pop("max_candidate_records", PMC_OA_MAX_CANDIDATE_RECORDS))
+        published_after = params.pop("published_after", None)
+        published_before = params.pop("published_before", None)
         if license_required and "open access" not in query_text.lower():
             query_text = f"({query_text}) AND \"open access\"[filter]"
+        params = _ncbi_date_params(params, published_after, published_before)
         require_policy_match = params.get("require_policy_match", True)
         candidate_limit = min(max(limit * 10, 25), max_candidate_records)
         search = _get_json(
@@ -2537,6 +2543,45 @@ def _date_struct_value(value: Any) -> str | None:
         return None
     date = value.get("date")
     return str(date) if date else None
+
+
+def _europe_pmc_date_query(query_text: str, published_after: Any, published_before: Any) -> str:
+    start = _normalize_iso_date(published_after)
+    end = _normalize_iso_date(published_before) or start
+    if not start:
+        return query_text
+    return f"({query_text}) AND FIRST_PDATE:[{start} TO {end}]"
+
+
+def _ncbi_date_params(params: dict[str, Any], published_after: Any, published_before: Any) -> dict[str, Any]:
+    start = _normalize_iso_date(published_after)
+    end = _normalize_iso_date(published_before) or start
+    if not start:
+        return params
+    return {
+        **params,
+        "datetype": params.get("datetype", "pdat"),
+        "mindate": params.get("mindate", start.replace("-", "/")),
+        "maxdate": params.get("maxdate", end.replace("-", "/")),
+    }
+
+
+def _normalize_iso_date(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    match = re.fullmatch(r"\d{4}-\d{2}-\d{2}", text)
+    if match:
+        return text
+    compact = re.fullmatch(r"(\d{4})(\d{2})(\d{2})", text)
+    if compact:
+        return f"{compact.group(1)}-{compact.group(2)}-{compact.group(3)}"
+    slash = re.fullmatch(r"(\d{4})/(\d{2})/(\d{2})", text)
+    if slash:
+        return f"{slash.group(1)}-{slash.group(2)}-{slash.group(3)}"
+    raise ValueError(f"Expected date as YYYY-MM-DD, YYYYMMDD, or YYYY/MM/DD; got {text!r}")
 
 
 def _clinical_trial_interventions(module: dict[str, Any]) -> list[str]:

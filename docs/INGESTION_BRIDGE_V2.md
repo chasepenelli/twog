@@ -189,6 +189,8 @@ than chained. The initial production cadence is:
 - `structured_source_pipeline_weekly_schedule`: `0 2 * * 1`, running.
 - `literature_full_text_weekly_schedule`: `0 2 * * 0`, stopped until the
   full-text lane has a clean hosted run.
+- `literature_full_text_source_date_daily_schedule`: `30 2 * * *`, stopped
+  until source/date partitions are reviewed in Dagster+.
 - `all_api_smoke_weekly_schedule`: `0 3 * * 2`, running.
 - `embedding_index_daily_schedule`: `0 5 * * *`, running.
 - `embedding_maintenance_daily_schedule`: `45 5 * * *`, running.
@@ -201,10 +203,14 @@ fetch, normalization, persistence, chunking, and full-text QA from entity
 resolution, claim extraction, and curation. Then run
 `literature_full_text_smoke_job`, `europe_pmc_full_text_refresh_job`, and
 `pmc_oa_full_text_refresh_job` before the combined weekly refresh when a
-source-specific parser, API, or runtime issue needs isolation.
+source-specific parser, API, or runtime issue needs isolation. The
+`literature_full_text_source_date_job` is the first partitioned lane: it uses a
+multi-partition key with `source` and `date`, applies source-native publication
+date filters, and treats zero-record days as clean empty partitions rather than
+source failures. Keep the daily schedule stopped until at least one hosted
+source/date partition is reviewed.
 
-No sensors, chained graph job, or source/date partitions are part of this
-first schedule pass.
+No sensors or chained graph job are part of this first schedule pass.
 
 CLI smoke check:
 

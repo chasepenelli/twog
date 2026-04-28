@@ -40,10 +40,29 @@ class LocalIngestionPipeline:
             "coverage": self.repository.coverage_summary(),
         }
 
-    def ingest_query(self, query: SourceQuery, limit: int = 25) -> IngestionResult:
+    def ingest_query(
+        self,
+        query: SourceQuery,
+        limit: int = 25,
+        *,
+        query_param_overrides: dict | None = None,
+        query_name_suffix: str | None = None,
+        persist_query: bool = True,
+    ) -> IngestionResult:
         """Fetch a source query and persist raw records plus research objects."""
 
-        self.repository.upsert_source_query(query)
+        if query_param_overrides or query_name_suffix:
+            query = query.model_copy(
+                update={
+                    "query_name": f"{query.query_name}:{query_name_suffix}" if query_name_suffix else query.query_name,
+                    "query_params": {
+                        **query.query_params,
+                        **(query_param_overrides or {}),
+                    },
+                }
+            )
+        if persist_query:
+            self.repository.upsert_source_query(query)
         fetch_run_id = self.repository.create_fetch_run(query.source_key, query.query_name)
         raw_count = 0
         object_count = 0
@@ -114,11 +133,28 @@ class LocalIngestionPipeline:
             errors=errors,
         )
 
-    def ingest_source(self, source_key: str, limit: int = 25) -> list[IngestionResult]:
+    def ingest_source(
+        self,
+        source_key: str,
+        limit: int = 25,
+        *,
+        query_param_overrides: dict | None = None,
+        query_name_suffix: str | None = None,
+        persist_query_overrides: bool = False,
+    ) -> list[IngestionResult]:
         """Run all active local queries for one source."""
 
         queries = self.repository.list_source_queries(source_key=source_key)
-        return [self.ingest_query(query, limit=limit) for query in queries]
+        return [
+            self.ingest_query(
+                query,
+                limit=limit,
+                query_param_overrides=query_param_overrides,
+                query_name_suffix=query_name_suffix,
+                persist_query=not (query_param_overrides or query_name_suffix) or persist_query_overrides,
+            )
+            for query in queries
+        ]
 
     def coverage(self) -> dict:
         return self.repository.coverage_summary()

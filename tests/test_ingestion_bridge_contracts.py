@@ -170,7 +170,12 @@ def test_dagster_full_text_source_specific_assets_use_injected_repository(monkey
 
     def fake_pipeline(repository, **kwargs):
         assert repository is sentinel_repository
-        return kwargs
+        return {
+            **kwargs,
+            "sources": [],
+            "totals": {},
+            "errors": [],
+        }
 
     monkeypatch.setattr(structured_orchestration, "run_structured_sources_pipeline", fake_pipeline)
     monkeypatch.setattr(structured_orchestration, "run_structured_sources_ingestion_pipeline", fake_pipeline)
@@ -193,8 +198,23 @@ def test_dagster_full_text_source_specific_assets_use_injected_repository(monkey
     smoke_report = dagster_asset_module.literature_full_text_smoke_report.node_def.compute_fn.decorated_fn(
         FakeRepositoryResource()
     )
+    partition_context = SimpleNamespace(
+        multi_partition_key=dagster_asset_module.dg.MultiPartitionKey(
+            {
+                "source": "europe_pmc",
+                "date": "2026-04-27",
+            }
+        )
+    )
+    partition_result = (
+        dagster_asset_module.literature_full_text_source_date_report.node_def.compute_fn.decorated_fn(
+            partition_context,
+            FakeRepositoryResource(),
+        )
+    )
 
     assert calls == [
+        "build_repository",
         "build_repository",
         "build_repository",
         "build_repository",
@@ -220,6 +240,10 @@ def test_dagster_full_text_source_specific_assets_use_injected_repository(monkey
     assert smoke_report["source_keys"] == dagster_asset_module.LITERATURE_FULL_TEXT_SOURCE_KEYS
     assert smoke_report["source_limits"] == {"europe_pmc": 1, "pmc_oa": 1}
     assert smoke_report["mode"] == "refresh"
+    assert partition_result.value["source_keys"] == ("europe_pmc",)
+    assert partition_result.value["source_limits"] == {"europe_pmc": 10}
+    assert partition_result.value["partition_date"] == "2026-04-27"
+    assert partition_result.value["mode"] == "source_date_partition"
 
 
 def test_full_text_ingestion_pipeline_skips_downstream_work(monkeypatch):
@@ -301,6 +325,83 @@ def test_full_text_ingestion_pipeline_skips_downstream_work(monkeypatch):
     assert source_report["full_text_qa"]["passes_full_text_bar"] is True
     assert source_report["full_text_qa"]["triage"]["action"] == "no_action"
     assert source_report["full_text_triage_action"] == "no_action"
+
+
+def test_full_text_partition_allows_empty_current_day(monkeypatch):
+    calls = []
+
+    class EmptyIngestionResult:
+        def model_dump(self, mode):
+            assert mode == "json"
+            return {
+                "source_key": "europe_pmc",
+                "query_name": "comparative_hsa_open_access:partition_2026-04-27",
+                "raw_records": 0,
+                "research_objects": 0,
+                "document_chunks": 0,
+                "full_text_research_objects": 0,
+                "section_chunk_counts": {},
+                "status": "completed",
+                "errors": [],
+            }
+
+    class FakePipeline:
+        def __init__(self, repository):
+            calls.append(("init", repository))
+
+        def initialize(self):
+            calls.append(("initialize",))
+
+        def ingest_source(self, source_key, limit=25, **kwargs):
+            calls.append(("ingest_source", source_key, limit, kwargs))
+            return [EmptyIngestionResult()]
+
+    class FakeRepository:
+        def source_runtime_summary(self, source_key, sample_limit=5):
+            return {
+                "source_key": source_key,
+                "raw_records": 0,
+                "research_objects": 0,
+                "document_chunks": 0,
+                "entity_mentions": 0,
+                "claims": 0,
+            }
+
+        def list_research_objects(self, source_key=None):
+            return []
+
+        def list_document_chunks(self, source_key=None):
+            return []
+
+        def coverage_summary(self):
+            return {}
+
+    monkeypatch.setattr(structured_orchestration, "LocalIngestionPipeline", FakePipeline)
+
+    report = structured_orchestration.run_structured_sources_ingestion_pipeline(
+        FakeRepository(),
+        source_keys=("europe_pmc",),
+        source_limits={"europe_pmc": 1},
+        partition_date="2026-04-27",
+    )
+
+    source_report = report["sources"][0]
+    assert calls[-1] == (
+        "ingest_source",
+        "europe_pmc",
+        1,
+        {
+            "query_param_overrides": {
+                "published_after": "2026-04-27",
+                "published_before": "2026-04-27",
+            },
+            "query_name_suffix": "partition_2026-04-27",
+        },
+    )
+    assert report["partition_date"] == "2026-04-27"
+    assert source_report["full_text_qa"]["current_empty_passes"] is True
+    assert source_report["full_text_qa"]["passes_full_text_bar"] is True
+    assert source_report["full_text_qa"]["triage"]["action"] == "no_action"
 
 
 def test_dagster_metadata_table_rows_encode_nested_values():
@@ -598,6 +699,47 @@ def test_dagster_full_text_check_requires_full_text_body_chunks():
     assert result.metadata["failed_sources"].data == ["europe_pmc"]
     assert result.metadata["full_text_blocking_sources"].data == ["europe_pmc"]
     assert "full_text_triage" in result.metadata
+
+
+def test_dagster_full_text_partition_check_allows_empty_partition():
+    report = {
+        "mode": "source_date_partition",
+        "partition_date": "2026-04-27",
+        "source_keys": ["europe_pmc"],
+        "sources": [
+            {
+                "source_key": "europe_pmc",
+                "qa": {
+                    "raw_records": 0,
+                    "research_objects": 0,
+                    "document_chunks": 0,
+                    "claims": 0,
+                },
+                "full_text_qa": {
+                    "passes_full_text_bar": True,
+                    "current_empty_passes": True,
+                    "triage": {
+                        "action": "no_action",
+                        "severity": "info",
+                        "should_retry": False,
+                        "should_block_schedule": False,
+                        "reasons": ["The date-partitioned source run completed with no records."],
+                        "recommended_next_actions": ["Mark the partition clean."],
+                    },
+                },
+            }
+        ],
+        "errors": [],
+        "full_text_triage": [],
+        "totals": {"raw_records": 0, "research_objects": 0, "document_chunks": 0, "claims": 0},
+    }
+
+    result = dagster_asset_module.literature_full_text_source_date_has_outputs.node_def.compute_fn.decorated_fn(
+        report
+    )
+
+    assert result.passed is True
+    assert result.metadata["empty_sources"].data == ["europe_pmc"]
 
 
 def _seed_minimal_source_claim(
@@ -1060,6 +1202,22 @@ def test_full_text_triage_agent_reduces_batch_on_timeout():
     assert any("source/date partitioning" in action for action in result.recommended_next_actions)
 
 
+def test_full_text_triage_agent_allows_empty_date_partition():
+    result = FullTextTriageAgent().triage(
+        FullTextTriageRequest(
+            source_key="europe_pmc",
+            stage="qa",
+            raw_records=0,
+            metadata={"allow_empty_current_run": True},
+        )
+    )
+
+    assert result.action == "no_action"
+    assert result.severity == "info"
+    assert result.should_retry is False
+    assert result.should_block_schedule is False
+
+
 def test_full_text_triage_agent_flags_parser_fixture():
     result = FullTextTriageAgent().triage(
         FullTextTriageRequest(
@@ -1338,6 +1496,27 @@ def test_europe_pmc_v2_fetch_keeps_body_only_policy_match(monkeypatch):
     assert records[0].research_object.metadata["body_ingestion_policy"]["matched_concepts"] == ["canine_hsa"]
 
 
+def test_europe_pmc_v2_fetch_applies_publication_date_range(monkeypatch):
+    def fake_get_json(url, params):
+        assert url.endswith("/search")
+        assert "FIRST_PDATE:[2026-04-27 TO 2026-04-27]" in params["query"]
+        return {"resultList": {"result": []}}
+
+    monkeypatch.setattr(harvesters_v2, "_get_json", fake_get_json)
+
+    records = EuropePMCHarvesterV2().fetch(
+        "hemangiosarcoma",
+        limit=1,
+        open_access=True,
+        fetch_full_text=False,
+        require_policy_match=False,
+        published_after="2026-04-27",
+        published_before="2026-04-27",
+    )
+
+    assert records == []
+
+
 def test_pmc_oa_v2_normalizer_extracts_license_and_full_text():
     xml = """
     <OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
@@ -1523,6 +1702,26 @@ def test_pmc_oa_v2_fetch_caps_candidate_metadata_scans(monkeypatch):
         and kwargs["attempts"] == harvesters_v2.FULL_TEXT_REQUEST_ATTEMPTS
         for _pmcid, kwargs in metadata_calls
     )
+
+
+def test_pmc_oa_v2_fetch_applies_publication_date_params(monkeypatch):
+    def fake_get_json(url, params):
+        assert url.endswith("/esearch.fcgi")
+        assert params["datetype"] == "pdat"
+        assert params["mindate"] == "2026/04/27"
+        assert params["maxdate"] == "2026/04/27"
+        return {"esearchresult": {"idlist": []}}
+
+    monkeypatch.setattr(harvesters_v2, "_get_json", fake_get_json)
+
+    records = PMCOAHarvesterV2().fetch(
+        "hemangiosarcoma",
+        limit=1,
+        published_after="2026-04-27",
+        published_before="2026-04-27",
+    )
+
+    assert records == []
 
 
 def test_local_ingestion_replaces_full_text_chunks_by_section(tmp_path, monkeypatch):

@@ -92,6 +92,15 @@ class FullTextTriageAgent:
                 ],
             )
 
+        if request.raw_records == 0 and request.metadata.get("allow_empty_current_run") is True:
+            return self._result(
+                request,
+                action="no_action",
+                severity="info",
+                reasons=["The date-partitioned source run completed with no records, which is allowed."],
+                recommended_next_actions=["Mark the partition clean and continue the scheduled cadence."],
+            )
+
         if request.raw_records == 0:
             reasons.append("No raw records were persisted for the source run.")
             actions.append("Confirm the query still returns records and retry the fetch lane.")

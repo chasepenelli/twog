@@ -176,6 +176,11 @@ The workflow also exposes a `timeout_seconds` dispatch input so long-running
 jobs can be tested without changing the file. For the full-text lane, prefer a
 shorter manual timeout while hardening the hosted path.
 
+Partitioned full-text source/date jobs should be launched from Dagster+ directly
+or by the stopped `literature_full_text_source_date_daily_schedule`. The current
+GitHub smoke workflow uses `dagster-cloud job launch`, which does not expose a
+partition-key option in the installed CLI.
+
 If a run is already stuck in Dagster+, use the manual GitHub Actions workflow
 `Terminate Dagster Runs`. It calls Dagster Cloud GraphQL `terminateRuns` with the
 GitHub secret `DAGSTER_PLUS_ENV_API_TOKEN`. Start with `SAFE_TERMINATE`. Use
