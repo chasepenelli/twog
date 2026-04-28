@@ -522,6 +522,14 @@ It returns structured recommendations such as `run_ingest_smoke`,
 `full_text_ops_agent_report` / `full_text_ops_agent_job`, intentionally manual
 only until the recommendations are trusted in hosted runs.
 
+Full-text ops is external-review backed by default. `review_mode=external_required`
+creates a typed review packet containing source health, full-text report, recent
+agent runs, and the deterministic guardrail result. A ChatGPT Pro/Codex session
+reviews that packet outside the hosted Dagster worker, so no API key or per-token
+API spend is required. The hosted job keeps the schedule stopped until that
+external review is performed. `deterministic_only` exists for tests and
+break-glass debugging, not normal hosted operations.
+
 `full_text_source_date_ops_job` is the manual hosted bridge for source/date
 validation while the Dagster Cloud CLI lacks partition-key launch support. It
 accepts `source_key` and `partition_date` run config, executes one source/date

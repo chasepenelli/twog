@@ -1003,6 +1003,7 @@ def test_full_text_ops_ready_when_health_and_partition_are_clean(tmp_path):
         FullTextOpsRequest(
             partition_date="2026-04-27",
             full_text_report=partition_report,
+            review_mode="deterministic_only",
         )
     )
 
@@ -1012,19 +1013,52 @@ def test_full_text_ops_ready_when_health_and_partition_are_clean(tmp_path):
     assert {action.action for action in result.actions if action.source_key != "all"} == {"mark_clean"}
 
 
+def test_full_text_ops_external_review_packet_includes_deterministic_guardrail(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "full-text-ops-external-review.sqlite3", seed=False)
+    _seed_full_text_source_claim(repo, "europe_pmc")
+    partition_report = {
+        "mode": "source_date_partition",
+        "partition_date": "2026-04-27",
+        "sources": [
+            {"source_key": "europe_pmc", "full_text_qa": {"passes_full_text_bar": True}},
+        ],
+        "errors": [],
+    }
+
+    result = FullTextOpsAgent(repo).run(
+        FullTextOpsRequest(
+            source_keys=["europe_pmc"],
+            partition_date="2026-04-27",
+            full_text_report=partition_report,
+        )
+    )
+
+    assert result.schedule_readiness == "keep_stopped"
+    assert result.should_block_schedule is True
+    assert any(action.action == "needs_human_review" for action in result.actions)
+    assert result.evidence["external_reviewer"]["provider"] == "openai_chatgpt_pro"
+    assert result.evidence["review_packet"]["deterministic_guardrail_result"]["schedule_readiness"] == "ready_to_enable"
+
+
 def test_full_text_ops_requests_partition_or_ingest_when_validation_is_missing(tmp_path):
     clean_repo = SQLiteResearchRepository(tmp_path / "full-text-ops-partition.sqlite3", seed=False)
     _seed_full_text_source_claim(clean_repo, "europe_pmc")
 
     partition_result = FullTextOpsAgent(clean_repo).run(
-        FullTextOpsRequest(source_keys=["europe_pmc"], partition_date="2026-04-27")
+        FullTextOpsRequest(
+            source_keys=["europe_pmc"],
+            partition_date="2026-04-27",
+            review_mode="deterministic_only",
+        )
     )
 
     assert partition_result.schedule_readiness == "needs_partition_validation"
     assert any(action.action == "run_source_date_partition" for action in partition_result.actions)
 
     empty_repo = SQLiteResearchRepository(tmp_path / "full-text-ops-empty.sqlite3", seed=False)
-    ingest_result = FullTextOpsAgent(empty_repo).run(FullTextOpsRequest(source_keys=["europe_pmc"]))
+    ingest_result = FullTextOpsAgent(empty_repo).run(
+        FullTextOpsRequest(source_keys=["europe_pmc"], review_mode="deterministic_only")
+    )
 
     assert ingest_result.schedule_readiness == "keep_stopped"
     assert any(action.action == "run_ingest_smoke" for action in ingest_result.actions)
@@ -1059,7 +1093,11 @@ def test_full_text_ops_maps_triage_actions_to_recommendations(tmp_path):
     }
 
     result = FullTextOpsAgent(repo).run(
-        FullTextOpsRequest(source_keys=["europe_pmc", "pmc_oa"], source_health_report=report)
+        FullTextOpsRequest(
+            source_keys=["europe_pmc", "pmc_oa"],
+            source_health_report=report,
+            review_mode="deterministic_only",
+        )
     )
 
     assert result.schedule_readiness == "blocked"
@@ -1074,7 +1112,11 @@ def test_full_text_ops_service_is_recommend_only(tmp_path):
     source_queries_before = repo.list_source_queries(source_key="europe_pmc")
 
     result = HSAResearchService(repo).run_full_text_ops(
-        FullTextOpsRequest(source_keys=["europe_pmc"], partition_date="2026-04-27")
+        FullTextOpsRequest(
+            source_keys=["europe_pmc"],
+            partition_date="2026-04-27",
+            review_mode="deterministic_only",
+        )
     )
 
     assert result.agent_run_id is not None
@@ -3638,6 +3680,7 @@ def test_mcp_agent_run_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
     payload = mcp_server.run_full_text_ops_tool(
         source_keys=["europe_pmc"],
         partition_date="2026-04-27",
+        review_mode="deterministic_only",
     )
     run_payload = mcp_server.get_agent_run_tool(payload["agent_run_id"])
     runs_payload = mcp_server.list_agent_runs_tool(agent_name="full_text_ops_agent")

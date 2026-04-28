@@ -55,7 +55,12 @@ from .storage import build_research_repository
 DEFAULT_MODEL_PROFILES: dict[str, ModelProfile] = {
     "extractor": ModelProfile(profile_key="extractor", provider="claude", purpose="Claim and entity extraction"),
     "hypothesis": ModelProfile(profile_key="hypothesis", provider="openai", purpose="Hypothesis drafting"),
-    "reviewer": ModelProfile(profile_key="reviewer", provider="claude", purpose="Scientific review"),
+    "reviewer": ModelProfile(
+        profile_key="reviewer",
+        provider="other",
+        model_name="chatgpt-pro-5x",
+        purpose="External ChatGPT Pro scientific and operational review",
+    ),
     "cheap_classifier": ModelProfile(profile_key="cheap_classifier", provider="openai", purpose="Fast classification"),
     "long_context_reviewer": ModelProfile(
         profile_key="long_context_reviewer",

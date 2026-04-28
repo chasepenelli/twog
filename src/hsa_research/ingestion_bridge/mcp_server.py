@@ -195,6 +195,7 @@ def run_full_text_ops_tool(
     full_text_report: dict | None = None,
     recent_run_limit: int = 10,
     model_profile: str = "reviewer",
+    review_mode: str = "external_required",
     dagster_run_id: str | None = None,
     metadata: dict | None = None,
 ) -> dict:
@@ -207,6 +208,7 @@ def run_full_text_ops_tool(
         full_text_report=full_text_report,
         recent_run_limit=recent_run_limit,
         model_profile=model_profile,
+        review_mode=review_mode,  # type: ignore[arg-type]
         dagster_run_id=dagster_run_id,
         metadata=metadata or {},
     )
@@ -402,6 +404,7 @@ if mcp is not None:
         full_text_report: dict | None = None,
         recent_run_limit: int = 10,
         model_profile: str = "reviewer",
+        review_mode: str = "external_required",
         dagster_run_id: str | None = None,
         metadata: dict | None = None,
     ) -> dict:
@@ -414,6 +417,7 @@ if mcp is not None:
             full_text_report=full_text_report,
             recent_run_limit=recent_run_limit,
             model_profile=model_profile,
+            review_mode=review_mode,
             dagster_run_id=dagster_run_id,
             metadata=metadata,
         )

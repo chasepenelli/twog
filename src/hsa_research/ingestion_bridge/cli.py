@@ -199,6 +199,12 @@ def main() -> None:
     full_text_ops.add_argument("--partition-date", default=None, help="Optional YYYY-MM-DD partition to validate")
     full_text_ops.add_argument("--recent-run-limit", type=int, default=10, help="Recent agent runs to include")
     full_text_ops.add_argument("--model-profile", default="reviewer", help="Logical model profile")
+    full_text_ops.add_argument(
+        "--review-mode",
+        choices=("external_required", "deterministic_only"),
+        default="external_required",
+        help="Whether external ChatGPT Pro review is required or deterministic checks are returned directly",
+    )
     full_text_ops.add_argument("--fail-on-blocking", action="store_true")
 
     agent_runs = subparsers.add_parser("agent-runs", help="List or fetch persisted agent runs")
@@ -451,6 +457,7 @@ def main() -> None:
                 partition_date=args.partition_date,
                 recent_run_limit=args.recent_run_limit,
                 model_profile=args.model_profile,
+                review_mode=args.review_mode,
             )
         ).model_dump(mode="json")
     elif args.command == "agent-runs":

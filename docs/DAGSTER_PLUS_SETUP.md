@@ -92,8 +92,6 @@ These improve rate limits or unlock later compute paths:
 NCBI_API_KEY=<free NCBI key>
 OPENFDA_API_KEY=<free openFDA key>
 RUNPOD_API_KEY=<later GPU jobs>
-OPENAI_API_KEY=<later hosted LLM agents>
-ANTHROPIC_API_KEY=<later hosted LLM agents>
 ```
 
 ## Hosted Database
@@ -198,12 +196,19 @@ Example `config_json`:
         "partition_date": "2026-04-27",
         "source_limit": 25,
         "extract_limit": 100,
-        "curate_limit": 100
+        "curate_limit": 100,
+        "review_mode": "external_required"
       }
     }
   }
 }
 ```
+
+External-review full-text ops does not require an OpenAI API key. The hosted job
+persists a typed review packet in `agent_runs.output_payload.evidence.review_packet`.
+Review that packet from a ChatGPT Pro/Codex session, compare it to
+`deterministic_guardrail_result`, and only then decide whether to enable the
+stopped schedule.
 
 If a run is already stuck in Dagster+, use the manual GitHub Actions workflow
 `Terminate Dagster Runs`. It calls Dagster Cloud GraphQL `terminateRuns` with the

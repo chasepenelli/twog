@@ -942,6 +942,11 @@ if dg is not None:
                 default_value=100,
                 description="Maximum claims to curate.",
             ),
+            "review_mode": dg.Field(
+                str,
+                default_value="external_required",
+                description="FullTextOps review mode: external_required or deterministic_only.",
+            ),
         },
     )
     def full_text_source_date_ops(context) -> dict:
@@ -967,6 +972,7 @@ if dg is not None:
                 source_keys=(source_key,),
                 partition_date=partition_date,
                 full_text_report=partition_report,
+                review_mode=config["review_mode"],
             )
         )
         ops_report = result.model_dump(mode="json")

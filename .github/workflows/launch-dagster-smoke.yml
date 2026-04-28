@@ -286,6 +286,14 @@ jobs:
             --fail-on-error
         shell: bash
 
+      - name: Print hosted full-text ops agent run
+        if: ${{ inputs.job == 'full_text_ops_agent_job' || inputs.job == 'full_text_source_date_ops_job' }}
+        run: |
+          uv run python -m hsa_research.ingestion_bridge.cli agent-runs \
+            --agent-name full_text_ops_agent \
+            --limit 3
+        shell: bash
+
       - name: Print hosted structured-source count report
         run: |
           validation_flags=""

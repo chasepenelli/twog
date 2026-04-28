@@ -104,7 +104,7 @@ class FullTextOpsAgent:
                 )
             )
 
-        return FullTextOpsResult(
+        deterministic_result = FullTextOpsResult(
             model_profile=request.model_profile,
             actions=actions,
             should_block_schedule=any(
@@ -115,12 +115,29 @@ class FullTextOpsAgent:
             evidence={
                 "source_keys": source_keys,
                 "partition_date": request.partition_date,
+                "review_mode": request.review_mode,
                 "source_health_summary": health_report.get("summary", {}),
                 "full_text_report_mode": full_text_report.get("mode"),
                 "full_text_report_errors": full_text_report.get("errors", []),
                 "recent_agent_runs": [run.model_dump(mode="json") for run in recent_runs],
             },
             errors=errors + list(full_text_report.get("errors", [])),
+        )
+        if request.review_mode == "deterministic_only":
+            return deterministic_result
+
+        review_payload = _build_review_payload(
+            request=request,
+            source_keys=source_keys,
+            deterministic_result=deterministic_result,
+            health_report=health_report,
+            full_text_report=full_text_report,
+            recent_runs=recent_runs,
+        )
+        return _external_review_required_result(
+            request=request,
+            deterministic_result=deterministic_result,
+            review_payload=review_payload,
         )
 
     def _source_actions(
@@ -293,3 +310,149 @@ def _schedule_readiness(
     if set(partition_clean_sources) != set(source_keys):
         return "needs_partition_validation"
     return "ready_to_enable"
+
+
+def _build_review_payload(
+    *,
+    request: FullTextOpsRequest,
+    source_keys: Sequence[str],
+    deterministic_result: FullTextOpsResult,
+    health_report: Mapping[str, Any],
+    full_text_report: Mapping[str, Any],
+    recent_runs: Sequence[Any],
+) -> dict[str, Any]:
+    return {
+        "task": "Review full-text ingestion operations and return the next operational recommendation.",
+        "allowed_actions": [
+            "mark_clean",
+            "run_ingest_smoke",
+            "run_full_text_smoke",
+            "run_source_date_partition",
+            "reduce_batch_size",
+            "inspect_parser",
+            "inspect_license",
+            "keep_schedule_stopped",
+            "ready_to_enable_schedule",
+            "needs_human_review",
+        ],
+        "allowed_severities": ["info", "watch", "blocking"],
+        "allowed_schedule_readiness": [
+            "ready_to_enable",
+            "needs_partition_validation",
+            "keep_stopped",
+            "blocked",
+        ],
+        "request": request.model_dump(
+            mode="json",
+            exclude={"source_health_report", "full_text_report"},
+        ),
+        "source_keys": list(source_keys),
+        "deterministic_guardrail_result": deterministic_result.model_dump(mode="json"),
+        "source_health_report": _compact_report(health_report),
+        "full_text_report": _compact_report(full_text_report),
+        "recent_agent_runs": [run.model_dump(mode="json") for run in recent_runs],
+        "output_contract": {
+            "agent_name": FULL_TEXT_OPS_AGENT_NAME,
+            "model_profile": request.model_profile,
+            "actions": [
+                {
+                    "source_key": "string",
+                    "action": "one allowed action",
+                    "severity": "info|watch|blocking",
+                    "reason": "specific evidence-backed reason",
+                    "dagster_job_name": "optional string",
+                    "partition_date": "optional YYYY-MM-DD",
+                    "evidence_refs": ["specific evidence paths"],
+                    "metadata": {},
+                }
+            ],
+            "should_block_schedule": "boolean",
+            "schedule_readiness": "one allowed schedule readiness value",
+            "evidence": {},
+            "errors": [],
+        },
+    }
+
+
+def _compact_report(report: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "mode": report.get("mode"),
+        "partition_date": report.get("partition_date"),
+        "source_keys": report.get("source_keys", []),
+        "summary": report.get("summary", {}),
+        "totals": report.get("totals", {}),
+        "errors": report.get("errors", []),
+        "sources": [_compact_source_report(source) for source in report.get("sources", [])],
+        "full_text_triage": report.get("full_text_triage", []),
+        "full_text_blocking_sources": report.get("full_text_blocking_sources", []),
+    }
+
+
+def _compact_source_report(source_report: Mapping[str, Any]) -> dict[str, Any]:
+    keys = (
+        "source_key",
+        "source_role",
+        "health_status",
+        "health_score",
+        "raw_records",
+        "research_objects",
+        "document_chunks",
+        "entity_mentions",
+        "claims",
+        "passes_minimum_bar",
+        "full_text_qa",
+        "full_text_triage_action",
+        "full_text_triage_severity",
+        "full_text_triage_should_retry",
+        "full_text_triage_should_block_schedule",
+        "signals",
+        "risks",
+        "recommended_actions",
+    )
+    return {key: source_report.get(key) for key in keys if key in source_report}
+
+
+def _external_review_required_result(
+    *,
+    request: FullTextOpsRequest,
+    deterministic_result: FullTextOpsResult,
+    review_payload: dict[str, Any],
+) -> FullTextOpsResult:
+    actions = [
+        *deterministic_result.actions,
+        FullTextOpsAction(
+            source_key="all",
+            action="needs_human_review",
+            severity="watch",
+            reason=(
+                "External ChatGPT Pro review is required before changing schedule readiness. "
+                "Review the evidence.review_packet payload and record the conclusion outside the hosted job."
+            ),
+            partition_date=request.partition_date,
+            evidence_refs=["evidence.review_packet", "deterministic_guardrail_result"],
+            metadata={"review_profile": request.model_profile},
+        ),
+    ]
+    readiness = "blocked" if deterministic_result.schedule_readiness == "blocked" else "keep_stopped"
+    evidence = {
+        **deterministic_result.evidence,
+        "review_mode": request.review_mode,
+        "review_packet": review_payload,
+        "external_reviewer": {
+            "provider": "openai_chatgpt_pro",
+            "model_profile": request.model_profile,
+            "execution": "external_subscription_session",
+        },
+        "deterministic_guardrail_schedule_readiness": deterministic_result.schedule_readiness,
+        "deterministic_guardrail_actions": [
+            action.model_dump(mode="json") for action in deterministic_result.actions
+        ],
+    }
+    return deterministic_result.model_copy(
+        update={
+            "actions": actions,
+            "schedule_readiness": readiness,
+            "should_block_schedule": True,
+            "evidence": evidence,
+        }
+    )

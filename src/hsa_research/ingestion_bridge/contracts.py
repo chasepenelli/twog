@@ -143,6 +143,7 @@ class FullTextOpsRequest(StrictBaseModel):
     full_text_report: dict[str, Any] | None = None
     recent_run_limit: int = Field(default=10, ge=0, le=100)
     model_profile: str = "reviewer"
+    review_mode: Literal["external_required", "deterministic_only"] = "external_required"
     dagster_run_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
