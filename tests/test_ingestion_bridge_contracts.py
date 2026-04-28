@@ -2751,6 +2751,39 @@ def test_x_topic_review_resolves_short_links_before_classification(monkeypatch):
     assert link.metadata["resolved"] is True
 
 
+def test_x_topic_review_queues_resolved_articles_for_scrape_followup(monkeypatch):
+    resolved_url = (
+        "https://cancer.ufl.edu/2026/04/20/"
+        "researchers-characterize-genetic-landscape-of-angiosarcoma-opening-new-frontier-in-rare-cancer/"
+    )
+    monkeypatch.setattr(x_topic_review, "_follow_redirects", lambda url: resolved_url)
+
+    result = x_topic_review.XTopicReviewAgent().run(
+        XTopicReviewRequest(
+            review_mode="deterministic_only",
+            candidates=[
+                {
+                    "post_id": "123",
+                    "query_name": "x_disease_monitoring",
+                    "quality_score": 0.7,
+                    "durable_links": ["https://go.ufl.edu/r2uqpua"],
+                }
+            ],
+        )
+    )
+
+    action = result.actions[0]
+    link = action.ingestible_links[0]
+    assert result.ingestion_candidate_count == 1
+    assert action.action == "queue_source_followup"
+    assert link.url == resolved_url
+    assert link.recommended_source_key == "x_linked_article"
+    assert link.should_ingest is False
+    assert link.metadata["followup_type"] == "controlled_scrape_review"
+    assert link.metadata["source_profile"] == "x_linked_article"
+    assert link.metadata["original_url"] == "https://go.ufl.edu/r2uqpua"
+
+
 def test_x_topic_review_openrouter_preserves_deterministic_ingestion_guardrail(monkeypatch):
     def fake_review_model(model_name, review_payload):
         assert model_name == "anthropic/claude-sonnet-test"
@@ -4922,6 +4955,9 @@ def test_scrape_profiles_keep_avma_approval_gated():
     assert profiles["avma_vctr"].enabled is False
     assert profiles["avma_vctr"].robots_policy == "unknown"
     assert profiles["avma_vctr"].parser == "avma_vctr"
+    assert profiles["x_linked_article"].approval_required is True
+    assert profiles["x_linked_article"].enabled is False
+    assert profiles["x_linked_article"].parser == "generic_html"
 
 
 def test_scrape_bridge_refuses_approval_gated_fetch_without_approval(tmp_path):

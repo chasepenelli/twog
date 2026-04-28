@@ -121,6 +121,22 @@ INITIAL_SOURCES: tuple[ResearchSource, ...] = (
         ),
     ),
     ResearchSource(
+        source_key="x_linked_article",
+        display_name="X Linked Article Review",
+        source_kind=SourceKind.INTERNAL,
+        base_url="https://x.com/",
+        license_policy="controlled_scrape_review",
+        requires_api_key=False,
+        enabled=False,
+        priority=96,
+        phase=1,
+        capabilities=["social_link_followup", "controlled_scrape_review", "link_extraction_review"],
+        notes=(
+            "Review-gated scraper follow-up lane for credible non-primary article links found by social monitoring. "
+            "Use this to extract outbound primary-source identifiers before promoting evidence."
+        ),
+    ),
+    ResearchSource(
         source_key="clinicaltrials_gov",
         display_name="ClinicalTrials.gov",
         source_kind=SourceKind.CLINICAL_TRIAL,

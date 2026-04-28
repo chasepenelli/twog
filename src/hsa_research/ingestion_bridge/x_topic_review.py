@@ -72,6 +72,15 @@ _RESOLVABLE_SHORT_LINK_HOSTS = (
     "t.co",
     "x.com",
 )
+_SOURCE_FOLLOWUP_KEY = "x_linked_article"
+_SOURCE_FOLLOWUP_HOST_MARKERS = (
+    ".edu",
+    ".gov",
+    "nih.gov",
+    "ncbi.nlm.nih.gov",
+    "fda.gov",
+    "cancer.gov",
+)
 
 
 class XTopicReviewAgent:
@@ -131,6 +140,11 @@ def _review_candidate(candidate: Mapping[str, Any]) -> XTopicReviewAction:
         if isinstance(link, str) and link.strip()
     ]
     ingestible_links = [link for link in links if link.should_ingest]
+    followup_links = [
+        link
+        for link in links
+        if link.metadata.get("followup_type") == "controlled_scrape_review"
+    ]
     evidence_refs = [f"candidate:{post_id}"] if post_id else []
 
     if quality_score < 0.2:
@@ -155,6 +169,21 @@ def _review_candidate(candidate: Mapping[str, Any]) -> XTopicReviewAction:
             reason="Candidate links to one or more durable primary-source records that should be harvested.",
             ingestible_links=ingestible_links,
             evidence_refs=evidence_refs + [link.url for link in ingestible_links],
+        )
+
+    if followup_links:
+        return XTopicReviewAction(
+            source_record_id=post_id,
+            query_name=query_name,
+            username=username,
+            action="queue_source_followup",
+            severity="watch",
+            reason=(
+                "Candidate links to a credible non-primary article that should enter "
+                "controlled scraper/link-extraction review."
+            ),
+            ingestible_links=followup_links,
+            evidence_refs=evidence_refs + [link.url for link in followup_links],
         )
 
     if links:
@@ -214,15 +243,22 @@ def _classify_link(url: str) -> XTopicLinkedSource:
             metadata=resolution_metadata,
         )
 
-    if any(marker in host_path for marker in ("nih.gov", "ncbi.nlm.nih.gov", "fda.gov", ".edu")):
+    if _is_source_followup_link(host_path):
         return XTopicLinkedSource(
             url=normalized,
-            recommended_source_key=None,
+            recommended_source_key=_SOURCE_FOLLOWUP_KEY,
             identifier_type="unknown",
             identifier=None,
             should_ingest=False,
-            reason="Credible domain but no implemented source identifier was detected; human link review needed.",
-            metadata=resolution_metadata,
+            reason=(
+                "Credible linked article did not expose a primary-source identifier; "
+                "queue for controlled scraper/link-extraction review."
+            ),
+            metadata={
+                **resolution_metadata,
+                "followup_type": "controlled_scrape_review",
+                "source_profile": _SOURCE_FOLLOWUP_KEY,
+            },
         )
 
     return XTopicLinkedSource(
@@ -288,6 +324,10 @@ def _extract_doi(url: str) -> str | None:
     return match.group(0).rstrip(").,;")
 
 
+def _is_source_followup_link(host_path: str) -> bool:
+    return any(marker in host_path for marker in _SOURCE_FOLLOWUP_HOST_MARKERS)
+
+
 def _build_review_payload(
     request: XTopicReviewRequest,
     candidates: Sequence[Mapping[str, Any]],
@@ -298,6 +338,7 @@ def _build_review_payload(
         "rules": [
             "Never treat a social post as scientific evidence.",
             "Flag only durable linked sources for ingestion into primary API harvesters.",
+            "Queue credible non-primary articles for controlled scraper/link-extraction review.",
             "Use needs_human_review when a link may matter but does not map cleanly.",
             "Use compliance_hold for protected, deleted, private, or policy-sensitive content.",
             "Return JSON only.",
@@ -611,8 +652,9 @@ def _sanitize_model_link(raw_link: Any) -> XTopicLinkedSource | None:
     elif not isinstance(should_ingest, bool):
         should_ingest = classified.should_ingest
     metadata = raw_link.get("metadata") if isinstance(raw_link.get("metadata"), dict) else {}
+    merged_metadata = {**classified.metadata, **metadata}
     return XTopicLinkedSource(
-        url=url,
+        url=classified.url,
         recommended_source_key=_optional_str(
             raw_link.get("recommended_source_key") or classified.recommended_source_key
         ),
@@ -620,7 +662,7 @@ def _sanitize_model_link(raw_link: Any) -> XTopicLinkedSource | None:
         identifier=_optional_str(raw_link.get("identifier") or classified.identifier),
         should_ingest=should_ingest,
         reason=_optional_str(raw_link.get("reason")) or classified.reason,
-        metadata=metadata,
+        metadata=merged_metadata,
     )
 
 
@@ -656,6 +698,8 @@ def _finalize_result(result: XTopicReviewResult) -> XTopicReviewResult:
     for action in result.actions:
         for link in action.ingestible_links:
             if link.should_ingest:
+                ingestion_keys.add((action.source_record_id, link.url))
+            elif action.action == "queue_source_followup":
                 ingestion_keys.add((action.source_record_id, link.url))
         if action.action in {"flag_for_ingestion", "queue_source_followup"} and not action.ingestible_links:
             ingestion_keys.add((action.source_record_id, action.action))
@@ -711,6 +755,9 @@ Rules:
 - Flag durable linked sources for ingestion when they map to implemented
   sources: pubmed, pmc_oa, crossref, clinicaltrials_gov, pubchem, chembl,
   uniprot, rcsb_pdb, geo, or sra.
+- Use queue_source_followup for credible linked articles or institutional pages
+  that need controlled scraper/link-extraction review before any database
+  promotion.
 - If a link may be important but does not map cleanly, use needs_link_review.
 - If there is no durable source, use skip_no_durable_source or needs_human_review.
 - If content appears private, deleted, protected, or compliance-sensitive, use

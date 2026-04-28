@@ -52,6 +52,26 @@ DEFAULT_SCRAPE_ARTIFACT_ROOT = Path("var/hsa_research/artifacts/scrape")
 
 SCRAPE_SOURCE_PROFILES: tuple[ScrapeSourceProfile, ...] = (
     ScrapeSourceProfile(
+        source_key="x_linked_article",
+        display_name="X Linked Article Review",
+        base_url="https://x.com/",
+        allowed_url_patterns=[
+            "https://*.edu/*",
+            "https://*.gov/*",
+            "https://*.org/*",
+        ],
+        robots_policy="unknown",
+        rate_limit_per_minute=6,
+        parser="generic_html",
+        storage_policy="metadata_and_link_review",
+        approval_required=True,
+        enabled=False,
+        notes=(
+            "Controlled review lane for credible non-primary article links discovered "
+            "through social monitoring. Fetch requires per-source approval and human review."
+        ),
+    ),
+    ScrapeSourceProfile(
         source_key="avma_vctr",
         display_name="AVMA Veterinary Clinical Trials Registry",
         base_url="https://veterinaryclinicaltrials.org/",
