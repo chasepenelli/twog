@@ -372,6 +372,43 @@ jobs:
           PY
         shell: bash
 
+      - name: Print hosted X linked article follow-up summary
+        if: ${{ always() && inputs.job == 'x_linked_article_followup_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+
+          from hsa_research.ingestion_bridge.scraper_bridge import ScrapeBridge
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          repository = build_research_repository()
+          reviews = ScrapeBridge(repository).list_reviews(
+              "x_linked_article",
+              review_status=None,
+              limit=5,
+          )
+          print(
+              json.dumps(
+                  [
+                      {
+                          "review_id": str(review.review_id),
+                          "artifact_id": str(review.artifact_id),
+                          "title": review.title,
+                          "canonical_url": review.canonical_url,
+                          "review_status": review.review_status,
+                          "parser_confidence": review.parser_confidence,
+                          "primary_source_links": review.fields.get("primary_source_links", []),
+                      }
+                      for review in reviews
+                  ],
+                  indent=2,
+                  sort_keys=True,
+              )
+          )
+          PY
+        shell: bash
+
       - name: Print hosted structured-source count report
         if: ${{ inputs.job == 'structured_source_smoke_job' || inputs.job == 'structured_source_multisource_smoke_job' || inputs.job == 'literature_clinical_smoke_job' || inputs.job == 'all_api_smoke_job' || inputs.job == 'literature_corpus_harvest_job' || inputs.job == 'literature_full_text_refresh_job' || inputs.job == 'europe_pmc_full_text_refresh_job' || inputs.job == 'pmc_oa_full_text_refresh_job' || inputs.job == 'literature_full_text_ingest_smoke_job' || inputs.job == 'europe_pmc_full_text_ingest_job' || inputs.job == 'pmc_oa_full_text_ingest_job' || inputs.job == 'literature_full_text_smoke_job' || inputs.job == 'full_text_source_date_ops_job' || inputs.job == 'structured_source_count_report_job' || inputs.job == 'source_health_report_job' || inputs.job == 'structured_source_pipeline_job' }}
         run: |
