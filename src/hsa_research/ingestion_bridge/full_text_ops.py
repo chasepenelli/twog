@@ -365,10 +365,10 @@ def _build_review_payload(
             exclude={"source_health_report", "full_text_report"},
         ),
         "source_keys": list(source_keys),
-        "deterministic_guardrail_result": deterministic_result.model_dump(mode="json"),
+        "deterministic_guardrail_result": _compact_ops_result(deterministic_result),
         "source_health_report": _compact_report(health_report),
         "full_text_report": _compact_report(full_text_report),
-        "recent_agent_runs": [run.model_dump(mode="json") for run in recent_runs],
+        "recent_agent_runs": [_compact_recent_agent_run(run) for run in recent_runs],
         "output_contract": {
             "agent_name": FULL_TEXT_OPS_AGENT_NAME,
             "model_profile": request.model_profile,
@@ -428,6 +428,65 @@ def _compact_source_report(source_report: Mapping[str, Any]) -> dict[str, Any]:
         "recommended_actions",
     )
     return {key: source_report.get(key) for key in keys if key in source_report}
+
+
+def _compact_ops_result(result: FullTextOpsResult) -> dict[str, Any]:
+    evidence = result.evidence or {}
+    return {
+        "agent_name": result.agent_name,
+        "model_profile": result.model_profile,
+        "schedule_readiness": result.schedule_readiness,
+        "should_block_schedule": result.should_block_schedule,
+        "actions": [action.model_dump(mode="json") for action in result.actions],
+        "errors": result.errors[:20],
+        "evidence": {
+            "source_keys": evidence.get("source_keys", []),
+            "partition_date": evidence.get("partition_date"),
+            "review_mode": evidence.get("review_mode"),
+            "source_health_summary": evidence.get("source_health_summary", {}),
+            "full_text_report_mode": evidence.get("full_text_report_mode"),
+            "full_text_report_errors": evidence.get("full_text_report_errors", [])[:20],
+        },
+    }
+
+
+def _compact_recent_agent_run(run: Any) -> dict[str, Any]:
+    payload = run.model_dump(mode="json")
+    output_payload = payload.get("output_payload") or {}
+    evidence = output_payload.get("evidence") or {}
+    return {
+        "agent_run_id": payload.get("agent_run_id"),
+        "agent_name": payload.get("agent_name"),
+        "status": payload.get("status"),
+        "source_key": payload.get("source_key"),
+        "partition_date": payload.get("partition_date"),
+        "completed_at": payload.get("completed_at"),
+        "summary": payload.get("summary", {}),
+        "errors": payload.get("errors", [])[:5],
+        "output": {
+            "schedule_readiness": output_payload.get("schedule_readiness"),
+            "should_block_schedule": output_payload.get("should_block_schedule"),
+            "actions": [
+                {
+                    "source_key": action.get("source_key"),
+                    "action": action.get("action"),
+                    "severity": action.get("severity"),
+                }
+                for action in output_payload.get("actions", [])[:10]
+            ],
+            "selected_model": evidence.get("selected_model"),
+            "model_review_statuses": [
+                {
+                    "model_name": review.get("model_name"),
+                    "status": review.get("status"),
+                    "schedule_readiness": (review.get("result") or {}).get("schedule_readiness"),
+                    "should_block_schedule": (review.get("result") or {}).get("should_block_schedule"),
+                    "error": review.get("error"),
+                }
+                for review in evidence.get("model_reviews", [])[:10]
+            ],
+        },
+    }
 
 
 def _external_review_required_result(

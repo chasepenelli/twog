@@ -1043,6 +1043,25 @@ def test_full_text_ops_external_review_packet_includes_deterministic_guardrail(t
 def test_full_text_ops_openrouter_compare_records_each_model(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "full-text-ops-openrouter.sqlite3", seed=False)
     _seed_full_text_source_claim(repo, "europe_pmc")
+    repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="full_text_ops_agent",
+            status=RunStatus.COMPLETED,
+            source_key="europe_pmc",
+            partition_date="2026-04-26",
+            output_payload={
+                "schedule_readiness": "keep_stopped",
+                "should_block_schedule": True,
+                "actions": [{"source_key": "all", "action": "needs_human_review", "severity": "watch"}],
+                "evidence": {
+                    "review_packet": {"large_nested_payload": "x" * 10000},
+                    "model_reviews": [{"model_name": "old", "status": "failed", "error": "old failure"}],
+                },
+            },
+            summary={"actions": 1},
+            errors=["old failure"],
+        )
+    )
     partition_report = {
         "mode": "source_date_partition",
         "partition_date": "2026-04-27",
@@ -1054,6 +1073,9 @@ def test_full_text_ops_openrouter_compare_records_each_model(monkeypatch, tmp_pa
 
     def fake_review_model(model_name, review_payload):
         assert review_payload["deterministic_guardrail_result"]["schedule_readiness"] == "ready_to_enable"
+        assert not _contains_key(review_payload, "output_payload")
+        assert not _contains_key(review_payload, "review_packet")
+        assert review_payload["recent_agent_runs"][0]["output"]["model_review_statuses"][0]["model_name"] == "old"
         return {
             "text": json.dumps(
                 {
