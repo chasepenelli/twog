@@ -1398,19 +1398,186 @@ class PostgresResearchRepository(ResearchRepository):
         return [ArtifactHandle.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
 
     def upsert_scrape_review(self, record: ScrapeReviewRecord) -> ScrapeReviewRecord:
-        raise NotImplementedError("Scrape review persistence is not wired for hosted Postgres yet")
+        existing = self._fetchone(
+            """
+            select payload from scrape_review_records
+            where source_key = %s and artifact_id = %s and source_record_id = %s
+            """,
+            (record.source_key, str(record.artifact_id), record.source_record_id),
+        )
+        if existing is not None:
+            existing_record = ScrapeReviewRecord.model_validate(_payload(existing))
+            record = record.model_copy(
+                update={
+                    "review_id": existing_record.review_id,
+                    "review_status": existing_record.review_status,
+                    "reviewer": existing_record.reviewer,
+                    "review_note": existing_record.review_note,
+                    "reviewed_at": existing_record.reviewed_at,
+                }
+            )
+        payload = record.model_dump(mode="json")
+        self._execute(
+            """
+            insert into scrape_review_records (
+              review_id, source_key, artifact_id, source_record_id, title,
+              canonical_url, parser_confidence, review_status, reviewer,
+              parsed_at, reviewed_at, payload
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict(source_key, artifact_id, source_record_id) do update set
+              title = excluded.title,
+              canonical_url = excluded.canonical_url,
+              parser_confidence = excluded.parser_confidence,
+              review_status = excluded.review_status,
+              reviewer = excluded.reviewer,
+              parsed_at = excluded.parsed_at,
+              reviewed_at = excluded.reviewed_at,
+              payload = excluded.payload,
+              updated_at = now()
+            """,
+            (
+                str(record.review_id),
+                record.source_key,
+                str(record.artifact_id),
+                record.source_record_id,
+                record.title,
+                record.canonical_url,
+                record.parser_confidence,
+                record.review_status,
+                record.reviewer,
+                record.parsed_at.isoformat(),
+                record.reviewed_at.isoformat() if record.reviewed_at else None,
+                self._json(payload),
+            ),
+        )
+        row = self._fetchone(
+            """
+            select payload from scrape_review_records
+            where source_key = %s and artifact_id = %s and source_record_id = %s
+            """,
+            (record.source_key, str(record.artifact_id), record.source_record_id),
+        )
+        return ScrapeReviewRecord.model_validate(_payload(row))
 
-    def list_scrape_reviews(self, **_: Any) -> list[ScrapeReviewRecord]:
-        raise NotImplementedError("Scrape review persistence is not wired for hosted Postgres yet")
+    def list_scrape_reviews(
+        self,
+        *,
+        source_key: str | None = None,
+        review_status: str | None = None,
+        review_ids: list[UUID] | None = None,
+        artifact_ids: list[UUID] | None = None,
+        limit: int | None = None,
+    ) -> list[ScrapeReviewRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if source_key:
+            clauses.append("source_key = %s")
+            params.append(source_key)
+        if review_status:
+            clauses.append("review_status = %s")
+            params.append(review_status)
+        if review_ids:
+            placeholders = ",".join("%s" for _ in review_ids)
+            clauses.append(f"review_id in ({placeholders})")
+            params.extend(str(review_id) for review_id in review_ids)
+        if artifact_ids:
+            placeholders = ",".join("%s" for _ in artifact_ids)
+            clauses.append(f"artifact_id in ({placeholders})")
+            params.extend(str(artifact_id) for artifact_id in artifact_ids)
+        sql = "select payload from scrape_review_records"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by updated_at desc"
+        if limit is not None:
+            sql += " limit %s"
+            params.append(limit)
+        return [ScrapeReviewRecord.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
 
-    def update_scrape_review(self, review_id: UUID, **_: Any) -> ScrapeReviewRecord | None:
-        raise NotImplementedError("Scrape review persistence is not wired for hosted Postgres yet")
+    def update_scrape_review(
+        self,
+        review_id: UUID,
+        *,
+        review_status: str,
+        reviewed_by: str,
+        review_note: str | None = None,
+    ) -> ScrapeReviewRecord | None:
+        row = self._fetchone(
+            "select payload from scrape_review_records where review_id = %s",
+            (str(review_id),),
+        )
+        if row is None:
+            return None
+        record = ScrapeReviewRecord.model_validate(_payload(row))
+        updated = record.model_copy(
+            update={
+                "review_status": review_status,
+                "reviewer": reviewed_by,
+                "review_note": review_note,
+                "reviewed_at": datetime.now(UTC),
+            }
+        )
+        payload = updated.model_dump(mode="json")
+        self._execute(
+            """
+            update scrape_review_records
+            set review_status = %s,
+                reviewer = %s,
+                reviewed_at = %s,
+                payload = %s,
+                updated_at = now()
+            where review_id = %s
+            """,
+            (
+                updated.review_status,
+                updated.reviewer,
+                updated.reviewed_at.isoformat() if updated.reviewed_at else None,
+                self._json(payload),
+                str(review_id),
+            ),
+        )
+        return updated
 
     def upsert_scrape_profile_review(self, review: ScrapeSourceProfileReview) -> ScrapeSourceProfileReview:
-        raise NotImplementedError("Scrape profile review persistence is not wired for hosted Postgres yet")
+        payload = review.model_dump(mode="json")
+        self._execute(
+            """
+            insert into scrape_source_profile_reviews (
+              source_key, robots_policy, approved_for_fetch, reviewed_by,
+              review_note, storage_policy, reviewed_at, payload
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict(source_key) do update set
+              robots_policy = excluded.robots_policy,
+              approved_for_fetch = excluded.approved_for_fetch,
+              reviewed_by = excluded.reviewed_by,
+              review_note = excluded.review_note,
+              storage_policy = excluded.storage_policy,
+              reviewed_at = excluded.reviewed_at,
+              payload = excluded.payload,
+              updated_at = now()
+            """,
+            (
+                review.source_key,
+                review.robots_policy,
+                review.approved_for_fetch,
+                review.reviewed_by,
+                review.review_note,
+                review.storage_policy,
+                review.reviewed_at.isoformat(),
+                self._json(payload),
+            ),
+        )
+        return review
 
     def get_scrape_profile_review(self, source_key: str) -> ScrapeSourceProfileReview | None:
-        raise NotImplementedError("Scrape profile review persistence is not wired for hosted Postgres yet")
+        row = self._fetchone(
+            "select payload from scrape_source_profile_reviews where source_key = %s",
+            (source_key,),
+        )
+        if row is None:
+            return None
+        return ScrapeSourceProfileReview.model_validate(_payload(row))
 
     def upsert_claim(self, claim: ClaimSearchResult) -> ClaimSearchResult:
         payload = claim.model_dump(mode="json")

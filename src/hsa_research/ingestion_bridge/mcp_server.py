@@ -28,6 +28,7 @@ from .contracts import (
     RetrievalSmokeRequest,
     SourceScoutRequest,
     ValidationRequest,
+    XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
 )
 from .service import get_service
@@ -243,6 +244,33 @@ def run_x_topic_review_tool(
         metadata=metadata or {},
     )
     return get_service().run_x_topic_review(request).model_dump(mode="json")
+
+
+def run_x_linked_article_followup_tool(
+    urls: list[str] | None = None,
+    recent_run_limit: int = 10,
+    max_urls: int = 10,
+    fetch: bool = True,
+    parse: bool = True,
+    approved_by: str | None = None,
+    approval_note: str | None = None,
+    robots_policy: str = "reviewed",
+    metadata: dict | None = None,
+) -> dict:
+    """Fetch and parse controlled article links queued by X topic review."""
+
+    request = XLinkedArticleFollowupRequest(
+        urls=urls or [],
+        recent_run_limit=recent_run_limit,
+        max_urls=max_urls,
+        fetch=fetch,
+        parse=parse,
+        approved_by=approved_by,
+        approval_note=approval_note,
+        robots_policy=robots_policy,  # type: ignore[arg-type]
+        metadata=metadata or {},
+    )
+    return get_service().run_x_linked_article_followup(request).model_dump(mode="json")
 
 
 def get_agent_run_tool(agent_run_id: str) -> dict:
@@ -477,6 +505,32 @@ if mcp is not None:
             review_mode=review_mode,
             review_models=review_models,
             dagster_run_id=dagster_run_id,
+            metadata=metadata,
+        )
+
+    @mcp.tool()
+    def run_x_linked_article_followup(
+        urls: list[str] | None = None,
+        recent_run_limit: int = 10,
+        max_urls: int = 10,
+        fetch: bool = True,
+        parse: bool = True,
+        approved_by: str | None = None,
+        approval_note: str | None = None,
+        robots_policy: str = "reviewed",
+        metadata: dict | None = None,
+    ) -> dict:
+        """Fetch and parse controlled article links queued by X topic review."""
+
+        return run_x_linked_article_followup_tool(
+            urls=urls,
+            recent_run_limit=recent_run_limit,
+            max_urls=max_urls,
+            fetch=fetch,
+            parse=parse,
+            approved_by=approved_by,
+            approval_note=approval_note,
+            robots_policy=robots_policy,
             metadata=metadata,
         )
 

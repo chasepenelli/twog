@@ -31,6 +31,8 @@ from .contracts import (
     SourceScoutRequest,
     SourceScoutResult,
     ValidationRequest,
+    XLinkedArticleFollowupRequest,
+    XLinkedArticleFollowupResult,
     XTopicLinkedSource,
     XTopicReviewAction,
     XTopicReviewRequest,
@@ -63,6 +65,7 @@ from .postgres_store import PostgresResearchRepository
 from .source_scout import SourceScoutAgent, scout_sources_for_repository
 from .storage import build_research_repository, build_sql_repository
 from .x_topic_review import XTopicReviewAgent
+from .x_linked_article_followup import run_x_linked_article_followup
 
 __all__ = [
     "ArtifactHandle",
@@ -111,6 +114,8 @@ __all__ = [
     "SourceScoutRequest",
     "SourceScoutResult",
     "ValidationRequest",
+    "XLinkedArticleFollowupRequest",
+    "XLinkedArticleFollowupResult",
     "XTopicLinkedSource",
     "XTopicReviewAction",
     "XTopicReviewAgent",
@@ -129,4 +134,5 @@ __all__ = [
     "maintain_embedding_index",
     "scout_sources_for_repository",
     "triage_full_text_issue",
+    "run_x_linked_article_followup",
 ]

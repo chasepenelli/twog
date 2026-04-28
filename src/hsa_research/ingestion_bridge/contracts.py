@@ -258,6 +258,34 @@ class XTopicReviewResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class XLinkedArticleFollowupRequest(StrictBaseModel):
+    urls: list[str] = Field(default_factory=list)
+    recent_run_limit: int = Field(default=10, ge=0, le=100)
+    max_urls: int = Field(default=10, ge=1, le=100)
+    fetch: bool = True
+    parse: bool = True
+    approved_by: str | None = None
+    approval_note: str | None = None
+    robots_policy: Literal["unknown", "reviewed", "disallow", "manual_only"] = "reviewed"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class XLinkedArticleFollowupResult(StrictBaseModel):
+    source_key: str = "x_linked_article"
+    candidate_urls: list[str] = Field(default_factory=list)
+    agent_run_ids: list[UUID] = Field(default_factory=list)
+    fetched_pages: int = 0
+    skipped_pages: int = 0
+    artifact_ids: list[UUID] = Field(default_factory=list)
+    parsed_records: int = 0
+    review_ids: list[UUID] = Field(default_factory=list)
+    primary_source_links: list[dict[str, Any]] = Field(default_factory=list)
+    requires_fetch_approval: bool = False
+    errors: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ResearchSource(StrictBaseModel):
     source_key: str = Field(description="Stable source key, e.g. openalex")
     display_name: str

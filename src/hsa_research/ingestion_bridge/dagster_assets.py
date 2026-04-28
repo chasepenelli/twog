@@ -19,6 +19,7 @@ from .contracts import (
     ResearchObject,
     SourceQuery,
     SourceScoutRequest,
+    XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
 )
 from .query_policy import (
@@ -134,6 +135,14 @@ _X_TOPIC_REVIEW_TABLE_COLUMNS = (
     "recommended_sources",
     "identifiers",
     "links",
+    "reason",
+)
+_X_LINKED_ARTICLE_SOURCE_LINK_COLUMNS = (
+    "recommended_source_key",
+    "identifier_type",
+    "identifier",
+    "url",
+    "should_ingest",
     "reason",
 )
 _ENTITY_RESOLUTION_TABLE_COLUMNS = (
@@ -433,6 +442,29 @@ if dg is not None:
                 }
             )
         return rows
+
+    def _x_linked_article_followup_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        errors = report.get("errors", [])
+        primary_source_links = report.get("primary_source_links", [])
+        return {
+            "source_key": report.get("source_key"),
+            "candidate_url_count": len(report.get("candidate_urls", [])),
+            "candidate_urls": dg.MetadataValue.json(report.get("candidate_urls", [])),
+            "agent_run_ids": dg.MetadataValue.json(report.get("agent_run_ids", [])),
+            "fetched_pages": dg.MetadataValue.int(int(report.get("fetched_pages", 0))),
+            "skipped_pages": dg.MetadataValue.int(int(report.get("skipped_pages", 0))),
+            "artifact_count": len(report.get("artifact_ids", [])),
+            "review_record_count": len(report.get("review_ids", [])),
+            "parsed_records": dg.MetadataValue.int(int(report.get("parsed_records", 0))),
+            "primary_source_link_count": len(primary_source_links),
+            "requires_fetch_approval": bool(report.get("requires_fetch_approval", False)),
+            "error_count": len(errors),
+            "errors": dg.MetadataValue.json(errors),
+            "primary_source_links": _metadata_table(
+                primary_source_links,
+                _X_LINKED_ARTICLE_SOURCE_LINK_COLUMNS,
+            ),
+        }
 
     def _run_literature_full_text_refresh(
         research_repository: ResearchRepositoryResource,
@@ -1111,6 +1143,31 @@ if dg is not None:
         report["agent_review"] = agent_review.model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_x_topic_monitor_report_metadata(report))
 
+    @dg.asset(group_name="social_monitoring")
+    def x_linked_article_followup_report(
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Controlled scraper follow-up for article links queued by X topic review."""
+
+        from .service import HSAResearchService
+
+        repository = research_repository.build_repository()
+        approved_by = os.getenv("HSA_X_LINKED_ARTICLE_APPROVED_BY")
+        result = HSAResearchService(repository).run_x_linked_article_followup(
+            XLinkedArticleFollowupRequest(
+                recent_run_limit=int(os.getenv("HSA_X_LINKED_ARTICLE_RECENT_RUN_LIMIT", "10")),
+                max_urls=int(os.getenv("HSA_X_LINKED_ARTICLE_MAX_URLS", "10")),
+                approved_by=approved_by,
+                approval_note=os.getenv("HSA_X_LINKED_ARTICLE_APPROVAL_NOTE"),
+                fetch=os.getenv("HSA_X_LINKED_ARTICLE_FETCH", "true").strip().lower()
+                in {"1", "true", "yes"},
+                parse=os.getenv("HSA_X_LINKED_ARTICLE_PARSE", "true").strip().lower()
+                in {"1", "true", "yes"},
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_x_linked_article_followup_metadata(report))
+
     @dg.op(
         required_resource_keys={"research_repository"},
         config_schema={
@@ -1670,6 +1727,7 @@ if dg is not None:
         source_health_report,
         full_text_ops_agent_report,
         x_topic_monitor_review_report,
+        x_linked_article_followup_report,
         entity_resolution_report,
         embedding_index_report,
         embedding_maintenance_report,
@@ -1746,6 +1804,10 @@ if dg is not None:
     x_topic_monitor_review_job = dg.define_asset_job(
         "x_topic_monitor_review_job",
         selection=dg.AssetSelection.assets(x_topic_monitor_review_report),
+    )
+    x_linked_article_followup_job = dg.define_asset_job(
+        "x_linked_article_followup_job",
+        selection=dg.AssetSelection.assets(x_linked_article_followup_report),
     )
     full_text_source_date_ops_job = dg.JobDefinition(
         name="full_text_source_date_ops_job",
@@ -1867,6 +1929,7 @@ if dg is not None:
             source_health_report_job,
             full_text_ops_agent_job,
             x_topic_monitor_review_job,
+            x_linked_article_followup_job,
             full_text_source_date_ops_job,
             entity_resolution_job,
             embedding_index_job,
@@ -1907,6 +1970,7 @@ else:
     source_health_report_job = None
     full_text_ops_agent_job = None
     x_topic_monitor_review_job = None
+    x_linked_article_followup_job = None
     full_text_source_date_ops_job = None
     entity_resolution_job = None
     embedding_index_job = None

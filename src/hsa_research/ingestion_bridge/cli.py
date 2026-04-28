@@ -26,6 +26,7 @@ from .contracts import (
     ScrapeReviewRequest,
     SourceQuery,
     SourceScoutRequest,
+    XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
 )
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, maintain_embedding_index
@@ -244,6 +245,24 @@ def main() -> None:
         action="append",
         default=[],
         help="OpenRouter model id; repeat to compare multiple models",
+    )
+
+    x_linked_article_followup = subparsers.add_parser(
+        "x-linked-article-followup",
+        help="Fetch and parse article links queued by the X topic review agent",
+    )
+    x_linked_article_followup.add_argument("--url", action="append", default=[], help="Direct article URL to process")
+    x_linked_article_followup.add_argument("--recent-run-limit", type=int, default=10, help="Recent X agent runs to inspect")
+    x_linked_article_followup.add_argument("--max-urls", type=int, default=10, help="Maximum queued URLs to process")
+    x_linked_article_followup.add_argument("--no-fetch", action="store_true", help="Only report queued article URLs")
+    x_linked_article_followup.add_argument("--no-parse", action="store_true", help="Fetch only; skip parser review records")
+    x_linked_article_followup.add_argument("--approved-by", default=None, help="Required for controlled page fetch")
+    x_linked_article_followup.add_argument("--approval-note", default=None, help="Optional approval note")
+    x_linked_article_followup.add_argument(
+        "--robots-policy",
+        choices=["unknown", "reviewed", "disallow", "manual_only"],
+        default="reviewed",
+        help="Reviewed robots/TOS policy for this controlled fetch",
     )
 
     agent_runs = subparsers.add_parser("agent-runs", help="List or fetch persisted agent runs")
@@ -524,6 +543,19 @@ def main() -> None:
                 model_profile=args.model_profile,
                 review_mode=args.review_mode,
                 review_models=args.review_model,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "x-linked-article-followup":
+        output = HSAResearchService(repo).run_x_linked_article_followup(
+            XLinkedArticleFollowupRequest(
+                urls=args.url,
+                recent_run_limit=args.recent_run_limit,
+                max_urls=args.max_urls,
+                fetch=not args.no_fetch,
+                parse=not args.no_parse,
+                approved_by=args.approved_by,
+                approval_note=args.approval_note,
+                robots_policy=args.robots_policy,
             )
         ).model_dump(mode="json")
     elif args.command == "agent-runs":

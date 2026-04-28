@@ -25,6 +25,7 @@ on:
           - "source_health_report_job"
           - "full_text_ops_agent_job"
           - "x_topic_monitor_review_job"
+          - "x_linked_article_followup_job"
           - "full_text_source_date_ops_job"
           - "entity_resolution_job"
           - "embedding_index_job"
@@ -63,6 +64,8 @@ jobs:
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
+      HSA_X_LINKED_ARTICLE_APPROVED_BY: "github-actions"
+      HSA_X_LINKED_ARTICLE_APPROVAL_NOTE: "Manual smoke workflow dispatch for controlled x_linked_article follow-up."
 
     steps:
       - name: Checkout

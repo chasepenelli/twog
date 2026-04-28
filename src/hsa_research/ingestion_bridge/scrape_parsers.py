@@ -12,6 +12,7 @@ from uuid import UUID
 from .contracts import ArtifactHandle, ResearchObjectType, ScrapeManifestItem, ScrapeParsedRecord, ScrapeSourceProfile
 
 ParserFunc = Callable[[ScrapeSourceProfile, ArtifactHandle, str], ScrapeParsedRecord | None]
+_DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
 
 
 def parse_scrape_html(
@@ -49,18 +50,28 @@ def parse_generic_html(
     title = _best_title(html)
     source_url = artifact.metadata.get("source_url")
     links = _html_links(html, source_url)
+    primary_source_links = _primary_source_links(html, links)
+    record_type = (
+        ResearchObjectType.PUBLICATION
+        if profile.source_key == "x_linked_article"
+        else ResearchObjectType.VETERINARY_TRIAL
+    )
+    confidence = 0.35 if title else 0.15
+    if primary_source_links:
+        confidence = max(confidence, 0.55)
     return ScrapeParsedRecord(
         source_key=profile.source_key,
         source_record_id=_stable_source_record_id(source_url, title, artifact.artifact_id),
         title=title,
         canonical_url=source_url,
-        record_type=ResearchObjectType.VETERINARY_TRIAL,
+        record_type=record_type,
         fields={
             "links": links[:100],
+            "primary_source_links": primary_source_links[:50],
             "parser": profile.parser,
             "storage_policy": profile.storage_policy,
         },
-        parser_confidence=0.35 if title else 0.15,
+        parser_confidence=confidence,
         review_status="needs_review",
         artifact_id=artifact.artifact_id,
     )
@@ -292,6 +303,127 @@ def _html_links(html: str, base_url: str | None) -> list[dict[str, Any]]:
             }
         )
     return links
+
+
+def _primary_source_links(html: str, links: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for link in links:
+        href = str(link.get("href") or "")
+        text = str(link.get("text") or "")
+        classified = _classify_primary_source_link(href, text)
+        if classified:
+            candidates.append(classified)
+
+    text = _visible_text(html)
+    for doi in _extract_dois(text):
+        candidates.append(
+            {
+                "url": f"https://doi.org/{doi}",
+                "recommended_source_key": "crossref",
+                "identifier_type": "doi",
+                "identifier": doi,
+                "should_ingest": True,
+                "reason": "DOI found in linked article text.",
+            }
+        )
+    for pmid in sorted(set(re.findall(r"\bPMID[:\s]*(\d{5,})\b", text, flags=re.I))):
+        candidates.append(
+            {
+                "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                "recommended_source_key": "pubmed",
+                "identifier_type": "pmid",
+                "identifier": pmid,
+                "should_ingest": True,
+                "reason": "PMID found in linked article text.",
+            }
+        )
+    for nct in sorted(set(re.findall(r"\b(NCT\d{8})\b", text, flags=re.I))):
+        nct = nct.upper()
+        candidates.append(
+            {
+                "url": f"https://clinicaltrials.gov/study/{nct}",
+                "recommended_source_key": "clinicaltrials_gov",
+                "identifier_type": "nct",
+                "identifier": nct,
+                "should_ingest": True,
+                "reason": "ClinicalTrials.gov identifier found in linked article text.",
+            }
+        )
+    return _dedupe_primary_source_links(candidates)
+
+
+def _classify_primary_source_link(url: str, text: str = "") -> dict[str, Any] | None:
+    parsed = urllib.parse.urlparse(url)
+    host_path = f"{parsed.netloc}{parsed.path}".lower()
+    doi = _extract_doi(url) or next(iter(_extract_dois(text)), None)
+    if doi:
+        return {
+            "url": f"https://doi.org/{doi}",
+            "recommended_source_key": "crossref",
+            "identifier_type": "doi",
+            "identifier": doi,
+            "should_ingest": True,
+            "reason": "DOI link found in linked article.",
+        }
+    if "pubmed.ncbi.nlm.nih.gov" in host_path:
+        match = re.search(r"/(\d{5,})/?(?:$|[?#])", url)
+        if match:
+            return {
+                "url": url,
+                "recommended_source_key": "pubmed",
+                "identifier_type": "pmid",
+                "identifier": match.group(1),
+                "should_ingest": True,
+                "reason": "PubMed link found in linked article.",
+            }
+    if "pmc.ncbi.nlm.nih.gov" in host_path:
+        match = re.search(r"/articles/(PMC\d+)/?", url, flags=re.I)
+        if match:
+            return {
+                "url": url,
+                "recommended_source_key": "pmc_oa",
+                "identifier_type": "pmcid",
+                "identifier": match.group(1).upper(),
+                "should_ingest": True,
+                "reason": "PMC link found in linked article.",
+            }
+    if "clinicaltrials.gov" in host_path:
+        match = re.search(r"(NCT\d{8})", url, flags=re.I)
+        if match:
+            nct = match.group(1).upper()
+            return {
+                "url": url,
+                "recommended_source_key": "clinicaltrials_gov",
+                "identifier_type": "nct",
+                "identifier": nct,
+                "should_ingest": True,
+                "reason": "ClinicalTrials.gov link found in linked article.",
+            }
+    return None
+
+
+def _extract_doi(value: str) -> str | None:
+    parsed = urllib.parse.urlparse(value)
+    if "doi.org" in parsed.netloc.lower():
+        doi = urllib.parse.unquote(parsed.path.lstrip("/"))
+        return doi.rstrip(").,;") or None
+    return next(iter(_extract_dois(value)), None)
+
+
+def _extract_dois(value: str) -> list[str]:
+    dois = [match.group(0).rstrip(").,;") for match in _DOI_RE.finditer(value)]
+    return sorted(set(dois))
+
+
+def _dedupe_primary_source_links(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for link in links:
+        key = (
+            str(link.get("identifier_type") or "unknown"),
+            str(link.get("identifier") or link.get("url") or ""),
+        )
+        deduped.setdefault(key, link)
+    return list(deduped.values())
 
 
 def _extract_label_values(html: str) -> dict[str, str]:

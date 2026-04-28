@@ -44,7 +44,8 @@ from .contracts import (
     ScrapeSourceProfile,
 )
 from .harvesters_v2 import USER_AGENT
-from .local_store import SQLiteResearchRepository, stable_json_hash
+from .local_store import stable_json_hash
+from .repository import ResearchRepository
 from .scrape_parsers import discover_manifest_candidates, parse_scrape_html
 
 DEFAULT_SCRAPE_ARTIFACT_ROOT = Path("var/hsa_research/artifacts/scrape")
@@ -115,7 +116,7 @@ class ScrapeBridge:
 
     def __init__(
         self,
-        repository: SQLiteResearchRepository,
+        repository: ResearchRepository,
         *,
         artifact_root: Path | str = DEFAULT_SCRAPE_ARTIFACT_ROOT,
     ) -> None:

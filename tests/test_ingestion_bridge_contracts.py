@@ -47,6 +47,8 @@ from hsa_research.ingestion_bridge.contracts import (
     ClaimCurationRequest,
     SourceScoutRequest,
     RunStatus,
+    XLinkedArticleFollowupRequest,
+    XLinkedArticleFollowupResult,
     XTopicLinkedSource,
     XTopicReviewAction,
     XTopicReviewRequest,
@@ -176,6 +178,34 @@ def test_agent_run_and_full_text_ops_contracts_validate():
         FullTextOpsAction(source_key="europe_pmc", action="mark_clean", severity="bad", reason="bad")
     with pytest.raises(ValueError):
         AgentRunRecord(agent_name="x", status="bad")
+
+
+def test_x_linked_article_followup_contracts_validate():
+    request = XLinkedArticleFollowupRequest(
+        urls=["https://cancer.ufl.edu/article"],
+        approved_by="unit-test",
+        max_urls=1,
+    )
+    result = XLinkedArticleFollowupResult(
+        candidate_urls=request.urls,
+        primary_source_links=[
+            {
+                "recommended_source_key": "crossref",
+                "identifier_type": "doi",
+                "identifier": "10.1234/test",
+                "url": "https://doi.org/10.1234/test",
+                "should_ingest": True,
+            }
+        ],
+    )
+
+    assert request.robots_policy == "reviewed"
+    assert result.source_key == "x_linked_article"
+    assert result.primary_source_links[0]["recommended_source_key"] == "crossref"
+    with pytest.raises(ValueError):
+        XLinkedArticleFollowupRequest(max_urls=0)
+    with pytest.raises(ValueError):
+        XLinkedArticleFollowupRequest(robots_policy="bad")
 
 
 def test_agent_run_repository_roundtrip_sqlite_and_memory(tmp_path):
@@ -5054,6 +5084,130 @@ def test_scrape_bridge_stores_snapshot_and_parses_generic_html(tmp_path, monkeyp
     reviews = repo.list_scrape_reviews(source_key="test_scraper", review_status="needs_review")
     assert len(reviews) == 1
     assert reviews[0].title == "Canine Hemangiosarcoma Trial"
+
+
+def test_x_linked_article_parser_extracts_primary_source_links(tmp_path, monkeypatch):
+    html_path = tmp_path / "article.html"
+    html_path.write_text(
+        """
+        <html>
+          <head><title>Angiosarcoma genomic landscape</title></head>
+          <body>
+            <a href="https://pubmed.ncbi.nlm.nih.gov/12345678/">PubMed</a>
+            <a href="https://doi.org/10.1158/0008-5472.CAN-26-0001">Cancer Research DOI</a>
+            Clinical trial NCT12345678 is also mentioned.
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    profile = ScrapeSourceProfile(
+        source_key="x_linked_article",
+        display_name="X Linked Article Test",
+        base_url=tmp_path.as_uri(),
+        allowed_url_patterns=[f"{tmp_path.as_uri()}/*"],
+        robots_policy="reviewed",
+        rate_limit_per_minute=120,
+        parser="generic_html",
+        storage_policy="metadata_and_link_review",
+        approval_required=False,
+        enabled=True,
+    )
+    monkeypatch.setattr(scraper_bridge, "SCRAPE_SOURCE_PROFILES", (profile,))
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+    bridge = ScrapeBridge(repo, artifact_root=tmp_path / "artifacts")
+
+    bridge.fetch(ScrapeFetchRequest(source_key="x_linked_article", urls=[html_path.as_uri()]))
+    record = bridge.parse("x_linked_article").records[0]
+    source_links = record.fields["primary_source_links"]
+
+    assert record.record_type == "publication"
+    assert record.parser_confidence >= 0.55
+    assert {
+        (link["recommended_source_key"], link["identifier_type"], link["identifier"])
+        for link in source_links
+    } >= {
+        ("pubmed", "pmid", "12345678"),
+        ("crossref", "doi", "10.1158/0008-5472.CAN-26-0001"),
+        ("clinicaltrials_gov", "nct", "NCT12345678"),
+    }
+
+
+def test_x_linked_article_followup_collects_agent_links_and_parses(tmp_path, monkeypatch):
+    article_url = "https://cancer.ufl.edu/2026/04/20/angiosarcoma-frontier/"
+    html = b"""
+    <html>
+      <head><title>Angiosarcoma frontier</title></head>
+      <body>
+        <a href="https://pubmed.ncbi.nlm.nih.gov/87654321/">Primary paper</a>
+        DOI: 10.1158/0008-5472.CAN-26-0002
+      </body>
+    </html>
+    """
+
+    def fake_fetch_url(url):
+        assert url == article_url
+        return scraper_bridge.FetchedPage(url=url, status_code=200, mime_type="text/html", content=html)
+
+    monkeypatch.setattr(scraper_bridge, "_fetch_url", fake_fetch_url)
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="x_topic_review_agent",
+            status=RunStatus.COMPLETED,
+            source_key="x_topic_monitor",
+            output_payload={
+                "actions": [
+                    {
+                        "source_record_id": "tweet-1",
+                        "action": "queue_source_followup",
+                        "ingestible_links": [
+                            {
+                                "url": article_url,
+                                "recommended_source_key": "x_linked_article",
+                                "identifier_type": "unknown",
+                                "identifier": None,
+                                "should_ingest": False,
+                                "reason": "Controlled scraper follow-up.",
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+    )
+
+    result = HSAResearchService(repo).run_x_linked_article_followup(
+        XLinkedArticleFollowupRequest(
+            approved_by="unit-test",
+            approval_note="robots reviewed",
+            recent_run_limit=5,
+        )
+    )
+
+    assert result.candidate_urls == [article_url]
+    assert result.fetched_pages == 1
+    assert result.parsed_records == 1
+    assert result.review_ids
+    assert {
+        (link["recommended_source_key"], link["identifier_type"], link["identifier"])
+        for link in result.primary_source_links
+    } >= {
+        ("pubmed", "pmid", "87654321"),
+        ("crossref", "doi", "10.1158/0008-5472.CAN-26-0002"),
+    }
+
+
+def test_x_linked_article_followup_requires_fetch_approval(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+
+    result = HSAResearchService(repo).run_x_linked_article_followup(
+        XLinkedArticleFollowupRequest(urls=["https://cancer.ufl.edu/article"])
+    )
+
+    assert result.candidate_urls == ["https://cancer.ufl.edu/article"]
+    assert result.requires_fetch_approval is True
+    assert result.fetched_pages == 0
 
 
 def test_scrape_bridge_ingest_requires_approval(tmp_path, monkeypatch):

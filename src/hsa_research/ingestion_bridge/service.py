@@ -43,6 +43,8 @@ from .contracts import (
     ValidationRequest,
     XTopicReviewRequest,
     XTopicReviewResult,
+    XLinkedArticleFollowupRequest,
+    XLinkedArticleFollowupResult,
 )
 from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
@@ -53,6 +55,7 @@ from .repository import ResearchRepository
 from .source_scout import SourceScoutAgent
 from .storage import build_research_repository
 from .x_topic_review import X_TOPIC_REVIEW_AGENT_NAME, X_TOPIC_REVIEW_AGENT_VERSION, XTopicReviewAgent
+from .x_linked_article_followup import run_x_linked_article_followup
 
 
 DEFAULT_MODEL_PROFILES: dict[str, ModelProfile] = {
@@ -314,6 +317,12 @@ class HSAResearchService:
                 "rejected_count": result.rejected_count,
             },
         )
+
+    def run_x_linked_article_followup(
+        self,
+        request: XLinkedArticleFollowupRequest,
+    ) -> XLinkedArticleFollowupResult:
+        return run_x_linked_article_followup(self.repository, request)
 
     def get_agent_run(self, agent_run_id: UUID) -> AgentRunRecord | None:
         return self.repository.get_agent_run(agent_run_id)
