@@ -1098,6 +1098,43 @@ def test_full_text_ops_openrouter_compare_records_each_model(monkeypatch, tmp_pa
     assert all(review["status"] == "completed" for review in result.evidence["model_reviews"])
 
 
+def test_full_text_ops_openrouter_compare_persists_model_failures(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "full-text-ops-openrouter-failures.sqlite3", seed=False)
+    _seed_full_text_source_claim(repo, "europe_pmc")
+    partition_report = {
+        "mode": "source_date_partition",
+        "partition_date": "2026-04-27",
+        "sources": [
+            {"source_key": "europe_pmc", "full_text_qa": {"passes_full_text_bar": True}},
+        ],
+        "errors": [],
+    }
+
+    def failing_review_model(model_name, review_payload):
+        assert review_payload["deterministic_guardrail_result"]["schedule_readiness"] == "ready_to_enable"
+        raise RuntimeError(f"{model_name} unavailable")
+
+    monkeypatch.setattr(full_text_ops, "_openrouter_review_model", failing_review_model)
+
+    result = FullTextOpsAgent(repo).run(
+        FullTextOpsRequest(
+            source_keys=["europe_pmc"],
+            partition_date="2026-04-27",
+            full_text_report=partition_report,
+            review_mode="openrouter_compare",
+            review_models=["openai/gpt-5.1", "anthropic/claude-sonnet-4.5"],
+        )
+    )
+
+    assert result.schedule_readiness == "keep_stopped"
+    assert result.should_block_schedule is True
+    assert result.evidence["openrouter_all_models_failed"] is True
+    assert result.evidence["selected_model"] is None
+    assert [review["status"] for review in result.evidence["model_reviews"]] == ["failed", "failed"]
+    assert any("openai/gpt-5.1 unavailable" in error for error in result.errors)
+    assert any(action.action == "needs_human_review" for action in result.actions)
+
+
 def test_full_text_ops_requests_partition_or_ingest_when_validation_is_missing(tmp_path):
     clean_repo = SQLiteResearchRepository(tmp_path / "full-text-ops-partition.sqlite3", seed=False)
     _seed_full_text_source_claim(clean_repo, "europe_pmc")

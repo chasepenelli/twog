@@ -489,8 +489,10 @@ def _run_openrouter_reviews(
     errors: list[str] = []
 
     for model_name in models:
+        response_text_preview = None
         try:
             review = _openrouter_review_model(model_name, review_payload)
+            response_text_preview = review["text"][:1200]
             raw_payload = _parse_json_object(review["text"])
             raw_payload.setdefault("agent_name", FULL_TEXT_OPS_AGENT_NAME)
             raw_payload.setdefault("model_profile", request.model_profile)
@@ -511,10 +513,37 @@ def _run_openrouter_reviews(
         except Exception as exc:
             message = f"{model_name}: {exc}"
             errors.append(message)
-            reviews.append({"model_name": model_name, "status": "failed", "error": str(exc)})
+            failed_review = {
+                "model_name": model_name,
+                "status": "failed",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+            if response_text_preview:
+                failed_review["response_text_preview"] = response_text_preview
+            reviews.append(failed_review)
 
     if selected is None:
-        raise RuntimeError(f"OpenRouter full-text ops review failed for all models: {errors}")
+        if request.review_mode == "openrouter_required":
+            raise RuntimeError(f"OpenRouter full-text ops review failed for all models: {errors}")
+        fallback = _external_review_required_result(
+            request=request,
+            deterministic_result=deterministic_result,
+            review_payload=review_payload,
+        )
+        evidence = {
+            **fallback.evidence,
+            "review_mode": request.review_mode,
+            "selected_model": None,
+            "model_reviews": reviews,
+            "openrouter_all_models_failed": True,
+        }
+        return fallback.model_copy(
+            update={
+                "evidence": evidence,
+                "errors": [*fallback.errors, *errors],
+            }
+        )
 
     evidence = {
         **selected.evidence,
@@ -554,6 +583,7 @@ def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) ->
         "model": model_name,
         "temperature": float(os.getenv("HSA_FULL_TEXT_OPS_TEMPERATURE", "0")),
         "max_tokens": int(os.getenv("HSA_FULL_TEXT_OPS_MAX_TOKENS", "2000")),
+        "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": _FULL_TEXT_OPS_SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(review_payload, sort_keys=True, default=str)},
