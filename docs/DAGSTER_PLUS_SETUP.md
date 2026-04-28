@@ -47,6 +47,7 @@ HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS=8
 HSA_FULL_TEXT_REQUEST_ATTEMPTS=1
 HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS=120
 HSA_PMC_OA_MAX_CANDIDATE_RECORDS=20
+OPENROUTER_API_KEY=<required for hosted OpenRouter review modes>
 ```
 
 Do not commit or paste `HSA_DATABASE_URL` into chat. Store it directly in
@@ -58,7 +59,9 @@ The preferred automated path is:
    `HSA_DATABASE_URL`.
 2. Store a Dagster+ token from a user with Editor, Admin, or Organization Admin
    permissions as the GitHub Actions secret `DAGSTER_PLUS_ENV_API_TOKEN`.
-3. Run the `Configure Dagster Plus Environment` GitHub Actions workflow.
+3. Store the OpenRouter key as the GitHub Actions secret `OPENROUTER_API_KEY`
+   if hosted model-review comparison should run.
+4. Run the `Configure Dagster Plus Environment` GitHub Actions workflow.
 
 That workflow uses `DAGSTER_PLUS_ENV_API_TOKEN` to write the production Dagster+
 environment variables with:
@@ -71,6 +74,7 @@ uv run dg plus create env HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS 8 --global --sco
 uv run dg plus create env HSA_FULL_TEXT_REQUEST_ATTEMPTS 1 --global --scope full --yes
 uv run dg plus create env HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS 120 --global --scope full --yes
 uv run dg plus create env HSA_PMC_OA_MAX_CANDIDATE_RECORDS 20 --global --scope full --yes
+uv run dg plus create env OPENROUTER_API_KEY --from-local-env --global --scope full --yes
 ```
 
 ## GitHub Actions Settings
