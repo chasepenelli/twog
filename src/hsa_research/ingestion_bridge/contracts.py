@@ -349,6 +349,61 @@ class IngestionResult(StrictBaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class FullTextTriageRequest(StrictBaseModel):
+    source_key: str
+    stage: Literal[
+        "fetch",
+        "parse",
+        "normalize",
+        "chunk",
+        "qa",
+        "entity_resolution",
+        "claim_extraction",
+        "claim_curation",
+        "source_health",
+        "dagster_run",
+    ] = "qa"
+    query_name: str | None = None
+    error_message: str | None = None
+    errors: list[str] = Field(default_factory=list)
+    runtime_seconds: float | None = Field(default=None, ge=0.0)
+    timeout_seconds: float | None = Field(default=None, ge=1.0)
+    raw_records: int = Field(default=0, ge=0)
+    research_objects: int = Field(default=0, ge=0)
+    document_chunks: int = Field(default=0, ge=0)
+    full_text_document_chunks: int = Field(default=0, ge=0)
+    full_text_body_chars: int = Field(default=0, ge=0)
+    claims: int = Field(default=0, ge=0)
+    entity_mentions: int = Field(default=0, ge=0)
+    current_failed_runs: list[str] = Field(default_factory=list)
+    http_status: int | None = Field(default=None, ge=100, le=599)
+    model_profile: str = "cheap_classifier"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FullTextTriageResult(StrictBaseModel):
+    triage_name: str = "full_text_triage_agent"
+    source_key: str
+    stage: str
+    action: Literal[
+        "no_action",
+        "retry_later",
+        "reduce_batch_size",
+        "needs_parser_fix",
+        "needs_license_review",
+        "skip_record",
+        "needs_human_review",
+        "inspect_source_health",
+    ]
+    severity: Literal["info", "watch", "blocking"]
+    should_retry: bool = False
+    should_block_schedule: bool = False
+    reasons: list[str] = Field(default_factory=list)
+    recommended_next_actions: list[str] = Field(default_factory=list)
+    model_profile: str = "cheap_classifier"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class BackfillResult(StrictBaseModel):
     source_key: str
     path: str

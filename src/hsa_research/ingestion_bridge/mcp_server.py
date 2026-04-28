@@ -18,6 +18,7 @@ from .contracts import (
     ClaimCurationRequest,
     ClaimSearchRequest,
     CommitHypothesisRequest,
+    FullTextTriageRequest,
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
@@ -141,6 +142,51 @@ def run_retrieval_smoke_tool(
     return get_service().run_retrieval_smoke(request).model_dump(mode="json")
 
 
+def triage_full_text_issue_tool(
+    source_key: str,
+    stage: str = "qa",
+    query_name: str | None = None,
+    error_message: str | None = None,
+    errors: list[str] | None = None,
+    runtime_seconds: float | None = None,
+    timeout_seconds: float | None = None,
+    raw_records: int = 0,
+    research_objects: int = 0,
+    document_chunks: int = 0,
+    full_text_document_chunks: int = 0,
+    full_text_body_chars: int = 0,
+    claims: int = 0,
+    entity_mentions: int = 0,
+    current_failed_runs: list[str] | None = None,
+    http_status: int | None = None,
+    model_profile: str = "cheap_classifier",
+    metadata: dict | None = None,
+) -> dict:
+    """Classify a full-text edge case into a bounded operational action."""
+
+    request = FullTextTriageRequest(
+        source_key=source_key,
+        stage=stage,  # type: ignore[arg-type]
+        query_name=query_name,
+        error_message=error_message,
+        errors=errors or [],
+        runtime_seconds=runtime_seconds,
+        timeout_seconds=timeout_seconds,
+        raw_records=raw_records,
+        research_objects=research_objects,
+        document_chunks=document_chunks,
+        full_text_document_chunks=full_text_document_chunks,
+        full_text_body_chars=full_text_body_chars,
+        claims=claims,
+        entity_mentions=entity_mentions,
+        current_failed_runs=current_failed_runs or [],
+        http_status=http_status,
+        model_profile=model_profile,
+        metadata=metadata or {},
+    )
+    return get_service().triage_full_text_issue(request).model_dump(mode="json")
+
+
 if mcp is not None:
 
     @mcp.tool()
@@ -250,6 +296,50 @@ if mcp is not None:
             include_entity_mentions=include_entity_mentions,
             include_keyword_fallback=include_keyword_fallback,
             require_embedding=require_embedding,
+        )
+
+    @mcp.tool()
+    def triage_full_text_issue(
+        source_key: str,
+        stage: str = "qa",
+        query_name: str | None = None,
+        error_message: str | None = None,
+        errors: list[str] | None = None,
+        runtime_seconds: float | None = None,
+        timeout_seconds: float | None = None,
+        raw_records: int = 0,
+        research_objects: int = 0,
+        document_chunks: int = 0,
+        full_text_document_chunks: int = 0,
+        full_text_body_chars: int = 0,
+        claims: int = 0,
+        entity_mentions: int = 0,
+        current_failed_runs: list[str] | None = None,
+        http_status: int | None = None,
+        model_profile: str = "cheap_classifier",
+        metadata: dict | None = None,
+    ) -> dict:
+        """Classify a full-text ingestion edge case into the next operational action."""
+
+        return triage_full_text_issue_tool(
+            source_key=source_key,
+            stage=stage,
+            query_name=query_name,
+            error_message=error_message,
+            errors=errors,
+            runtime_seconds=runtime_seconds,
+            timeout_seconds=timeout_seconds,
+            raw_records=raw_records,
+            research_objects=research_objects,
+            document_chunks=document_chunks,
+            full_text_document_chunks=full_text_document_chunks,
+            full_text_body_chars=full_text_body_chars,
+            claims=claims,
+            entity_mentions=entity_mentions,
+            current_failed_runs=current_failed_runs,
+            http_status=http_status,
+            model_profile=model_profile,
+            metadata=metadata,
         )
 
     @mcp.tool()

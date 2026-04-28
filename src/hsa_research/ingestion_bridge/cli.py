@@ -13,6 +13,7 @@ from .claim_extractor import extract_claims_for_repository
 from .contracts import (
     ClaimCurationRequest,
     EntityResolutionRequest,
+    FullTextTriageRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
@@ -144,6 +145,44 @@ def main() -> None:
         action="store_true",
         help="Exit non-zero if the report has failed sources",
     )
+
+    triage_full_text = subparsers.add_parser(
+        "triage-full-text",
+        help="Classify a full-text ingestion edge case into a bounded operational action",
+    )
+    triage_full_text.add_argument("--source", required=True, help="Source key, e.g. europe_pmc")
+    triage_full_text.add_argument(
+        "--stage",
+        default="qa",
+        choices=[
+            "fetch",
+            "parse",
+            "normalize",
+            "chunk",
+            "qa",
+            "entity_resolution",
+            "claim_extraction",
+            "claim_curation",
+            "source_health",
+            "dagster_run",
+        ],
+        help="Pipeline stage where the issue surfaced",
+    )
+    triage_full_text.add_argument("--query-name", default=None, help="Optional source query name")
+    triage_full_text.add_argument("--error", action="append", default=[], help="Error text; repeatable")
+    triage_full_text.add_argument("--runtime-seconds", type=float, default=None, help="Observed runtime")
+    triage_full_text.add_argument("--timeout-seconds", type=float, default=None, help="Runtime cap")
+    triage_full_text.add_argument("--raw-records", type=int, default=0)
+    triage_full_text.add_argument("--research-objects", type=int, default=0)
+    triage_full_text.add_argument("--document-chunks", type=int, default=0)
+    triage_full_text.add_argument("--full-text-document-chunks", type=int, default=0)
+    triage_full_text.add_argument("--full-text-body-chars", type=int, default=0)
+    triage_full_text.add_argument("--claims", type=int, default=0)
+    triage_full_text.add_argument("--entity-mentions", type=int, default=0)
+    triage_full_text.add_argument("--current-failed-run", action="append", default=[])
+    triage_full_text.add_argument("--http-status", type=int, default=None)
+    triage_full_text.add_argument("--model-profile", default="cheap_classifier")
+    triage_full_text.add_argument("--fail-on-blocking", action="store_true")
 
     retrieval_smoke = subparsers.add_parser(
         "retrieval-smoke",
@@ -359,6 +398,28 @@ def main() -> None:
             min_health_score=args.min_health_score,
             require_claims=not args.no_require_claims,
         )
+    elif args.command == "triage-full-text":
+        output = HSAResearchService(repo).triage_full_text_issue(
+            FullTextTriageRequest(
+                source_key=args.source,
+                stage=args.stage,
+                query_name=args.query_name,
+                error_message=args.error[0] if args.error else None,
+                errors=args.error[1:],
+                runtime_seconds=args.runtime_seconds,
+                timeout_seconds=args.timeout_seconds,
+                raw_records=args.raw_records,
+                research_objects=args.research_objects,
+                document_chunks=args.document_chunks,
+                full_text_document_chunks=args.full_text_document_chunks,
+                full_text_body_chars=args.full_text_body_chars,
+                claims=args.claims,
+                entity_mentions=args.entity_mentions,
+                current_failed_runs=args.current_failed_run,
+                http_status=args.http_status,
+                model_profile=args.model_profile,
+            )
+        ).model_dump(mode="json")
     elif args.command == "retrieval-smoke":
         output = HSAResearchService(repo).run_retrieval_smoke(
             RetrievalSmokeRequest(
@@ -534,6 +595,9 @@ def main() -> None:
         raise SystemExit(1)
     if getattr(args, "fail_on_error", False) and output.get("passed") is False:
         print(f"Retrieval smoke failed: {', '.join(output.get('errors', []))}", file=sys.stderr)
+        raise SystemExit(1)
+    if getattr(args, "fail_on_blocking", False) and output.get("should_block_schedule"):
+        print(f"Blocking full-text triage: {output.get('action')}", file=sys.stderr)
         raise SystemExit(1)
 
 

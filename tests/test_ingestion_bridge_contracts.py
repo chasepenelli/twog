@@ -20,6 +20,7 @@ from hsa_research.ingestion_bridge.contracts import (
     EmbeddingCoverageSummary,
     EntityMention,
     EvidenceLevel,
+    FullTextTriageRequest,
     HypothesisProposalRequest,
     RawSourceRecord,
     ResearchChunkSearchRequest,
@@ -44,6 +45,7 @@ from hsa_research.ingestion_bridge.backfill import backfill_deep_dives, backfill
 from hsa_research.ingestion_bridge.claim_curator import ClaimCuratorAgent
 from hsa_research.ingestion_bridge.claim_extractor import LocalRuleClaimExtractor, extract_claims_for_repository
 from hsa_research.ingestion_bridge.chunker import chunk_text
+from hsa_research.ingestion_bridge.full_text_triage import FullTextTriageAgent
 from hsa_research.ingestion_bridge.dagster_assets import (
     ALL_API_SMOKE_KEYS,
     HOSTED_API_REPORT_KEYS,
@@ -976,6 +978,82 @@ def test_full_text_qa_uses_body_chunks_as_persisted_gate(tmp_path):
     assert qa["full_text_document_chunks"] == 1
     assert qa["passes_persisted_full_text_bar"] is True
     assert qa["passes_full_text_bar"] is True
+
+
+def test_full_text_triage_agent_accepts_clean_body_chunks():
+    result = FullTextTriageAgent().triage(
+        FullTextTriageRequest(
+            source_key="europe_pmc",
+            stage="qa",
+            raw_records=1,
+            research_objects=1,
+            document_chunks=2,
+            full_text_document_chunks=1,
+            full_text_body_chars=1000,
+        )
+    )
+
+    assert result.action == "no_action"
+    assert result.severity == "info"
+    assert result.should_retry is False
+    assert result.should_block_schedule is False
+
+
+def test_full_text_triage_agent_reduces_batch_on_timeout():
+    result = FullTextTriageAgent().triage(
+        FullTextTriageRequest(
+            source_key="europe_pmc",
+            stage="dagster_run",
+            error_message="Timed out after 2700 seconds",
+            runtime_seconds=2700,
+            timeout_seconds=2700,
+            raw_records=10,
+            research_objects=10,
+            document_chunks=10,
+        )
+    )
+
+    assert result.action == "reduce_batch_size"
+    assert result.severity == "watch"
+    assert result.should_retry is True
+    assert result.should_block_schedule is True
+    assert any("source/date partitioning" in action for action in result.recommended_next_actions)
+
+
+def test_full_text_triage_agent_flags_parser_fixture():
+    result = FullTextTriageAgent().triage(
+        FullTextTriageRequest(
+            source_key="pmc_oa",
+            stage="parse",
+            error_message="XML parse error: unsupported JATS body shape",
+            raw_records=1,
+            research_objects=1,
+            document_chunks=1,
+            full_text_document_chunks=0,
+        )
+    )
+
+    assert result.action == "needs_parser_fix"
+    assert result.severity == "blocking"
+    assert result.should_block_schedule is True
+    assert any("fixture" in action for action in result.recommended_next_actions)
+
+
+def test_service_triages_full_text_issue(tmp_path):
+    service = make_service(tmp_path)
+
+    result = service.triage_full_text_issue(
+        FullTextTriageRequest(
+            source_key="pmc_oa",
+            stage="fetch",
+            error_message="429 too many requests",
+            http_status=429,
+        )
+    )
+
+    assert result.action == "retry_later"
+    assert result.should_retry is True
+    assert result.should_block_schedule is False
 
 
 def test_entity_resolution_persists_entities_aliases_and_mentions_idempotently(tmp_path):
@@ -3044,6 +3122,26 @@ def test_mcp_retrieval_tool_helpers_dump_bounded_read_results(monkeypatch, tmp_p
     assert chunk_payload["chunk"]["id"] == str(chunk.id)
     assert object_payload["research_object"]["id"] == str(object_id)
     assert len(object_payload["chunks"]) == 1
+
+
+def test_mcp_full_text_triage_helper_dumps_action(monkeypatch, tmp_path):
+    service = make_service(tmp_path)
+    monkeypatch.setattr(mcp_server, "get_service", lambda: service)
+
+    payload = mcp_server.triage_full_text_issue_tool(
+        source_key="europe_pmc",
+        stage="dagster_run",
+        error_message="Timed out while running hosted refresh",
+        runtime_seconds=2700,
+        timeout_seconds=2700,
+        raw_records=10,
+        research_objects=10,
+    )
+
+    assert payload["triage_name"] == "full_text_triage_agent"
+    assert payload["action"] == "reduce_batch_size"
+    assert payload["should_retry"] is True
+    assert payload["should_block_schedule"] is True
 
 
 def test_mcp_retrieval_smoke_helper_dumps_full_read_chain(monkeypatch, tmp_path):

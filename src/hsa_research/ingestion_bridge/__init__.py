@@ -13,6 +13,8 @@ from .contracts import (
     ClaimSearchResults,
     CommitHypothesisRequest,
     DocumentChunk,
+    FullTextTriageRequest,
+    FullTextTriageResult,
     HypothesisDraft,
     HypothesisProposalRequest,
     IngestionResult,
@@ -44,6 +46,7 @@ from .harvesters_v2 import (
 )
 from .local_ingest import LocalIngestionPipeline
 from .claim_extractor import LocalRuleClaimExtractor, extract_claims_for_repository
+from .full_text_triage import FullTextTriageAgent, triage_full_text_issue
 from .query_policy import build_scholarly_source_queries, comparative_required_query
 from .service import HSAResearchService, get_service
 from .local_store import SQLiteResearchRepository
@@ -66,6 +69,9 @@ __all__ = [
     "DocumentChunk",
     "EmbeddingIndexResult",
     "EmbeddingMaintenanceResult",
+    "FullTextTriageAgent",
+    "FullTextTriageRequest",
+    "FullTextTriageResult",
     "HypothesisDraft",
     "HypothesisProposalRequest",
     "HSAResearchService",
@@ -102,4 +108,5 @@ __all__ = [
     "index_embeddings_for_repository",
     "maintain_embedding_index",
     "scout_sources_for_repository",
+    "triage_full_text_issue",
 ]

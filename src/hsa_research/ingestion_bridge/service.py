@@ -22,6 +22,8 @@ from .contracts import (
     ClaimSearchResults,
     CommitHypothesisRequest,
     DocumentChunk,
+    FullTextTriageRequest,
+    FullTextTriageResult,
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
@@ -39,6 +41,7 @@ from .contracts import (
 )
 from .claim_curator import ClaimCuratorAgent
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, LocalDeterministicEmbeddingProvider
+from .full_text_triage import FullTextTriageAgent
 from .repository import ResearchRepository
 from .source_scout import SourceScoutAgent
 from .storage import build_research_repository
@@ -221,6 +224,9 @@ class HSAResearchService:
         if not hasattr(self.repository, "coverage_summary"):
             raise RuntimeError("Source scouting requires a SQL repository")
         return SourceScoutAgent(self.repository).scout(request)
+
+    def triage_full_text_issue(self, request: FullTextTriageRequest) -> FullTextTriageResult:
+        return FullTextTriageAgent().triage(request)
 
     def get_candidate(self, request: CandidateDossierRequest) -> CandidateDossier | None:
         return self.repository.get_candidate(request)
