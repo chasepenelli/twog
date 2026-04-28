@@ -2735,11 +2735,12 @@ def test_x_topic_review_openrouter_preserves_deterministic_ingestion_guardrail(m
                             "query_name": "x_disease_monitoring",
                             "username": "vetonc",
                             "action": "needs_human_review",
-                            "severity": "watch",
+                            "severity": "critical",
                             "reason": "Model wants a human pass.",
-                            "ingestible_links": [],
+                            "links": ["https://doi.org/10.7717/peerj.4375"],
                             "evidence_refs": ["candidate:123"],
-                            "metadata": {},
+                            "metadata": {"reviewer": "model"},
+                            "extra_field": "ignored",
                         }
                     ],
                     "evidence": {"review_summary": "reviewed"},
@@ -2769,6 +2770,7 @@ def test_x_topic_review_openrouter_preserves_deterministic_ingestion_guardrail(m
 
     assert result.ingestion_candidate_count == 1
     assert [action.action for action in result.actions] == ["needs_human_review", "flag_for_ingestion"]
+    assert result.actions[0].severity == "watch"
     assert result.actions[1].ingestible_links[0].recommended_source_key == "crossref"
     assert result.evidence["model_reviews"][0]["status"] == "completed"
 

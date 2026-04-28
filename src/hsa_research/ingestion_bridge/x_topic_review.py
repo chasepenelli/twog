@@ -28,6 +28,29 @@ X_TOPIC_REVIEW_AGENT_NAME = "x_topic_review_agent"
 X_TOPIC_REVIEW_AGENT_VERSION = "v1"
 DEFAULT_X_TOPIC_REVIEW_MODEL = "~anthropic/claude-sonnet-latest"
 DEFAULT_X_TOPIC_COMPARE_MODELS = (DEFAULT_X_TOPIC_REVIEW_MODEL,)
+_ALLOWED_ACTIONS = {
+    "flag_for_ingestion",
+    "queue_source_followup",
+    "needs_link_review",
+    "needs_human_review",
+    "reject_noise",
+    "compliance_hold",
+    "skip_no_durable_source",
+}
+_ALLOWED_SEVERITIES = {"info", "watch", "blocking"}
+_ALLOWED_IDENTIFIER_TYPES = {
+    "doi",
+    "pmid",
+    "pmcid",
+    "nct",
+    "pubchem",
+    "chembl",
+    "uniprot",
+    "rcsb_pdb",
+    "geo",
+    "sra",
+    "unknown",
+}
 
 _SOURCE_PATTERNS = (
     ("pubmed", "pmid", "pubmed.ncbi.nlm.nih.gov", re.compile(r"/(\d{5,})/?(?:$|[?#])")),
@@ -458,16 +481,94 @@ def _parse_json_object(text: str) -> dict[str, Any]:
 
 
 def _result_from_payload(request: XTopicReviewRequest, payload: Mapping[str, Any]) -> XTopicReviewResult:
-    actions = payload.get("actions", [])
+    actions = (
+        payload.get("actions")
+        or payload.get("recommendations")
+        or payload.get("ingestion_recommendations")
+        or []
+    )
     if not isinstance(actions, list):
         raise RuntimeError("X topic review response must include an actions list.")
+    parsed_actions = [
+        action
+        for raw_action in actions
+        if isinstance(raw_action, dict)
+        if (action := _sanitize_model_action(raw_action)) is not None
+    ]
     result = XTopicReviewResult(
         model_profile=request.model_profile,
-        actions=[XTopicReviewAction.model_validate(action) for action in actions],
+        actions=parsed_actions,
         evidence=payload.get("evidence", {}) if isinstance(payload.get("evidence"), dict) else {},
         errors=list(payload.get("errors", [])) if isinstance(payload.get("errors"), list) else [],
     )
     return _finalize_result(result)
+
+
+def _sanitize_model_action(raw_action: Mapping[str, Any]) -> XTopicReviewAction | None:
+    post_id = _optional_str(raw_action.get("source_record_id") or raw_action.get("post_id"))
+    if post_id is None:
+        return None
+    action = _allowed_value(raw_action.get("action"), _ALLOWED_ACTIONS, "needs_human_review")
+    severity = _allowed_value(raw_action.get("severity"), _ALLOWED_SEVERITIES, "watch")
+    links = []
+    raw_links = raw_action.get("ingestible_links") or raw_action.get("links") or []
+    if isinstance(raw_links, list):
+        links = [
+            link
+            for raw_link in raw_links
+            if (link := _sanitize_model_link(raw_link)) is not None
+        ]
+    evidence_refs = [
+        str(ref)
+        for ref in raw_action.get("evidence_refs", [])
+        if isinstance(ref, str | int | float)
+    ]
+    metadata = raw_action.get("metadata") if isinstance(raw_action.get("metadata"), dict) else {}
+    return XTopicReviewAction(
+        source_record_id=post_id,
+        query_name=_optional_str(raw_action.get("query_name")),
+        username=_optional_str(raw_action.get("username")),
+        action=action,  # type: ignore[arg-type]
+        severity=severity,  # type: ignore[arg-type]
+        reason=_optional_str(raw_action.get("reason") or raw_action.get("rationale"))
+        or "Model review did not provide a reason.",
+        ingestible_links=links,
+        evidence_refs=evidence_refs,
+        metadata=metadata,
+    )
+
+
+def _sanitize_model_link(raw_link: Any) -> XTopicLinkedSource | None:
+    if isinstance(raw_link, str):
+        return _classify_link(raw_link)
+    if not isinstance(raw_link, Mapping):
+        return None
+    url = _optional_str(raw_link.get("url"))
+    if url is None:
+        return None
+    classified = _classify_link(url)
+    identifier_type = _allowed_value(
+        raw_link.get("identifier_type"),
+        _ALLOWED_IDENTIFIER_TYPES,
+        classified.identifier_type,
+    )
+    should_ingest = raw_link.get("should_ingest")
+    if isinstance(should_ingest, str):
+        should_ingest = should_ingest.strip().lower() in {"1", "true", "yes"}
+    elif not isinstance(should_ingest, bool):
+        should_ingest = classified.should_ingest
+    metadata = raw_link.get("metadata") if isinstance(raw_link.get("metadata"), dict) else {}
+    return XTopicLinkedSource(
+        url=url,
+        recommended_source_key=_optional_str(
+            raw_link.get("recommended_source_key") or classified.recommended_source_key
+        ),
+        identifier_type=identifier_type,  # type: ignore[arg-type]
+        identifier=_optional_str(raw_link.get("identifier") or classified.identifier),
+        should_ingest=should_ingest,
+        reason=_optional_str(raw_link.get("reason")) or classified.reason,
+        metadata=metadata,
+    )
 
 
 def _apply_deterministic_guardrails(
@@ -498,12 +599,14 @@ def _apply_deterministic_guardrails(
 
 
 def _finalize_result(result: XTopicReviewResult) -> XTopicReviewResult:
-    ingestion_candidate_count = sum(
-        1
-        for action in result.actions
-        if action.action in {"flag_for_ingestion", "queue_source_followup"}
-        or any(link.should_ingest for link in action.ingestible_links)
-    )
+    ingestion_keys: set[tuple[str, str]] = set()
+    for action in result.actions:
+        for link in action.ingestible_links:
+            if link.should_ingest:
+                ingestion_keys.add((action.source_record_id, link.url))
+        if action.action in {"flag_for_ingestion", "queue_source_followup"} and not action.ingestible_links:
+            ingestion_keys.add((action.source_record_id, action.action))
+    ingestion_candidate_count = len(ingestion_keys)
     needs_human_review_count = sum(
         1
         for action in result.actions
@@ -535,6 +638,11 @@ def _float_or_zero(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _allowed_value(value: Any, allowed: set[str], default: str) -> str:
+    text = str(value or "").strip()
+    return text if text in allowed else default
 
 
 _X_TOPIC_REVIEW_SYSTEM_PROMPT = """You are a scientific ingestion-review agent for HSA comparative oncology monitoring.
