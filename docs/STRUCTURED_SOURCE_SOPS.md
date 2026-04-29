@@ -181,9 +181,10 @@ Required gates:
   even when title/abstract metadata is sparse.
 - Unpaywall may store DOI, title, OA status, license, landing-page URL, PDF URL,
   and location summaries only. It is an OA discovery source, not a full-text
-  evidence source.
-- Every hosted smoke source must produce raw records, research objects, chunks,
-  and at least one claim.
+  evidence source. Keep it manual/DOI-enrichment until title-search health is
+  stable enough for hosted schedules.
+- Every hosted API heartbeat source must produce raw records, research objects,
+  and chunks. Source-specific refresh lanes validate claims.
 
 Allowed claims:
 - Source-context `OTHER` claims for sparse but relevant scholarly records.
@@ -326,7 +327,8 @@ Dagster schedule:
 - Default status: running.
 - Purpose: lightweight API reachability across every implemented source,
   including clinical, omics, and canine sources that do not yet have deeper
-  scheduled refresh lanes.
+  scheduled refresh lanes. Manual discovery lanes such as Unpaywall title
+  search are excluded until the upstream endpoint is stable.
 
 ### Run The Literature Corpus Harvest
 
@@ -499,9 +501,9 @@ Sequence:
    - at least one active source query
    - a source role that matches the evidence boundary
 
-For discovery-only sources such as `unpaywall`, `triage` is an acceptable final
-health status. For evidence-producing sources, investigate `watch` before
-expanding volume or schedules.
+For discovery-only sources promoted to hosted coverage, `triage` is an
+acceptable final health status. For evidence-producing sources, investigate
+`watch` before expanding volume or schedules.
 
 ### Run The Deterministic Entity Resolver
 

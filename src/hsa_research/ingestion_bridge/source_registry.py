@@ -79,8 +79,9 @@ INITIAL_SOURCES: tuple[ResearchSource, ...] = (
         phase=1,
         capabilities=["oa_discovery", "doi_resolution", "license_metadata", "full_text_location_links"],
         notes=(
-            "Use title search and DOI metadata for open-access discovery. Store OA location metadata and links only; "
-            "do not treat linked PDFs as storable full text until a license-aware fetch lane validates them."
+            "Use DOI metadata for open-access discovery and title search only when upstream health is clean. "
+            "Store OA location metadata and links only; do not treat linked PDFs as storable full text until "
+            "a license-aware fetch lane validates them."
         ),
     ),
     ResearchSource(
