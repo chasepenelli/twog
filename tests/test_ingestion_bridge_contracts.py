@@ -67,6 +67,7 @@ from hsa_research.ingestion_bridge.claim_extractor import LocalRuleClaimExtracto
 from hsa_research.ingestion_bridge.chunker import chunk_text
 from hsa_research.ingestion_bridge.full_text_triage import FullTextTriageAgent
 from hsa_research.ingestion_bridge import full_text_ops
+from hsa_research.ingestion_bridge import source_followup
 from hsa_research.ingestion_bridge.full_text_ops import FullTextOpsAgent
 from hsa_research.ingestion_bridge.dagster_assets import (
     ALL_API_SMOKE_KEYS,
@@ -92,6 +93,7 @@ from hsa_research.ingestion_bridge.harvesters_v2 import (
     AVMAVCTRHarvesterV2,
     ChEMBLHarvesterV2,
     ClinicalTrialsGovHarvesterV2,
+    CrossrefHarvesterV2,
     EuropePMCHarvesterV2,
     GEOHarvesterV2,
     HARVESTERS_V2,
@@ -5374,6 +5376,87 @@ def test_source_followup_ingest_dry_run_lists_queue_items(tmp_path):
     assert result.skipped == 1
     assert result.items[0].identifier == "12345678"
     assert repo.list_source_followups(source_key="pubmed")[0].status == "queued"
+
+
+def test_source_followup_query_params_are_source_safe():
+    crossref_query = source_followup._query_for_followup(
+        SourceFollowupQueueItem(
+            source_key="crossref",
+            identifier_type="doi",
+            identifier="10.1234/test",
+            origin_source_key="x_linked_article",
+        )
+    )
+    clinical_query = source_followup._query_for_followup(
+        SourceFollowupQueueItem(
+            source_key="clinicaltrials_gov",
+            identifier_type="nct",
+            identifier="NCT12345678",
+            origin_source_key="x_linked_article",
+        )
+    )
+
+    assert crossref_query.query_params == {
+        "comparative_policy": "disabled",
+        "require_policy_match": False,
+    }
+    assert clinical_query.query_params == {"require_policy_match": False}
+
+
+def test_followup_internal_policy_params_do_not_reach_external_apis(monkeypatch):
+    crossref_calls = []
+
+    def fake_crossref_get_json(url, params):
+        crossref_calls.append((url, params))
+        return {
+            "message": {
+                "items": [
+                    {
+                        "DOI": "10.1234/test",
+                        "title": ["Follow-up article without local policy terms"],
+                        "URL": "https://doi.org/10.1234/test",
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(harvesters_v2, "_get_json", fake_crossref_get_json)
+    crossref_records = CrossrefHarvesterV2().fetch(
+        "10.1234/test",
+        limit=1,
+        comparative_policy="disabled",
+        require_policy_match=False,
+    )
+
+    assert len(crossref_records) == 1
+    assert crossref_calls == [
+        (
+            "https://api.crossref.org/works",
+            {"query": "10.1234/test", "rows": 1},
+        )
+    ]
+
+    clinical_calls = []
+
+    def fake_clinical_get_json(url, params):
+        clinical_calls.append((url, params))
+        return {"studies": []}
+
+    monkeypatch.setattr(harvesters_v2, "_get_json", fake_clinical_get_json)
+    clinical_records = ClinicalTrialsGovHarvesterV2().fetch(
+        "NCT12345678",
+        limit=1,
+        comparative_policy="disabled",
+        require_policy_match=False,
+    )
+
+    assert clinical_records == []
+    assert clinical_calls == [
+        (
+            "https://clinicaltrials.gov/api/v2/studies",
+            {"query.term": "NCT12345678", "pageSize": 1, "format": "json"},
+        )
+    ]
 
 
 def test_x_linked_article_review_agent_recommends_queue_and_ledgers(tmp_path):

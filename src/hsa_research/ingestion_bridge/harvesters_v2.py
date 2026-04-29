@@ -191,6 +191,7 @@ class OpenAlexHarvesterV2(ScholarlyHarvesterV2):
 
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         query_text, params = self.prepare_query(query_text, params)
+        require_policy_match = params.pop("require_policy_match", True)
         data = _get_json(
             "https://api.openalex.org/works",
             {
@@ -199,7 +200,10 @@ class OpenAlexHarvesterV2(ScholarlyHarvesterV2):
                 **params,
             },
         )
-        return self.filter_relevant([self.normalize(item) for item in data.get("results", [])], params)
+        return self.filter_relevant(
+            [self.normalize(item) for item in data.get("results", [])],
+            {"require_policy_match": require_policy_match},
+        )
 
     def normalize(self, item: dict[str, Any]) -> HarvestedRecord:
         source_id = item.get("id")
@@ -362,6 +366,7 @@ class CrossrefHarvesterV2(ScholarlyHarvesterV2):
 
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         query_text, params = self.prepare_query(query_text, params)
+        require_policy_match = params.pop("require_policy_match", True)
         data = _get_json(
             "https://api.crossref.org/works",
             {
@@ -371,7 +376,10 @@ class CrossrefHarvesterV2(ScholarlyHarvesterV2):
             },
         )
         items = (data.get("message") or {}).get("items", [])
-        return self.filter_relevant([self.normalize(item) for item in items], params)
+        return self.filter_relevant(
+            [self.normalize(item) for item in items],
+            {"require_policy_match": require_policy_match},
+        )
 
     def normalize(self, item: dict[str, Any]) -> HarvestedRecord:
         doi = _normalize_doi(item.get("DOI"))
@@ -420,6 +428,7 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
         full_text_time_budget_seconds = float(
             params.pop("full_text_time_budget_seconds", FULL_TEXT_FETCH_TIME_BUDGET_SECONDS)
         )
+        require_policy_match = params.pop("require_policy_match", True)
         if open_access and "OPEN_ACCESS:" not in query_text.upper():
             query_text = f"({query_text}) AND OPEN_ACCESS:Y"
         query_text = _europe_pmc_date_query(query_text, published_after, published_before)
@@ -451,7 +460,7 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
                     else None,
                 )
             )
-        return self.filter_relevant(records, params)
+        return self.filter_relevant(records, {"require_policy_match": require_policy_match})
 
     def filter_relevant(
         self,
@@ -558,6 +567,7 @@ class PubMedHarvesterV2(ScholarlyHarvesterV2):
 
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         query_text, params = self.prepare_query(query_text, params)
+        require_policy_match = params.pop("require_policy_match", True)
         search = _get_json(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
             {
@@ -576,7 +586,7 @@ class PubMedHarvesterV2(ScholarlyHarvesterV2):
             {"db": "pubmed", "id": ",".join(ids), "retmode": "xml"},
         )
         records = [self.normalize(article) for article in ET.fromstring(xml).findall(".//PubmedArticle")]
-        return self.filter_relevant(records, params)
+        return self.filter_relevant(records, {"require_policy_match": require_policy_match})
 
     def normalize(self, article: ET.Element) -> HarvestedRecord:
         pmid = _xml_text(article, ".//MedlineCitation/PMID")
@@ -644,10 +654,10 @@ class PMCOAHarvesterV2(ScholarlyHarvesterV2):
         max_candidate_records = int(params.pop("max_candidate_records", PMC_OA_MAX_CANDIDATE_RECORDS))
         published_after = params.pop("published_after", None)
         published_before = params.pop("published_before", None)
+        require_policy_match = params.pop("require_policy_match", True)
         if license_required and "open access" not in query_text.lower():
             query_text = f"({query_text}) AND \"open access\"[filter]"
         params = _ncbi_date_params(params, published_after, published_before)
-        require_policy_match = params.get("require_policy_match", True)
         candidate_limit = min(max(limit * 10, 25), max_candidate_records)
         search = _get_json(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
@@ -700,7 +710,7 @@ class PMCOAHarvesterV2(ScholarlyHarvesterV2):
                 continue
             records.append(record)
             time.sleep(0.1)
-        return self.filter_relevant(records, params)
+        return records
 
     def filter_relevant(
         self,
@@ -837,6 +847,7 @@ class ClinicalTrialsGovHarvesterV2(HarvesterV2):
 
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         params = dict(params)
+        params.pop("comparative_policy", None)
         search_area = params.pop("search_area", "term")
         require_policy_match = params.pop("require_policy_match", True)
         query_param = "query.cond" if search_area == "condition" else "query.term"
