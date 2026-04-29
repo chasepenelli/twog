@@ -36,13 +36,17 @@ PUBTATOR_ENDPOINT = "https://www.ncbi.nlm.nih.gov/research/pubtator3-api/publica
 
 STABLE_ID_ORDER = (
     "pubchem_cid",
+    "chebi_id",
     "chembl_molecule_id",
     "chembl_target_id",
     "uniprot_accession",
     "pdb_id",
     "ncbi_gene_id",
+    "taxonomy_id",
     "mesh_id",
     "umls_cui",
+    "omim_id",
+    "cellosaurus_id",
     "pubtator_identifier",
 )
 
@@ -429,4 +433,55 @@ def _pubtator_external_ids(annotation: dict[str, Any]) -> dict[str, str]:
     identifier = infons.get("identifier") or annotation.get("id")
     if not identifier:
         return {}
-    return {"pubtator_identifier": str(identifier)}
+    entity_type = str(infons.get("type") or "").strip().lower()
+    identifiers = {"pubtator_identifier": str(identifier)}
+    for part in _split_pubtator_identifiers(str(identifier)):
+        identifiers.update(_parse_pubtator_identifier(part, entity_type=entity_type))
+    return identifiers
+
+
+def _split_pubtator_identifiers(value: str) -> list[str]:
+    return [part.strip() for part in re.split(r"[|;,]", value) if part.strip()]
+
+
+def _parse_pubtator_identifier(value: str, *, entity_type: str) -> dict[str, str]:
+    cleaned = re.sub(r"\s+", " ", value.strip())
+    if not cleaned:
+        return {}
+
+    normalized = cleaned.replace("_", " ").lower()
+    compact = re.sub(r"\s+", "", cleaned)
+
+    mesh_match = re.match(r"(?i)^(?:mesh|chemical:mesh|disease:mesh|chemical|disease):?([DC]\d{3,})$", compact)
+    if mesh_match:
+        return {"mesh_id": mesh_match.group(1).upper()}
+    if re.match(r"(?i)^[DC]\d{3,}$", compact) and entity_type in {"chemical", "disease"}:
+        return {"mesh_id": compact.upper()}
+
+    gene_match = re.match(r"(?i)^(?:ncbi\s*gene|ncbigene|gene):?(\d+)$", cleaned)
+    if gene_match:
+        return {"ncbi_gene_id": gene_match.group(1)}
+    if cleaned.isdigit() and entity_type == "gene":
+        return {"ncbi_gene_id": cleaned}
+
+    tax_match = re.match(r"(?i)^(?:tax|taxid|taxonomy|ncbi\s*taxon|ncbitaxon|species):?(\d+)$", cleaned)
+    if tax_match:
+        return {"taxonomy_id": tax_match.group(1)}
+    if cleaned.isdigit() and entity_type == "species":
+        return {"taxonomy_id": cleaned}
+
+    umls_match = re.match(r"(?i)^umls:?([A-Z]\d+)$", compact)
+    if umls_match:
+        return {"umls_cui": umls_match.group(1).upper()}
+
+    omim_match = re.match(r"(?i)^omim:?(\d+)$", compact)
+    if omim_match:
+        return {"omim_id": omim_match.group(1)}
+
+    chebi_match = re.match(r"(?i)^chebi:?(CHEBI:)?(\d+)$", compact)
+    if chebi_match:
+        return {"chebi_id": f"CHEBI:{chebi_match.group(2)}"}
+
+    if normalized.startswith("cvcl:"):
+        return {"cellosaurus_id": cleaned.upper()}
+    return {}

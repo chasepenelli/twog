@@ -49,6 +49,14 @@ class ResearchRepository(Protocol):
     def get_research_object(self, object_id: UUID) -> ResearchObject | None:
         """Return a canonical research object by ID."""
 
+    def list_research_objects(
+        self,
+        object_type: str | None = None,
+        source_key: str | None = None,
+        limit: int | None = None,
+    ) -> list[ResearchObject]:
+        """Return canonical research objects by durable filters."""
+
     def get_document_chunk(self, chunk_id: UUID) -> DocumentChunk | None:
         """Return a single document chunk by ID."""
 
@@ -284,6 +292,20 @@ class InMemoryResearchRepository:
 
     def get_research_object(self, object_id: UUID) -> ResearchObject | None:
         return self.research_objects.get(object_id)
+
+    def list_research_objects(
+        self,
+        object_type: str | None = None,
+        source_key: str | None = None,
+        limit: int | None = None,
+    ) -> list[ResearchObject]:
+        objects = list(self.research_objects.values())
+        if object_type:
+            objects = [obj for obj in objects if str(obj.object_type) == object_type]
+        if source_key:
+            objects = [obj for obj in objects if obj.source_key == source_key]
+        objects.sort(key=lambda obj: (obj.source_key or "", obj.title or "", str(obj.id)))
+        return objects[:limit] if limit is not None else objects
 
     def get_document_chunk(self, chunk_id: UUID) -> DocumentChunk | None:
         return self.document_chunks.get(chunk_id)

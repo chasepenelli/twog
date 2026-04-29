@@ -22,6 +22,7 @@ from .contracts import (
     ClaimSearchRequest,
     ClaimSearchResults,
     CommitHypothesisRequest,
+    DoiOpenAccessFollowupQueueRequest,
     DocumentChunk,
     FullTextTriageRequest,
     FullTextTriageResult,
@@ -30,6 +31,9 @@ from .contracts import (
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
+    ResearchBriefPlaygroundPack,
+    ResearchBriefRequest,
+    ResearchBriefResult,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
     ResearchChunkSearchResults,
@@ -58,9 +62,21 @@ from .claim_curator import ClaimCuratorAgent
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, LocalDeterministicEmbeddingProvider
 from .full_text_ops import FULL_TEXT_OPS_AGENT_NAME, FULL_TEXT_OPS_AGENT_VERSION, FullTextOpsAgent
 from .full_text_triage import FullTextTriageAgent
+from .research_brief_agent import (
+    PERSPECTIVE_ORDER,
+    RESEARCH_BRIEF_AGENT_VERSION,
+    RESEARCH_SYNTHESIS_EDITOR_AGENT_NAME,
+    ResearchBriefAgent,
+    summarize_perspective_report,
+    summarize_research_brief,
+)
 from .repository import ResearchRepository
 from .source_scout import SourceScoutAgent
-from .source_followup import ingest_source_followups, queue_source_followups_from_scrape_reviews
+from .source_followup import (
+    ingest_source_followups,
+    queue_source_followups_from_scrape_reviews,
+    queue_unpaywall_doi_followups,
+)
 from .storage import build_research_repository
 from .x_linked_article_review import (
     X_LINKED_ARTICLE_REVIEW_AGENT_NAME,
@@ -85,6 +101,12 @@ DEFAULT_MODEL_PROFILES: dict[str, ModelProfile] = {
         profile_key="long_context_reviewer",
         provider="claude",
         purpose="Long-context literature review",
+    ),
+    "research_brief": ModelProfile(
+        profile_key="research_brief",
+        provider="other",
+        model_name="openrouter:~anthropic/claude-sonnet-latest",
+        purpose="Citation-first multi-perspective research briefs",
     ),
 }
 
@@ -179,6 +201,60 @@ class HSAResearchService:
                 )
             ]
         return ResearchObjectReadResult(research_object=research_object, chunks=chunks)
+
+    def run_research_brief(self, request: ResearchBriefRequest) -> ResearchBriefResult:
+        agent = ResearchBriefAgent(self.repository)
+        evidence = agent.build_evidence(request)
+        runner = AgentRunner(self.repository)
+        perspective_reports = [
+            runner.run(
+                agent_name=agent_name,
+                agent_version=RESEARCH_BRIEF_AGENT_VERSION,
+                model_profile=request.model_profile,
+                input_payload={
+                    "request": request.model_dump(mode="json"),
+                    "perspective": perspective,
+                    "citation_count": len(evidence.citations),
+                    "claim_count": len(evidence.claims),
+                },
+                execute=lambda perspective=perspective: agent.run_perspective(
+                    request,
+                    perspective=perspective,
+                    evidence=evidence,
+                ),
+                dagster_run_id=request.dagster_run_id,
+                metadata=request.metadata,
+                summarize=summarize_perspective_report,
+            )
+            for perspective, agent_name in (
+                (perspective, f"{perspective}_agent")
+                for perspective in PERSPECTIVE_ORDER
+            )
+        ]
+        return runner.run(
+            agent_name=RESEARCH_SYNTHESIS_EDITOR_AGENT_NAME,
+            agent_version=RESEARCH_BRIEF_AGENT_VERSION,
+            model_profile=request.model_profile,
+            input_payload={
+                "request": request.model_dump(mode="json"),
+                "perspective_agent_run_ids": [
+                    str(report.agent_run_id)
+                    for report in perspective_reports
+                    if report.agent_run_id is not None
+                ],
+                "citation_count": len(evidence.citations),
+            },
+            execute=lambda: agent.synthesize(request, perspective_reports, evidence=evidence),
+            dagster_run_id=request.dagster_run_id,
+            metadata=request.metadata,
+            summarize=summarize_research_brief,
+        )
+
+    def build_research_brief_playground_pack(
+        self,
+        request: ResearchBriefRequest,
+    ) -> ResearchBriefPlaygroundPack:
+        return ResearchBriefAgent(self.repository).build_playground_pack(request)
 
     def run_retrieval_smoke(self, request: RetrievalSmokeRequest) -> RetrievalSmokeResult:
         """Exercise the full read path: search, chunk context, and parent object."""
@@ -359,6 +435,12 @@ class HSAResearchService:
 
     def queue_source_followups(self, request: SourceFollowupQueueRequest) -> SourceFollowupQueueResult:
         return queue_source_followups_from_scrape_reviews(self.repository, request)
+
+    def queue_unpaywall_doi_followups(
+        self,
+        request: DoiOpenAccessFollowupQueueRequest,
+    ) -> SourceFollowupQueueResult:
+        return queue_unpaywall_doi_followups(self.repository, request)
 
     def ingest_source_followups(self, request: SourceFollowupIngestRequest) -> SourceFollowupIngestResult:
         return ingest_source_followups(self.repository, request)

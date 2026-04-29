@@ -9,6 +9,7 @@ import re
 from typing import Any
 from uuid import UUID
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .contracts import (
@@ -31,6 +32,8 @@ _ALLOWED_ACTIONS = {
     "reject_low_signal",
 }
 _ALLOWED_SEVERITIES = {"info", "watch", "blocking"}
+_ALLOWED_PRIMARY_SOURCE_KEYS = {"crossref", "pubmed", "pmc_oa", "clinicaltrials_gov"}
+_DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
 
 
 class XLinkedArticleReviewAgent:
@@ -109,27 +112,46 @@ def _review_article_record(review) -> XLinkedArticleReviewAction:
             metadata={"parser_confidence": review.parser_confidence, "title": review.title},
         )
 
+    evidence_spans = review.fields.get("evidence_spans", [])
+    context_links = review.fields.get("context_links", [])
     return XLinkedArticleReviewAction(
         review_id=review.review_id,
         source_record_id=review.source_record_id,
         action="needs_human_review",
         severity="watch",
-        reason="Article parsed cleanly enough to inspect, but no durable primary-source identifier was found.",
+        reason=(
+            "Article parsed cleanly enough to inspect, but no validated durable "
+            "primary-source identifier was found."
+        ),
         followup_links=[],
         evidence_refs=evidence_refs,
-        metadata={"parser_confidence": review.parser_confidence, "title": review.title},
+        metadata={
+            "parser_confidence": review.parser_confidence,
+            "title": review.title,
+            "evidence_spans": evidence_spans[:10] if isinstance(evidence_spans, list) else [],
+            "context_links": context_links[:10] if isinstance(context_links, list) else [],
+            "context_link_count": len(context_links) if isinstance(context_links, list) else 0,
+        },
     )
 
 
 def _linked_source_from_payload(raw_link: Mapping[str, Any]) -> XTopicLinkedSource | None:
     url = _optional_str(raw_link.get("url"))
-    if url is None:
+    source_key = _optional_str(raw_link.get("recommended_source_key"))
+    if url is None or source_key not in _ALLOWED_PRIMARY_SOURCE_KEYS:
+        return None
+    identifier_type, identifier, canonical_url, expected_source_key = _validated_identifier(
+        url=url,
+        identifier_type=_optional_str(raw_link.get("identifier_type")),
+        identifier=_optional_str(raw_link.get("identifier")),
+    )
+    if identifier_type is None or expected_source_key != source_key:
         return None
     return XTopicLinkedSource(
-        url=url,
-        recommended_source_key=_optional_str(raw_link.get("recommended_source_key")),
-        identifier_type=str(raw_link.get("identifier_type") or "unknown"),  # type: ignore[arg-type]
-        identifier=_optional_str(raw_link.get("identifier")),
+        url=canonical_url,
+        recommended_source_key=source_key,
+        identifier_type=identifier_type,  # type: ignore[arg-type]
+        identifier=identifier,
         should_ingest=bool(raw_link.get("should_ingest")),
         reason=_optional_str(raw_link.get("reason")) or "Primary source link from parsed article.",
         metadata=raw_link.get("metadata") if isinstance(raw_link.get("metadata"), dict) else {},
@@ -140,7 +162,9 @@ def _finalize_result(result: XLinkedArticleReviewResult) -> XLinkedArticleReview
     return result.model_copy(
         update={
             "queue_candidate_count": sum(
-                1 for action in result.actions if action.action == "queue_primary_source_followup"
+                1
+                for action in result.actions
+                if action.action == "queue_primary_source_followup" and action.followup_links
             ),
             "needs_human_review_count": sum(
                 1 for action in result.actions if action.action == "needs_human_review"
@@ -160,6 +184,7 @@ def _build_review_payload(
         "rules": [
             "The linked article is discovery context, not evidence.",
             "Queue only durable primary-source links that map to implemented API harvesters.",
+            "Use the supplied evidence_spans/article_text_preview to identify possible source claims, but return only validated DOI, PMID, PMCID, or NCT follow-up links.",
             "Use needs_human_review when parser output may matter but lacks a durable identifier.",
             "Use reject_low_signal when the parser output is weak and there are no useful primary-source links.",
             "Return JSON only.",
@@ -208,6 +233,9 @@ def _compact_review(review) -> dict[str, Any]:
         "parser_confidence": review.parser_confidence,
         "review_status": review.review_status,
         "primary_source_links": fields.get("primary_source_links", []),
+        "context_links": fields.get("context_links", [])[:25],
+        "evidence_spans": fields.get("evidence_spans", [])[:15],
+        "article_text_preview": fields.get("article_text_preview"),
         "article_metadata": fields.get("article_metadata", {}),
     }
 
@@ -417,10 +445,13 @@ def _sanitize_model_action(raw_action: Mapping[str, Any]) -> XLinkedArticleRevie
         if isinstance(raw_link, Mapping)
         if (link := _linked_source_from_payload(raw_link)) is not None
     ]
+    action = _allowed_value(raw_action.get("action"), _ALLOWED_ACTIONS, "needs_human_review")
+    if action == "queue_primary_source_followup" and not links:
+        action = "needs_human_review"
     return XLinkedArticleReviewAction(
         review_id=review_id,
         source_record_id=source_record_id,
-        action=_allowed_value(raw_action.get("action"), _ALLOWED_ACTIONS, "needs_human_review"),  # type: ignore[arg-type]
+        action=action,  # type: ignore[arg-type]
         severity=_allowed_value(raw_action.get("severity"), _ALLOWED_SEVERITIES, "watch"),  # type: ignore[arg-type]
         reason=_optional_str(raw_action.get("reason") or raw_action.get("rationale"))
         or "Model review did not provide a reason.",
@@ -461,6 +492,63 @@ def _parse_uuid(value: Any) -> UUID | None:
         return UUID(text)
     except ValueError:
         return None
+
+
+def _validated_identifier(
+    *,
+    url: str,
+    identifier_type: str | None,
+    identifier: str | None,
+) -> tuple[str | None, str | None, str, str | None]:
+    identifier_type = identifier_type.lower() if identifier_type else None
+    parsed = urllib.parse.urlparse(url)
+    host_path = f"{parsed.netloc}{parsed.path}".lower()
+    doi = _extract_doi(identifier or "") or _extract_doi(url)
+    if doi:
+        return "doi", doi, f"https://doi.org/{doi}", "crossref"
+    if identifier_type == "pmid" and identifier and re.fullmatch(r"\d{5,}", identifier):
+        return "pmid", identifier, f"https://pubmed.ncbi.nlm.nih.gov/{identifier}/", "pubmed"
+    if "pubmed.ncbi.nlm.nih.gov" in host_path:
+        match = re.search(r"/(\d{5,})/?(?:$|[?#])", url)
+        if match:
+            pmid = match.group(1)
+            return "pmid", pmid, f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/", "pubmed"
+    if identifier_type == "pmcid" and identifier and re.fullmatch(r"PMC\d{3,}", identifier, flags=re.I):
+        pmcid = identifier.upper()
+        return "pmcid", pmcid, f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/", "pmc_oa"
+    if "pmc.ncbi.nlm.nih.gov" in host_path:
+        match = re.search(r"/articles/(PMC\d+)/?", url, flags=re.I)
+        if match:
+            pmcid = match.group(1).upper()
+            return "pmcid", pmcid, f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/", "pmc_oa"
+    nct = None
+    if identifier_type == "nct" and identifier and re.fullmatch(r"NCT\d{8}", identifier, flags=re.I):
+        nct = identifier.upper()
+    else:
+        match = re.search(r"\b(NCT\d{8})\b", url, flags=re.I)
+        if match:
+            nct = match.group(1).upper()
+    if nct:
+        return "nct", nct, f"https://clinicaltrials.gov/study/{nct}", "clinicaltrials_gov"
+    return None, None, url, None
+
+
+def _extract_doi(value: str) -> str | None:
+    parsed = urllib.parse.urlparse(value)
+    if "doi.org" in parsed.netloc.lower():
+        return _clean_doi(urllib.parse.unquote(parsed.path.lstrip("/")))
+    match = _DOI_RE.search(value)
+    return _clean_doi(match.group(0)) if match else None
+
+
+def _clean_doi(value: str) -> str | None:
+    doi = urllib.parse.unquote(value).strip()
+    doi = doi.split("?", 1)[0].split("#", 1)[0].rstrip(").,;:&")
+    for suffix in ("/full", "/abstract", "/pdf", "/epdf", "/html"):
+        if doi.lower().endswith(suffix):
+            doi = doi[: -len(suffix)]
+            break
+    return doi or None
 
 
 def _allowed_value(value: Any, allowed: set[str], default: str) -> str:

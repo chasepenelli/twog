@@ -7,6 +7,7 @@ import pytest
 
 from hsa_research.ingestion_bridge import dagster_assets as dagster_asset_module
 from hsa_research.ingestion_bridge import cli as cli_module
+from hsa_research.ingestion_bridge import entity_resolution
 from hsa_research.ingestion_bridge import storage, structured_orchestration
 from hsa_research.ingestion_bridge.contracts import (
     AgentRunRecord,
@@ -18,6 +19,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ClaimSearchResult,
     ClaimType,
     CommitHypothesisRequest,
+    DoiOpenAccessFollowupQueueRequest,
     DocumentChunk,
     EmbeddingCoverageSummary,
     EntityMention,
@@ -32,6 +34,11 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchObject,
     ResearchObjectType,
     ResearchObjectReadRequest,
+    ResearchBriefCitation,
+    ResearchBriefFinding,
+    ResearchBriefPerspectiveReport,
+    ResearchBriefRequest,
+    ResearchBriefResult,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
@@ -210,6 +217,7 @@ def test_x_linked_article_followup_contracts_validate():
 
     assert request.robots_policy == "reviewed"
     assert result.source_key == "x_linked_article"
+    assert result.candidate_results == []
     assert result.primary_source_links[0]["recommended_source_key"] == "crossref"
     with pytest.raises(ValueError):
         XLinkedArticleFollowupRequest(max_urls=0)
@@ -245,6 +253,12 @@ def test_source_followup_and_linked_article_review_contracts_validate():
 
     assert item.identifier == "10.1234/test"
     assert item.identity_key == "crossref:doi:10.1234/test"
+    tracked_item = SourceFollowupQueueItem(
+        source_key="crossref",
+        identifier_type="doi",
+        identifier="10.3389/fvets.2026.1778366?utm_source=twitter#section",
+    )
+    assert tracked_item.identifier == "10.3389/fvets.2026.1778366"
     assert SourceFollowupQueueRequest().source_key == "x_linked_article"
     assert SourceFollowupIngestRequest().statuses == ["queued", "approved"]
     assert XLinkedArticleReviewRequest().review_mode == "deterministic_only"
@@ -410,6 +424,63 @@ def test_dagster_all_api_smoke_is_ingestion_only(monkeypatch):
     assert result["mode"] == "ingestion_only"
     assert check.passed is True
     assert check.metadata["mode"].value == "ingestion_only"
+
+
+def test_dagster_literature_corpus_source_date_asset_uses_single_source_partition(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    def fake_pipeline(repository, **kwargs):
+        assert repository is sentinel_repository
+        return {
+            **kwargs,
+            "sources": [],
+            "totals": {"raw_records": 0},
+            "errors": [],
+        }
+
+    monkeypatch.setattr(structured_orchestration, "run_structured_sources_pipeline", fake_pipeline)
+
+    partition_context = SimpleNamespace(
+        multi_partition_key=dagster_asset_module.dg.MultiPartitionKey(
+            {
+                "source": "pubmed",
+                "date": "2026-04-27",
+            }
+        )
+    )
+    result = dagster_asset_module.literature_corpus_source_date_report.node_def.compute_fn.decorated_fn(
+        partition_context,
+        FakeRepositoryResource(),
+    )
+
+    assert calls == ["build_repository"]
+    assert isinstance(result, dagster_asset_module.dg.MaterializeResult)
+    assert result.value["source_keys"] == ("pubmed",)
+    assert result.value["source_limits"] == {"pubmed": 100}
+    assert result.value["partition_date"] == "2026-04-27"
+    assert result.value["mode"] == "source_date_partition"
+    assert result.value["date_filter_status"] == "orchestration_metadata_only"
+    assert result.metadata["source_key"] == "pubmed"
+    assert result.metadata["partition_date"] == "2026-04-27"
+    assert result.metadata["date_filter_status"] == "orchestration_metadata_only"
+
+
+def test_dagster_literature_corpus_source_date_partitions_and_job_are_wired():
+    assert dagster_asset_module.literature_corpus_source_date_job is not None
+    assert (
+        dagster_asset_module.literature_corpus_source_date_report.partitions_def
+        is dagster_asset_module.LITERATURE_CORPUS_SOURCE_DATE_PARTITIONS
+    )
+    assert dagster_asset_module.LITERATURE_CORPUS_SOURCE_PARTITIONS.get_partition_keys() == list(
+        dagster_asset_module.LITERATURE_CORPUS_SOURCE_KEYS
+    )
+    assert dagster_asset_module.LITERATURE_CORPUS_DATE_PARTITIONS.start.date().isoformat() == "2026-01-01"
 
 
 def test_dagster_full_text_ops_asset_uses_injected_repository(monkeypatch):
@@ -2019,6 +2090,321 @@ def test_entity_resolution_persists_entities_aliases_and_mentions_idempotently(t
     assert repo.source_runtime_summary("pubmed")["entity_mentions"] == len(mentions)
 
 
+def test_research_brief_contracts_require_known_citations():
+    citation = ResearchBriefCitation(
+        citation_id="C1",
+        chunk_id=uuid4(),
+        research_object_id=uuid4(),
+        quote="Canine hemangiosarcoma evidence quote.",
+    )
+    finding = ResearchBriefFinding(
+        claim="VEGF biology is relevant enough to brief.",
+        stance="supporting",
+        citations=["C1"],
+        evidence_strength="medium",
+        reasoning="The finding is tied to a stored citation.",
+    )
+
+    report = ResearchBriefPerspectiveReport(
+        perspective="evidence_scout",
+        agent_name="evidence_scout_agent",
+        summary="Evidence was found.",
+        findings=[finding],
+        citations=[citation],
+    )
+    result = ResearchBriefResult(
+        topic="VEGF therapy",
+        disease_scope="canine hemangiosarcoma",
+        perspective_reports=[report],
+        final_brief="The stored evidence supports review [C1].",
+        ranked_hypotheses=[finding],
+        citations=[citation],
+    )
+
+    assert result.final_brief.endswith("[C1].")
+    with pytest.raises(ValueError):
+        ResearchBriefPerspectiveReport(
+            perspective="evidence_scout",
+            agent_name="evidence_scout_agent",
+            summary="Bad citation.",
+            findings=[finding.model_copy(update={"citations": ["C2"]})],
+            citations=[citation],
+        )
+    with pytest.raises(ValueError):
+        ResearchBriefResult(
+            topic="VEGF therapy",
+            disease_scope="canine hemangiosarcoma",
+            final_brief="The stored evidence supports review.",
+            citations=[citation],
+        )
+
+
+def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief.sqlite3", seed=False)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:brief",
+            content_hash="brief-raw",
+            source_url="https://pubmed.ncbi.nlm.nih.gov/brief/",
+            raw_payload={"pmid": "brief"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="VEGF therapy in canine hemangiosarcoma",
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            canonical_url="https://pubmed.ncbi.nlm.nih.gov/brief/",
+            dedupe_key="pmid:brief",
+            identifiers={"pmid": "brief"},
+        ),
+        raw_record_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "Canine hemangiosarcoma and human angiosarcoma share vascular biology. "
+                "VEGF therapy, toxicity, species mismatch, target selection, translational "
+                "biomarker work, and clinical evidence are discussed."
+            ),
+            content_hash="brief-chunk",
+        )
+    )
+
+    result = HSAResearchService(repo).run_research_brief(
+        ResearchBriefRequest(
+            topic="VEGF therapy in canine hemangiosarcoma",
+            review_mode="deterministic_only",
+            max_chunks_per_perspective=3,
+            max_claims=0,
+        )
+    )
+    runs = repo.list_agent_runs(limit=10)
+
+    assert len(result.perspective_reports) == 3
+    assert result.final_brief.startswith("# Research Brief")
+    assert "[C1]" in result.final_brief
+    assert result.citations
+    assert result.ranked_hypotheses
+    assert result.agent_run_id is not None
+    assert {run.agent_name for run in runs} >= {
+        "evidence_scout_agent",
+        "translational_hypothesis_agent",
+        "skeptic_validation_agent",
+        "research_synthesis_editor_agent",
+    }
+
+
+def test_research_brief_skeptic_retrieval_prefers_clinical_outcome_evidence(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-skeptic.sqlite3", seed=False)
+    weak_raw_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:mirna",
+            content_hash="brief-mirna-raw",
+            source_url="https://pubmed.ncbi.nlm.nih.gov/mirna/",
+            raw_payload={"pmid": "mirna"},
+        )
+    )
+    weak_object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="miRNA expression profiling in canine hemangiosarcoma",
+            source_key="pubmed",
+            raw_record_id=weak_raw_id,
+            canonical_url="https://pubmed.ncbi.nlm.nih.gov/mirna/",
+            dedupe_key="pmid:mirna",
+            identifiers={"pmid": "mirna"},
+        ),
+        weak_raw_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=weak_object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "Canine hemangiosarcoma miRNA expression profiles describe predicted "
+                "VEGF pathway targets and biomarker hypotheses."
+            ),
+            content_hash="brief-mirna-chunk",
+        )
+    )
+    clinical_raw_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:clinical",
+            content_hash="brief-clinical-raw",
+            source_url="https://pubmed.ncbi.nlm.nih.gov/clinical/",
+            raw_payload={"pmid": "clinical"},
+        )
+    )
+    clinical_object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="VEGF inhibitor clinical outcomes in canine hemangiosarcoma",
+            source_key="pubmed",
+            raw_record_id=clinical_raw_id,
+            canonical_url="https://pubmed.ncbi.nlm.nih.gov/clinical/",
+            dedupe_key="pmid:clinical",
+            identifiers={"pmid": "clinical"},
+        ),
+        clinical_raw_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=clinical_object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "A canine hemangiosarcoma VEGF VEGFR inhibitor clinical trial reported "
+                "response, survival outcome, toxicity, adverse events, and no clear "
+                "progression-free benefit."
+            ),
+            content_hash="brief-clinical-chunk",
+        )
+    )
+
+    result = HSAResearchService(repo).run_research_brief(
+        ResearchBriefRequest(
+            topic="VEGF therapy in canine hemangiosarcoma",
+            review_mode="deterministic_only",
+            max_chunks_per_perspective=1,
+            max_claims=0,
+        )
+    )
+
+    skeptic = next(report for report in result.perspective_reports if report.perspective == "skeptic_validation")
+    assert skeptic.citations
+    assert "clinical outcomes" in (skeptic.citations[0].title or "").lower()
+    assert result.evidence["retrieval_strategy"] == "embedding_keyword_blended_perspective_rerank"
+
+
+def test_research_brief_playground_pack_exports_prompt_contracts(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-playground.sqlite3", seed=False)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:playground",
+            content_hash="brief-playground-raw",
+            source_url="https://pubmed.ncbi.nlm.nih.gov/playground/",
+            raw_payload={"pmid": "playground"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="VEGF inhibitor evidence in canine hemangiosarcoma",
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            canonical_url="https://pubmed.ncbi.nlm.nih.gov/playground/",
+            dedupe_key="pmid:playground",
+            identifiers={"pmid": "playground"},
+        ),
+        raw_record_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "Canine hemangiosarcoma VEGF VEGFR inhibitor evidence includes "
+                "clinical outcome, toxicity, translational relevance, and biomarker limitations."
+            ),
+            content_hash="brief-playground-chunk",
+        )
+    )
+
+    pack = HSAResearchService(repo).build_research_brief_playground_pack(
+        ResearchBriefRequest(
+            topic="VEGF therapy in canine hemangiosarcoma",
+            review_mode="external_required",
+            max_chunks_per_perspective=2,
+            max_claims=0,
+        )
+    )
+
+    assert [prompt.perspective for prompt in pack.prompts] == [
+        "evidence_scout",
+        "translational_hypothesis",
+        "skeptic_validation",
+    ]
+    assert pack.evidence["mode"] == "manual_playground_prompt_pack"
+    assert pack.evidence["retrieval_strategy"] == "embedding_keyword_blended_perspective_rerank"
+    assert pack.prompts[0].response_contract["required"] == ["summary", "findings", "errors"]
+    assert "EVIDENCE_PAYLOAD_JSON" in pack.prompts[0].user_prompt
+    assert "Return JSON only" in pack.prompts[0].user_prompt
+    assert pack.prompts[0].prompt_payload["requirements"]["use_only_supplied_citation_ids"] is True
+    assert pack.prompts[2].prompt_payload["perspective"] == "skeptic_validation"
+    assert any("clinical outcomes" in item for item in pack.prompts[2].evaluation_rubric)
+
+
+def test_pubtator_external_ids_normalize_vocabulary_identifiers():
+    assert entity_resolution._pubtator_external_ids(  # noqa: SLF001
+        {"infons": {"type": "Gene", "identifier": "NCBI Gene:7157"}}
+    ) == {
+        "pubtator_identifier": "NCBI Gene:7157",
+        "ncbi_gene_id": "7157",
+    }
+    assert entity_resolution._pubtator_external_ids(  # noqa: SLF001
+        {"infons": {"type": "Species", "identifier": "9606"}}
+    ) == {
+        "pubtator_identifier": "9606",
+        "taxonomy_id": "9606",
+    }
+    assert entity_resolution._pubtator_external_ids(  # noqa: SLF001
+        {"infons": {"type": "Disease", "identifier": "MESH:D012878|OMIM:614420"}}
+    ) == {
+        "pubtator_identifier": "MESH:D012878|OMIM:614420",
+        "mesh_id": "D012878",
+        "omim_id": "614420",
+    }
+    assert entity_resolution._pubtator_external_ids(  # noqa: SLF001
+        {"infons": {"type": "Chemical", "identifier": "CHEBI:16236"}}
+    ) == {
+        "pubtator_identifier": "CHEBI:16236",
+        "chebi_id": "CHEBI:16236",
+    }
+    assert normalize_entity_key("compound", "water", {"chebi_id": "CHEBI:16236"}) == "chebi_id:chebi:16236"
+
+
+def test_pubtator_resolution_uses_external_vocab_ids_for_stable_keys():
+    obj = ResearchObject(
+        object_type="publication",
+        source_key="pubmed",
+        identifiers={"pmid": "1"},
+    )
+    chunk = DocumentChunk(
+        research_object_id=obj.id,
+        chunk_index=0,
+        section_label="abstract",
+        text_content="TP53 and Homo sapiens were annotated by PubTator.",
+        content_hash="pubtator-entity-chunk",
+    )
+
+    mentions = entity_resolution.resolve_chunk_with_pubtator_annotations(
+        chunk,
+        obj,
+        [
+            {"text": "TP53", "infons": {"type": "Gene", "identifier": "7157"}},
+            {"text": "Homo sapiens", "infons": {"type": "Species", "identifier": "NCBI Taxon:9606"}},
+        ],
+    )
+
+    assert {mention.normalized_key for mention in mentions} == {
+        "ncbi_gene_id:7157",
+        "taxonomy_id:9606",
+    }
+    assert any(mention.external_ids.get("ncbi_gene_id") == "7157" for mention in mentions)
+    assert any(mention.external_ids.get("taxonomy_id") == "9606" for mention in mentions)
+
+
 def test_structured_pipeline_can_report_empty_selection(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
 
@@ -2463,6 +2849,52 @@ def test_pmc_oa_v2_normalizer_splits_jats_body_sections():
     assert all("Reference text" not in text for _section_label, text in sections)
 
 
+def test_pmc_oa_v2_normalizer_preserves_nested_jats_sections():
+    record = PMCOAHarvesterV2().normalize(
+        """
+        <article xmlns="http://jats.nlm.nih.gov">
+          <front>
+            <article-meta>
+              <article-id pub-id-type="pmc">PMC33</article-id>
+              <title-group><article-title>Canine hemangiosarcoma nested sections</article-title></title-group>
+              <abstract><p>Short abstract.</p></abstract>
+            </article-meta>
+          </front>
+          <body>
+            <sec>
+              <title>Results</title>
+              <p>Human angiosarcoma comparison was summarized.</p>
+              <sec>
+                <title>VEGF Signaling</title>
+                <p>Nested VEGF signaling evidence should become its own searchable section.</p>
+              </sec>
+            </sec>
+            <sec>
+              <title>References</title>
+              <sec>
+                <title>Ignored Nested Reference</title>
+                <p>Nested reference text should not become a body chunk.</p>
+              </sec>
+            </sec>
+          </body>
+        </article>
+        """,
+        oa_metadata={"oa_license": "CC BY"},
+    )
+
+    sections = PMCOAHarvesterV2().chunk_text_sections(record)
+
+    assert [section_label for section_label, _text in sections] == [
+        "title_abstract",
+        "full_text:results",
+        "full_text:vegf_signaling",
+    ]
+    assert "Human angiosarcoma comparison" in sections[1][1]
+    assert "Nested VEGF signaling evidence" not in sections[1][1]
+    assert "Nested VEGF signaling evidence" in sections[2][1]
+    assert all("Nested reference text" not in text for _section_label, text in sections)
+
+
 def test_pmc_oa_v2_chunks_full_text_not_just_abstract():
     record = PMCOAHarvesterV2().normalize(
         """
@@ -2610,7 +3042,7 @@ def test_pmc_oa_v2_fetch_applies_publication_date_params(monkeypatch):
     assert records == []
 
 
-def test_local_ingestion_replaces_full_text_chunks_by_section(tmp_path, monkeypatch):
+def test_local_ingestion_preserves_full_text_chunks_when_duplicate_metadata_arrives(tmp_path, monkeypatch):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
     pipeline = LocalIngestionPipeline(repo)
     query = SourceQuery(
@@ -2662,11 +3094,14 @@ def test_local_ingestion_replaces_full_text_chunks_by_section(tmp_path, monkeypa
     FakeEuropePMCHarvester.records = [abstract_only_record]
     refreshed = pipeline.ingest_query(query, limit=1)
     refreshed_chunks = repo.list_document_chunks(source_key="europe_pmc")
+    refreshed_object = repo.get_research_object(full_text_record.research_object.id)
 
-    assert refreshed.document_chunks == 1
+    assert refreshed.document_chunks == 0
     assert refreshed.full_text_research_objects == 0
-    assert refreshed.section_chunk_counts == {"title_abstract": 1}
-    assert [chunk.section_label for chunk in refreshed_chunks] == ["title_abstract"]
+    assert refreshed.section_chunk_counts == {}
+    assert refreshed_object is not None
+    assert refreshed_object.metadata["full_text_available"] is True
+    assert [chunk.section_label for chunk in refreshed_chunks] == ["title_abstract", "full_text"]
 
 
 def test_pmc_oa_v2_is_registered_harvester():
@@ -2872,6 +3307,57 @@ def test_dagster_x_topic_monitor_review_asset_uses_twitterapi_io(monkeypatch):
     assert dagster_asset_module.x_topic_monitor_review_job is not None
 
 
+def test_dagster_x_topic_monitor_review_asset_paces_twitterapi_io_queries(monkeypatch):
+    calls = []
+    sleeps = []
+    repo = InMemoryResearchRepository()
+    queries = [
+        SourceQuery(
+            source_key=x_topic_monitor.X_TOPIC_SOURCE_KEY,
+            query_name="first_query",
+            query_text='"canine hemangiosarcoma"',
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+        ),
+        SourceQuery(
+            source_key=x_topic_monitor.X_TOPIC_SOURCE_KEY,
+            query_name="second_query",
+            query_text='"angiosarcoma" "dog"',
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+        ),
+    ]
+
+    class FakeTwitterApiIoProvider:
+        def search(self, request):
+            calls.append(request.query_name)
+            return x_topic_monitor.XTopicProviderResult(
+                provider="twitterapi_io",
+                query_name=request.query_name,
+                raw_tweet_count=0,
+                candidates=[],
+            )
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            return repo
+
+    monkeypatch.delenv("HSA_X_TOPIC_QUERY_NAME", raising=False)
+    monkeypatch.setenv("HSA_X_TOPIC_MAX_RESULTS", "10")
+    monkeypatch.setenv("HSA_X_TOPIC_QUERY_DELAY_SECONDS", "0.25")
+    monkeypatch.setenv("HSA_X_TOPIC_REVIEW_MODE", "deterministic_only")
+    monkeypatch.setattr(x_topic_monitor, "build_default_source_queries", lambda: queries)
+    monkeypatch.setattr(x_topic_monitor, "TwitterApiIoProvider", FakeTwitterApiIoProvider)
+    monkeypatch.setattr(dagster_asset_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = dagster_asset_module.x_topic_monitor_review_report.node_def.compute_fn.decorated_fn(
+        FakeRepositoryResource()
+    )
+
+    assert calls == ["first_query", "second_query"]
+    assert sleeps == [0.25]
+    assert result.value["query_delay_seconds"] == 0.25
+    assert result.value["raw_tweet_count"] == 0
+
+
 def test_x_topic_monitor_normalizes_post_for_manual_review():
     candidate = x_topic_monitor.normalize_post_payload(
         {
@@ -2897,6 +3383,31 @@ def test_x_topic_monitor_normalizes_post_for_manual_review():
     assert "canine hemangiosarcoma" in candidate.matched_terms
     assert candidate.durable_links == ["https://pubmed.ncbi.nlm.nih.gov/123456/"]
     assert candidate.quality_score > 0.5
+
+
+def test_x_topic_monitor_extracts_durable_links_from_text_fallbacks():
+    candidate = x_topic_monitor.normalize_post_payload(
+        {
+            "id": "123",
+            "author": {"username": "vetonc"},
+            "lang": "en",
+            "text": (
+                "Canine hemangiosarcoma update with DOI 10.1158/0008-5472.CAN-26-0002, "
+                "PMID: 87654321, PMCID: PMC6686562, NCT12345678, and "
+                "https://www.nature.com/articles/s41586-026-00001."
+            ),
+        },
+        query_name="x_disease_monitoring",
+    )
+
+    assert candidate.durable_links == [
+        "https://clinicaltrials.gov/study/NCT12345678",
+        "https://doi.org/10.1158/0008-5472.CAN-26-0002",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC6686562/",
+        "https://pubmed.ncbi.nlm.nih.gov/87654321/",
+        "https://www.nature.com/articles/s41586-026-00001",
+    ]
+    assert "contains durable source link" in candidate.review_reasons
 
 
 def test_x_topic_review_contracts_validate():
@@ -3021,6 +3532,105 @@ def test_x_topic_review_queues_resolved_articles_for_scrape_followup(monkeypatch
     assert link.metadata["followup_type"] == "controlled_scrape_review"
     assert link.metadata["source_profile"] == "x_linked_article"
     assert link.metadata["original_url"] == "https://go.ufl.edu/r2uqpua"
+
+
+def test_x_topic_review_queues_publisher_articles_for_scrape_followup():
+    result = x_topic_review.XTopicReviewAgent().run(
+        XTopicReviewRequest(
+            review_mode="deterministic_only",
+            candidates=[
+                {
+                    "post_id": "123",
+                    "query_name": "x_disease_monitoring",
+                    "quality_score": 0.7,
+                    "durable_links": ["https://www.nature.com/articles/s41586-026-00001"],
+                }
+            ],
+        )
+    )
+
+    action = result.actions[0]
+    link = action.ingestible_links[0]
+    assert action.action == "queue_source_followup"
+    assert link.recommended_source_key == "x_linked_article"
+    assert link.metadata["followup_type"] == "controlled_scrape_review"
+    assert link.metadata["resolution_status"] == "not_short_link"
+
+
+def test_x_topic_review_queues_unresolved_short_links_for_followup(monkeypatch):
+    def fake_follow_redirects(url):
+        raise RuntimeError("timeout")
+
+    monkeypatch.setattr(x_topic_review, "_follow_redirects", fake_follow_redirects)
+
+    result = x_topic_review.XTopicReviewAgent().run(
+        XTopicReviewRequest(
+            review_mode="deterministic_only",
+            candidates=[
+                {
+                    "post_id": "123",
+                    "query_name": "x_disease_monitoring",
+                    "quality_score": 0.7,
+                    "durable_links": ["https://t.co/source"],
+                }
+            ],
+        )
+    )
+
+    action = result.actions[0]
+    link = action.ingestible_links[0]
+    assert action.action == "queue_source_followup"
+    assert link.url == "https://t.co/source"
+    assert link.recommended_source_key == "x_linked_article"
+    assert link.metadata["resolution_status"] == "failed"
+    assert link.metadata["fallback_reason"] == "unresolved_short_link"
+
+
+def test_x_topic_review_strips_tracking_params_from_publisher_dois():
+    result = x_topic_review.XTopicReviewAgent().run(
+        XTopicReviewRequest(
+            review_mode="deterministic_only",
+            candidates=[
+                {
+                    "post_id": "123",
+                    "query_name": "x_disease_monitoring",
+                    "quality_score": 0.7,
+                    "durable_links": [
+                        "https://www.frontiersin.org/journals/veterinary-science/articles/10.3389/fvets.2026.1778366/full?utm_source=twitter#metrics"
+                    ],
+                }
+            ],
+        )
+    )
+
+    link = result.actions[0].ingestible_links[0]
+    assert link.recommended_source_key == "crossref"
+    assert link.identifier == "10.3389/fvets.2026.1778366"
+
+
+def test_x_topic_review_sends_high_volume_link_lists_to_human_review():
+    links = [f"https://pubmed.ncbi.nlm.nih.gov/{100000 + index}/" for index in range(21)]
+
+    result = x_topic_review.XTopicReviewAgent().run(
+        XTopicReviewRequest(
+            review_mode="deterministic_only",
+            candidates=[
+                {
+                    "post_id": "123",
+                    "query_name": "x_disease_monitoring",
+                    "quality_score": 0.9,
+                    "durable_links": links,
+                }
+            ],
+        )
+    )
+
+    action = result.actions[0]
+    assert action.action == "needs_human_review"
+    assert action.ingestible_links == []
+    assert action.metadata["actionable_link_count"] == 21
+    assert result.ingestion_candidate_count == 0
+    assert result.needs_human_review_count == 1
 
 
 def test_x_topic_review_openrouter_preserves_deterministic_ingestion_guardrail(monkeypatch):
@@ -5433,6 +6043,59 @@ def test_x_linked_article_parser_extracts_metadata_identifiers(tmp_path, monkeyp
     }
 
 
+def test_x_linked_article_parser_keeps_context_separate_when_no_primary_identifier(tmp_path, monkeypatch):
+    html_path = tmp_path / "article-context.html"
+    html_path.write_text(
+        """
+        <html>
+          <head><title>Angiosarcoma frontier</title></head>
+          <body>
+            <p>Now, for the first time, the team has performed comprehensive genomic
+            profiling of angiosarcoma cells, analyzing hundreds of genes in specific
+            cell types and studying how they interact with the environment.</p>
+            <p>The work was <a href="https://www.abstractsonline.com/pp8/#!/21436/presentation/7856">
+            presented</a> at the American Association for Cancer Research Annual
+            Meeting 2026 and showed RAS plays a role in survival and spread.</p>
+            <p>Research in Kim's lab focuses on angiosarcoma's counterpart in dogs,
+            hemangiosarcoma, which is common in dogs.</p>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    profile = ScrapeSourceProfile(
+        source_key="x_linked_article",
+        display_name="X Linked Article Test",
+        base_url=tmp_path.as_uri(),
+        allowed_url_patterns=[f"{tmp_path.as_uri()}/*"],
+        robots_policy="reviewed",
+        rate_limit_per_minute=120,
+        parser="generic_html",
+        storage_policy="metadata_and_link_review",
+        approval_required=False,
+        enabled=True,
+    )
+    monkeypatch.setattr(scraper_bridge, "SCRAPE_SOURCE_PROFILES", (profile,))
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+    bridge = ScrapeBridge(repo, artifact_root=tmp_path / "artifacts")
+
+    bridge.fetch(ScrapeFetchRequest(source_key="x_linked_article", urls=[html_path.as_uri()]))
+    record = bridge.parse("x_linked_article").records[0]
+
+    assert record.fields["primary_source_links"] == []
+    assert record.parser_confidence >= 0.45
+    assert "hemangiosarcoma" in record.fields["article_text_preview"]
+    assert any("comprehensive genomic profiling" in span["text"] for span in record.fields["evidence_spans"])
+    assert record.fields["context_links"] == [
+        {
+            "href": "https://www.abstractsonline.com/pp8/#!/21436/presentation/7856",
+            "text": "presented",
+            "host": "www.abstractsonline.com",
+            "reason": "conference_abstract_link",
+        }
+    ]
+
+
 def test_x_linked_article_followup_collects_agent_links_and_parses(tmp_path, monkeypatch):
     article_url = "https://cancer.ufl.edu/2026/04/20/angiosarcoma-frontier/"
     html = b"""
@@ -5489,6 +6152,11 @@ def test_x_linked_article_followup_collects_agent_links_and_parses(tmp_path, mon
     assert result.fetched_pages == 1
     assert result.parsed_records == 1
     assert result.review_ids
+    assert result.candidate_results[0]["status"] == "parsed"
+    assert result.candidate_results[0]["url"] == article_url
+    assert result.candidate_results[0]["artifact_id"]
+    assert result.candidate_results[0]["review_id"]
+    assert result.candidate_results[0]["primary_source_link_count"] == 2
     assert {
         (link["recommended_source_key"], link["identifier_type"], link["identifier"])
         for link in result.primary_source_links
@@ -5508,6 +6176,13 @@ def test_x_linked_article_followup_requires_fetch_approval(tmp_path):
     assert result.candidate_urls == ["https://cancer.ufl.edu/article"]
     assert result.requires_fetch_approval is True
     assert result.fetched_pages == 0
+    assert result.candidate_results == [
+        {
+            "url": "https://cancer.ufl.edu/article",
+            "status": "requires_fetch_approval",
+            "reason": "Explicit approval is required before fetching X-linked article URLs.",
+        }
+    ]
 
 
 def test_source_followup_queue_roundtrips_sqlite_and_memory(tmp_path):
@@ -5544,13 +6219,138 @@ def test_source_followup_queue_roundtrips_sqlite_and_memory(tmp_path):
         queued_again = HSAResearchService(repo).queue_source_followups(
             SourceFollowupQueueRequest(review_ids=[review.review_id])
         )
+        queued_existing = HSAResearchService(repo).queue_source_followups(
+            SourceFollowupQueueRequest(review_ids=[review.review_id], include_existing=True)
+        )
         rows = HSAResearchService(repo).list_source_followups(source_key="crossref")
 
         assert queued.queued == 1
         assert queued_again.skipped_existing == 1
+        assert queued_existing.queued == 0
+        assert len(queued_existing.items) == 1
         assert len(rows) == 1
         assert rows[0].identifier == "10.1234/test"
         assert rows[0].status == "queued"
+
+
+def test_source_followup_queue_reads_linked_article_agent_recommendations(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "agent-followups.sqlite3", seed=False)
+    review = repo.upsert_scrape_review(
+        ScrapeReviewRecord(
+            source_key="x_linked_article",
+            artifact_id=uuid4(),
+            source_record_id="article-context",
+            title="Angiosarcoma context article",
+            canonical_url="https://example.edu/article",
+            parser_confidence=0.45,
+            fields={
+                "primary_source_links": [],
+                "evidence_spans": [
+                    {
+                        "text": "The article mentions DOI 10.1158/0008-5472.CAN-26-0002.",
+                        "matched_terms": ["doi"],
+                    }
+                ],
+            },
+        )
+    )
+    agent_run = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="x_linked_article_review_agent",
+            status=RunStatus.COMPLETED,
+            source_key="x_linked_article",
+            output_payload={
+                "actions": [
+                    {
+                        "review_id": str(review.review_id),
+                        "source_record_id": review.source_record_id,
+                        "action": "queue_primary_source_followup",
+                        "reason": "Agent found a validated DOI in the article context.",
+                        "followup_links": [
+                            {
+                                "url": "https://doi.org/10.1158/0008-5472.CAN-26-0002",
+                                "recommended_source_key": "crossref",
+                                "identifier_type": "doi",
+                                "identifier": "10.1158/0008-5472.CAN-26-0002",
+                                "should_ingest": True,
+                                "reason": "Validated DOI from linked article review.",
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+    )
+
+    result = HSAResearchService(repo).queue_source_followups(
+        SourceFollowupQueueRequest(review_ids=[review.review_id])
+    )
+
+    assert result.reviewed_records == 1
+    assert result.agent_runs_seen == 1
+    assert result.agent_recommendations_seen == 1
+    assert result.queued == 1
+    row = HSAResearchService(repo).list_source_followups(source_key="crossref")[0]
+    assert row.identifier == "10.1158/0008-5472.can-26-0002"
+    assert row.origin_agent_run_id == agent_run.agent_run_id
+    assert row.metadata["recommendation_source"] == "linked_article_review_agent"
+    assert row.metadata["agent_action_reason"] == "Agent found a validated DOI in the article context."
+
+
+def test_source_followup_queue_reads_x_topic_agent_primary_source_flags(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "x-topic-followups.sqlite3", seed=False)
+    agent_run = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="x_topic_review_agent",
+            status=RunStatus.COMPLETED,
+            source_key="x_topic_monitor",
+            output_payload={
+                "actions": [
+                    {
+                        "source_record_id": "tweet-1",
+                        "query_name": "x_trial_monitoring",
+                        "username": "vetonc",
+                        "action": "flag_for_ingestion",
+                        "reason": "Candidate links to a durable PubMed record.",
+                        "ingestible_links": [
+                            {
+                                "url": "https://pubmed.ncbi.nlm.nih.gov/12345678/",
+                                "recommended_source_key": "pubmed",
+                                "identifier_type": "pmid",
+                                "identifier": "12345678",
+                                "should_ingest": True,
+                                "reason": "PubMed link found in X topic review.",
+                            },
+                            {
+                                "url": "https://example.edu/article",
+                                "recommended_source_key": "x_linked_article",
+                                "identifier_type": "unknown",
+                                "identifier": None,
+                                "should_ingest": False,
+                                "reason": "Context article.",
+                            },
+                        ],
+                    }
+                ]
+            },
+        )
+    )
+
+    result = HSAResearchService(repo).queue_source_followups(
+        SourceFollowupQueueRequest(source_key="x_topic_monitor")
+    )
+
+    assert result.reviewed_records == 0
+    assert result.agent_runs_seen == 1
+    assert result.agent_recommendations_seen == 2
+    assert result.queued == 1
+    assert result.skipped_uningestible == 1
+    row = HSAResearchService(repo).list_source_followups(source_key="pubmed")[0]
+    assert row.identifier == "12345678"
+    assert row.origin_source_key == "x_topic_monitor"
+    assert row.origin_agent_run_id == agent_run.agent_run_id
+    assert row.metadata["recommendation_source"] == "x_topic_review_agent"
+    assert row.metadata["source_record_id"] == "tweet-1"
 
 
 def test_source_followup_ingest_dry_run_lists_queue_items(tmp_path):
@@ -5570,6 +6370,82 @@ def test_source_followup_ingest_dry_run_lists_queue_items(tmp_path):
     assert result.skipped == 1
     assert result.items[0].identifier == "12345678"
     assert repo.list_source_followups(source_key="pubmed")[0].status == "queued"
+
+
+def test_source_followup_pmc_oa_fallback_queues_pubmed_and_crossref(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "pmc-fallback.sqlite3", seed=False)
+    item = repo.upsert_source_followup(
+        SourceFollowupQueueItem(
+            source_key="pmc_oa",
+            identifier_type="pmcid",
+            identifier="PMC5634767",
+            origin_source_key="x_topic_monitor",
+            metadata={"recommendation_source": "x_topic_review_agent"},
+        )
+    )
+    monkeypatch.setattr(
+        source_followup,
+        "_pmc_idconv_metadata",
+        lambda pmcid: {"pmcid": pmcid, "pmid": 28606972, "doi": "10.1634/theoncologist.2016-0429"},
+    )
+
+    fallback_items = source_followup._queue_pmc_metadata_fallbacks(
+        repo,
+        item,
+        approved_by="unit-test",
+    )
+    rows = HSAResearchService(repo).list_source_followups(limit=10)
+
+    assert {(row.source_key, row.identifier_type, row.identifier) for row in fallback_items} == {
+        ("pubmed", "pmid", "28606972"),
+        ("crossref", "doi", "10.1634/theoncologist.2016-0429"),
+    }
+    assert len(rows) == 3
+    pubmed_row = next(row for row in rows if row.source_key == "pubmed")
+    assert pubmed_row.metadata["fallback_type"] == "pmc_idconv_pubmed"
+    assert pubmed_row.metadata["fallback_from_identifier"] == "PMC5634767"
+    assert pubmed_row.metadata["approved_by"] == "unit-test"
+
+
+def test_unpaywall_doi_followups_queue_only_doi_objects_idempotently(tmp_path):
+    sqlite_repo = SQLiteResearchRepository(tmp_path / "doi-followups.sqlite3", seed=False)
+    memory_repo = InMemoryResearchRepository()
+
+    doi_object = ResearchObject(
+        object_type=ResearchObjectType.PUBLICATION,
+        title="Open access DOI candidate",
+        source_key="crossref",
+        identifiers={"doi": "https://doi.org/10.1234/HSA.OA"},
+    )
+    non_doi_object = ResearchObject(
+        object_type=ResearchObjectType.PUBLICATION,
+        title="No DOI candidate",
+        source_key="pubmed",
+        identifiers={"pmid": "12345678"},
+    )
+
+    sqlite_repo.upsert_research_object(doi_object)
+    sqlite_repo.upsert_research_object(non_doi_object)
+    memory_repo.research_objects[doi_object.id] = doi_object
+    memory_repo.research_objects[non_doi_object.id] = non_doi_object
+
+    for repo in (sqlite_repo, memory_repo):
+        service = HSAResearchService(repo)
+        queued = service.queue_unpaywall_doi_followups(DoiOpenAccessFollowupQueueRequest(limit=10))
+        queued_again = service.queue_unpaywall_doi_followups(DoiOpenAccessFollowupQueueRequest(limit=10))
+        rows = service.list_source_followups(source_key="unpaywall")
+
+        assert queued.reviewed_records == 2
+        assert queued.queued == 1
+        assert queued.skipped_uningestible == 1
+        assert queued_again.queued == 0
+        assert queued_again.skipped_existing == 1
+        assert len(rows) == 1
+        assert rows[0].identifier_type == "doi"
+        assert rows[0].identifier == "10.1234/hsa.oa"
+        assert rows[0].metadata["followup_type"] == "doi_open_access_enrichment"
+        assert rows[0].metadata["lookup_mode"] == "doi"
+        assert rows[0].metadata["title_search"] is False
 
 
 def test_source_followup_query_params_are_source_safe():
@@ -5595,6 +6471,18 @@ def test_source_followup_query_params_are_source_safe():
         "require_policy_match": False,
     }
     assert clinical_query.query_params == {"require_policy_match": False}
+
+    unpaywall_query = source_followup._query_for_followup(
+        SourceFollowupQueueItem(
+            source_key="unpaywall",
+            identifier_type="doi",
+            identifier="10.1234/HSA.OA",
+            origin_source_key="crossref",
+        )
+    )
+    assert unpaywall_query.source_key == "unpaywall"
+    assert unpaywall_query.query_text == "10.1234/hsa.oa"
+    assert unpaywall_query.query_name == "source_followup_doi_10_1234_hsa_oa"
 
 
 def test_followup_internal_policy_params_do_not_reach_external_apis(monkeypatch):
@@ -5690,6 +6578,51 @@ def test_x_linked_article_review_agent_recommends_queue_and_ledgers(tmp_path):
     assert runs[0].summary["queue_candidate_count"] == 1
 
 
+def test_x_linked_article_review_agent_uses_context_without_queueing_it(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "linked-review-context.sqlite3", seed=False)
+    review = repo.upsert_scrape_review(
+        ScrapeReviewRecord(
+            source_key="x_linked_article",
+            artifact_id=uuid4(),
+            source_record_id="article-context",
+            title="Angiosarcoma conference article",
+            canonical_url="https://cancer.ufl.edu/article",
+            parser_confidence=0.45,
+            fields={
+                "primary_source_links": [],
+                "context_links": [
+                    {
+                        "href": "https://www.abstractsonline.com/pp8/#!/21436/presentation/7856",
+                        "text": "presented",
+                        "host": "www.abstractsonline.com",
+                        "reason": "conference_abstract_link",
+                    }
+                ],
+                "evidence_spans": [
+                    {
+                        "text": "The work was presented at AACR and showed RAS plays a role.",
+                        "matched_terms": ["presented", "RAS"],
+                        "reason": "article_body_source_context",
+                    }
+                ],
+                "article_text_preview": "The work was presented at AACR.",
+            },
+        )
+    )
+
+    result = HSAResearchService(repo).run_x_linked_article_review(
+        XLinkedArticleReviewRequest(review_ids=[review.review_id])
+    )
+
+    action = result.actions[0]
+    assert action.action == "needs_human_review"
+    assert action.followup_links == []
+    assert action.metadata["context_link_count"] == 1
+    assert action.metadata["context_links"][0]["reason"] == "conference_abstract_link"
+    assert result.queue_candidate_count == 0
+    assert result.needs_human_review_count == 1
+
+
 def test_x_linked_article_review_openrouter_preserves_queue_guardrail(tmp_path, monkeypatch):
     from hsa_research.ingestion_bridge import x_linked_article_review
 
@@ -5756,10 +6689,92 @@ def test_x_linked_article_review_openrouter_preserves_queue_guardrail(tmp_path, 
     assert result.evidence["model_reviews"][0]["status"] == "completed"
 
 
+def test_x_linked_article_review_openrouter_rejects_unvalidated_context_links(tmp_path, monkeypatch):
+    from hsa_research.ingestion_bridge import x_linked_article_review
+
+    repo = SQLiteResearchRepository(tmp_path / "linked-review-invalid-model.sqlite3", seed=False)
+    review = repo.upsert_scrape_review(
+        ScrapeReviewRecord(
+            source_key="x_linked_article",
+            artifact_id=uuid4(),
+            source_record_id="article-context",
+            title="Angiosarcoma conference article",
+            parser_confidence=0.45,
+            fields={
+                "primary_source_links": [],
+                "context_links": [
+                    {
+                        "href": "https://www.abstractsonline.com/pp8/#!/21436/presentation/7856",
+                        "text": "presented",
+                        "host": "www.abstractsonline.com",
+                        "reason": "conference_abstract_link",
+                    }
+                ],
+                "evidence_spans": [
+                    {
+                        "text": "The work was presented at AACR.",
+                        "matched_terms": ["presented"],
+                        "reason": "article_body_source_context",
+                    }
+                ],
+            },
+        )
+    )
+
+    def fake_review_model(model_name, review_payload):
+        assert review_payload["articles"][0]["context_links"][0]["host"] == "www.abstractsonline.com"
+        assert review_payload["articles"][0]["evidence_spans"]
+        return {
+            "text": json.dumps(
+                {
+                    "actions": [
+                        {
+                            "review_id": str(review.review_id),
+                            "source_record_id": "article-context",
+                            "action": "queue_primary_source_followup",
+                            "severity": "watch",
+                            "reason": "Model tried to queue a conference page.",
+                            "followup_links": [
+                                {
+                                    "url": "https://www.abstractsonline.com/pp8/#!/21436/presentation/7856",
+                                    "recommended_source_key": "x_linked_article",
+                                    "identifier_type": "unknown",
+                                    "identifier": None,
+                                    "should_ingest": True,
+                                    "reason": "Conference context.",
+                                }
+                            ],
+                        }
+                    ],
+                    "evidence": {"review_summary": "reviewed"},
+                    "errors": [],
+                }
+            ),
+            "metadata": {"model_name": "anthropic/claude-sonnet-test", "usage": {"cost": 0.01}},
+        }
+
+    monkeypatch.setattr(x_linked_article_review, "_openrouter_review_model", fake_review_model)
+
+    result = HSAResearchService(repo).run_x_linked_article_review(
+        XLinkedArticleReviewRequest(
+            review_ids=[review.review_id],
+            review_mode="openrouter_required",
+            review_models=["anthropic/claude-sonnet-test"],
+        )
+    )
+
+    assert result.actions[0].action == "needs_human_review"
+    assert result.actions[0].followup_links == []
+    assert result.queue_candidate_count == 0
+    assert result.needs_human_review_count >= 1
+
+
 def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.x_linked_article_review_job is not None
     assert dagster_asset_module.source_followup_queue_job is not None
     assert dagster_asset_module.source_followup_ingest_job is not None
+    assert dagster_asset_module.research_brief_agent_job is not None
+    assert dagster_asset_module.research_brief_playground_pack_job is not None
 
 
 def test_scrape_bridge_ingest_requires_approval(tmp_path, monkeypatch):

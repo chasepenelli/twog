@@ -28,6 +28,7 @@ X_TOPIC_REVIEW_AGENT_NAME = "x_topic_review_agent"
 X_TOPIC_REVIEW_AGENT_VERSION = "v1"
 DEFAULT_X_TOPIC_REVIEW_MODEL = "~anthropic/claude-sonnet-latest"
 DEFAULT_X_TOPIC_COMPARE_MODELS = (DEFAULT_X_TOPIC_REVIEW_MODEL,)
+MAX_AUTO_INGEST_LINKS_PER_CANDIDATE = 20
 _ALLOWED_ACTIONS = {
     "flag_for_ingestion",
     "queue_source_followup",
@@ -72,6 +73,12 @@ _RESOLVABLE_SHORT_LINK_HOSTS = (
     "t.co",
     "x.com",
 )
+_UNRESOLVED_SHORT_LINK_FOLLOWUP_HOSTS = (
+    "go.ufl.edu",
+    "bit.ly",
+    "tinyurl.com",
+    "t.co",
+)
 _SOURCE_FOLLOWUP_KEY = "x_linked_article"
 _SOURCE_FOLLOWUP_HOST_MARKERS = (
     ".edu",
@@ -80,6 +87,25 @@ _SOURCE_FOLLOWUP_HOST_MARKERS = (
     "ncbi.nlm.nih.gov",
     "fda.gov",
     "cancer.gov",
+    "nature.com",
+    "science.org",
+    "cell.com",
+    "aacrjournals.org",
+    "ascopubs.org",
+    "frontiersin.org",
+    "mdpi.com",
+    "springer.com",
+    "biomedcentral.com",
+    "wiley.com",
+    "tandfonline.com",
+    "sciencedirect.com",
+    "nejm.org",
+    "jamanetwork.com",
+    "biorxiv.org",
+    "medrxiv.org",
+    "peerj.com",
+    "plos.org",
+    "bmj.com",
 )
 
 
@@ -145,6 +171,7 @@ def _review_candidate(candidate: Mapping[str, Any]) -> XTopicReviewAction:
         for link in links
         if link.metadata.get("followup_type") == "controlled_scrape_review"
     ]
+    actionable_link_count = len(ingestible_links) + len(followup_links)
     evidence_refs = [f"candidate:{post_id}"] if post_id else []
 
     if quality_score < 0.2:
@@ -157,6 +184,26 @@ def _review_candidate(candidate: Mapping[str, Any]) -> XTopicReviewAction:
             reason="Candidate scored below the social-monitoring quality bar.",
             ingestible_links=links,
             evidence_refs=evidence_refs,
+        )
+
+    if actionable_link_count > MAX_AUTO_INGEST_LINKS_PER_CANDIDATE:
+        preview_links = [link.url for link in [*ingestible_links, *followup_links][:MAX_AUTO_INGEST_LINKS_PER_CANDIDATE]]
+        return XTopicReviewAction(
+            source_record_id=post_id,
+            query_name=query_name,
+            username=username,
+            action="needs_human_review",
+            severity="watch",
+            reason=(
+                "Candidate contains a high-volume linked-source list; require operator review "
+                "before queuing primary-source ingestion."
+            ),
+            ingestible_links=[],
+            evidence_refs=evidence_refs + preview_links,
+            metadata={
+                "actionable_link_count": actionable_link_count,
+                "max_auto_ingest_links_per_candidate": MAX_AUTO_INGEST_LINKS_PER_CANDIDATE,
+            },
         )
 
     if ingestible_links:
@@ -261,6 +308,25 @@ def _classify_link(url: str) -> XTopicLinkedSource:
             },
         )
 
+    if _is_unresolved_short_link(parsed.netloc, resolution_metadata):
+        return XTopicLinkedSource(
+            url=normalized,
+            recommended_source_key=_SOURCE_FOLLOWUP_KEY,
+            identifier_type="unknown",
+            identifier=None,
+            should_ingest=False,
+            reason=(
+                "Short link could not be resolved automatically; queue for controlled "
+                "scraper/link review instead of dropping a potentially useful source."
+            ),
+            metadata={
+                **resolution_metadata,
+                "followup_type": "controlled_scrape_review",
+                "source_profile": _SOURCE_FOLLOWUP_KEY,
+                "fallback_reason": "unresolved_short_link",
+            },
+        )
+
     return XTopicLinkedSource(
         url=normalized,
         recommended_source_key=None,
@@ -279,7 +345,7 @@ def _resolve_review_link(url: str) -> tuple[str, dict[str, Any]]:
         return url, metadata
     parsed = urllib.parse.urlparse(url)
     host = parsed.netloc.lower()
-    should_resolve = any(host == item or host.endswith(f".{item}") for item in _RESOLVABLE_SHORT_LINK_HOSTS)
+    should_resolve = _host_matches(host, _RESOLVABLE_SHORT_LINK_HOSTS)
     if not should_resolve:
         metadata["resolution_status"] = "not_short_link"
         return url, metadata
@@ -317,15 +383,36 @@ def _extract_doi(url: str) -> str | None:
     parsed = urllib.parse.urlparse(url)
     if "doi.org" in parsed.netloc.lower():
         path = urllib.parse.unquote(parsed.path.lstrip("/"))
-        return path or None
+        return _clean_doi(path)
     match = _DOI_RE.search(url)
     if not match:
         return None
-    return match.group(0).rstrip(").,;")
+    return _clean_doi(match.group(0))
+
+
+def _clean_doi(value: str) -> str | None:
+    doi = urllib.parse.unquote(value).strip()
+    doi = doi.split("?", 1)[0].split("#", 1)[0].rstrip(").,;:&")
+    for suffix in ("/full", "/abstract", "/pdf", "/epdf", "/html"):
+        if doi.lower().endswith(suffix):
+            doi = doi[: -len(suffix)]
+            break
+    return doi or None
 
 
 def _is_source_followup_link(host_path: str) -> bool:
     return any(marker in host_path for marker in _SOURCE_FOLLOWUP_HOST_MARKERS)
+
+
+def _is_unresolved_short_link(host: str, metadata: Mapping[str, Any]) -> bool:
+    return (
+        metadata.get("resolution_status") == "failed"
+        and _host_matches(host.lower(), _UNRESOLVED_SHORT_LINK_FOLLOWUP_HOSTS)
+    )
+
+
+def _host_matches(host: str, markers: Sequence[str]) -> bool:
+    return any(host == item or host.endswith(f".{item}") for item in markers)
 
 
 def _build_review_payload(

@@ -18,11 +18,13 @@ from .contracts import (
     ClaimCurationRequest,
     ClaimSearchRequest,
     CommitHypothesisRequest,
+    DoiOpenAccessFollowupQueueRequest,
     FullTextTriageRequest,
     FullTextOpsRequest,
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
+    ResearchBriefRequest,
     ResearchChunkSearchRequest,
     ResearchObjectReadRequest,
     RetrievalSmokeRequest,
@@ -117,6 +119,61 @@ def get_research_object_tool(
     )
     result = get_service().get_research_object(request)
     return {} if result is None else result.model_dump(mode="json")
+
+
+def run_research_brief_tool(
+    topic: str,
+    disease_scope: str = "canine hemangiosarcoma and human angiosarcoma",
+    source_key: str | None = None,
+    max_chunks_per_perspective: int = 8,
+    max_claims: int = 12,
+    max_chunk_chars: int = 1800,
+    brief_style: str = "technical",
+    model_profile: str = "research_brief",
+    review_mode: str = "openrouter_required",
+    review_models: list[str] | None = None,
+) -> dict:
+    """Run citation-first perspective agents and return a synthesized research brief."""
+
+    request = ResearchBriefRequest(
+        topic=topic,
+        disease_scope=disease_scope,
+        source_key=source_key,
+        max_chunks_per_perspective=max_chunks_per_perspective,
+        max_claims=max_claims,
+        max_chunk_chars=max_chunk_chars,
+        brief_style=brief_style,  # type: ignore[arg-type]
+        model_profile=model_profile,
+        review_mode=review_mode,  # type: ignore[arg-type]
+        review_models=review_models or [],
+    )
+    return get_service().run_research_brief(request).model_dump(mode="json")
+
+
+def build_research_brief_playground_pack_tool(
+    topic: str,
+    disease_scope: str = "canine hemangiosarcoma and human angiosarcoma",
+    source_key: str | None = None,
+    max_chunks_per_perspective: int = 8,
+    max_claims: int = 12,
+    max_chunk_chars: int = 1800,
+    brief_style: str = "technical",
+    model_profile: str = "research_brief",
+) -> dict:
+    """Build playground-ready prompts for manual model review."""
+
+    request = ResearchBriefRequest(
+        topic=topic,
+        disease_scope=disease_scope,
+        source_key=source_key,
+        max_chunks_per_perspective=max_chunks_per_perspective,
+        max_claims=max_claims,
+        max_chunk_chars=max_chunk_chars,
+        brief_style=brief_style,  # type: ignore[arg-type]
+        model_profile=model_profile,
+        review_mode="external_required",
+    )
+    return get_service().build_research_brief_playground_pack(request).model_dump(mode="json")
 
 
 def run_retrieval_smoke_tool(
@@ -307,8 +364,10 @@ def queue_source_followups_tool(
     review_status: str | None = None,
     limit: int = 100,
     include_existing: bool = False,
+    include_agent_recommendations: bool = True,
+    agent_run_limit: int = 20,
 ) -> dict:
-    """Queue primary-source follow-ups extracted from scrape review records."""
+    """Queue primary-source follow-ups from parsed records and review-agent recommendations."""
 
     request = SourceFollowupQueueRequest(
         source_key=source_key,
@@ -316,8 +375,25 @@ def queue_source_followups_tool(
         review_status=review_status,  # type: ignore[arg-type]
         limit=limit,
         include_existing=include_existing,
+        include_agent_recommendations=include_agent_recommendations,
+        agent_run_limit=agent_run_limit,
     )
     return get_service().queue_source_followups(request).model_dump(mode="json")
+
+
+def queue_unpaywall_doi_followups_tool(
+    source_keys: list[str] | None = None,
+    limit: int = 100,
+    include_existing: bool = False,
+) -> dict:
+    """Queue manual Unpaywall open-access enrichment for DOI-bearing objects."""
+
+    request = DoiOpenAccessFollowupQueueRequest(
+        source_keys=source_keys or [],
+        limit=limit,
+        include_existing=include_existing,
+    )
+    return get_service().queue_unpaywall_doi_followups(request).model_dump(mode="json")
 
 
 def list_source_followups_tool(
@@ -469,6 +545,58 @@ if mcp is not None:
             include_chunks=include_chunks,
             max_chunks=max_chunks,
             max_chunk_chars=max_chunk_chars,
+        )
+
+    @mcp.tool()
+    def run_research_brief(
+        topic: str,
+        disease_scope: str = "canine hemangiosarcoma and human angiosarcoma",
+        source_key: str | None = None,
+        max_chunks_per_perspective: int = 8,
+        max_claims: int = 12,
+        max_chunk_chars: int = 1800,
+        brief_style: str = "technical",
+        model_profile: str = "research_brief",
+        review_mode: str = "openrouter_required",
+        review_models: list[str] | None = None,
+    ) -> dict:
+        """Run evidence scout, translational, skeptic, and synthesis agents."""
+
+        return run_research_brief_tool(
+            topic=topic,
+            disease_scope=disease_scope,
+            source_key=source_key,
+            max_chunks_per_perspective=max_chunks_per_perspective,
+            max_claims=max_claims,
+            max_chunk_chars=max_chunk_chars,
+            brief_style=brief_style,
+            model_profile=model_profile,
+            review_mode=review_mode,
+            review_models=review_models,
+        )
+
+    @mcp.tool()
+    def build_research_brief_playground_pack(
+        topic: str,
+        disease_scope: str = "canine hemangiosarcoma and human angiosarcoma",
+        source_key: str | None = None,
+        max_chunks_per_perspective: int = 8,
+        max_claims: int = 12,
+        max_chunk_chars: int = 1800,
+        brief_style: str = "technical",
+        model_profile: str = "research_brief",
+    ) -> dict:
+        """Return system/user prompts, evidence payloads, and rubrics for model playgrounds."""
+
+        return build_research_brief_playground_pack_tool(
+            topic=topic,
+            disease_scope=disease_scope,
+            source_key=source_key,
+            max_chunks_per_perspective=max_chunks_per_perspective,
+            max_claims=max_claims,
+            max_chunk_chars=max_chunk_chars,
+            brief_style=brief_style,
+            model_profile=model_profile,
         )
 
     @mcp.tool()
@@ -654,13 +782,31 @@ if mcp is not None:
         review_status: str | None = None,
         limit: int = 100,
         include_existing: bool = False,
+        include_agent_recommendations: bool = True,
+        agent_run_limit: int = 20,
     ) -> dict:
-        """Queue primary-source follow-ups from parsed scraper review records."""
+        """Queue primary-source follow-ups from parsed records and review-agent recommendations."""
 
         return queue_source_followups_tool(
             source_key=source_key,
             review_ids=review_ids,
             review_status=review_status,
+            limit=limit,
+            include_existing=include_existing,
+            include_agent_recommendations=include_agent_recommendations,
+            agent_run_limit=agent_run_limit,
+        )
+
+    @mcp.tool()
+    def queue_unpaywall_doi_followups(
+        source_keys: list[str] | None = None,
+        limit: int = 100,
+        include_existing: bool = False,
+    ) -> dict:
+        """Queue manual Unpaywall DOI enrichment from stored research objects."""
+
+        return queue_unpaywall_doi_followups_tool(
+            source_keys=source_keys,
             limit=limit,
             include_existing=include_existing,
         )

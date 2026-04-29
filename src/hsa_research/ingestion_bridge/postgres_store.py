@@ -41,7 +41,11 @@ from .contracts import (
     TextEmbeddingSearchResult,
     ValidationRequest,
 )
-from .local_store import build_research_object_dedupe_key, document_chunk_from_payload
+from .local_store import (
+    build_research_object_dedupe_key,
+    document_chunk_from_payload,
+    should_preserve_existing_research_object,
+)
 from .repository import ResearchRepository, cosine_similarity, keyword_chunk_score, keyword_terms, seed_claims
 
 
@@ -264,6 +268,15 @@ class PostgresResearchRepository(ResearchRepository):
     def upsert_research_object(self, obj: ResearchObject, raw_record_id: UUID | None = None) -> UUID:
         object_id = obj.id or uuid4()
         dedupe_key = obj.dedupe_key or build_research_object_dedupe_key(obj)
+        existing = self._fetchone("select object_id, payload from research_objects where dedupe_key = %s", (dedupe_key,))
+        if existing is not None:
+            existing_obj = ResearchObject.model_validate(_payload(existing))
+            object_id = UUID(existing["object_id"])
+            if should_preserve_existing_research_object(existing_obj, obj):
+                for identifier_type, identifier_value in obj.identifiers.items():
+                    if identifier_value:
+                        self.link_identifier(object_id, identifier_type, identifier_value)
+                return object_id
         payload = obj.model_copy(update={"id": object_id, "raw_record_id": raw_record_id, "dedupe_key": dedupe_key}).model_dump(
             mode="json"
         )
@@ -322,6 +335,29 @@ class PostgresResearchRepository(ResearchRepository):
         if row is None:
             return None
         return ResearchObject.model_validate(_payload(row))
+
+    def list_research_objects(
+        self,
+        object_type: str | None = None,
+        source_key: str | None = None,
+        limit: int | None = None,
+    ) -> list[ResearchObject]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if object_type:
+            clauses.append("object_type = %s")
+            params.append(object_type)
+        if source_key:
+            clauses.append("source_key = %s")
+            params.append(source_key)
+        sql = "select payload from research_objects"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by updated_at desc"
+        if limit is not None:
+            sql += " limit %s"
+            params.append(limit)
+        return [ResearchObject.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
 
     def get_document_chunk(self, chunk_id: UUID) -> DocumentChunk | None:
         row = self._fetchone(

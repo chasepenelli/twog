@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import Enum
+import re
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -18,6 +19,10 @@ class StrictBaseModel(BaseModel):
     """Base model that keeps contracts explicit but allows future metadata."""
 
     model_config = ConfigDict(extra="forbid", use_enum_values=True)
+
+
+def re_search_citation_token(value: str) -> bool:
+    return bool(re.search(r"\[C\d+\]", value))
 
 
 class SourceKind(str, Enum):
@@ -133,6 +138,22 @@ XLinkedArticleReviewActionName = Literal[
     "reject_low_signal",
 ]
 
+ResearchBriefPerspectiveName = Literal[
+    "evidence_scout",
+    "translational_hypothesis",
+    "skeptic_validation",
+]
+
+ResearchBriefStance = Literal[
+    "supporting",
+    "contradicting",
+    "uncertain",
+    "opportunity",
+    "risk",
+]
+
+ResearchBriefEvidenceStrength = Literal["high", "medium", "low", "unknown"]
+
 XTopicIdentifierType = Literal[
     "doi",
     "pmid",
@@ -221,6 +242,132 @@ class FullTextOpsResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ResearchBriefRequest(StrictBaseModel):
+    topic: str = Field(min_length=3, max_length=1000)
+    disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
+    source_key: str | None = None
+    max_chunks_per_perspective: int = Field(default=8, ge=1, le=25)
+    max_claims: int = Field(default=12, ge=0, le=50)
+    max_chunk_chars: int = Field(default=1800, ge=500, le=12000)
+    brief_style: Literal["technical", "operator", "substack", "vet_partner"] = "technical"
+    model_profile: str = "research_brief"
+    review_mode: Literal[
+        "external_required",
+        "openrouter_required",
+        "openrouter_compare",
+        "deterministic_only",
+    ] = "openrouter_required"
+    review_models: list[str] = Field(default_factory=list, max_length=10)
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchBriefCitation(StrictBaseModel):
+    citation_id: str
+    chunk_id: UUID
+    research_object_id: UUID
+    source_key: str | None = None
+    title: str | None = None
+    source_url: str | None = None
+    section_label: str | None = None
+    quote: str = Field(min_length=1, max_length=1200)
+    relevance: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchBriefFinding(StrictBaseModel):
+    claim: str = Field(min_length=1, max_length=2000)
+    stance: ResearchBriefStance
+    citations: list[str] = Field(min_length=1, max_length=10)
+    evidence_strength: ResearchBriefEvidenceStrength = "unknown"
+    reasoning: str = Field(min_length=1, max_length=3000)
+    open_questions: list[str] = Field(default_factory=list, max_length=10)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchBriefPerspectiveReport(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    perspective: ResearchBriefPerspectiveName
+    agent_name: str
+    model_profile: str = "research_brief"
+    summary: str = Field(min_length=1, max_length=3000)
+    findings: list[ResearchBriefFinding] = Field(default_factory=list, max_length=20)
+    citations: list[ResearchBriefCitation] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def _findings_must_use_known_citations(self) -> "ResearchBriefPerspectiveReport":
+        known = {citation.citation_id for citation in self.citations}
+        unknown = [
+            citation_id
+            for finding in self.findings
+            for citation_id in finding.citations
+            if citation_id not in known
+        ]
+        if unknown:
+            raise ValueError(f"findings reference unknown citations: {sorted(set(unknown))}")
+        return self
+
+
+class ResearchBriefResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    agent_run_ids: list[UUID] = Field(default_factory=list)
+    agent_name: str = "research_synthesis_editor_agent"
+    topic: str
+    disease_scope: str
+    brief_style: Literal["technical", "operator", "substack", "vet_partner"] = "technical"
+    model_profile: str = "research_brief"
+    perspective_reports: list[ResearchBriefPerspectiveReport] = Field(default_factory=list)
+    final_brief: str = ""
+    ranked_hypotheses: list[ResearchBriefFinding] = Field(default_factory=list)
+    unresolved_questions: list[str] = Field(default_factory=list)
+    citations: list[ResearchBriefCitation] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def _brief_must_remain_cited(self) -> "ResearchBriefResult":
+        known = {citation.citation_id for citation in self.citations}
+        unknown = [
+            citation_id
+            for finding in self.ranked_hypotheses
+            for citation_id in finding.citations
+            if citation_id not in known
+        ]
+        if unknown:
+            raise ValueError(f"ranked hypotheses reference unknown citations: {sorted(set(unknown))}")
+        if self.final_brief and self.citations and not re_search_citation_token(self.final_brief):
+            raise ValueError("final_brief must include citation tokens such as [C1]")
+        return self
+
+
+class ResearchBriefPlaygroundPrompt(StrictBaseModel):
+    perspective: ResearchBriefPerspectiveName
+    agent_name: str
+    recommended_model: str | None = None
+    system_prompt: str = Field(min_length=1, max_length=12000)
+    user_prompt: str = Field(min_length=1, max_length=100000)
+    prompt_payload: dict[str, Any] = Field(default_factory=dict)
+    response_contract: dict[str, Any] = Field(default_factory=dict)
+    evaluation_rubric: list[str] = Field(default_factory=list, max_length=20)
+    playground_steps: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ResearchBriefPlaygroundPack(StrictBaseModel):
+    topic: str
+    disease_scope: str
+    brief_style: Literal["technical", "operator", "substack", "vet_partner"] = "technical"
+    model_profile: str = "research_brief"
+    prompts: list[ResearchBriefPlaygroundPrompt] = Field(default_factory=list)
+    citations: list[ResearchBriefCitation] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class XTopicLinkedSource(StrictBaseModel):
     url: str
     recommended_source_key: str | None = None
@@ -288,6 +435,7 @@ class XLinkedArticleFollowupRequest(StrictBaseModel):
 class XLinkedArticleFollowupResult(StrictBaseModel):
     source_key: str = "x_linked_article"
     candidate_urls: list[str] = Field(default_factory=list)
+    candidate_results: list[dict[str, Any]] = Field(default_factory=list)
     agent_run_ids: list[UUID] = Field(default_factory=list)
     fetched_pages: int = 0
     skipped_pages: int = 0
@@ -366,6 +514,11 @@ class SourceFollowupQueueItem(StrictBaseModel):
     def normalize_identifier(self) -> "SourceFollowupQueueItem":
         identifier = self.identifier.strip()
         if self.identifier_type == "doi":
+            identifier = identifier.split("?", 1)[0].split("#", 1)[0].rstrip(").,;:&")
+            for suffix in ("/full", "/abstract", "/pdf", "/epdf", "/html"):
+                if identifier.lower().endswith(suffix):
+                    identifier = identifier[: -len(suffix)]
+                    break
             identifier = identifier.lower()
         elif self.identifier_type in {"pmcid", "nct", "chembl", "geo", "sra", "rcsb_pdb"}:
             identifier = identifier.upper()
@@ -380,11 +533,21 @@ class SourceFollowupQueueRequest(StrictBaseModel):
     review_status: Literal["needs_review", "accepted", "rejected"] | None = None
     limit: int = Field(default=100, ge=1, le=1000)
     include_existing: bool = False
+    include_agent_recommendations: bool = True
+    agent_run_limit: int = Field(default=20, ge=0, le=100)
+
+
+class DoiOpenAccessFollowupQueueRequest(StrictBaseModel):
+    source_keys: list[str] = Field(default_factory=list)
+    limit: int = Field(default=100, ge=1, le=1000)
+    include_existing: bool = False
 
 
 class SourceFollowupQueueResult(StrictBaseModel):
     source_key: str = "x_linked_article"
     reviewed_records: int = 0
+    agent_runs_seen: int = 0
+    agent_recommendations_seen: int = 0
     queued: int = 0
     skipped_existing: int = 0
     skipped_uningestible: int = 0

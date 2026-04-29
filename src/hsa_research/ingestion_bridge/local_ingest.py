@@ -6,7 +6,7 @@ from .chunker import chunk_text
 from .contracts import IngestionResult, RunStatus, SourceQuery
 from .dagster_assets import build_source_queries
 from .harvesters_v2 import get_harvester
-from .local_store import SQLiteResearchRepository
+from .local_store import SQLiteResearchRepository, research_object_has_full_text
 from .storage import build_sql_repository
 from .source_registry import get_initial_sources
 
@@ -79,6 +79,15 @@ class LocalIngestionPipeline:
                 object_id = self.repository.upsert_research_object(record.research_object, raw_id)
                 if record.research_object.metadata.get("full_text_available"):
                     full_text_object_count += 1
+                persisted_object = self.repository.get_research_object(object_id)
+                preserve_existing_chunks = (
+                    research_object_has_full_text(persisted_object)
+                    and not research_object_has_full_text(record.research_object)
+                )
+                if preserve_existing_chunks:
+                    raw_count += 1
+                    object_count += 1
+                    continue
                 doc_chunks = []
                 next_chunk_index = 0
                 for section_label, section_text in harvester.chunk_text_sections(record):

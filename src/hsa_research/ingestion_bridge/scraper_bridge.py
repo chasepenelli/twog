@@ -60,6 +60,36 @@ SCRAPE_SOURCE_PROFILES: tuple[ScrapeSourceProfile, ...] = (
             "https://*.edu/*",
             "https://*.gov/*",
             "https://*.org/*",
+            "https://nature.com/*",
+            "https://*.nature.com/*",
+            "https://science.org/*",
+            "https://*.science.org/*",
+            "https://cell.com/*",
+            "https://*.cell.com/*",
+            "https://aacrjournals.org/*",
+            "https://*.aacrjournals.org/*",
+            "https://ascopubs.org/*",
+            "https://*.ascopubs.org/*",
+            "https://frontiersin.org/*",
+            "https://*.frontiersin.org/*",
+            "https://mdpi.com/*",
+            "https://*.mdpi.com/*",
+            "https://springer.com/*",
+            "https://*.springer.com/*",
+            "https://biomedcentral.com/*",
+            "https://*.biomedcentral.com/*",
+            "https://wiley.com/*",
+            "https://*.wiley.com/*",
+            "https://tandfonline.com/*",
+            "https://*.tandfonline.com/*",
+            "https://sciencedirect.com/*",
+            "https://*.sciencedirect.com/*",
+            "https://nejm.org/*",
+            "https://*.nejm.org/*",
+            "https://jamanetwork.com/*",
+            "https://*.jamanetwork.com/*",
+            "https://bmj.com/*",
+            "https://*.bmj.com/*",
         ],
         robots_policy="unknown",
         rate_limit_per_minute=6,
@@ -148,7 +178,7 @@ class ScrapeBridge:
                 time.sleep(delay_seconds)
             try:
                 page = _fetch_url(url)
-                artifact = self._store_page(profile, page, request)
+                artifact = self._store_page(profile, page, request, requested_url=url)
                 self.repository.upsert_artifact(artifact)
                 result.artifact_ids.append(artifact.artifact_id)
                 result.fetched_pages += 1
@@ -366,6 +396,8 @@ class ScrapeBridge:
         profile: ScrapeSourceProfile,
         page: FetchedPage,
         request: ScrapeFetchRequest,
+        *,
+        requested_url: str | None = None,
     ) -> ArtifactHandle:
         digest = sha256(page.content).hexdigest()
         suffix = _extension_for_mime(page.mime_type, page.url)
@@ -381,6 +413,7 @@ class ScrapeBridge:
             mime_type=page.mime_type,
             metadata={
                 "source_key": profile.source_key,
+                "requested_url": requested_url or page.url,
                 "source_url": page.url,
                 "content_hash": digest,
                 "http_status": page.status_code,

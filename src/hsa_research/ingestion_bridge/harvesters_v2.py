@@ -3101,13 +3101,19 @@ def _jats_body_sections(body: ET.Element | None) -> list[dict[str, str]]:
         return []
     sections: list[dict[str, str]] = []
     for sec in body.findall("./{*}sec"):
-        title = _clean_multiline_text(_xml_join_text(_find_first(sec, "./{*}title")))
-        text = _clean_multiline_text(_xml_join_text(sec))
-        if not text:
-            continue
-        kind = _jats_section_kind(title)
-        if kind in JATS_SECTION_EXCLUDED_KINDS:
-            continue
+        sections.extend(_jats_section_tree(sec))
+    return sections
+
+
+def _jats_section_tree(sec: ET.Element) -> list[dict[str, str]]:
+    title = _clean_multiline_text(_xml_join_text(_find_first(sec, "./{*}title")))
+    kind = _jats_section_kind(title)
+    if kind in JATS_SECTION_EXCLUDED_KINDS:
+        return []
+
+    sections: list[dict[str, str]] = []
+    text = _jats_section_text_without_nested_sections(sec, title)
+    if text:
         sections.append(
             {
                 "section_label": f"full_text:{kind}",
@@ -3115,7 +3121,28 @@ def _jats_body_sections(body: ET.Element | None) -> list[dict[str, str]]:
                 "text": text,
             }
         )
+
+    for child in sec:
+        if _local_name(child.tag) == "sec":
+            sections.extend(_jats_section_tree(child))
     return sections
+
+
+def _jats_section_text_without_nested_sections(sec: ET.Element, title: str | None) -> str:
+    parts: list[str] = []
+    if title:
+        parts.append(title)
+    if sec.text and sec.text.strip():
+        parts.append(sec.text.strip())
+    for child in sec:
+        child_name = _local_name(child.tag)
+        if child_name not in {"title", "sec"}:
+            text = _xml_join_text(child)
+            if text:
+                parts.append(text)
+        if child.tail and child.tail.strip():
+            parts.append(child.tail.strip())
+    return _clean_multiline_text(" ".join(parts))
 
 
 def _jats_section_kind(title: str | None) -> str:

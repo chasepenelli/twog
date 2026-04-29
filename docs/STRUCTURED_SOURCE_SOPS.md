@@ -330,6 +330,34 @@ Dagster schedule:
   scheduled refresh lanes. Manual discovery lanes such as Unpaywall title
   search are excluded until the upstream endpoint is stable.
 
+### Queue Manual Unpaywall DOI Enrichment
+
+Use this when stored literature objects already have DOI identifiers and need
+open-access location metadata. This is DOI enrichment only; it does not use the
+Unpaywall title-search endpoint and should remain outside hosted health/smoke
+schedules.
+
+Local CLI:
+
+```text
+python -m hsa_research.ingestion_bridge.cli queue-unpaywall-doi-followups --limit 100
+python -m hsa_research.ingestion_bridge.cli ingest-source-followups --source unpaywall --limit 25
+```
+
+Optional filters:
+- Repeat `--source <source_key>` on `queue-unpaywall-doi-followups` to scan DOI
+  identifiers from selected research-object sources only; `--limit` caps the
+  number of stored research objects scanned.
+- Use `source-followups --source unpaywall --identifier-type doi` to inspect the
+  queue before ingesting.
+
+Required QA output:
+- Queued rows have `source_key=unpaywall`, `identifier_type=doi`, and
+  `metadata.lookup_mode=doi`.
+- Re-running the queue command is idempotent; existing DOI queue rows should not
+  be duplicated.
+- Objects without DOI identifiers are skipped, not title-searched.
+
 ### Run The Literature Corpus Harvest
 
 Use this when you want to prove the system can build an organized paper corpus

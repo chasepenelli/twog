@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -14,9 +16,11 @@ from .claim_curator import curate_claims_for_repository
 from .claim_extractor import extract_claims_for_repository
 from .contracts import (
     ClaimCurationRequest,
+    DoiOpenAccessFollowupQueueRequest,
     EntityResolutionRequest,
     FullTextTriageRequest,
     FullTextOpsRequest,
+    ResearchBriefRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
@@ -32,7 +36,7 @@ from .contracts import (
     XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
 )
-from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, maintain_embedding_index
+from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, index_embeddings_for_repository, maintain_embedding_index
 from .entity_resolution import resolve_entities_for_repository
 from .local_ingest import LocalIngestionPipeline
 from .local_store import SQLiteResearchRepository
@@ -219,6 +223,86 @@ def main() -> None:
     )
     full_text_ops.add_argument("--fail-on-blocking", action="store_true")
 
+    research_brief = subparsers.add_parser(
+        "research-brief",
+        help="Run citation-first evidence, translational, skeptic, and synthesis agents",
+    )
+    research_brief.add_argument("--topic", required=True, help="Research question or topic to brief")
+    research_brief.add_argument(
+        "--disease-scope",
+        default="canine hemangiosarcoma and human angiosarcoma",
+        help="Disease/scope guardrail for retrieval and synthesis",
+    )
+    research_brief.add_argument("--source", default=None, help="Optional source key filter")
+    research_brief.add_argument("--max-chunks", type=int, default=8, help="Chunks per perspective search")
+    research_brief.add_argument("--max-claims", type=int, default=12, help="Claims to include in the evidence payload")
+    research_brief.add_argument("--max-chunk-chars", type=int, default=1800, help="Maximum chars per cited chunk")
+    research_brief.add_argument(
+        "--brief-style",
+        choices=("technical", "operator", "substack", "vet_partner"),
+        default="technical",
+    )
+    research_brief.add_argument("--model-profile", default="research_brief", help="Logical model profile")
+    research_brief.add_argument(
+        "--review-mode",
+        choices=("external_required", "openrouter_required", "openrouter_compare", "deterministic_only"),
+        default="openrouter_required",
+    )
+    research_brief.add_argument(
+        "--review-model",
+        action="append",
+        default=[],
+        help="OpenRouter model id; repeat to compare multiple models",
+    )
+
+    research_brief_playground = subparsers.add_parser(
+        "research-brief-playground-pack",
+        help="Export playground-ready prompts for the research brief perspective agents",
+    )
+    research_brief_playground.add_argument("--topic", required=True, help="Research question or topic to brief")
+    research_brief_playground.add_argument(
+        "--disease-scope",
+        default="canine hemangiosarcoma and human angiosarcoma",
+        help="Disease/scope guardrail for retrieval and synthesis",
+    )
+    research_brief_playground.add_argument("--source", default=None, help="Optional source key filter")
+    research_brief_playground.add_argument("--max-chunks", type=int, default=8, help="Chunks per perspective search")
+    research_brief_playground.add_argument("--max-claims", type=int, default=12, help="Claims to include in the evidence payload")
+    research_brief_playground.add_argument("--max-chunk-chars", type=int, default=1800, help="Maximum chars per cited chunk")
+    research_brief_playground.add_argument(
+        "--brief-style",
+        choices=("technical", "operator", "substack", "vet_partner"),
+        default="technical",
+    )
+    research_brief_playground.add_argument("--model-profile", default="research_brief", help="Logical model profile")
+
+    x_topic_monitor = subparsers.add_parser(
+        "x-topic-monitor",
+        help="Run TwitterAPI.io topic monitoring and the X topic review agent",
+    )
+    x_topic_monitor.add_argument("--query-name", default=None, help="Optional configured query name to run")
+    x_topic_monitor.add_argument("--max-results", type=int, default=20, help="Maximum provider results per query")
+    x_topic_monitor.add_argument("--max-candidates", type=int, default=20, help="Maximum candidates to review")
+    x_topic_monitor.add_argument("--query-delay-seconds", type=float, default=6.0, help="Delay between provider queries")
+    x_topic_monitor.add_argument(
+        "--retention-mode",
+        choices=("store_post_id_only", "store_metadata_only", "store_text"),
+        default="store_metadata_only",
+    )
+    x_topic_monitor.add_argument("--model-profile", default="reviewer", help="Logical model profile")
+    x_topic_monitor.add_argument(
+        "--review-mode",
+        choices=("external_required", "openrouter_required", "openrouter_compare", "deterministic_only"),
+        default="openrouter_required",
+        help="Whether review is external, OpenRouter-backed, comparative, or deterministic only",
+    )
+    x_topic_monitor.add_argument(
+        "--review-model",
+        action="append",
+        default=[],
+        help="OpenRouter model id; repeat to compare multiple models",
+    )
+
     x_topic_review = subparsers.add_parser(
         "x-topic-review",
         help="Run the recommend-only X topic review agent over candidate JSON",
@@ -303,6 +387,34 @@ def main() -> None:
     )
     queue_source_followups.add_argument("--limit", type=int, default=100, help="Maximum records to scan")
     queue_source_followups.add_argument("--include-existing", action="store_true", help="Return existing queue rows too")
+    queue_source_followups.add_argument(
+        "--no-agent-recommendations",
+        action="store_true",
+        help="Only queue deterministic parser links; ignore linked-article review agent recommendations",
+    )
+    queue_source_followups.add_argument(
+        "--agent-run-limit",
+        type=int,
+        default=20,
+        help="Maximum recent linked-article review agent runs to scan",
+    )
+
+    queue_unpaywall_doi_followups = subparsers.add_parser(
+        "queue-unpaywall-doi-followups",
+        help="Queue manual Unpaywall DOI open-access enrichment from stored research objects",
+    )
+    queue_unpaywall_doi_followups.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="Research object source key to scan; repeatable",
+    )
+    queue_unpaywall_doi_followups.add_argument("--limit", type=int, default=100, help="Maximum research objects to scan")
+    queue_unpaywall_doi_followups.add_argument(
+        "--include-existing",
+        action="store_true",
+        help="Return existing Unpaywall DOI queue rows too",
+    )
 
     list_source_followups = subparsers.add_parser("source-followups", help="List queued source follow-ups")
     list_source_followups.add_argument("--source", default=None, help="Target source key")
@@ -368,6 +480,19 @@ def main() -> None:
     retrieval_smoke.add_argument("--no-keyword-fallback", action="store_true", help="Fail open only to embedding search")
     retrieval_smoke.add_argument("--require-embedding", action="store_true", help="Fail if search does not use embeddings")
     retrieval_smoke.add_argument("--fail-on-error", action="store_true", help="Exit non-zero if the smoke check fails")
+
+    embedding_index = subparsers.add_parser(
+        "embedding-index",
+        help="Index stored document chunks for retrieval",
+    )
+    embedding_index.add_argument("--source", default=None, help="Optional source key filter")
+    embedding_index.add_argument(
+        "--embedding-model",
+        default=LOCAL_HASH_EMBEDDING_MODEL,
+        help="Embedding model to write",
+    )
+    embedding_index.add_argument("--limit", type=int, default=None, help="Optional maximum chunks to inspect")
+    embedding_index.add_argument("--force", action="store_true", help="Rebuild existing embeddings")
 
     embedding_maintenance = subparsers.add_parser(
         "embedding-maintenance",
@@ -596,6 +721,103 @@ def main() -> None:
                 review_models=args.review_model,
             )
         ).model_dump(mode="json")
+    elif args.command == "research-brief":
+        output = HSAResearchService(repo).run_research_brief(
+            ResearchBriefRequest(
+                topic=args.topic,
+                disease_scope=args.disease_scope,
+                source_key=args.source,
+                max_chunks_per_perspective=args.max_chunks,
+                max_claims=args.max_claims,
+                max_chunk_chars=args.max_chunk_chars,
+                brief_style=args.brief_style,
+                model_profile=args.model_profile,
+                review_mode=args.review_mode,
+                review_models=args.review_model,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "research-brief-playground-pack":
+        output = HSAResearchService(repo).build_research_brief_playground_pack(
+            ResearchBriefRequest(
+                topic=args.topic,
+                disease_scope=args.disease_scope,
+                source_key=args.source,
+                max_chunks_per_perspective=args.max_chunks,
+                max_claims=args.max_claims,
+                max_chunk_chars=args.max_chunk_chars,
+                brief_style=args.brief_style,
+                model_profile=args.model_profile,
+                review_mode="external_required",
+            )
+        ).model_dump(mode="json")
+    elif args.command == "x-topic-monitor":
+        from .x_topic_monitor import (
+            TWITTERAPI_IO_MAX_SINGLE_PAGE_RESULTS,
+            X_TOPIC_SOURCE_KEY,
+            TwitterApiIoProvider,
+            XTopicRequest,
+            build_default_source_queries,
+        )
+
+        provider = TwitterApiIoProvider()
+        max_results = min(args.max_results, TWITTERAPI_IO_MAX_SINGLE_PAGE_RESULTS)
+        queries = [
+            query
+            for query in build_default_source_queries()
+            if args.query_name is None or query.query_name == args.query_name
+        ]
+        query_results = []
+        candidates = []
+        errors = []
+        raw_tweet_count = 0
+        for query_index, query in enumerate(queries):
+            if query_index > 0 and args.query_delay_seconds > 0:
+                time.sleep(args.query_delay_seconds)
+            try:
+                result = provider.search(
+                    XTopicRequest(
+                        query=query.query_text,
+                        query_name=query.query_name,
+                        max_results=max_results,
+                        retention_mode=args.retention_mode,
+                    )
+                )
+            except Exception as exc:
+                errors.append({"query_name": query.query_name, "error": str(exc)})
+                continue
+            raw_tweet_count += result.raw_tweet_count
+            query_results.append(result.model_dump(mode="json"))
+            for candidate in result.candidates:
+                candidates.append(
+                    {
+                        **candidate.model_dump(mode="json"),
+                        "query_name": query.query_name,
+                        "post_id": candidate.source_record_id,
+                    }
+                )
+        provider_report = {
+            "source_key": X_TOPIC_SOURCE_KEY,
+            "provider": provider.provider_name,
+            "queries": [query.model_dump(mode="json") for query in queries],
+            "query_delay_seconds": args.query_delay_seconds,
+            "query_results": query_results,
+            "raw_tweet_count": raw_tweet_count,
+            "candidate_count": len(candidates),
+            "candidates": candidates,
+            "manual_review_required": True,
+            "errors": errors,
+        }
+        agent_review = HSAResearchService(repo).run_x_topic_review(
+            XTopicReviewRequest(
+                provider_report=provider_report,
+                recent_run_limit=5,
+                max_candidates=args.max_candidates,
+                model_profile=args.model_profile,
+                review_mode=args.review_mode,
+                review_models=args.review_model,
+            )
+        ).model_dump(mode="json")
+        output = {**provider_report, "agent_review": agent_review}
     elif args.command == "x-topic-review":
         provider_report = None
         if args.provider_report:
@@ -642,6 +864,16 @@ def main() -> None:
                 source_key=args.source,
                 review_ids=[UUID(review_id) for review_id in args.review_id],
                 review_status=args.review_status,
+                limit=args.limit,
+                include_existing=args.include_existing,
+                include_agent_recommendations=not args.no_agent_recommendations,
+                agent_run_limit=args.agent_run_limit,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "queue-unpaywall-doi-followups":
+        output = HSAResearchService(repo).queue_unpaywall_doi_followups(
+            DoiOpenAccessFollowupQueueRequest(
+                source_keys=args.source,
                 limit=args.limit,
                 include_existing=args.include_existing,
             )
@@ -712,6 +944,16 @@ def main() -> None:
                 require_embedding=args.require_embedding,
             )
         ).model_dump(mode="json")
+    elif args.command == "embedding-index":
+        output = asdict(
+            index_embeddings_for_repository(
+                repo,
+                embedding_model=args.embedding_model,
+                source_key=args.source,
+                limit=args.limit,
+                force=args.force,
+            )
+        )
     elif args.command == "embedding-maintenance":
         output = maintain_embedding_index(
             repo,

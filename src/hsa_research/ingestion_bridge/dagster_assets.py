@@ -10,12 +10,14 @@ from collections.abc import Mapping, Sequence
 from datetime import timedelta
 import json
 import os
+import time
 from typing import Any
 
 from .contracts import (
     ClaimCurationRequest,
     ClaimSearchRequest,
     FullTextOpsRequest,
+    ResearchBriefRequest,
     ResearchObject,
     SourceFollowupIngestRequest,
     SourceFollowupQueueRequest,
@@ -62,6 +64,7 @@ LITERATURE_FULL_TEXT_SMOKE_LIMITS = {
     source_key: 1 for source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS
 }
 SCHEDULE_TIMEZONE = "America/Denver"
+LITERATURE_CORPUS_PARTITION_START_DATE = "2026-01-01"
 LITERATURE_FULL_TEXT_PARTITION_START_DATE = "2026-01-01"
 
 _STRUCTURED_SOURCE_COUNT_TABLE_COLUMNS = (
@@ -128,6 +131,30 @@ _FULL_TEXT_OPS_ACTION_TABLE_COLUMNS = (
     "dagster_job_name",
     "partition_date",
     "evidence_refs",
+)
+_RESEARCH_BRIEF_PERSPECTIVE_TABLE_COLUMNS = (
+    "perspective",
+    "agent_name",
+    "finding_count",
+    "citation_count",
+    "error_count",
+    "summary",
+)
+_RESEARCH_BRIEF_CITATION_TABLE_COLUMNS = (
+    "citation_id",
+    "source_key",
+    "title",
+    "section_label",
+    "match_type",
+    "score",
+    "relevance",
+)
+_RESEARCH_BRIEF_PLAYGROUND_PROMPT_TABLE_COLUMNS = (
+    "perspective",
+    "agent_name",
+    "recommended_model",
+    "user_prompt_chars",
+    "citation_count",
 )
 _X_TOPIC_CANDIDATE_TABLE_COLUMNS = (
     "query_name",
@@ -235,6 +262,18 @@ def build_source_queries() -> list[SourceQuery]:
 if dg is not None:
     from .dagster_resources import ResearchRepositoryResource
 
+    LITERATURE_CORPUS_SOURCE_PARTITIONS = dg.StaticPartitionsDefinition(
+        list(LITERATURE_CORPUS_SOURCE_KEYS)
+    )
+    LITERATURE_CORPUS_DATE_PARTITIONS = dg.DailyPartitionsDefinition(
+        start_date=LITERATURE_CORPUS_PARTITION_START_DATE,
+    )
+    LITERATURE_CORPUS_SOURCE_DATE_PARTITIONS = dg.MultiPartitionsDefinition(
+        {
+            "source": LITERATURE_CORPUS_SOURCE_PARTITIONS,
+            "date": LITERATURE_CORPUS_DATE_PARTITIONS,
+        }
+    )
     LITERATURE_FULL_TEXT_SOURCE_PARTITIONS = dg.StaticPartitionsDefinition(
         list(LITERATURE_FULL_TEXT_SOURCE_KEYS)
     )
@@ -428,6 +467,85 @@ if dg is not None:
             "actions": _metadata_table(actions, _FULL_TEXT_OPS_ACTION_TABLE_COLUMNS),
         }
 
+    def _research_brief_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        perspective_reports = report.get("perspective_reports", [])
+        finding_count = sum(len(item.get("findings", [])) for item in perspective_reports)
+        evidence = report.get("evidence", {})
+        perspective_rows = [
+            {
+                "perspective": item.get("perspective"),
+                "agent_name": item.get("agent_name"),
+                "finding_count": len(item.get("findings", [])),
+                "citation_count": len(item.get("citations", [])),
+                "error_count": len(item.get("errors", [])),
+                "summary": str(item.get("summary") or "")[:500],
+            }
+            for item in perspective_reports
+        ]
+        citation_rows = [
+            {
+                "citation_id": citation.get("citation_id"),
+                "source_key": citation.get("source_key"),
+                "title": str(citation.get("title") or "")[:300],
+                "section_label": citation.get("section_label"),
+                "match_type": (citation.get("metadata") or {}).get("match_type"),
+                "score": (citation.get("metadata") or {}).get("score"),
+                "relevance": str(citation.get("relevance") or "")[:500],
+            }
+            for citation in report.get("citations", [])[:50]
+        ]
+        return {
+            "agent_run_id": report.get("agent_run_id"),
+            "agent_run_ids": dg.MetadataValue.json(report.get("agent_run_ids", [])),
+            "topic": report.get("topic"),
+            "brief_style": report.get("brief_style"),
+            "review_mode": evidence.get("review_mode"),
+            "retrieval_strategy": evidence.get("retrieval_strategy"),
+            "search_query_count": dg.MetadataValue.int(int(evidence.get("search_query_count", 0))),
+            "perspective_count": len(perspective_reports),
+            "finding_count": dg.MetadataValue.int(int(finding_count)),
+            "hypothesis_count": dg.MetadataValue.int(len(report.get("ranked_hypotheses", []))),
+            "citation_count": dg.MetadataValue.int(len(report.get("citations", []))),
+            "error_count": len(report.get("errors", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "evidence": dg.MetadataValue.json(evidence),
+            "perspectives": _metadata_table(
+                perspective_rows,
+                _RESEARCH_BRIEF_PERSPECTIVE_TABLE_COLUMNS,
+            ),
+            "citations": _metadata_table(citation_rows, _RESEARCH_BRIEF_CITATION_TABLE_COLUMNS),
+            "brief_preview": dg.MetadataValue.md(str(report.get("final_brief") or "")[:4000]),
+        }
+
+    def _research_brief_playground_pack_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        evidence = report.get("evidence", {})
+        prompt_rows = [
+            {
+                "perspective": prompt.get("perspective"),
+                "agent_name": prompt.get("agent_name"),
+                "recommended_model": prompt.get("recommended_model"),
+                "user_prompt_chars": len(str(prompt.get("user_prompt") or "")),
+                "citation_count": len((prompt.get("prompt_payload") or {}).get("citations", [])),
+            }
+            for prompt in report.get("prompts", [])
+        ]
+        return {
+            "topic": report.get("topic"),
+            "brief_style": report.get("brief_style"),
+            "model_profile": report.get("model_profile"),
+            "prompt_count": dg.MetadataValue.int(len(report.get("prompts", []))),
+            "citation_count": dg.MetadataValue.int(len(report.get("citations", []))),
+            "retrieval_strategy": evidence.get("retrieval_strategy"),
+            "search_query_count": dg.MetadataValue.int(int(evidence.get("search_query_count", 0))),
+            "error_count": len(report.get("errors", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "evidence": dg.MetadataValue.json(evidence),
+            "prompts": _metadata_table(
+                prompt_rows,
+                _RESEARCH_BRIEF_PLAYGROUND_PROMPT_TABLE_COLUMNS,
+            ),
+        }
+
     def _x_topic_monitor_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
         errors = report.get("errors", [])
         agent_review = report.get("agent_review") or {}
@@ -570,6 +688,8 @@ if dg is not None:
             "queued": int(report.get("queued", 0)),
             "skipped_existing": int(report.get("skipped_existing", 0)),
             "skipped_uningestible": int(report.get("skipped_uningestible", 0)),
+            "agent_runs_seen": int(report.get("agent_runs_seen", 0)),
+            "agent_recommendations_seen": int(report.get("agent_recommendations_seen", 0)),
             "error_count": len(report.get("errors", [])),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "queue_items": _metadata_table(
@@ -631,6 +751,45 @@ if dg is not None:
             source_limits=source_limits,
         )
         return _annotate_full_text_report(report, mode="ingestion_only")
+
+    def _run_literature_corpus_source_date_partition(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        from .structured_orchestration import run_structured_sources_pipeline
+
+        keys = context.multi_partition_key.keys_by_dimension
+        source_key = keys["source"]
+        partition_date = keys["date"]
+        source_limits = {source_key: LITERATURE_CORPUS_SOURCE_LIMITS[source_key]}
+        repository = research_repository.build_repository()
+        report = run_structured_sources_pipeline(
+            repository,
+            source_keys=(source_key,),
+            source_limits=source_limits,
+            extract_limit=5000,
+            curate_limit=5000,
+            partition_date=partition_date,
+        )
+        report["mode"] = "source_date_partition"
+        report["date_filter_status"] = "orchestration_metadata_only"
+        report["date_filter_note"] = (
+            "Literature corpus harvesters are source-filtered for this partition; "
+            "the date partition is orchestration metadata until source-specific "
+            "publication-date filters are added."
+        )
+        return dg.MaterializeResult(
+            value=report,
+            metadata={
+                "source_key": source_key,
+                "partition_date": partition_date,
+                "date_filter_status": report["date_filter_status"],
+                "date_filter_note": report["date_filter_note"],
+                "source_limits": dg.MetadataValue.json(dict(source_limits)),
+                "totals": dg.MetadataValue.json(report.get("totals", {})),
+                "errors": dg.MetadataValue.json(report.get("errors", [])),
+            },
+        )
 
     def _run_literature_full_text_source_date_partition(
         context,
@@ -1078,6 +1237,18 @@ if dg is not None:
             curate_limit=5000,
         )
 
+    @dg.asset(
+        group_name="literature_corpus_partitions",
+        partitions_def=LITERATURE_CORPUS_SOURCE_DATE_PARTITIONS,
+    )
+    def literature_corpus_source_date_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Source/date literature corpus harvest partition for rerunnable daily slices."""
+
+        return _run_literature_corpus_source_date_partition(context, research_repository)
+
     @dg.asset(group_name="literature_full_text_refresh")
     def literature_full_text_refresh_report(research_repository: ResearchRepositoryResource) -> dict:
         """Bounded hosted full-text ingestion for licensed open-access sources."""
@@ -1209,6 +1380,152 @@ if dg is not None:
         report = result.model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_full_text_ops_report_metadata(report))
 
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "topic": dg.Field(
+                str,
+                default_value="canine hemangiosarcoma translational therapy",
+                description="Research topic or question to brief.",
+            ),
+            "disease_scope": dg.Field(
+                str,
+                default_value="canine hemangiosarcoma and human angiosarcoma",
+                description="Disease/scope guardrail for retrieval and synthesis.",
+            ),
+            "source_key": dg.Field(
+                str,
+                is_required=False,
+                description="Optional source key filter for chunk retrieval.",
+            ),
+            "max_chunks_per_perspective": dg.Field(
+                int,
+                default_value=8,
+                description="Maximum chunks to retrieve per perspective query.",
+            ),
+            "max_claims": dg.Field(
+                int,
+                default_value=12,
+                description="Maximum stored claims to include in the evidence payload.",
+            ),
+            "max_chunk_chars": dg.Field(
+                int,
+                default_value=1800,
+                description="Maximum characters per cited chunk sent to the reviewer.",
+            ),
+            "brief_style": dg.Field(
+                str,
+                default_value="technical",
+                description="Brief style: technical, operator, substack, or vet_partner.",
+            ),
+            "review_mode": dg.Field(
+                str,
+                default_value="openrouter_required",
+                description="Research brief review mode: openrouter_required, openrouter_compare, external_required, or deterministic_only.",
+            ),
+            "review_models": dg.Field(
+                [str],
+                default_value=[],
+                description="OpenRouter model ids to use when using an OpenRouter review mode.",
+            ),
+        },
+    )
+    def research_brief_agent_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual citation-first research brief from evidence, translational, and skeptic agents."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).run_research_brief(
+            ResearchBriefRequest(
+                topic=config["topic"],
+                disease_scope=config["disease_scope"],
+                source_key=config.get("source_key"),
+                max_chunks_per_perspective=config["max_chunks_per_perspective"],
+                max_claims=config["max_claims"],
+                max_chunk_chars=config["max_chunk_chars"],
+                brief_style=config["brief_style"],
+                review_mode=config["review_mode"],
+                review_models=config["review_models"],
+                dagster_run_id=context.run_id,
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_research_brief_report_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "topic": dg.Field(
+                str,
+                default_value="canine hemangiosarcoma translational therapy",
+                description="Research topic or question to brief.",
+            ),
+            "disease_scope": dg.Field(
+                str,
+                default_value="canine hemangiosarcoma and human angiosarcoma",
+                description="Disease/scope guardrail for retrieval and synthesis.",
+            ),
+            "source_key": dg.Field(
+                str,
+                is_required=False,
+                description="Optional source key filter for chunk retrieval.",
+            ),
+            "max_chunks_per_perspective": dg.Field(
+                int,
+                default_value=8,
+                description="Maximum chunks to retrieve per perspective query.",
+            ),
+            "max_claims": dg.Field(
+                int,
+                default_value=12,
+                description="Maximum stored claims to include in the evidence payload.",
+            ),
+            "max_chunk_chars": dg.Field(
+                int,
+                default_value=1800,
+                description="Maximum characters per cited chunk sent to the reviewer.",
+            ),
+            "brief_style": dg.Field(
+                str,
+                default_value="technical",
+                description="Brief style: technical, operator, substack, or vet_partner.",
+            ),
+        },
+    )
+    def research_brief_playground_pack_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual prompt pack for running research brief agents in a model playground."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).build_research_brief_playground_pack(
+            ResearchBriefRequest(
+                topic=config["topic"],
+                disease_scope=config["disease_scope"],
+                source_key=config.get("source_key"),
+                max_chunks_per_perspective=config["max_chunks_per_perspective"],
+                max_claims=config["max_claims"],
+                max_chunk_chars=config["max_chunk_chars"],
+                brief_style=config["brief_style"],
+                review_mode="external_required",
+                dagster_run_id=context.run_id,
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_research_brief_playground_pack_metadata(report),
+        )
+
     @dg.asset(group_name="social_monitoring")
     def x_topic_monitor_review_report(
         research_repository: ResearchRepositoryResource,
@@ -1227,6 +1544,7 @@ if dg is not None:
         provider_name = os.getenv("X_TOPIC_PROVIDER", "twitterapi_io")
         max_results = int(os.getenv("HSA_X_TOPIC_MAX_RESULTS", str(TWITTERAPI_IO_MAX_SINGLE_PAGE_RESULTS)))
         query_name_filter = os.getenv("HSA_X_TOPIC_QUERY_NAME")
+        query_delay_seconds = max(0.0, float(os.getenv("HSA_X_TOPIC_QUERY_DELAY_SECONDS", "6")))
         retention_mode = os.getenv("HSA_X_RETENTION_MODE", "store_metadata_only")
         review_mode = os.getenv("HSA_X_TOPIC_REVIEW_MODE", "openrouter_required")
         review_models = [
@@ -1250,7 +1568,9 @@ if dg is not None:
             errors.append(f"Unsupported X topic provider: {provider_name}")
         else:
             provider = TwitterApiIoProvider()
-            for query in queries:
+            for query_index, query in enumerate(queries):
+                if query_index > 0 and query_delay_seconds > 0:
+                    time.sleep(query_delay_seconds)
                 try:
                     result = provider.search(
                         XTopicRequest(
@@ -1287,6 +1607,7 @@ if dg is not None:
             "source_key": X_TOPIC_SOURCE_KEY,
             "provider": provider_name,
             "queries": [query.model_dump(mode="json") for query in queries],
+            "query_delay_seconds": query_delay_seconds,
             "query_results": query_results,
             "raw_tweet_count": raw_tweet_count,
             "candidate_count": len(candidate_rows),
@@ -1305,6 +1626,7 @@ if dg is not None:
                 metadata={
                     "provider": provider_name,
                     "query_name_filter": query_name_filter,
+                    "query_delay_seconds": query_delay_seconds,
                     "retention_mode": retention_mode,
                 },
             )
@@ -1457,6 +1779,16 @@ if dg is not None:
             ),
             "limit": dg.Field(int, is_required=False, description="Maximum scrape review records to scan."),
             "include_existing": dg.Field(bool, is_required=False, description="Include existing queue rows in output."),
+            "include_agent_recommendations": dg.Field(
+                bool,
+                is_required=False,
+                description="Also queue validated recommendations from recent linked-article review agent runs.",
+            ),
+            "agent_run_limit": dg.Field(
+                int,
+                is_required=False,
+                description="Maximum recent linked-article review agent runs to scan.",
+            ),
         },
     )
     def source_followup_queue_report(
@@ -1480,6 +1812,15 @@ if dg is not None:
                     "include_existing",
                     "HSA_SOURCE_FOLLOWUP_INCLUDE_EXISTING",
                     False,
+                ),
+                include_agent_recommendations=_config_or_env_bool(
+                    config,
+                    "include_agent_recommendations",
+                    "HSA_SOURCE_FOLLOWUP_INCLUDE_AGENT_RECOMMENDATIONS",
+                    True,
+                ),
+                agent_run_limit=int(
+                    _config_or_env(config, "agent_run_limit", "HSA_SOURCE_FOLLOWUP_AGENT_RUN_LIMIT", 20)
                 ),
             )
         )
@@ -2083,6 +2424,7 @@ if dg is not None:
         literature_clinical_smoke_report,
         all_api_smoke_report,
         literature_corpus_harvest_report,
+        literature_corpus_source_date_report,
         literature_full_text_refresh_report,
         europe_pmc_full_text_refresh_report,
         pmc_oa_full_text_refresh_report,
@@ -2094,6 +2436,8 @@ if dg is not None:
         structured_source_count_report,
         source_health_report,
         full_text_ops_agent_report,
+        research_brief_agent_report,
+        research_brief_playground_pack_report,
         x_topic_monitor_review_report,
         x_linked_article_followup_report,
         x_linked_article_review_report,
@@ -2127,6 +2471,10 @@ if dg is not None:
     literature_corpus_harvest_job = dg.define_asset_job(
         "literature_corpus_harvest_job",
         selection=dg.AssetSelection.assets(literature_corpus_harvest_report),
+    )
+    literature_corpus_source_date_job = dg.define_asset_job(
+        "literature_corpus_source_date_job",
+        selection=dg.AssetSelection.assets(literature_corpus_source_date_report),
     )
     literature_full_text_refresh_job = dg.define_asset_job(
         "literature_full_text_refresh_job",
@@ -2171,6 +2519,14 @@ if dg is not None:
     full_text_ops_agent_job = dg.define_asset_job(
         "full_text_ops_agent_job",
         selection=dg.AssetSelection.assets(full_text_ops_agent_report),
+    )
+    research_brief_agent_job = dg.define_asset_job(
+        "research_brief_agent_job",
+        selection=dg.AssetSelection.assets(research_brief_agent_report),
+    )
+    research_brief_playground_pack_job = dg.define_asset_job(
+        "research_brief_playground_pack_job",
+        selection=dg.AssetSelection.assets(research_brief_playground_pack_report),
     )
     x_topic_monitor_review_job = dg.define_asset_job(
         "x_topic_monitor_review_job",
@@ -2300,6 +2656,7 @@ if dg is not None:
             literature_clinical_smoke_job,
             all_api_smoke_job,
             literature_corpus_harvest_job,
+            literature_corpus_source_date_job,
             literature_full_text_refresh_job,
             europe_pmc_full_text_refresh_job,
             pmc_oa_full_text_refresh_job,
@@ -2311,6 +2668,8 @@ if dg is not None:
             structured_source_count_report_job,
             source_health_report_job,
             full_text_ops_agent_job,
+            research_brief_agent_job,
+            research_brief_playground_pack_job,
             x_topic_monitor_review_job,
             x_linked_article_followup_job,
             x_linked_article_review_job,
@@ -2344,6 +2703,7 @@ else:
     literature_clinical_smoke_job = None
     all_api_smoke_job = None
     literature_corpus_harvest_job = None
+    literature_corpus_source_date_job = None
     literature_full_text_refresh_job = None
     europe_pmc_full_text_refresh_job = None
     pmc_oa_full_text_refresh_job = None
@@ -2355,6 +2715,8 @@ else:
     structured_source_count_report_job = None
     source_health_report_job = None
     full_text_ops_agent_job = None
+    research_brief_agent_job = None
+    research_brief_playground_pack_job = None
     x_topic_monitor_review_job = None
     x_linked_article_followup_job = None
     x_linked_article_review_job = None

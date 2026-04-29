@@ -11,13 +11,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from datetime import datetime
 from enum import Enum
 from hashlib import sha256
 from typing import Any, Callable
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode, urlparse
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -84,8 +85,33 @@ HIGH_QUALITY_DOMAINS = (
     "veterinaryclinicaltrials.org",
     "fda.gov",
     "nih.gov",
+    "nature.com",
+    "science.org",
+    "cell.com",
+    "aacrjournals.org",
+    "ascopubs.org",
+    "frontiersin.org",
+    "mdpi.com",
+    "springer.com",
+    "biomedcentral.com",
+    "wiley.com",
+    "tandfonline.com",
+    "sciencedirect.com",
+    "nejm.org",
+    "jamanetwork.com",
+    "biorxiv.org",
+    "medrxiv.org",
+    "peerj.com",
+    "plos.org",
+    "bmj.com",
     "edu",
 )
+
+_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+_DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
+_PMID_RE = re.compile(r"\bPMID\s*:?\s*(\d{5,})\b", re.IGNORECASE)
+_PMCID_RE = re.compile(r"\bPMC(?:ID)?\s*:?\s*(PMC\d+)\b", re.IGNORECASE)
+_NCT_RE = re.compile(r"\bNCT\d{8}\b", re.IGNORECASE)
 
 
 class XRetentionMode(str, Enum):
@@ -679,16 +705,31 @@ def _matched_terms(text: str) -> list[str]:
 
 def _durable_links(payload: dict[str, Any]) -> list[str]:
     links: list[str] = []
+    candidate_urls: list[str] = []
     entities = payload.get("entities") or {}
     for url_item in entities.get("urls") or []:
         if not isinstance(url_item, dict):
             continue
-        expanded = _optional_str(url_item.get("expanded_url") or url_item.get("unwound_url") or url_item.get("url"))
-        if not expanded:
-            continue
-        lowered = expanded.lower()
-        if any(domain in lowered for domain in HIGH_QUALITY_DOMAINS):
-            links.append(expanded)
+        candidate_urls.extend(
+            str(value)
+            for value in (
+                url_item.get("expanded_url"),
+                url_item.get("expandedUrl"),
+                url_item.get("unwound_url"),
+                url_item.get("unwoundUrl"),
+                url_item.get("url"),
+            )
+            if value
+        )
+
+    text = _optional_str(payload.get("text")) or ""
+    candidate_urls.extend(match.group(0) for match in _URL_RE.finditer(text))
+    for candidate_url in candidate_urls:
+        cleaned = _clean_url(candidate_url)
+        if cleaned and _is_high_quality_link(cleaned):
+            links.append(cleaned)
+
+    links.extend(_identifier_links_from_text(text))
     return sorted(set(links))
 
 
@@ -720,6 +761,18 @@ def _twitterapi_io_tweet_to_post_payload(tweet: dict[str, Any]) -> dict[str, Any
             {
                 "url": url_item.get("url"),
                 "expanded_url": url_item.get("expanded_url") or url_item.get("expandedUrl"),
+                "unwound_url": url_item.get("unwound_url") or url_item.get("unwoundUrl"),
+                "display_url": url_item.get("display_url") or url_item.get("displayUrl"),
+            }
+        )
+    for url_item in tweet.get("urls") or []:
+        if not isinstance(url_item, dict):
+            continue
+        urls.append(
+            {
+                "url": url_item.get("url"),
+                "expanded_url": url_item.get("expanded_url") or url_item.get("expandedUrl"),
+                "unwound_url": url_item.get("unwound_url") or url_item.get("unwoundUrl"),
                 "display_url": url_item.get("display_url") or url_item.get("displayUrl"),
             }
         )
@@ -782,6 +835,54 @@ def _http_get_json(
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
         raise RuntimeError(f"HTTP {exc.code} from {url}: {detail}") from exc
+
+
+def _identifier_links_from_text(text: str) -> list[str]:
+    links: list[str] = []
+    for match in _DOI_RE.finditer(text):
+        doi = _clean_identifier(match.group(0))
+        if doi:
+            links.append(f"https://doi.org/{quote(doi, safe='/')}")
+    for match in _PMID_RE.finditer(text):
+        links.append(f"https://pubmed.ncbi.nlm.nih.gov/{match.group(1)}/")
+    for match in _PMCID_RE.finditer(text):
+        links.append(f"https://pmc.ncbi.nlm.nih.gov/articles/{match.group(1).upper()}/")
+    for match in _NCT_RE.finditer(text):
+        links.append(f"https://clinicaltrials.gov/study/{match.group(0).upper()}")
+    return links
+
+
+def _clean_url(url: str) -> str | None:
+    cleaned = url.strip().rstrip(").,;]'\"")
+    parsed = urlparse(cleaned)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return cleaned
+
+
+def _clean_identifier(value: str) -> str:
+    identifier = value.strip().split("?", 1)[0].split("#", 1)[0].rstrip(").,;:]'\"")
+    for suffix in ("/full", "/abstract", "/pdf", "/epdf", "/html"):
+        if identifier.lower().endswith(suffix):
+            identifier = identifier[: -len(suffix)]
+            break
+    return identifier
+
+
+def _is_high_quality_link(url: str) -> bool:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if not host:
+        return False
+    for domain in HIGH_QUALITY_DOMAINS:
+        marker = domain.lower()
+        if marker == "edu":
+            if host.endswith(".edu"):
+                return True
+            continue
+        if host == marker or host.endswith(f".{marker}"):
+            return True
+    return False
 
 
 def _stable_hash(payload: dict[str, Any]) -> str:

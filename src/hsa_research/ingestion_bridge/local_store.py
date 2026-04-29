@@ -283,10 +283,17 @@ class SQLiteResearchRepository(ResearchRepository):
     def upsert_research_object(self, obj: ResearchObject, raw_record_id: UUID | None = None) -> UUID:
         dedupe_key = obj.dedupe_key or build_research_object_dedupe_key(obj)
         existing = self.conn.execute(
-            "select object_id from research_objects where dedupe_key = ?",
+            "select object_id, payload from research_objects where dedupe_key = ?",
             (dedupe_key,),
         ).fetchone()
         object_id = UUID(existing["object_id"]) if existing else obj.id
+        if existing:
+            existing_obj = ResearchObject.model_validate(json.loads(existing["payload"]))
+            if should_preserve_existing_research_object(existing_obj, obj):
+                for identifier_type, identifier_value in obj.identifiers.items():
+                    if identifier_value:
+                        self.link_identifier(object_id, identifier_type, identifier_value)
+                return object_id
         payload = obj.model_copy(
             update={"id": object_id, "raw_record_id": raw_record_id, "dedupe_key": dedupe_key}
         ).model_dump(mode="json")
@@ -2311,6 +2318,18 @@ def build_research_object_dedupe_key(obj: ResearchObject) -> str:
     if obj.title:
         return f"title:{(obj.source_key or 'unknown').lower()}:{obj.title.strip().lower()}"
     return f"object:{obj.id}"
+
+
+def research_object_has_full_text(obj: ResearchObject | None) -> bool:
+    """Return whether an object represents a body-text-bearing source record."""
+
+    return bool(obj and obj.metadata.get("full_text_available") is True)
+
+
+def should_preserve_existing_research_object(existing: ResearchObject, incoming: ResearchObject) -> bool:
+    """Avoid downgrading a full-text object when a weaker duplicate arrives later."""
+
+    return research_object_has_full_text(existing) and not research_object_has_full_text(incoming)
 
 
 def document_chunk_from_payload(payload: dict[str, Any], *, chunk_id: object, object_id: object) -> DocumentChunk:

@@ -14,6 +14,29 @@ from .contracts import ArtifactHandle, ResearchObjectType, ScrapeManifestItem, S
 ParserFunc = Callable[[ScrapeSourceProfile, ArtifactHandle, str], ScrapeParsedRecord | None]
 _DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
 _DOI_TRAILING_CHARS = ").,;:&"
+_ARTICLE_SIGNAL_TERMS = (
+    "published",
+    "presented",
+    "study",
+    "trial",
+    "abstract",
+    "journal",
+    "doi",
+    "pmid",
+    "pmcid",
+    "clinicaltrials",
+    "researchers found",
+    "research team",
+    "screened",
+    "cell line",
+    "cell lines",
+    "mouse model",
+    "dog",
+    "dogs",
+    "canine",
+    "hemangiosarcoma",
+    "angiosarcoma",
+)
 
 
 def parse_scrape_html(
@@ -52,6 +75,9 @@ def parse_generic_html(
     article_metadata = _extract_article_metadata(html)
     title = _first_present(article_metadata.get("title"), _best_title(html))
     links = _html_links(html, source_url)
+    article_text_blocks = _article_text_blocks(html)
+    context_links = _context_links(links, source_url)
+    evidence_spans = _evidence_spans(article_text_blocks, context_links)
     primary_source_links = _primary_source_links(html, links, article_metadata)
     reference_links = _reference_links(links)
     record_type = (
@@ -64,6 +90,8 @@ def parse_generic_html(
         confidence = max(confidence, 0.55)
     if article_metadata.get("doi") or article_metadata.get("pmid") or article_metadata.get("pmcid"):
         confidence = max(confidence, 0.65)
+    if evidence_spans or context_links:
+        confidence = max(confidence, 0.45)
     return ScrapeParsedRecord(
         source_key=profile.source_key,
         source_record_id=_stable_source_record_id(source_url, title, artifact.artifact_id),
@@ -74,6 +102,9 @@ def parse_generic_html(
             "links": links[:100],
             "reference_links": reference_links[:100],
             "primary_source_links": primary_source_links[:50],
+            "context_links": context_links[:50],
+            "evidence_spans": evidence_spans[:20],
+            "article_text_preview": _truncate_text(" ".join(article_text_blocks), 5000),
             "article_metadata": article_metadata,
             "parser": profile.parser,
             "storage_policy": profile.storage_policy,
@@ -325,6 +356,106 @@ def _html_links(html: str, base_url: str | None) -> list[dict[str, Any]]:
     return links
 
 
+def _article_text_blocks(html: str) -> list[str]:
+    blocks: list[str] = []
+    seen: set[str] = set()
+    for tag in ("p", "li", "figcaption"):
+        for match in re.finditer(rf"<{tag}\b[^>]*>(.*?)</{tag}>", html, flags=re.I | re.S):
+            text = _clean_html(match.group(1))
+            if len(text) < 40:
+                continue
+            lowered = text.lower()
+            if any(term in lowered for term in ("skip to main", "share this", "subscribe", "cookie")):
+                continue
+            key = lowered[:200]
+            if key in seen:
+                continue
+            seen.add(key)
+            blocks.append(text)
+    return blocks[:120]
+
+
+def _evidence_spans(
+    article_text_blocks: list[str],
+    context_links: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    spans: list[dict[str, Any]] = []
+    for block in article_text_blocks:
+        lowered = block.lower()
+        matched_terms = [term for term in _ARTICLE_SIGNAL_TERMS if term in lowered]
+        if not matched_terms:
+            continue
+        spans.append(
+            {
+                "text": _truncate_text(block, 700),
+                "matched_terms": matched_terms[:8],
+                "reason": "article_body_source_context",
+            }
+        )
+        if len(spans) >= 15:
+            break
+    for link in context_links[:5]:
+        spans.append(
+            {
+                "text": f"{link.get('text') or link.get('href')}",
+                "matched_terms": [str(link.get("reason") or "context_link")],
+                "reason": "linked_source_context",
+                "url": link.get("href"),
+            }
+        )
+    return spans
+
+
+def _context_links(links: list[dict[str, Any]], source_url: str | None) -> list[dict[str, Any]]:
+    source_host = urllib.parse.urlparse(source_url or "").netloc.lower()
+    candidates: list[dict[str, Any]] = []
+    for link in links:
+        href = str(link.get("href") or "")
+        text = str(link.get("text") or "")
+        parsed = urllib.parse.urlparse(href)
+        host_path = f"{parsed.netloc}{parsed.path}".lower()
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        if source_host and parsed.netloc.lower() == source_host:
+            continue
+        if _classify_primary_source_link(href, text):
+            continue
+        reason = _context_link_reason(host_path, text)
+        if not reason:
+            continue
+        candidates.append(
+            {
+                "href": href,
+                "text": text or None,
+                "host": parsed.netloc.lower(),
+                "reason": reason,
+            }
+        )
+    return _dedupe_context_links(candidates)
+
+
+def _context_link_reason(host_path: str, text: str) -> str | None:
+    haystack = f"{host_path} {text}".lower()
+    if "abstractsonline.com" in host_path:
+        return "conference_abstract_link"
+    if any(term in haystack for term in ("aacr", "asco", "annual meeting", "conference", "presentation", "abstract")):
+        return "conference_context_link"
+    if any(term in host_path for term in ("nature.com", "science.org", "cell.com", "wiley.com", "springer.com")):
+        return "publisher_context_link"
+    if any(term in haystack for term in ("study", "trial", "publication", "paper", "journal")):
+        return "article_context_link"
+    return None
+
+
+def _dedupe_context_links(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for link in links:
+        href = str(link.get("href") or "")
+        if href:
+            deduped.setdefault(href, link)
+    return list(deduped.values())
+
+
 def _extract_article_metadata(html: str) -> dict[str, Any]:
     jsonld_values = _extract_jsonld_values(html)
     doi = _first_present(
@@ -553,7 +684,12 @@ def _extract_dois(value: str) -> list[str]:
 
 
 def _clean_doi(value: str) -> str | None:
-    doi = value.strip().rstrip(_DOI_TRAILING_CHARS)
+    doi = urllib.parse.unquote(value).strip()
+    doi = doi.split("?", 1)[0].split("#", 1)[0].rstrip(_DOI_TRAILING_CHARS)
+    for suffix in ("/full", "/abstract", "/pdf", "/epdf", "/html"):
+        if doi.lower().endswith(suffix):
+            doi = doi[: -len(suffix)]
+            break
     return doi or None
 
 
@@ -849,6 +985,13 @@ def _clean_html(value: str) -> str:
 
 def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", unescape(value)).strip()
+
+
+def _truncate_text(value: str, limit: int) -> str:
+    text = _clean_text(value)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
 
 
 def _normalize_label(value: str) -> str:
