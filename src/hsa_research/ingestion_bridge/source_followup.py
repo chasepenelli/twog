@@ -210,10 +210,9 @@ def _find_existing_followup(
 
 
 def _query_for_followup(item: SourceFollowupQueueItem) -> SourceQuery:
-    query_params: dict[str, Any] = {
-        "comparative_policy": "disabled",
-        "require_policy_match": False,
-    }
+    query_params: dict[str, Any] = {"require_policy_match": False}
+    if item.source_key in {"crossref", "pubmed", "pmc_oa"}:
+        query_params["comparative_policy"] = "disabled"
     if item.source_key == "pmc_oa":
         query_params["license_required"] = True
         query_params["max_candidate_records"] = 5
