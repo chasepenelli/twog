@@ -51,6 +51,27 @@ def build_source_health_report(
         for report in source_reports
         if report.get("full_text_triage_should_block_schedule")
     ]
+    embedding_missing_sources = [
+        report["source_key"]
+        for report in source_reports
+        if int(report.get("missing_embeddings", 0)) > 0
+    ]
+    source_followup_failed_sources = [
+        report["source_key"]
+        for report in source_reports
+        if int(report.get("source_followup_failed", 0)) > 0
+    ]
+    source_followup_pending_sources = [
+        report["source_key"]
+        for report in source_reports
+        if int(report.get("source_followup_pending", 0)) > 0
+    ]
+    sources_without_active_queries = [
+        report["source_key"]
+        for report in source_reports
+        if report.get("source_query_health", {}).get("available")
+        and int(report.get("active_source_queries", 0)) < 1
+    ]
     return {
         "source_keys": selected_sources,
         "sources": source_reports,
@@ -61,10 +82,18 @@ def build_source_health_report(
             "triage": status_counts.get("triage", 0),
             "watch": status_counts.get("watch", 0),
             "failing": status_counts.get("failing", 0),
+            "embedding_missing": len(embedding_missing_sources),
+            "source_followup_failed": len(source_followup_failed_sources),
+            "source_followup_pending": len(source_followup_pending_sources),
+            "sources_without_active_queries": len(sources_without_active_queries),
         },
         "failed_sources": failed_sources,
         "triage_sources": triage_sources,
         "watch_sources": watch_sources,
+        "embedding_missing_sources": embedding_missing_sources,
+        "source_followup_failed_sources": source_followup_failed_sources,
+        "source_followup_pending_sources": source_followup_pending_sources,
+        "sources_without_active_queries": sources_without_active_queries,
         "full_text_triage": full_text_triage,
         "full_text_blocking_sources": full_text_blocking_sources,
         "passes_minimum_bar": not failed_sources,
@@ -99,6 +128,21 @@ def build_source_health(
             **full_text_triage_summary(full_text_qa),
         }
     claim_metadata = _claim_metadata_summary(repository, source_key, limit=metadata_claim_limit)
+    embedding_health = _embedding_health(repository, source_key)
+    source_followup_health = _source_followup_health(repository, source_key)
+    source_query_health = _source_query_health(repository, source_key)
+    runtime = {
+        **runtime,
+        "embedding_health": embedding_health,
+        "embedding_coverage_ratio": embedding_health.get("coverage_ratio", 0.0),
+        "missing_embeddings": embedding_health.get("missing_chunks", 0),
+        "source_followup_health": source_followup_health,
+        "source_followup_failed": source_followup_health.get("failed", 0),
+        "source_followup_pending": source_followup_health.get("pending", 0),
+        "source_query_health": source_query_health,
+        "source_queries": source_query_health.get("source_queries", 0),
+        "active_source_queries": source_query_health.get("active_source_queries", 0),
+    }
     health_score, signals, risks, recommended_actions = _score_source(
         runtime,
         claim_metadata=claim_metadata,
@@ -129,6 +173,119 @@ def build_source_health(
             "has_required_counts": has_required_counts,
             "full_text_required_passes": full_text_required_passes,
         },
+    }
+
+
+def _embedding_health(repository: Any, source_key: str) -> dict[str, Any]:
+    if not hasattr(repository, "embedding_coverage"):
+        return {
+            "available": False,
+            "source_key": source_key,
+            "total_chunks": 0,
+            "embedded_chunks": 0,
+            "missing_chunks": 0,
+            "coverage_ratio": 0.0,
+            "embedding_models": {},
+        }
+
+    try:
+        coverage = repository.embedding_coverage(source_key=source_key)
+    except Exception as exc:  # pragma: no cover - defensive adapter boundary
+        return {
+            "available": False,
+            "source_key": source_key,
+            "total_chunks": 0,
+            "embedded_chunks": 0,
+            "missing_chunks": 0,
+            "coverage_ratio": 0.0,
+            "embedding_models": {},
+            "error": str(exc),
+        }
+
+    if hasattr(coverage, "model_dump"):
+        data = coverage.model_dump(mode="json")
+    else:
+        data = dict(coverage)
+    return {"available": True, **data}
+
+
+def _source_followup_health(repository: Any, source_key: str, *, sample_limit: int = 5) -> dict[str, Any]:
+    empty = {
+        "available": False,
+        "source_key": source_key,
+        "total": 0,
+        "pending": 0,
+        "queued": 0,
+        "approved": 0,
+        "ingested": 0,
+        "failed": 0,
+        "skipped": 0,
+        "status_counts": {},
+        "recent_failed": [],
+    }
+    if not hasattr(repository, "list_source_followups"):
+        return empty
+
+    try:
+        items = repository.list_source_followups(source_key=source_key, limit=None)
+    except TypeError:
+        items = repository.list_source_followups(source_key=source_key, limit=1000)
+    except Exception as exc:  # pragma: no cover - defensive adapter boundary
+        return {**empty, "error": str(exc)}
+
+    status_counts = Counter(str(item.status) for item in items)
+    failed_items = [item for item in items if str(item.status) == "failed"]
+    failed_items.sort(key=lambda item: item.updated_at, reverse=True)
+    return {
+        "available": True,
+        "source_key": source_key,
+        "total": len(items),
+        "pending": status_counts.get("queued", 0) + status_counts.get("approved", 0),
+        "queued": status_counts.get("queued", 0),
+        "approved": status_counts.get("approved", 0),
+        "ingested": status_counts.get("ingested", 0),
+        "failed": status_counts.get("failed", 0),
+        "skipped": status_counts.get("skipped", 0),
+        "status_counts": dict(sorted(status_counts.items())),
+        "recent_failed": [
+            {
+                "followup_id": str(item.followup_id),
+                "identifier_type": item.identifier_type,
+                "identifier": item.identifier,
+                "attempts": item.attempts,
+                "last_error": item.last_error,
+                "updated_at": item.updated_at.isoformat(),
+            }
+            for item in failed_items[:sample_limit]
+        ],
+    }
+
+
+def _source_query_health(repository: Any, source_key: str) -> dict[str, Any]:
+    empty = {
+        "available": False,
+        "source_key": source_key,
+        "source_queries": 0,
+        "active_source_queries": 0,
+        "active_query_names": [],
+    }
+    if not hasattr(repository, "list_source_queries"):
+        return empty
+
+    try:
+        queries = repository.list_source_queries(source_key=source_key, active_only=False)
+    except TypeError:
+        queries = repository.list_source_queries(source_key=source_key, active_only=True)
+    except Exception as exc:  # pragma: no cover - defensive adapter boundary
+        return {**empty, "error": str(exc)}
+
+    active_queries = [query for query in queries if bool(query.active)]
+    return {
+        "available": True,
+        "source_key": source_key,
+        "source_queries": len(queries),
+        "active_source_queries": len(active_queries),
+        "active_query_names": [query.query_name for query in active_queries],
     }
 
 
@@ -233,6 +390,50 @@ def _score_source(
                     f"({triage.get('severity')})."
                 )
                 recommended_actions.extend(triage.get("recommended_next_actions", []))
+
+    embedding_health = runtime.get("embedding_health") or {}
+    if embedding_health.get("available"):
+        missing_chunks = int(embedding_health.get("missing_chunks", 0))
+        total_chunks = int(embedding_health.get("total_chunks", 0))
+        if total_chunks > 0 and missing_chunks == 0:
+            signals.append("embedding_coverage_complete")
+        elif missing_chunks > 0:
+            risks.append(f"{missing_chunks} document chunks are missing text embeddings for this source.")
+            recommended_actions.append(
+                "Run embedding_index_job and embedding_maintenance_job before relying on RAG for this source."
+            )
+    elif embedding_health.get("error"):
+        risks.append(f"Embedding coverage check failed: {embedding_health['error']}.")
+        recommended_actions.append("Inspect repository embedding schema and rerun source_health_report_job.")
+
+    source_followup_health = runtime.get("source_followup_health") or {}
+    if source_followup_health.get("available"):
+        failed = int(source_followup_health.get("failed", 0))
+        pending = int(source_followup_health.get("pending", 0))
+        if failed > 0:
+            risks.append(f"{failed} source follow-up ingest rows failed for this source.")
+            recommended_actions.append(
+                "Inspect source_followup_ingest_report failures and rerun source_followup_ingest_job after fixes."
+            )
+        if pending > 0:
+            risks.append(f"{pending} source follow-up ingest rows are queued or approved for this source.")
+            recommended_actions.append("Run source_followup_ingest_job to drain approved and queued follow-up records.")
+        if source_followup_health.get("total", 0) and failed == 0 and pending == 0:
+            signals.append("source_followups_clear")
+    elif source_followup_health.get("error"):
+        risks.append(f"Source follow-up queue check failed: {source_followup_health['error']}.")
+        recommended_actions.append("Inspect source follow-up queue storage and rerun source_health_report_job.")
+
+    source_query_health = runtime.get("source_query_health") or {}
+    if source_query_health.get("available"):
+        if int(source_query_health.get("active_source_queries", 0)) > 0:
+            signals.append("active_source_queries_present")
+        else:
+            risks.append("No active source query is configured for this source.")
+            recommended_actions.append("Add or activate a source query before relying on scheduled harvests for this source.")
+    elif source_query_health.get("error"):
+        risks.append(f"Source query check failed: {source_query_health['error']}.")
+        recommended_actions.append("Inspect source query storage and rerun source_health_report_job.")
 
     return round(min(score, 1.0), 3), _dedupe(signals), _dedupe(risks), _dedupe(recommended_actions)
 

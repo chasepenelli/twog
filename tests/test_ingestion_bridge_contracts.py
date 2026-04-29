@@ -1582,7 +1582,17 @@ def test_source_health_report_separates_failed_and_watch_sources(tmp_path):
     chembl = next(source for source in report["sources"] if source["source_key"] == "chembl")
 
     assert report["source_keys"] == ["pubchem", "chembl"]
-    assert report["summary"] == {"sources": 2, "healthy": 0, "triage": 0, "watch": 1, "failing": 1}
+    assert report["summary"] == {
+        "sources": 2,
+        "healthy": 0,
+        "triage": 0,
+        "watch": 1,
+        "failing": 1,
+        "embedding_missing": 1,
+        "source_followup_failed": 0,
+        "source_followup_pending": 0,
+        "sources_without_active_queries": 2,
+    }
     assert report["failed_sources"] == ["chembl"]
     assert report["watch_sources"] == ["pubchem"]
     assert report["triage_sources"] == []
@@ -1591,9 +1601,92 @@ def test_source_health_report_separates_failed_and_watch_sources(tmp_path):
     assert pubchem["health_score"] >= report["minimum_bar"]["min_health_score"]
     assert pubchem["passes_minimum_bar"] is True
     assert pubchem["claim_metadata"]["extraction_status"] == {"source_context": 1}
+    assert pubchem["embedding_health"]["missing_chunks"] == 1
+    assert pubchem["source_followup_health"]["failed"] == 0
+    assert pubchem["source_query_health"]["active_source_queries"] == 0
     assert any("source-context" in risk for risk in pubchem["risks"])
     assert chembl["health_status"] == "failing"
     assert chembl["passes_minimum_bar"] is False
+
+
+def test_source_health_report_includes_operational_readiness(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    _seed_minimal_source_claim(repo, "pubmed")
+    repo.upsert_source_query(
+        SourceQuery(
+            source_key="pubmed",
+            query_name="pubmed_hsa_active",
+            query_text="canine hemangiosarcoma",
+            active=True,
+        )
+    )
+    repo.upsert_source_followup(
+        SourceFollowupQueueItem(
+            source_key="pubmed",
+            identifier_type="doi",
+            identifier="10.1000/hsa.1",
+            status="failed",
+            attempts=1,
+            last_error="HTTP 429",
+        )
+    )
+
+    report = build_source_health_report(repo, source_keys=["pubmed"], sample_limit=1)
+    pubmed = report["sources"][0]
+
+    assert report["embedding_missing_sources"] == ["pubmed"]
+    assert report["source_followup_failed_sources"] == ["pubmed"]
+    assert report["source_followup_pending_sources"] == []
+    assert report["sources_without_active_queries"] == []
+    assert pubmed["health_status"] == "watch"
+    assert pubmed["embedding_health"]["available"] is True
+    assert pubmed["embedding_health"]["total_chunks"] == 1
+    assert pubmed["embedding_health"]["missing_chunks"] == 1
+    assert pubmed["missing_embeddings"] == 1
+    assert pubmed["source_followup_health"]["failed"] == 1
+    assert pubmed["source_followup_failed"] == 1
+    assert pubmed["source_followup_health"]["recent_failed"][0]["last_error"] == "HTTP 429"
+    assert pubmed["source_query_health"]["active_source_queries"] == 1
+    assert pubmed["active_source_queries"] == 1
+    assert any("embedding_index_job" in action for action in pubmed["recommended_actions"])
+    assert any("source_followup_ingest_job" in action for action in pubmed["recommended_actions"])
+
+
+def test_source_health_report_marks_complete_embeddings(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    _seed_minimal_source_claim(repo, "pubmed")
+    repo.upsert_source_query(
+        SourceQuery(
+            source_key="pubmed",
+            query_name="pubmed_hsa_active",
+            query_text="canine hemangiosarcoma",
+            active=True,
+        )
+    )
+    chunk = repo.list_document_chunks(source_key="pubmed")[0]
+    repo.upsert_text_embedding(
+        TextEmbedding(
+            chunk_id=chunk.id,
+            research_object_id=chunk.research_object_id,
+            chunk_index=chunk.chunk_index,
+            source_key="pubmed",
+            object_type="publication",
+            content_hash=chunk.content_hash,
+            embedding_model="unit-embedding-v1",
+            embedding_dimensions=3,
+            embedding=[1.0, 0.0, 0.0],
+        )
+    )
+
+    report = build_source_health_report(repo, source_keys=["pubmed"], sample_limit=1)
+    pubmed = report["sources"][0]
+
+    assert report["embedding_missing_sources"] == []
+    assert pubmed["health_status"] == "healthy"
+    assert pubmed["embedding_health"]["coverage_ratio"] == 1.0
+    assert pubmed["missing_embeddings"] == 0
+    assert "embedding_coverage_complete" in pubmed["signals"]
+    assert "active_source_queries_present" in pubmed["signals"]
 
 
 def test_source_health_report_marks_expected_triage_sources(tmp_path):
@@ -1608,7 +1701,17 @@ def test_source_health_report_marks_expected_triage_sources(tmp_path):
     report = build_source_health_report(repo, source_keys=["sra"], sample_limit=1)
     sra = report["sources"][0]
 
-    assert report["summary"] == {"sources": 1, "healthy": 0, "triage": 1, "watch": 0, "failing": 0}
+    assert report["summary"] == {
+        "sources": 1,
+        "healthy": 0,
+        "triage": 1,
+        "watch": 0,
+        "failing": 0,
+        "embedding_missing": 1,
+        "source_followup_failed": 0,
+        "source_followup_pending": 0,
+        "sources_without_active_queries": 1,
+    }
     assert report["failed_sources"] == []
     assert report["triage_sources"] == ["sra"]
     assert report["watch_sources"] == []
