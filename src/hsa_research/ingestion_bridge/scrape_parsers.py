@@ -13,6 +13,7 @@ from .contracts import ArtifactHandle, ResearchObjectType, ScrapeManifestItem, S
 
 ParserFunc = Callable[[ScrapeSourceProfile, ArtifactHandle, str], ScrapeParsedRecord | None]
 _DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
+_DOI_TRAILING_CHARS = ").,;:&"
 
 
 def parse_scrape_html(
@@ -406,13 +407,18 @@ def _extract_doi(value: str) -> str | None:
     parsed = urllib.parse.urlparse(value)
     if "doi.org" in parsed.netloc.lower():
         doi = urllib.parse.unquote(parsed.path.lstrip("/"))
-        return doi.rstrip(").,;") or None
+        return _clean_doi(doi)
     return next(iter(_extract_dois(value)), None)
 
 
 def _extract_dois(value: str) -> list[str]:
-    dois = [match.group(0).rstrip(").,;") for match in _DOI_RE.finditer(value)]
+    dois = [doi for match in _DOI_RE.finditer(value) if (doi := _clean_doi(match.group(0)))]
     return sorted(set(dois))
+
+
+def _clean_doi(value: str) -> str | None:
+    doi = value.strip().rstrip(_DOI_TRAILING_CHARS)
+    return doi or None
 
 
 def _dedupe_primary_source_links(links: list[dict[str, Any]]) -> list[dict[str, Any]]:

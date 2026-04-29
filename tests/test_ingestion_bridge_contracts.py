@@ -5096,6 +5096,7 @@ def test_x_linked_article_parser_extracts_primary_source_links(tmp_path, monkeyp
             <a href="https://pubmed.ncbi.nlm.nih.gov/12345678/">PubMed</a>
             <a href="https://doi.org/10.1158/0008-5472.CAN-26-0001">Cancer Research DOI</a>
             Clinical trial NCT12345678 is also mentioned.
+            A trailing delimiter should normalize: 10.1186/s40425-017-0263-0&
           </body>
         </html>
         """,
@@ -5129,8 +5130,10 @@ def test_x_linked_article_parser_extracts_primary_source_links(tmp_path, monkeyp
     } >= {
         ("pubmed", "pmid", "12345678"),
         ("crossref", "doi", "10.1158/0008-5472.CAN-26-0001"),
+        ("crossref", "doi", "10.1186/s40425-017-0263-0"),
         ("clinicaltrials_gov", "nct", "NCT12345678"),
     }
+    assert all(not link["identifier"].endswith("&") for link in source_links)
 
 
 def test_x_linked_article_followup_collects_agent_links_and_parses(tmp_path, monkeypatch):
