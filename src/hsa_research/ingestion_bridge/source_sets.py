@@ -23,6 +23,9 @@ LITERATURE_CLINICAL_SOURCE_KEYS = (
     "pmc_oa",
     "clinicaltrials_gov",
 )
+OPEN_ACCESS_DISCOVERY_SOURCE_KEYS = (
+    "unpaywall",
+)
 LITERATURE_CORPUS_SOURCE_KEYS = (
     "openalex",
     "pubmed",
@@ -45,8 +48,10 @@ ALL_API_SOURCE_KEYS = (
     *STRUCTURED_SOURCE_KEYS,
     *CANINE_DATA_OMICS_SOURCE_KEYS,
     *LITERATURE_CLINICAL_SOURCE_KEYS,
+    *OPEN_ACCESS_DISCOVERY_SOURCE_KEYS,
 )
 TRIAGE_ONLY_SOURCE_KEYS = (
     "sra",
     "crossref",
+    "unpaywall",
 )

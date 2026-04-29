@@ -230,7 +230,6 @@ def build_scholarly_source_queries() -> list[SourceQuery]:
             query_text=unpaywall_disease_query,
             query_params={"is_oa": True},
             track="open_access_discovery",
-            active=False,
         ),
     ]
 
