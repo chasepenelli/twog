@@ -398,6 +398,12 @@ def test_dagster_full_text_ops_asset_uses_injected_repository(monkeypatch):
     assert result.metadata["action_count"] == 1
 
 
+def test_dagster_source_health_report_lives_in_control_panel_group():
+    assert dagster_asset_module.source_health_report.group_names_by_key == {
+        dagster_asset_module.dg.AssetKey(["source_health_report"]): "control_panel"
+    }
+
+
 def test_dagster_full_text_source_specific_assets_use_injected_repository(monkeypatch):
     sentinel_repository = object()
     calls = []
