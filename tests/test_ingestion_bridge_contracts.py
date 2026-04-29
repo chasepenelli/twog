@@ -359,6 +359,59 @@ def test_dagster_structured_asset_uses_injected_repository(monkeypatch):
     assert result == {"repository": "injected", "source_keys": dagster_asset_module.STRUCTURED_SOURCE_SMOKE_KEYS}
 
 
+def test_dagster_all_api_smoke_is_ingestion_only(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    def fail_full_pipeline(*args, **kwargs):
+        raise AssertionError("all_api_smoke_job must stay ingestion-only")
+
+    def fake_ingestion_pipeline(repository, **kwargs):
+        assert repository is sentinel_repository
+        assert kwargs == {
+            "source_keys": dagster_asset_module.ALL_API_SMOKE_KEYS,
+            "source_limits": {source_key: 1 for source_key in dagster_asset_module.ALL_API_SMOKE_KEYS},
+        }
+        return {
+            "mode": "ingestion_only",
+            "source_keys": kwargs["source_keys"],
+            "sources": [
+                {
+                    "source_key": "unpaywall",
+                    "qa": {
+                        "raw_records": 1,
+                        "research_objects": 1,
+                        "document_chunks": 1,
+                        "claims": 0,
+                    },
+                }
+            ],
+            "totals": {
+                "raw_records": 1,
+                "research_objects": 1,
+                "document_chunks": 1,
+                "claims": 0,
+            },
+            "errors": [],
+        }
+
+    monkeypatch.setattr(structured_orchestration, "run_structured_sources_pipeline", fail_full_pipeline)
+    monkeypatch.setattr(structured_orchestration, "run_structured_sources_ingestion_pipeline", fake_ingestion_pipeline)
+
+    result = dagster_asset_module.all_api_smoke_report.node_def.compute_fn.decorated_fn(FakeRepositoryResource())
+    check = dagster_asset_module.all_api_smoke_has_minimum_outputs.node_def.compute_fn.decorated_fn(result)
+
+    assert calls == ["build_repository"]
+    assert result["mode"] == "ingestion_only"
+    assert check.passed is True
+    assert check.metadata["mode"].value == "ingestion_only"
+
+
 def test_dagster_full_text_ops_asset_uses_injected_repository(monkeypatch):
     sentinel_repository = object()
     calls = []

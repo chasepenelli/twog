@@ -301,7 +301,7 @@ Dagster asset check:
 ### Run The Hosted All-API Smoke
 
 Use this before broadening the ingestion framework. It validates every current
-API harvester under one Dagster job and then checks persisted source counts.
+API harvester under one Dagster job and then checks persisted ingestion counts.
 
 GitHub Actions workflow:
 
@@ -311,9 +311,11 @@ Launch Dagster Smoke Job -> all_api_smoke_job
 
 Required QA output:
 - Every source in `ALL_API_SMOKE_KEYS` has at least one raw record, research
-  object, document chunk, and claim.
-- Sparse scholarly source-context claims remain `needs_review`.
-- Licensed full-text sources can produce `full_text` chunks and typed claims.
+  object, and document chunk.
+- This is a heartbeat only; entity resolution, claim extraction, and curation
+  are intentionally left to the deeper source-specific jobs.
+- Licensed full-text sources can produce persisted chunks in the smoke run, but
+  typed full-text claims are validated in the full-text refresh lanes.
 - Unpaywall writes OA discovery metadata and links only; it must not persist
   article body text.
 

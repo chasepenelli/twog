@@ -1052,17 +1052,15 @@ if dg is not None:
 
     @dg.asset(group_name="hosted_api_refresh")
     def all_api_smoke_report(research_repository: ResearchRepositoryResource) -> dict:
-        """Small hosted-runtime validation run across every implemented API harvester."""
+        """Small hosted-runtime API heartbeat across every implemented harvester."""
 
-        from .structured_orchestration import run_structured_sources_pipeline
+        from .structured_orchestration import run_structured_sources_ingestion_pipeline
 
         repository = research_repository.build_repository()
-        return run_structured_sources_pipeline(
+        return run_structured_sources_ingestion_pipeline(
             repository,
             source_keys=ALL_API_SMOKE_KEYS,
             source_limits={source_key: 1 for source_key in ALL_API_SMOKE_KEYS},
-            extract_limit=500,
-            curate_limit=500,
         )
 
     @dg.asset(group_name="literature_corpus_harvest")
@@ -1824,22 +1822,23 @@ if dg is not None:
     def all_api_smoke_has_minimum_outputs(
         all_api_smoke_report: dict,
     ) -> dg.AssetCheckResult:
-        """Ensure every implemented API source can write records, chunks, and claims."""
+        """Ensure every implemented API source can write records and chunks."""
 
         source_reports = all_api_smoke_report.get("sources", [])
         failed_sources = [
             report["source_key"]
             for report in source_reports
-            if not _has_minimum_ingested_source_outputs(report)
+            if not _has_minimum_source_ingestion_outputs(report)
         ]
         errors = all_api_smoke_report.get("errors", [])
         passed = not failed_sources and not errors
         return dg.AssetCheckResult(
             passed=passed,
             metadata={
+                "mode": all_api_smoke_report.get("mode"),
                 "failed_sources": failed_sources,
                 "errors": errors,
-                "source_keys": all_api_smoke_report.get("source_keys", []),
+                "source_keys": list(all_api_smoke_report.get("source_keys", [])),
                 "totals": all_api_smoke_report.get("totals", {}),
             },
         )
