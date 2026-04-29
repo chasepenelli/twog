@@ -1185,7 +1185,7 @@ if dg is not None:
         )
         return dg.MaterializeResult(value=report, metadata=_structured_source_count_report_metadata(report))
 
-    @dg.asset(group_name="hosted_api_refresh")
+    @dg.asset(group_name="control_panel")
     def source_health_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
         """Persisted source health report for hosted API source coverage."""
 
