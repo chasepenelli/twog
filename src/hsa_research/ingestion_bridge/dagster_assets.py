@@ -17,8 +17,11 @@ from .contracts import (
     ClaimSearchRequest,
     FullTextOpsRequest,
     ResearchObject,
+    SourceFollowupIngestRequest,
+    SourceFollowupQueueRequest,
     SourceQuery,
     SourceScoutRequest,
+    XLinkedArticleReviewRequest,
     XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
 )
@@ -144,6 +147,38 @@ _X_LINKED_ARTICLE_SOURCE_LINK_COLUMNS = (
     "url",
     "should_ingest",
     "reason",
+)
+_X_LINKED_ARTICLE_REVIEW_TABLE_COLUMNS = (
+    "review_id",
+    "source_record_id",
+    "action",
+    "severity",
+    "followup_sources",
+    "identifiers",
+    "reason",
+)
+_SOURCE_FOLLOWUP_QUEUE_TABLE_COLUMNS = (
+    "followup_id",
+    "source_key",
+    "identifier_type",
+    "identifier",
+    "status",
+    "priority",
+    "attempts",
+    "origin_source_key",
+    "origin_review_id",
+    "reason",
+)
+_SOURCE_FOLLOWUP_INGEST_TABLE_COLUMNS = (
+    "followup_id",
+    "source_key",
+    "identifier_type",
+    "identifier",
+    "status",
+    "raw_records",
+    "research_objects",
+    "document_chunks",
+    "error",
 )
 _ENTITY_RESOLUTION_TABLE_COLUMNS = (
     "source_key",
@@ -463,6 +498,85 @@ if dg is not None:
             "primary_source_links": _metadata_table(
                 primary_source_links,
                 _X_LINKED_ARTICLE_SOURCE_LINK_COLUMNS,
+            ),
+        }
+
+    def _x_linked_article_review_action_rows(actions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        rows = []
+        for action in actions:
+            links = action.get("followup_links", [])
+            rows.append(
+                {
+                    "review_id": action.get("review_id"),
+                    "source_record_id": action.get("source_record_id"),
+                    "action": action.get("action"),
+                    "severity": action.get("severity"),
+                    "followup_sources": sorted(
+                        {
+                            link.get("recommended_source_key")
+                            for link in links
+                            if isinstance(link, Mapping) and link.get("recommended_source_key")
+                        }
+                    ),
+                    "identifiers": [
+                        {
+                            "type": link.get("identifier_type"),
+                            "value": link.get("identifier"),
+                        }
+                        for link in links
+                        if isinstance(link, Mapping) and link.get("identifier")
+                    ],
+                    "reason": action.get("reason"),
+                }
+            )
+        return rows
+
+    def _x_linked_article_review_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "agent_run_id": report.get("agent_run_id"),
+            "action_count": len(report.get("actions", [])),
+            "queue_candidate_count": int(report.get("queue_candidate_count", 0)),
+            "needs_human_review_count": int(report.get("needs_human_review_count", 0)),
+            "rejected_count": int(report.get("rejected_count", 0)),
+            "error_count": len(report.get("errors", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "evidence": dg.MetadataValue.json(report.get("evidence", {})),
+            "recommendations": _metadata_table(
+                _x_linked_article_review_action_rows(report.get("actions", [])),
+                _X_LINKED_ARTICLE_REVIEW_TABLE_COLUMNS,
+            ),
+        }
+
+    def _source_followup_queue_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "source_key": report.get("source_key"),
+            "reviewed_records": int(report.get("reviewed_records", 0)),
+            "queued": int(report.get("queued", 0)),
+            "skipped_existing": int(report.get("skipped_existing", 0)),
+            "skipped_uningestible": int(report.get("skipped_uningestible", 0)),
+            "error_count": len(report.get("errors", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "queue_items": _metadata_table(
+                report.get("items", []),
+                _SOURCE_FOLLOWUP_QUEUE_TABLE_COLUMNS,
+            ),
+        }
+
+    def _source_followup_ingest_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "queue_items_seen": int(report.get("queue_items_seen", 0)),
+            "attempted": int(report.get("attempted", 0)),
+            "ingested": int(report.get("ingested", 0)),
+            "failed": int(report.get("failed", 0)),
+            "skipped": int(report.get("skipped", 0)),
+            "raw_records": int(report.get("raw_records", 0)),
+            "research_objects": int(report.get("research_objects", 0)),
+            "document_chunks": int(report.get("document_chunks", 0)),
+            "error_count": len(report.get("errors", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "items": _metadata_table(
+                report.get("items", []),
+                _SOURCE_FOLLOWUP_INGEST_TABLE_COLUMNS,
             ),
         }
 
@@ -1270,6 +1384,143 @@ if dg is not None:
         report = result.model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_x_linked_article_followup_metadata(report))
 
+    @dg.asset(
+        group_name="social_monitoring",
+        config_schema={
+            "review_ids": dg.Field([str], is_required=False, description="Specific scrape review IDs to review."),
+            "review_status": dg.Field(
+                str,
+                is_required=False,
+                description="Review status filter: needs_review, accepted, rejected, or empty for all.",
+            ),
+            "limit": dg.Field(int, is_required=False, description="Maximum parsed article records to review."),
+            "review_mode": dg.Field(
+                str,
+                is_required=False,
+                description="Review mode: deterministic_only, external_required, openrouter_required, or openrouter_compare.",
+            ),
+            "review_models": dg.Field([str], is_required=False, description="Optional model ids for external review."),
+        },
+    )
+    def x_linked_article_review_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Recommend-only agent review for parsed linked article records."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config or {}
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).run_x_linked_article_review(
+            XLinkedArticleReviewRequest(
+                review_ids=config.get("review_ids") or [],
+                review_status=config.get("review_status", "needs_review") or None,
+                limit=int(_config_or_env(config, "limit", "HSA_X_LINKED_ARTICLE_REVIEW_LIMIT", 50)),
+                review_mode=_config_or_env(
+                    config,
+                    "review_mode",
+                    "HSA_X_LINKED_ARTICLE_REVIEW_MODE",
+                    "deterministic_only",
+                ),
+                review_models=config.get("review_models") or _parse_delimited_string_list(
+                    os.getenv("HSA_X_LINKED_ARTICLE_REVIEW_MODELS")
+                ),
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_x_linked_article_review_metadata(report))
+
+    @dg.asset(
+        group_name="source_followup",
+        config_schema={
+            "source_key": dg.Field(str, is_required=False, description="Scrape source key to scan."),
+            "review_ids": dg.Field([str], is_required=False, description="Specific scrape review IDs to queue."),
+            "review_status": dg.Field(
+                str,
+                is_required=False,
+                description="Optional scrape review status filter.",
+            ),
+            "limit": dg.Field(int, is_required=False, description="Maximum scrape review records to scan."),
+            "include_existing": dg.Field(bool, is_required=False, description="Include existing queue rows in output."),
+        },
+    )
+    def source_followup_queue_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Queue primary-source follow-ups from parsed linked-article records."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config or {}
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).queue_source_followups(
+            SourceFollowupQueueRequest(
+                source_key=_config_or_env(config, "source_key", "HSA_SOURCE_FOLLOWUP_SOURCE_KEY", "x_linked_article"),
+                review_ids=config.get("review_ids") or [],
+                review_status=config.get("review_status"),
+                limit=int(_config_or_env(config, "limit", "HSA_SOURCE_FOLLOWUP_QUEUE_LIMIT", 100)),
+                include_existing=_config_or_env_bool(
+                    config,
+                    "include_existing",
+                    "HSA_SOURCE_FOLLOWUP_INCLUDE_EXISTING",
+                    False,
+                ),
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_source_followup_queue_metadata(report))
+
+    @dg.asset(
+        group_name="source_followup",
+        config_schema={
+            "source_keys": dg.Field([str], is_required=False, description="Target source keys to process."),
+            "statuses": dg.Field([str], is_required=False, description="Queue statuses to process."),
+            "limit": dg.Field(int, is_required=False, description="Maximum queue rows to process."),
+            "approved_by": dg.Field(str, is_required=False, description="Operator approval identity."),
+            "run_claim_extraction": dg.Field(
+                bool,
+                is_required=False,
+                description="Run entity resolution, claim extraction, and curation after ingest.",
+            ),
+            "dry_run": dg.Field(bool, is_required=False, description="List queue rows without ingesting."),
+        },
+    )
+    def source_followup_ingest_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual primary-source follow-up ingestion through API harvesters."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config or {}
+        repository = research_repository.build_repository()
+        source_keys = config.get("source_keys") or _parse_delimited_string_list(
+            os.getenv("HSA_SOURCE_FOLLOWUP_SOURCE_KEYS")
+        )
+        statuses = config.get("statuses") or _parse_delimited_string_list(
+            os.getenv("HSA_SOURCE_FOLLOWUP_STATUSES")
+        ) or ["queued", "approved"]
+        result = HSAResearchService(repository).ingest_source_followups(
+            SourceFollowupIngestRequest(
+                source_keys=source_keys,
+                statuses=statuses,
+                limit=int(_config_or_env(config, "limit", "HSA_SOURCE_FOLLOWUP_INGEST_LIMIT", 25)),
+                approved_by=_config_or_env(config, "approved_by", "HSA_SOURCE_FOLLOWUP_APPROVED_BY", None),
+                run_claim_extraction=_config_or_env_bool(
+                    config,
+                    "run_claim_extraction",
+                    "HSA_SOURCE_FOLLOWUP_RUN_CLAIM_EXTRACTION",
+                    True,
+                ),
+                dry_run=_config_or_env_bool(config, "dry_run", "HSA_SOURCE_FOLLOWUP_DRY_RUN", False),
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_source_followup_ingest_metadata(report))
+
     @dg.op(
         required_resource_keys={"research_repository"},
         config_schema={
@@ -1830,6 +2081,9 @@ if dg is not None:
         full_text_ops_agent_report,
         x_topic_monitor_review_report,
         x_linked_article_followup_report,
+        x_linked_article_review_report,
+        source_followup_queue_report,
+        source_followup_ingest_report,
         entity_resolution_report,
         embedding_index_report,
         embedding_maintenance_report,
@@ -1910,6 +2164,18 @@ if dg is not None:
     x_linked_article_followup_job = dg.define_asset_job(
         "x_linked_article_followup_job",
         selection=dg.AssetSelection.assets(x_linked_article_followup_report),
+    )
+    x_linked_article_review_job = dg.define_asset_job(
+        "x_linked_article_review_job",
+        selection=dg.AssetSelection.assets(x_linked_article_review_report),
+    )
+    source_followup_queue_job = dg.define_asset_job(
+        "source_followup_queue_job",
+        selection=dg.AssetSelection.assets(source_followup_queue_report),
+    )
+    source_followup_ingest_job = dg.define_asset_job(
+        "source_followup_ingest_job",
+        selection=dg.AssetSelection.assets(source_followup_ingest_report),
     )
     full_text_source_date_ops_job = dg.JobDefinition(
         name="full_text_source_date_ops_job",
@@ -2032,6 +2298,9 @@ if dg is not None:
             full_text_ops_agent_job,
             x_topic_monitor_review_job,
             x_linked_article_followup_job,
+            x_linked_article_review_job,
+            source_followup_queue_job,
+            source_followup_ingest_job,
             full_text_source_date_ops_job,
             entity_resolution_job,
             embedding_index_job,
@@ -2073,6 +2342,9 @@ else:
     full_text_ops_agent_job = None
     x_topic_monitor_review_job = None
     x_linked_article_followup_job = None
+    x_linked_article_review_job = None
+    source_followup_queue_job = None
+    source_followup_ingest_job = None
     full_text_source_date_ops_job = None
     entity_resolution_job = None
     embedding_index_job = None

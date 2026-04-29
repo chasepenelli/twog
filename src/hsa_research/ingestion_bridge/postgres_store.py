@@ -34,6 +34,7 @@ from .contracts import (
     ResearchSource,
     ScrapeReviewRecord,
     ScrapeSourceProfileReview,
+    SourceFollowupQueueItem,
     SourceQuery,
     TextEmbedding,
     TextEmbeddingSearchRequest,
@@ -967,6 +968,7 @@ class PostgresResearchRepository(ResearchRepository):
         entity_alias_count = self._scalar("select count(*) from entity_aliases")
         entity_mention_count = self._scalar("select count(*) from entity_mentions")
         scrape_review_count = self._scalar("select count(*) from scrape_review_records")
+        source_followup_count = self._scalar("select count(*) from source_followup_queue")
         scrape_profile_review_count = self._scalar("select count(*) from scrape_source_profile_reviews")
         by_source = [
             dict(row)
@@ -1006,6 +1008,7 @@ class PostgresResearchRepository(ResearchRepository):
             "entity_aliases": entity_alias_count,
             "entity_mentions": entity_mention_count,
             "scrape_review_records": scrape_review_count,
+            "source_followup_queue": source_followup_count,
             "scrape_source_profile_reviews": scrape_profile_review_count,
             "claim_curation": self.claim_curation_summary(),
             "by_source": by_source,
@@ -1579,6 +1582,153 @@ class PostgresResearchRepository(ResearchRepository):
             return None
         return ScrapeSourceProfileReview.model_validate(_payload(row))
 
+    def upsert_source_followup(self, item: SourceFollowupQueueItem) -> SourceFollowupQueueItem:
+        existing = self._fetchone(
+            "select payload from source_followup_queue where identity_key = %s",
+            (item.identity_key,),
+        )
+        if existing is not None:
+            existing_item = SourceFollowupQueueItem.model_validate(_payload(existing))
+            item = item.model_copy(
+                update={
+                    "followup_id": existing_item.followup_id,
+                    "status": existing_item.status,
+                    "attempts": existing_item.attempts,
+                    "last_error": existing_item.last_error,
+                    "created_at": existing_item.created_at,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+        payload = item.model_dump(mode="json")
+        self._execute(
+            """
+            insert into source_followup_queue (
+              followup_id, identity_key, source_key, identifier_type, identifier,
+              status, priority, attempts, origin_source_key, origin_review_id,
+              origin_artifact_id, origin_agent_run_id, created_at, updated_at, payload
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict(identity_key) do update set
+              source_key = excluded.source_key,
+              identifier_type = excluded.identifier_type,
+              identifier = excluded.identifier,
+              status = excluded.status,
+              priority = excluded.priority,
+              attempts = excluded.attempts,
+              origin_source_key = excluded.origin_source_key,
+              origin_review_id = excluded.origin_review_id,
+              origin_artifact_id = excluded.origin_artifact_id,
+              origin_agent_run_id = excluded.origin_agent_run_id,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(item.followup_id),
+                item.identity_key,
+                item.source_key,
+                item.identifier_type,
+                item.identifier,
+                item.status,
+                item.priority,
+                item.attempts,
+                item.origin_source_key,
+                str(item.origin_review_id) if item.origin_review_id else None,
+                str(item.origin_artifact_id) if item.origin_artifact_id else None,
+                str(item.origin_agent_run_id) if item.origin_agent_run_id else None,
+                item.created_at,
+                item.updated_at,
+                self._json(payload),
+            ),
+        )
+        row = self._fetchone(
+            "select payload from source_followup_queue where identity_key = %s",
+            (item.identity_key,),
+        )
+        return SourceFollowupQueueItem.model_validate(_payload(row))
+
+    def get_source_followup(self, followup_id: UUID) -> SourceFollowupQueueItem | None:
+        row = self._fetchone(
+            "select payload from source_followup_queue where followup_id = %s",
+            (str(followup_id),),
+        )
+        if row is None:
+            return None
+        return SourceFollowupQueueItem.model_validate(_payload(row))
+
+    def list_source_followups(
+        self,
+        *,
+        source_key: str | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        identifier_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[SourceFollowupQueueItem]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if source_key:
+            clauses.append("source_key = %s")
+            params.append(source_key)
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        if statuses:
+            placeholders = ",".join("%s" for _ in statuses)
+            clauses.append(f"status in ({placeholders})")
+            params.extend(statuses)
+        if identifier_type:
+            clauses.append("identifier_type = %s")
+            params.append(identifier_type)
+        sql = "select payload from source_followup_queue"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by priority asc, created_at asc"
+        if limit is not None:
+            sql += " limit %s"
+            params.append(limit)
+        return [SourceFollowupQueueItem.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
+
+    def update_source_followup(
+        self,
+        followup_id: UUID,
+        *,
+        status: str,
+        attempts: int | None = None,
+        last_error: str | None = None,
+        metadata: dict | None = None,
+    ) -> SourceFollowupQueueItem | None:
+        item = self.get_source_followup(followup_id)
+        if item is None:
+            return None
+        updated = item.model_copy(
+            update={
+                "status": status,
+                "attempts": item.attempts if attempts is None else attempts,
+                "last_error": last_error,
+                "updated_at": datetime.now(UTC),
+                "metadata": {**item.metadata, **(metadata or {})},
+            }
+        )
+        payload = updated.model_dump(mode="json")
+        self._execute(
+            """
+            update source_followup_queue
+            set status = %s,
+                attempts = %s,
+                updated_at = %s,
+                payload = %s
+            where followup_id = %s
+            """,
+            (
+                updated.status,
+                updated.attempts,
+                updated.updated_at,
+                self._json(payload),
+                str(followup_id),
+            ),
+        )
+        return updated
+
     def upsert_claim(self, claim: ClaimSearchResult) -> ClaimSearchResult:
         payload = claim.model_dump(mode="json")
         self._execute(
@@ -1948,6 +2098,29 @@ class PostgresResearchRepository(ResearchRepository):
 
             create index if not exists scrape_review_records_status_idx
               on scrape_review_records(source_key, review_status, updated_at desc);
+
+            create table if not exists source_followup_queue (
+              followup_id text primary key,
+              identity_key text not null unique,
+              source_key text not null,
+              identifier_type text not null,
+              identifier text not null,
+              status text not null default 'queued',
+              priority integer not null default 100,
+              attempts integer not null default 0,
+              origin_source_key text,
+              origin_review_id text,
+              origin_artifact_id text,
+              origin_agent_run_id text,
+              payload jsonb not null,
+              created_at timestamptz not null default now(),
+              updated_at timestamptz not null default now()
+            );
+
+            create index if not exists source_followup_queue_status_idx
+              on source_followup_queue(source_key, status, priority, created_at);
+            create index if not exists source_followup_queue_identifier_idx
+              on source_followup_queue(identifier_type, identifier);
 
             create table if not exists scrape_source_profile_reviews (
               source_key text primary key,

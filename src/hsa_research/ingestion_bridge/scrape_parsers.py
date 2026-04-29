@@ -48,10 +48,12 @@ def parse_generic_html(
 ) -> ScrapeParsedRecord | None:
     """Extract conservative title/link metadata from arbitrary HTML."""
 
-    title = _best_title(html)
     source_url = artifact.metadata.get("source_url")
+    article_metadata = _extract_article_metadata(html)
+    title = _first_present(article_metadata.get("title"), _best_title(html))
     links = _html_links(html, source_url)
-    primary_source_links = _primary_source_links(html, links)
+    primary_source_links = _primary_source_links(html, links, article_metadata)
+    reference_links = _reference_links(links)
     record_type = (
         ResearchObjectType.PUBLICATION
         if profile.source_key == "x_linked_article"
@@ -60,6 +62,8 @@ def parse_generic_html(
     confidence = 0.35 if title else 0.15
     if primary_source_links:
         confidence = max(confidence, 0.55)
+    if article_metadata.get("doi") or article_metadata.get("pmid") or article_metadata.get("pmcid"):
+        confidence = max(confidence, 0.65)
     return ScrapeParsedRecord(
         source_key=profile.source_key,
         source_record_id=_stable_source_record_id(source_url, title, artifact.artifact_id),
@@ -68,7 +72,9 @@ def parse_generic_html(
         record_type=record_type,
         fields={
             "links": links[:100],
+            "reference_links": reference_links[:100],
             "primary_source_links": primary_source_links[:50],
+            "article_metadata": article_metadata,
             "parser": profile.parser,
             "storage_policy": profile.storage_policy,
         },
@@ -262,7 +268,13 @@ def _discover_generic_candidates(
 
 
 def _best_title(html: str) -> str | None:
-    return _first_present(_heading(html, 1), _meta_content(html, "og:title"), _title_tag(html))
+    return _first_present(
+        _heading(html, 1),
+        _meta_content(html, "citation_title"),
+        _meta_content(html, "dc.title"),
+        _meta_content(html, "og:title"),
+        _title_tag(html),
+    )
 
 
 def _title_tag(html: str) -> str | None:
@@ -280,16 +292,23 @@ def _heading(html: str, level: int) -> str | None:
 
 
 def _meta_content(html: str, name_or_property: str) -> str | None:
+    values = _meta_contents(html, name_or_property)
+    return values[0] if values else None
+
+
+def _meta_contents(html: str, name_or_property: str) -> list[str]:
     attr_pattern = re.escape(name_or_property)
     patterns = [
         rf"<meta\b[^>]*(?:name|property)=[\"']{attr_pattern}[\"'][^>]*content=[\"']([^\"']+)[\"'][^>]*>",
         rf"<meta\b[^>]*content=[\"']([^\"']+)[\"'][^>]*(?:name|property)=[\"']{attr_pattern}[\"'][^>]*>",
     ]
+    values: list[str] = []
     for pattern in patterns:
-        match = re.search(pattern, html, flags=re.I | re.S)
-        if match:
-            return _clean_text(match.group(1))
-    return None
+        for match in re.finditer(pattern, html, flags=re.I | re.S):
+            value = _clean_text(match.group(1))
+            if value and value not in values:
+                values.append(value)
+    return values
 
 
 def _html_links(html: str, base_url: str | None) -> list[dict[str, Any]]:
@@ -306,7 +325,55 @@ def _html_links(html: str, base_url: str | None) -> list[dict[str, Any]]:
     return links
 
 
-def _primary_source_links(html: str, links: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _extract_article_metadata(html: str) -> dict[str, Any]:
+    jsonld_values = _extract_jsonld_values(html)
+    doi = _first_present(
+        _meta_content(html, "citation_doi"),
+        _meta_content(html, "dc.identifier"),
+        _optional_clean_doi(jsonld_values.get("doi")),
+        next(iter(_extract_dois(_metadata_text(jsonld_values))), None),
+    )
+    pmid = _first_present(
+        _meta_content(html, "citation_pmid"),
+        jsonld_values.get("pmid"),
+    )
+    pmcid = _first_present(
+        _meta_content(html, "citation_pmcid"),
+        jsonld_values.get("pmcid"),
+    )
+    metadata: dict[str, Any] = {
+        "title": _first_present(
+            _meta_content(html, "citation_title"),
+            jsonld_values.get("headline"),
+            jsonld_values.get("name"),
+            _meta_content(html, "dc.title"),
+            _meta_content(html, "og:title"),
+        ),
+        "description": _first_present(
+            _meta_content(html, "description"),
+            _meta_content(html, "og:description"),
+            jsonld_values.get("description"),
+        ),
+        "doi": doi,
+        "pmid": pmid,
+        "pmcid": pmcid.upper() if isinstance(pmcid, str) and pmcid.strip() else None,
+        "published_at": _first_present(
+            _meta_content(html, "citation_publication_date"),
+            _meta_content(html, "article:published_time"),
+            jsonld_values.get("datePublished"),
+        ),
+        "journal": _first_present(_meta_content(html, "citation_journal_title"), jsonld_values.get("journal")),
+        "authors": _meta_contents(html, "citation_author") or jsonld_values.get("authors") or [],
+        "jsonld": jsonld_values,
+    }
+    return {key: value for key, value in metadata.items() if value not in (None, "", [])}
+
+
+def _primary_source_links(
+    html: str,
+    links: list[dict[str, Any]],
+    article_metadata: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for link in links:
         href = str(link.get("href") or "")
@@ -315,7 +382,46 @@ def _primary_source_links(html: str, links: list[dict[str, Any]]) -> list[dict[s
         if classified:
             candidates.append(classified)
 
-    text = _visible_text(html)
+    text = " ".join(
+        part for part in (_visible_text(html), _metadata_text(article_metadata or {})) if part
+    )
+    metadata = article_metadata or {}
+    if metadata.get("doi"):
+        doi = str(metadata["doi"])
+        candidates.append(
+            {
+                "url": f"https://doi.org/{doi}",
+                "recommended_source_key": "crossref",
+                "identifier_type": "doi",
+                "identifier": doi,
+                "should_ingest": True,
+                "reason": "DOI found in linked article metadata.",
+            }
+        )
+    if metadata.get("pmid"):
+        pmid = str(metadata["pmid"])
+        candidates.append(
+            {
+                "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                "recommended_source_key": "pubmed",
+                "identifier_type": "pmid",
+                "identifier": pmid,
+                "should_ingest": True,
+                "reason": "PMID found in linked article metadata.",
+            }
+        )
+    if metadata.get("pmcid"):
+        pmcid = str(metadata["pmcid"]).upper()
+        candidates.append(
+            {
+                "url": f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/",
+                "recommended_source_key": "pmc_oa",
+                "identifier_type": "pmcid",
+                "identifier": pmcid,
+                "should_ingest": True,
+                "reason": "PMCID found in linked article metadata.",
+            }
+        )
     for doi in _extract_dois(text):
         candidates.append(
             {
@@ -325,6 +431,18 @@ def _primary_source_links(html: str, links: list[dict[str, Any]]) -> list[dict[s
                 "identifier": doi,
                 "should_ingest": True,
                 "reason": "DOI found in linked article text.",
+            }
+        )
+    for pmcid in sorted(set(re.findall(r"\b(PMC\d{3,})\b", text, flags=re.I))):
+        pmcid = pmcid.upper()
+        candidates.append(
+            {
+                "url": f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/",
+                "recommended_source_key": "pmc_oa",
+                "identifier_type": "pmcid",
+                "identifier": pmcid,
+                "should_ingest": True,
+                "reason": "PMCID found in linked article metadata or text.",
             }
         )
     for pmid in sorted(set(re.findall(r"\bPMID[:\s]*(\d{5,})\b", text, flags=re.I))):
@@ -350,6 +468,18 @@ def _primary_source_links(html: str, links: list[dict[str, Any]]) -> list[dict[s
                 "reason": "ClinicalTrials.gov identifier found in linked article text.",
             }
         )
+    return _dedupe_primary_source_links(candidates)
+
+
+def _reference_links(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates = []
+    for link in links:
+        classified = _classify_primary_source_link(
+            str(link.get("href") or ""),
+            str(link.get("text") or ""),
+        )
+        if classified:
+            candidates.append({**classified, "link_text": link.get("text")})
     return _dedupe_primary_source_links(candidates)
 
 
@@ -411,6 +541,12 @@ def _extract_doi(value: str) -> str | None:
     return next(iter(_extract_dois(value)), None)
 
 
+def _optional_clean_doi(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return _extract_doi(value) or _clean_doi(value)
+
+
 def _extract_dois(value: str) -> list[str]:
     dois = [doi for match in _DOI_RE.finditer(value) if (doi := _clean_doi(match.group(0)))]
     return sorted(set(dois))
@@ -419,6 +555,24 @@ def _extract_dois(value: str) -> list[str]:
 def _clean_doi(value: str) -> str | None:
     doi = value.strip().rstrip(_DOI_TRAILING_CHARS)
     return doi or None
+
+
+def _metadata_text(value: Any) -> str:
+    parts: list[str] = []
+    if isinstance(value, dict):
+        for item in value.values():
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, list | tuple | set):
+                parts.extend(str(child) for child in item if isinstance(child, str | int | float))
+            elif isinstance(item, dict):
+                parts.append(_metadata_text(item))
+    elif isinstance(value, list | tuple | set):
+        for item in value:
+            parts.append(_metadata_text(item))
+    elif isinstance(value, str | int | float):
+        parts.append(str(value))
+    return " ".join(part for part in parts if part)
 
 
 def _dedupe_primary_source_links(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -470,15 +624,78 @@ def _extract_jsonld_values(html: str) -> dict[str, str]:
             payload = json.loads(unescape(match.group(1)).strip())
         except json.JSONDecodeError:
             continue
-        candidates = payload if isinstance(payload, list) else [payload]
-        for candidate in candidates:
+        for candidate in _jsonld_candidates(payload):
             if not isinstance(candidate, dict):
                 continue
-            for key in ("name", "description"):
+            for key in ("name", "headline", "description", "datePublished", "url"):
                 value = candidate.get(key)
                 if isinstance(value, str) and value.strip():
                     values.setdefault(key, _clean_text(value))
+            identifier = candidate.get("identifier")
+            if isinstance(identifier, str) and identifier.strip():
+                _copy_jsonld_identifier(values, identifier)
+            elif isinstance(identifier, list):
+                for item in identifier:
+                    if isinstance(item, str):
+                        _copy_jsonld_identifier(values, item)
+                    elif isinstance(item, dict):
+                        raw_value = item.get("value") or item.get("propertyID")
+                        if isinstance(raw_value, str):
+                            _copy_jsonld_identifier(values, raw_value)
+            same_as = candidate.get("sameAs")
+            if isinstance(same_as, list):
+                values.setdefault("sameAs", " ".join(str(item) for item in same_as if isinstance(item, str)))
+            publisher = candidate.get("publisher")
+            if isinstance(publisher, dict):
+                name = publisher.get("name")
+                if isinstance(name, str) and name.strip():
+                    values.setdefault("publisher", _clean_text(name))
+            is_part_of = candidate.get("isPartOf")
+            if isinstance(is_part_of, dict):
+                journal = is_part_of.get("name")
+                if isinstance(journal, str) and journal.strip():
+                    values.setdefault("journal", _clean_text(journal))
+            authors = _jsonld_authors(candidate.get("author"))
+            if authors:
+                values.setdefault("authors", ", ".join(authors))
     return values
+
+
+def _jsonld_candidates(payload: Any) -> list[Any]:
+    candidates: list[Any] = []
+    stack = payload if isinstance(payload, list) else [payload]
+    for item in stack:
+        candidates.append(item)
+        if isinstance(item, dict) and isinstance(item.get("@graph"), list):
+            candidates.extend(item["@graph"])
+    return candidates
+
+
+def _copy_jsonld_identifier(values: dict[str, str], raw_value: str) -> None:
+    value = _clean_text(raw_value)
+    doi = _optional_clean_doi(value)
+    if doi:
+        values.setdefault("doi", doi)
+    pmid = re.search(r"\bPMID[:\s]*(\d{5,})\b", value, flags=re.I)
+    if pmid:
+        values.setdefault("pmid", pmid.group(1))
+    pmcid = re.search(r"\b(PMC\d{3,})\b", value, flags=re.I)
+    if pmcid:
+        values.setdefault("pmcid", pmcid.group(1).upper())
+
+
+def _jsonld_authors(raw_author: Any) -> list[str]:
+    if isinstance(raw_author, str) and raw_author.strip():
+        return [_clean_text(raw_author)]
+    if isinstance(raw_author, dict):
+        name = raw_author.get("name")
+        return [_clean_text(name)] if isinstance(name, str) and name.strip() else []
+    if isinstance(raw_author, list):
+        authors: list[str] = []
+        for item in raw_author:
+            authors.extend(_jsonld_authors(item))
+        return authors
+    return []
 
 
 def _script_json_by_id(html: str, element_id: str) -> Any:

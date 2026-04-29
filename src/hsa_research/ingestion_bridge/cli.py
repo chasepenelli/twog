@@ -24,8 +24,11 @@ from .contracts import (
     ScrapeManifestRequest,
     ScrapeProfileReviewRequest,
     ScrapeReviewRequest,
+    SourceFollowupIngestRequest,
+    SourceFollowupQueueRequest,
     SourceQuery,
     SourceScoutRequest,
+    XLinkedArticleReviewRequest,
     XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
 )
@@ -264,6 +267,70 @@ def main() -> None:
         default="reviewed",
         help="Reviewed robots/TOS policy for this controlled fetch",
     )
+
+    x_linked_article_review = subparsers.add_parser(
+        "x-linked-article-review",
+        help="Run the linked-article review agent over parsed article records",
+    )
+    x_linked_article_review.add_argument("--review-id", action="append", default=[], help="Review record ID")
+    x_linked_article_review.add_argument(
+        "--review-status",
+        choices=["needs_review", "accepted", "rejected"],
+        default="needs_review",
+        help="Parsed record review status filter",
+    )
+    x_linked_article_review.add_argument("--limit", type=int, default=50, help="Maximum records to review")
+    x_linked_article_review.add_argument("--model-profile", default="reviewer", help="Logical model profile")
+    x_linked_article_review.add_argument(
+        "--review-mode",
+        choices=("external_required", "openrouter_required", "openrouter_compare", "deterministic_only"),
+        default="deterministic_only",
+        help="Review mode for the linked-article agent",
+    )
+    x_linked_article_review.add_argument("--review-model", action="append", default=[], help="Review model id")
+
+    queue_source_followups = subparsers.add_parser(
+        "queue-source-followups",
+        help="Queue primary-source follow-ups from parsed article review records",
+    )
+    queue_source_followups.add_argument("--source", default="x_linked_article", help="Scrape source key")
+    queue_source_followups.add_argument("--review-id", action="append", default=[], help="Review record ID")
+    queue_source_followups.add_argument(
+        "--review-status",
+        choices=["needs_review", "accepted", "rejected"],
+        default=None,
+        help="Optional parsed record review status filter",
+    )
+    queue_source_followups.add_argument("--limit", type=int, default=100, help="Maximum records to scan")
+    queue_source_followups.add_argument("--include-existing", action="store_true", help="Return existing queue rows too")
+
+    list_source_followups = subparsers.add_parser("source-followups", help="List queued source follow-ups")
+    list_source_followups.add_argument("--source", default=None, help="Target source key")
+    list_source_followups.add_argument(
+        "--status",
+        choices=["queued", "approved", "ingested", "failed", "skipped", "rejected"],
+        default=None,
+        help="Queue item status",
+    )
+    list_source_followups.add_argument("--identifier-type", default=None, help="Identifier type filter")
+    list_source_followups.add_argument("--limit", type=int, default=50, help="Maximum queue rows")
+
+    ingest_source_followups = subparsers.add_parser(
+        "ingest-source-followups",
+        help="Ingest queued primary-source follow-ups through API harvesters",
+    )
+    ingest_source_followups.add_argument("--source", action="append", default=[], help="Target source key")
+    ingest_source_followups.add_argument(
+        "--status",
+        action="append",
+        default=[],
+        choices=["queued", "approved", "ingested", "failed", "skipped", "rejected"],
+        help="Queue status to process; repeatable",
+    )
+    ingest_source_followups.add_argument("--limit", type=int, default=25, help="Maximum queue rows to process")
+    ingest_source_followups.add_argument("--approved-by", default=None, help="Operator approval identity")
+    ingest_source_followups.add_argument("--no-claim-extraction", action="store_true", help="Skip enrichment after ingest")
+    ingest_source_followups.add_argument("--dry-run", action="store_true", help="Report queued rows without ingesting")
 
     agent_runs = subparsers.add_parser("agent-runs", help="List or fetch persisted agent runs")
     agent_runs.add_argument("--id", default=None, help="Optional agent_run_id to fetch")
@@ -556,6 +623,48 @@ def main() -> None:
                 approved_by=args.approved_by,
                 approval_note=args.approval_note,
                 robots_policy=args.robots_policy,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "x-linked-article-review":
+        output = HSAResearchService(repo).run_x_linked_article_review(
+            XLinkedArticleReviewRequest(
+                review_ids=[UUID(review_id) for review_id in args.review_id],
+                review_status=args.review_status,
+                limit=args.limit,
+                model_profile=args.model_profile,
+                review_mode=args.review_mode,
+                review_models=args.review_model,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "queue-source-followups":
+        output = HSAResearchService(repo).queue_source_followups(
+            SourceFollowupQueueRequest(
+                source_key=args.source,
+                review_ids=[UUID(review_id) for review_id in args.review_id],
+                review_status=args.review_status,
+                limit=args.limit,
+                include_existing=args.include_existing,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "source-followups":
+        output = [
+            item.model_dump(mode="json")
+            for item in HSAResearchService(repo).list_source_followups(
+                source_key=args.source,
+                status=args.status,
+                identifier_type=args.identifier_type,
+                limit=args.limit,
+            )
+        ]
+    elif args.command == "ingest-source-followups":
+        output = HSAResearchService(repo).ingest_source_followups(
+            SourceFollowupIngestRequest(
+                source_keys=args.source,
+                statuses=args.status or ["queued", "approved"],
+                limit=args.limit,
+                approved_by=args.approved_by,
+                run_claim_extraction=not args.no_claim_extraction,
+                dry_run=args.dry_run,
             )
         ).model_dump(mode="json")
     elif args.command == "agent-runs":
