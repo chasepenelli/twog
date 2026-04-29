@@ -456,6 +456,205 @@ jobs:
           PY
         shell: bash
 
+      - name: Print hosted X linked article review summary
+        if: ${{ always() && inputs.job == 'x_linked_article_review_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          from collections import Counter
+
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          service = HSAResearchService(build_research_repository())
+          runs = service.list_agent_runs(
+              agent_name="x_linked_article_review_agent",
+              source_key="x_linked_article",
+              limit=3,
+          )
+          summaries = []
+          for run in runs:
+              output = run.output_payload or {}
+              evidence = output.get("evidence", {})
+              actions = output.get("actions", [])
+              action_counts = Counter(
+                  action.get("action")
+                  for action in actions
+                  if isinstance(action, dict) and action.get("action")
+              )
+              summaries.append(
+                  {
+                      "agent_run_id": str(run.agent_run_id),
+                      "status": run.status,
+                      "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+                      "queue_candidate_count": output.get("queue_candidate_count", 0),
+                      "needs_human_review_count": output.get("needs_human_review_count", 0),
+                      "rejected_count": output.get("rejected_count", 0),
+                      "action_counts": dict(sorted(action_counts.items())),
+                      "model_reviews": evidence.get("model_reviews", [])[:5],
+                      "openrouter_errors": evidence.get("openrouter_errors", [])[:5],
+                      "recommendations": [
+                          {
+                              "review_id": action.get("review_id"),
+                              "source_record_id": action.get("source_record_id"),
+                              "action": action.get("action"),
+                              "severity": action.get("severity"),
+                              "reason": action.get("reason"),
+                              "followup_links": [
+                                  {
+                                      "recommended_source_key": link.get("recommended_source_key"),
+                                      "identifier_type": link.get("identifier_type"),
+                                      "identifier": link.get("identifier"),
+                                      "should_ingest": link.get("should_ingest"),
+                                  }
+                                  for link in action.get("followup_links", [])[:10]
+                                  if isinstance(link, dict)
+                              ],
+                          }
+                          for action in actions[:20]
+                          if isinstance(action, dict)
+                      ],
+                  }
+              )
+          print(json.dumps(summaries, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### X linked article review summary\n")
+                  if not summaries:
+                      summary.write("No linked-article review agent runs found.\n")
+                  for item in summaries[:3]:
+                      summary.write(
+                          f"- Run `{item['agent_run_id']}`: "
+                          f"{item['queue_candidate_count']} queue candidates, "
+                          f"{item['needs_human_review_count']} human-review, "
+                          f"{item['rejected_count']} rejected.\n"
+                      )
+                      if item["model_reviews"]:
+                          models = ", ".join(
+                              f"{review.get('model_name')}:{review.get('status')}"
+                              for review in item["model_reviews"]
+                          )
+                          summary.write(f"  Models: {models}\n")
+                      if item["openrouter_errors"]:
+                          summary.write(f"  OpenRouter errors: {len(item['openrouter_errors'])}\n")
+          PY
+        shell: bash
+
+      - name: Print hosted source follow-up queue summary
+        if: ${{ always() && inputs.job == 'source_followup_queue_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          from collections import Counter
+
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          service = HSAResearchService(build_research_repository())
+          items = service.list_source_followups(limit=50)
+          counts_by_status = Counter(item.status for item in items)
+          counts_by_source = Counter(item.source_key for item in items)
+          payload = {
+              "total_items_sampled": len(items),
+              "counts_by_status": dict(sorted(counts_by_status.items())),
+              "counts_by_source": dict(sorted(counts_by_source.items())),
+              "items": [
+                  {
+                      "followup_id": str(item.followup_id),
+                      "source_key": item.source_key,
+                      "identifier_type": item.identifier_type,
+                      "identifier": item.identifier,
+                      "status": item.status,
+                      "priority": item.priority,
+                      "attempts": item.attempts,
+                      "origin_source_key": item.origin_source_key,
+                      "origin_review_id": str(item.origin_review_id) if item.origin_review_id else None,
+                      "last_error": item.last_error,
+                  }
+                  for item in items[:25]
+              ],
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Source follow-up queue summary\n")
+                  summary.write(f"- Items sampled: {payload['total_items_sampled']}\n")
+                  summary.write(f"- By status: `{dict(sorted(counts_by_status.items()))}`\n")
+                  summary.write(f"- By source: `{dict(sorted(counts_by_source.items()))}`\n")
+          PY
+        shell: bash
+
+      - name: Print hosted source follow-up ingest summary
+        if: ${{ always() && inputs.job == 'source_followup_ingest_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          from collections import Counter
+
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          repository = build_research_repository()
+          items = []
+          for status in ("ingested", "failed", "queued", "approved", "skipped"):
+              items.extend(repository.list_source_followups(status=status, limit=50))
+          deduped = {item.followup_id: item for item in items}
+          ordered = sorted(
+              deduped.values(),
+              key=lambda item: item.updated_at,
+              reverse=True,
+          )
+          counts_by_status = Counter(item.status for item in ordered)
+          counts_by_source = Counter(item.source_key for item in ordered)
+          payload = {
+              "total_items_sampled": len(ordered),
+              "counts_by_status": dict(sorted(counts_by_status.items())),
+              "counts_by_source": dict(sorted(counts_by_source.items())),
+              "recent_items": [
+                  {
+                      "followup_id": str(item.followup_id),
+                      "source_key": item.source_key,
+                      "identifier_type": item.identifier_type,
+                      "identifier": item.identifier,
+                      "status": item.status,
+                      "attempts": item.attempts,
+                      "updated_at": item.updated_at.isoformat(),
+                      "last_error": item.last_error,
+                      "last_ingestion_totals": (
+                          item.metadata.get("last_ingestion_report", {}).get("totals")
+                          or {
+                              "raw_records": item.metadata.get("last_ingestion_report", {}).get("raw_records"),
+                              "research_objects": item.metadata.get("last_ingestion_report", {}).get("research_objects"),
+                              "document_chunks": item.metadata.get("last_ingestion_report", {}).get("document_chunks"),
+                          }
+                          if isinstance(item.metadata.get("last_ingestion_report"), dict)
+                          else {}
+                      ),
+                  }
+                  for item in ordered[:25]
+              ],
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Source follow-up ingest summary\n")
+                  summary.write(f"- Items sampled: {payload['total_items_sampled']}\n")
+                  summary.write(f"- By status: `{dict(sorted(counts_by_status.items()))}`\n")
+                  summary.write(f"- By source: `{dict(sorted(counts_by_source.items()))}`\n")
+          PY
+        shell: bash
+
       - name: Print hosted structured-source count report
         if: ${{ inputs.job == 'structured_source_smoke_job' || inputs.job == 'structured_source_multisource_smoke_job' || inputs.job == 'literature_clinical_smoke_job' || inputs.job == 'all_api_smoke_job' || inputs.job == 'literature_corpus_harvest_job' || inputs.job == 'literature_full_text_refresh_job' || inputs.job == 'europe_pmc_full_text_refresh_job' || inputs.job == 'pmc_oa_full_text_refresh_job' || inputs.job == 'literature_full_text_ingest_smoke_job' || inputs.job == 'europe_pmc_full_text_ingest_job' || inputs.job == 'pmc_oa_full_text_ingest_job' || inputs.job == 'literature_full_text_smoke_job' || inputs.job == 'full_text_source_date_ops_job' || inputs.job == 'structured_source_count_report_job' || inputs.job == 'source_health_report_job' || inputs.job == 'structured_source_pipeline_job' }}
         run: |
