@@ -155,10 +155,12 @@ Sources:
 - `europe_pmc`
 - `crossref`
 - `pmc_oa`
+- `unpaywall`
 
 Allowed use:
 - Publication metadata, abstracts where available, and legal full-text chunks
   where licensing allows it.
+- Open-access location metadata and links from Unpaywall.
 - HSA, human angiosarcoma, vascular sarcoma, and comparative oncology source
   triage.
 - Low-confidence source-context claims when a relevant sparse record has no
@@ -166,6 +168,8 @@ Allowed use:
 
 Not allowed:
 - Treating a title-only metadata record as proof of mechanism or efficacy.
+- Treating an Unpaywall PDF/link as storable full text before a license-aware
+  full-text lane validates it.
 - Promoting sparse source-context claims into biological claims without deeper
   extraction.
 
@@ -175,6 +179,9 @@ Required gates:
   policy metadata when present.
 - PMC OA and Europe PMC may pass relevance on licensed/open-access body text
   even when title/abstract metadata is sparse.
+- Unpaywall may store DOI, title, OA status, license, landing-page URL, PDF URL,
+  and location summaries only. It is an OA discovery source, not a full-text
+  evidence source.
 - Every hosted smoke source must produce raw records, research objects, chunks,
   and at least one claim.
 
@@ -190,6 +197,8 @@ QA checks:
   claims.
 - Sparse source-context samples must clearly state they are triage context, not
   efficacy or mechanism.
+- Unpaywall source-context samples must remain review-only and should route
+  promising DOIs/PMCID links into licensed full-text follow-up lanes.
 
 ## Task SOPs
 
@@ -305,6 +314,8 @@ Required QA output:
   object, document chunk, and claim.
 - Sparse scholarly source-context claims remain `needs_review`.
 - Licensed full-text sources can produce `full_text` chunks and typed claims.
+- Unpaywall writes OA discovery metadata and links only; it must not persist
+  article body text.
 
 Dagster schedule:
 - `all_api_smoke_weekly_schedule`
@@ -467,6 +478,28 @@ Stop conditions:
   all sampled claims are source-context triage claims.
 - Recommended actions point to missing raw records, normalized objects, chunks,
   or extraction/curation outputs.
+
+### Source Expansion Control-Panel Gate
+
+Use this every time a source moves from implemented code to operational
+coverage.
+
+Sequence:
+1. Add the source to its source-key set and starter query lane.
+2. Run the smallest hosted smoke job that touches the source.
+3. Run `embedding_index_job`.
+4. Run `embedding_maintenance_job`.
+5. Run `source_health_report_job` from the `control_panel` group.
+6. Treat the source as accepted only when the control panel shows:
+   - no `failed_sources`
+   - no missing embeddings
+   - no failed or pending follow-up rows
+   - at least one active source query
+   - a source role that matches the evidence boundary
+
+For discovery-only sources such as `unpaywall`, `triage` is an acceptable final
+health status. For evidence-producing sources, investigate `watch` before
+expanding volume or schedules.
 
 ### Run The Deterministic Entity Resolver
 

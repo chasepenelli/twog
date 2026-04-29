@@ -138,7 +138,15 @@ TRANSLATION_TERMS = (
     "translational",
 )
 
-SCHOLARLY_SOURCE_KEYS = {"current_papers", "pubmed", "europe_pmc", "openalex", "crossref", "pmc_oa"}
+SCHOLARLY_SOURCE_KEYS = {
+    "current_papers",
+    "pubmed",
+    "europe_pmc",
+    "openalex",
+    "crossref",
+    "pmc_oa",
+    "unpaywall",
+}
 TRIAGE_CONTEXT_SOURCE_KEYS = SCHOLARLY_SOURCE_KEYS | {"icdc", "geo", "sra"}
 
 
@@ -707,6 +715,7 @@ def _source_label(source_key: str) -> str:
         "openalex": "OpenAlex",
         "crossref": "Crossref",
         "pmc_oa": "PMC OA",
+        "unpaywall": "Unpaywall",
         "icdc": "ICDC",
         "geo": "GEO",
         "sra": "SRA",

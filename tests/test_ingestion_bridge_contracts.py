@@ -1469,7 +1469,7 @@ def test_local_pipeline_initializes_sources_and_queries(tmp_path):
     assert coverage["source_queries"] >= 4
     assert any(query.query_name == "licensed_full_text_hsa" for query in repo.list_source_queries("pmc_oa"))
     unpaywall_queries = repo.list_source_queries("unpaywall", active_only=False)
-    assert any(query.query_name == "oa_discovery_hsa_titles" and not query.active for query in unpaywall_queries)
+    assert any(query.query_name == "oa_discovery_hsa_titles" and query.active for query in unpaywall_queries)
     assert any(
         query.query_name == "human_vascular_sarcoma_trials"
         for query in repo.list_source_queries("clinicaltrials_gov")
@@ -2136,7 +2136,7 @@ def test_scholarly_query_policy_always_includes_human_angiosarcoma():
     assert "[tiab]" in pmc_query.query_text
     assert "comparative oncology" not in pmc_query.query_text.lower()
     assert unpaywall_query.query_params == {"is_oa": True}
-    assert unpaywall_query.active is False
+    assert unpaywall_query.active is True
 
 
 def test_comparative_scope_does_not_match_angiosarcoma_inside_hemangiosarcoma():
@@ -2625,9 +2625,9 @@ def test_hosted_literature_smoke_includes_pmc_oa():
     assert "pmc_oa" in HOSTED_API_REPORT_KEYS
 
 
-def test_unpaywall_is_registered_for_manual_oa_discovery():
+def test_unpaywall_is_registered_for_operational_oa_discovery():
     assert HARVESTERS_V2["unpaywall"] is UnpaywallHarvesterV2
-    assert "unpaywall" not in HOSTED_API_REPORT_KEYS
+    assert "unpaywall" in HOSTED_API_REPORT_KEYS
 
 
 def test_literature_corpus_harvest_targets_hundreds_of_papers():
@@ -2663,6 +2663,7 @@ def test_all_api_smoke_covers_every_hosted_report_source():
         "crossref",
         "pmc_oa",
         "clinicaltrials_gov",
+        "unpaywall",
     }
 
 
@@ -4849,6 +4850,38 @@ def test_local_claim_extractor_creates_sparse_scholarly_context_claims(tmp_path)
     assert result.claims_written == 2
     assert any("Europe PMC record provides human angiosarcoma" in statement for statement in statements)
     assert any("Crossref record provides human angiosarcoma" in statement for statement in statements)
+
+
+def test_unpaywall_claim_extractor_creates_oa_discovery_context_claim(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Human angiosarcoma open access review",
+            source_key="unpaywall",
+            metadata={
+                "license_policy": "metadata_and_open_access_location_links",
+                "best_oa_location": {
+                    "url_for_landing_page": "https://example.org/article",
+                    "url_for_pdf": "https://example.org/article.pdf",
+                    "license": "cc-by",
+                },
+            },
+        )
+    )
+    for chunk in chunk_text(
+        object_id,
+        "Human angiosarcoma open access review. OA status: gold. License: cc-by.",
+        section_label="oa_discovery_metadata",
+    ):
+        repo.upsert_document_chunk(chunk)
+
+    result = extract_claims_for_repository(repo, source_key="unpaywall", limit=10)
+    claims = repo.list_claims(source_key="unpaywall", include_seed_claims=True, limit=10)
+
+    assert result.claims_written == 1
+    assert claims[0].statement.startswith("Unpaywall record provides human angiosarcoma")
+    assert claims[0].metadata["rule_key"] == "source-context:human_angiosarcoma_analog"
 
 
 def test_local_claim_extractor_creates_dataset_source_context_claims(tmp_path):
