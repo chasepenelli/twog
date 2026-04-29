@@ -2678,9 +2678,9 @@ def test_hosted_literature_smoke_includes_pmc_oa():
     assert "pmc_oa" in HOSTED_API_REPORT_KEYS
 
 
-def test_unpaywall_is_registered_for_operational_oa_discovery():
+def test_unpaywall_is_registered_for_manual_oa_discovery():
     assert HARVESTERS_V2["unpaywall"] is UnpaywallHarvesterV2
-    assert "unpaywall" in HOSTED_API_REPORT_KEYS
+    assert "unpaywall" not in HOSTED_API_REPORT_KEYS
 
 
 def test_literature_corpus_harvest_targets_hundreds_of_papers():
@@ -2716,7 +2716,6 @@ def test_all_api_smoke_covers_every_hosted_report_source():
         "crossref",
         "pmc_oa",
         "clinicaltrials_gov",
-        "unpaywall",
     }
 
 
