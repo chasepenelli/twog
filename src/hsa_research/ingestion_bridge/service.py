@@ -39,10 +39,19 @@ from .contracts import (
     RetrievalSmokeResult,
     SourceScoutRequest,
     SourceScoutResult,
+    SourceFollowupIngestRequest,
+    SourceFollowupIngestResult,
+    SourceFollowupQueueRequest,
+    SourceFollowupQueueResult,
+    SourceFollowupQueueItem,
     TextEmbeddingSearchRequest,
     ValidationRequest,
+    XLinkedArticleReviewRequest,
+    XLinkedArticleReviewResult,
     XTopicReviewRequest,
     XTopicReviewResult,
+    XLinkedArticleFollowupRequest,
+    XLinkedArticleFollowupResult,
 )
 from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
@@ -51,8 +60,15 @@ from .full_text_ops import FULL_TEXT_OPS_AGENT_NAME, FULL_TEXT_OPS_AGENT_VERSION
 from .full_text_triage import FullTextTriageAgent
 from .repository import ResearchRepository
 from .source_scout import SourceScoutAgent
+from .source_followup import ingest_source_followups, queue_source_followups_from_scrape_reviews
 from .storage import build_research_repository
+from .x_linked_article_review import (
+    X_LINKED_ARTICLE_REVIEW_AGENT_NAME,
+    X_LINKED_ARTICLE_REVIEW_AGENT_VERSION,
+    XLinkedArticleReviewAgent,
+)
 from .x_topic_review import X_TOPIC_REVIEW_AGENT_NAME, X_TOPIC_REVIEW_AGENT_VERSION, XTopicReviewAgent
+from .x_linked_article_followup import run_x_linked_article_followup
 
 
 DEFAULT_MODEL_PROFILES: dict[str, ModelProfile] = {
@@ -313,6 +329,53 @@ class HSAResearchService:
                 "needs_human_review_count": result.needs_human_review_count,
                 "rejected_count": result.rejected_count,
             },
+        )
+
+    def run_x_linked_article_followup(
+        self,
+        request: XLinkedArticleFollowupRequest,
+    ) -> XLinkedArticleFollowupResult:
+        return run_x_linked_article_followup(self.repository, request)
+
+    def run_x_linked_article_review(
+        self,
+        request: XLinkedArticleReviewRequest,
+    ) -> XLinkedArticleReviewResult:
+        return AgentRunner(self.repository).run(
+            agent_name=X_LINKED_ARTICLE_REVIEW_AGENT_NAME,
+            agent_version=X_LINKED_ARTICLE_REVIEW_AGENT_VERSION,
+            model_profile=request.model_profile,
+            input_payload=request.model_dump(mode="json"),
+            source_key="x_linked_article",
+            dagster_run_id=request.dagster_run_id,
+            execute=lambda: XLinkedArticleReviewAgent(self.repository).run(request),
+            summarize=lambda result: {
+                "actions": len(result.actions),
+                "queue_candidate_count": result.queue_candidate_count,
+                "needs_human_review_count": result.needs_human_review_count,
+                "rejected_count": result.rejected_count,
+            },
+        )
+
+    def queue_source_followups(self, request: SourceFollowupQueueRequest) -> SourceFollowupQueueResult:
+        return queue_source_followups_from_scrape_reviews(self.repository, request)
+
+    def ingest_source_followups(self, request: SourceFollowupIngestRequest) -> SourceFollowupIngestResult:
+        return ingest_source_followups(self.repository, request)
+
+    def list_source_followups(
+        self,
+        *,
+        source_key: str | None = None,
+        status: str | None = None,
+        identifier_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[SourceFollowupQueueItem]:
+        return self.repository.list_source_followups(
+            source_key=source_key,
+            status=status,
+            identifier_type=identifier_type,
+            limit=limit,
         )
 
     def get_agent_run(self, agent_run_id: UUID) -> AgentRunRecord | None:

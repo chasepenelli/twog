@@ -32,6 +32,7 @@ from .contracts import (
     ResearchObject,
     ResolvedEntity,
     RunStatus,
+    SourceFollowupQueueItem,
     ScrapeSourceProfileReview,
     ScrapeReviewRecord,
     TextEmbedding,
@@ -233,6 +234,34 @@ class ResearchRepository(Protocol):
     def get_scrape_profile_review(self, source_key: str) -> ScrapeSourceProfileReview | None:
         """Return operator review for a scrape source profile."""
 
+    def upsert_source_followup(self, item: SourceFollowupQueueItem) -> SourceFollowupQueueItem:
+        """Persist a source follow-up queue item."""
+
+    def get_source_followup(self, followup_id: UUID) -> SourceFollowupQueueItem | None:
+        """Return a source follow-up queue item."""
+
+    def list_source_followups(
+        self,
+        *,
+        source_key: str | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        identifier_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[SourceFollowupQueueItem]:
+        """Return source follow-up queue items by durable filters."""
+
+    def update_source_followup(
+        self,
+        followup_id: UUID,
+        *,
+        status: str,
+        attempts: int | None = None,
+        last_error: str | None = None,
+        metadata: dict | None = None,
+    ) -> SourceFollowupQueueItem | None:
+        """Update source follow-up queue lifecycle fields."""
+
 
 class InMemoryResearchRepository:
     """Small deterministic repository for local development and MCP smoke tests."""
@@ -249,6 +278,7 @@ class InMemoryResearchRepository:
         self.text_embeddings: dict[UUID, TextEmbedding] = {}
         self.scrape_reviews: dict[UUID, ScrapeReviewRecord] = {}
         self.scrape_profile_reviews: dict[str, ScrapeSourceProfileReview] = {}
+        self.source_followups: dict[UUID, SourceFollowupQueueItem] = {}
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
         self.agent_runs: dict[UUID, AgentRunRecord] = {}
 
@@ -815,6 +845,78 @@ class InMemoryResearchRepository:
 
     def get_scrape_profile_review(self, source_key: str) -> ScrapeSourceProfileReview | None:
         return self.scrape_profile_reviews.get(source_key)
+
+    def upsert_source_followup(self, item: SourceFollowupQueueItem) -> SourceFollowupQueueItem:
+        existing = next(
+            (
+                candidate
+                for candidate in self.source_followups.values()
+                if candidate.identity_key == item.identity_key
+            ),
+            None,
+        )
+        if existing:
+            item = item.model_copy(
+                update={
+                    "followup_id": existing.followup_id,
+                    "status": existing.status,
+                    "attempts": existing.attempts,
+                    "last_error": existing.last_error,
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+        self.source_followups[item.followup_id] = item
+        return item
+
+    def get_source_followup(self, followup_id: UUID) -> SourceFollowupQueueItem | None:
+        return self.source_followups.get(followup_id)
+
+    def list_source_followups(
+        self,
+        *,
+        source_key: str | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        identifier_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[SourceFollowupQueueItem]:
+        items = list(self.source_followups.values())
+        if source_key:
+            items = [item for item in items if item.source_key == source_key]
+        if status:
+            items = [item for item in items if item.status == status]
+        if statuses:
+            allowed = set(statuses)
+            items = [item for item in items if item.status in allowed]
+        if identifier_type:
+            items = [item for item in items if item.identifier_type == identifier_type]
+        items.sort(key=lambda item: (item.priority, item.created_at))
+        return items[:limit] if limit is not None else items
+
+    def update_source_followup(
+        self,
+        followup_id: UUID,
+        *,
+        status: str,
+        attempts: int | None = None,
+        last_error: str | None = None,
+        metadata: dict | None = None,
+    ) -> SourceFollowupQueueItem | None:
+        item = self.source_followups.get(followup_id)
+        if item is None:
+            return None
+        updated = item.model_copy(
+            update={
+                "status": status,
+                "attempts": item.attempts if attempts is None else attempts,
+                "last_error": last_error,
+                "updated_at": datetime.now(UTC),
+                "metadata": {**item.metadata, **(metadata or {})},
+            }
+        )
+        self.source_followups[followup_id] = updated
+        return updated
 
 
 def seed_claims() -> list[ClaimSearchResult]:

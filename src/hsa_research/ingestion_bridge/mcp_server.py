@@ -27,7 +27,11 @@ from .contracts import (
     ResearchObjectReadRequest,
     RetrievalSmokeRequest,
     SourceScoutRequest,
+    SourceFollowupIngestRequest,
+    SourceFollowupQueueRequest,
     ValidationRequest,
+    XLinkedArticleReviewRequest,
+    XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
 )
 from .service import get_service
@@ -243,6 +247,119 @@ def run_x_topic_review_tool(
         metadata=metadata or {},
     )
     return get_service().run_x_topic_review(request).model_dump(mode="json")
+
+
+def run_x_linked_article_followup_tool(
+    urls: list[str] | None = None,
+    recent_run_limit: int = 10,
+    max_urls: int = 10,
+    fetch: bool = True,
+    parse: bool = True,
+    approved_by: str | None = None,
+    approval_note: str | None = None,
+    robots_policy: str = "reviewed",
+    metadata: dict | None = None,
+) -> dict:
+    """Fetch and parse controlled article links queued by X topic review."""
+
+    request = XLinkedArticleFollowupRequest(
+        urls=urls or [],
+        recent_run_limit=recent_run_limit,
+        max_urls=max_urls,
+        fetch=fetch,
+        parse=parse,
+        approved_by=approved_by,
+        approval_note=approval_note,
+        robots_policy=robots_policy,  # type: ignore[arg-type]
+        metadata=metadata or {},
+    )
+    return get_service().run_x_linked_article_followup(request).model_dump(mode="json")
+
+
+def run_x_linked_article_review_tool(
+    review_ids: list[str] | None = None,
+    review_status: str | None = "needs_review",
+    limit: int = 50,
+    model_profile: str = "reviewer",
+    review_mode: str = "deterministic_only",
+    review_models: list[str] | None = None,
+    dagster_run_id: str | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """Run the recommend-only linked-article review agent."""
+
+    request = XLinkedArticleReviewRequest(
+        review_ids=[UUID(review_id) for review_id in (review_ids or [])],
+        review_status=review_status,  # type: ignore[arg-type]
+        limit=limit,
+        model_profile=model_profile,
+        review_mode=review_mode,  # type: ignore[arg-type]
+        review_models=review_models or [],
+        dagster_run_id=dagster_run_id,
+        metadata=metadata or {},
+    )
+    return get_service().run_x_linked_article_review(request).model_dump(mode="json")
+
+
+def queue_source_followups_tool(
+    source_key: str = "x_linked_article",
+    review_ids: list[str] | None = None,
+    review_status: str | None = None,
+    limit: int = 100,
+    include_existing: bool = False,
+) -> dict:
+    """Queue primary-source follow-ups extracted from scrape review records."""
+
+    request = SourceFollowupQueueRequest(
+        source_key=source_key,
+        review_ids=[UUID(review_id) for review_id in (review_ids or [])],
+        review_status=review_status,  # type: ignore[arg-type]
+        limit=limit,
+        include_existing=include_existing,
+    )
+    return get_service().queue_source_followups(request).model_dump(mode="json")
+
+
+def list_source_followups_tool(
+    source_key: str | None = None,
+    status: str | None = None,
+    identifier_type: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Return queued source follow-ups."""
+
+    return [
+        item.model_dump(mode="json")
+        for item in get_service().list_source_followups(
+            source_key=source_key,
+            status=status,
+            identifier_type=identifier_type,
+            limit=limit,
+        )
+    ]
+
+
+def ingest_source_followups_tool(
+    source_keys: list[str] | None = None,
+    statuses: list[str] | None = None,
+    limit: int = 25,
+    approved_by: str | None = None,
+    run_claim_extraction: bool = True,
+    dry_run: bool = False,
+    metadata: dict | None = None,
+) -> dict:
+    """Ingest queued primary-source follow-ups through existing API harvesters."""
+
+    request = SourceFollowupIngestRequest(
+        source_keys=source_keys or [],
+        statuses=statuses or ["queued", "approved"],  # type: ignore[list-item]
+        limit=limit,
+        approved_by=approved_by,
+        run_claim_extraction=run_claim_extraction,
+        dry_run=dry_run,
+        metadata=metadata or {},
+    )
+    return get_service().ingest_source_followups(request).model_dump(mode="json")
 
 
 def get_agent_run_tool(agent_run_id: str) -> dict:
@@ -477,6 +594,112 @@ if mcp is not None:
             review_mode=review_mode,
             review_models=review_models,
             dagster_run_id=dagster_run_id,
+            metadata=metadata,
+        )
+
+    @mcp.tool()
+    def run_x_linked_article_followup(
+        urls: list[str] | None = None,
+        recent_run_limit: int = 10,
+        max_urls: int = 10,
+        fetch: bool = True,
+        parse: bool = True,
+        approved_by: str | None = None,
+        approval_note: str | None = None,
+        robots_policy: str = "reviewed",
+        metadata: dict | None = None,
+    ) -> dict:
+        """Fetch and parse controlled article links queued by X topic review."""
+
+        return run_x_linked_article_followup_tool(
+            urls=urls,
+            recent_run_limit=recent_run_limit,
+            max_urls=max_urls,
+            fetch=fetch,
+            parse=parse,
+            approved_by=approved_by,
+            approval_note=approval_note,
+            robots_policy=robots_policy,
+            metadata=metadata,
+        )
+
+    @mcp.tool()
+    def run_x_linked_article_review(
+        review_ids: list[str] | None = None,
+        review_status: str | None = "needs_review",
+        limit: int = 50,
+        model_profile: str = "reviewer",
+        review_mode: str = "deterministic_only",
+        review_models: list[str] | None = None,
+        dagster_run_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Run the linked-article review agent and persist recommendations."""
+
+        return run_x_linked_article_review_tool(
+            review_ids=review_ids,
+            review_status=review_status,
+            limit=limit,
+            model_profile=model_profile,
+            review_mode=review_mode,
+            review_models=review_models,
+            dagster_run_id=dagster_run_id,
+            metadata=metadata,
+        )
+
+    @mcp.tool()
+    def queue_source_followups(
+        source_key: str = "x_linked_article",
+        review_ids: list[str] | None = None,
+        review_status: str | None = None,
+        limit: int = 100,
+        include_existing: bool = False,
+    ) -> dict:
+        """Queue primary-source follow-ups from parsed scraper review records."""
+
+        return queue_source_followups_tool(
+            source_key=source_key,
+            review_ids=review_ids,
+            review_status=review_status,
+            limit=limit,
+            include_existing=include_existing,
+        )
+
+    @mcp.tool()
+    def list_source_followups(
+        source_key: str | None = None,
+        status: str | None = None,
+        identifier_type: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return queued primary-source follow-ups."""
+
+        return list_source_followups_tool(
+            source_key=source_key,
+            status=status,
+            identifier_type=identifier_type,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def ingest_source_followups(
+        source_keys: list[str] | None = None,
+        statuses: list[str] | None = None,
+        limit: int = 25,
+        approved_by: str | None = None,
+        run_claim_extraction: bool = True,
+        dry_run: bool = False,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Ingest queued source follow-ups through the primary API harvesters."""
+
+        return ingest_source_followups_tool(
+            source_keys=source_keys,
+            statuses=statuses,
+            limit=limit,
+            approved_by=approved_by,
+            run_claim_extraction=run_claim_extraction,
+            dry_run=dry_run,
             metadata=metadata,
         )
 

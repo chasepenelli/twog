@@ -127,6 +127,12 @@ XTopicReviewActionName = Literal[
     "skip_no_durable_source",
 ]
 
+XLinkedArticleReviewActionName = Literal[
+    "queue_primary_source_followup",
+    "needs_human_review",
+    "reject_low_signal",
+]
+
 XTopicIdentifierType = Literal[
     "doi",
     "pmid",
@@ -139,6 +145,15 @@ XTopicIdentifierType = Literal[
     "geo",
     "sra",
     "unknown",
+]
+
+SourceFollowupStatus = Literal[
+    "queued",
+    "approved",
+    "ingested",
+    "failed",
+    "skipped",
+    "rejected",
 ]
 
 
@@ -256,6 +271,162 @@ class XTopicReviewResult(StrictBaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class XLinkedArticleFollowupRequest(StrictBaseModel):
+    urls: list[str] = Field(default_factory=list)
+    recent_run_limit: int = Field(default=10, ge=0, le=100)
+    max_urls: int = Field(default=10, ge=1, le=100)
+    fetch: bool = True
+    parse: bool = True
+    approved_by: str | None = None
+    approval_note: str | None = None
+    robots_policy: Literal["unknown", "reviewed", "disallow", "manual_only"] = "reviewed"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class XLinkedArticleFollowupResult(StrictBaseModel):
+    source_key: str = "x_linked_article"
+    candidate_urls: list[str] = Field(default_factory=list)
+    agent_run_ids: list[UUID] = Field(default_factory=list)
+    fetched_pages: int = 0
+    skipped_pages: int = 0
+    artifact_ids: list[UUID] = Field(default_factory=list)
+    parsed_records: int = 0
+    review_ids: list[UUID] = Field(default_factory=list)
+    primary_source_links: list[dict[str, Any]] = Field(default_factory=list)
+    requires_fetch_approval: bool = False
+    errors: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class XLinkedArticleReviewAction(StrictBaseModel):
+    review_id: UUID
+    source_record_id: str
+    action: XLinkedArticleReviewActionName
+    severity: AgentSeverity
+    reason: str
+    followup_links: list[XTopicLinkedSource] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class XLinkedArticleReviewRequest(StrictBaseModel):
+    review_ids: list[UUID] = Field(default_factory=list)
+    review_status: Literal["needs_review", "accepted", "rejected"] | None = "needs_review"
+    limit: int = Field(default=50, ge=1, le=500)
+    model_profile: str = "reviewer"
+    review_mode: Literal[
+        "external_required",
+        "openrouter_required",
+        "openrouter_compare",
+        "deterministic_only",
+    ] = "deterministic_only"
+    review_models: list[str] = Field(default_factory=list, max_length=10)
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class XLinkedArticleReviewResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    agent_name: str = "x_linked_article_review_agent"
+    model_profile: str = "reviewer"
+    actions: list[XLinkedArticleReviewAction] = Field(default_factory=list)
+    queue_candidate_count: int = 0
+    needs_human_review_count: int = 0
+    rejected_count: int = 0
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class SourceFollowupQueueItem(StrictBaseModel):
+    followup_id: UUID = Field(default_factory=uuid4)
+    source_key: str
+    identifier_type: XTopicIdentifierType
+    identifier: str
+    identity_key: str | None = None
+    url: str | None = None
+    title: str | None = None
+    origin_source_key: str | None = None
+    origin_review_id: UUID | None = None
+    origin_artifact_id: UUID | None = None
+    origin_agent_run_id: UUID | None = None
+    reason: str | None = None
+    status: SourceFollowupStatus = "queued"
+    priority: int = Field(default=100, ge=0, le=1000)
+    attempts: int = Field(default=0, ge=0)
+    last_error: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_identifier(self) -> "SourceFollowupQueueItem":
+        identifier = self.identifier.strip()
+        if self.identifier_type == "doi":
+            identifier = identifier.lower()
+        elif self.identifier_type in {"pmcid", "nct", "chembl", "geo", "sra", "rcsb_pdb"}:
+            identifier = identifier.upper()
+        self.identifier = identifier
+        self.identity_key = f"{self.source_key}:{self.identifier_type}:{identifier.lower()}"
+        return self
+
+
+class SourceFollowupQueueRequest(StrictBaseModel):
+    source_key: str = "x_linked_article"
+    review_ids: list[UUID] = Field(default_factory=list)
+    review_status: Literal["needs_review", "accepted", "rejected"] | None = None
+    limit: int = Field(default=100, ge=1, le=1000)
+    include_existing: bool = False
+
+
+class SourceFollowupQueueResult(StrictBaseModel):
+    source_key: str = "x_linked_article"
+    reviewed_records: int = 0
+    queued: int = 0
+    skipped_existing: int = 0
+    skipped_uningestible: int = 0
+    items: list[SourceFollowupQueueItem] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class SourceFollowupIngestItemResult(StrictBaseModel):
+    followup_id: UUID
+    source_key: str
+    identifier_type: XTopicIdentifierType
+    identifier: str
+    status: SourceFollowupStatus
+    raw_records: int = 0
+    research_objects: int = 0
+    document_chunks: int = 0
+    error: str | None = None
+    fetch_run_id: UUID | None = None
+
+
+class SourceFollowupIngestRequest(StrictBaseModel):
+    source_keys: list[str] = Field(default_factory=list)
+    statuses: list[SourceFollowupStatus] = Field(default_factory=lambda: ["queued", "approved"])
+    limit: int = Field(default=25, ge=1, le=500)
+    approved_by: str | None = None
+    run_claim_extraction: bool = True
+    dry_run: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceFollowupIngestResult(StrictBaseModel):
+    queue_items_seen: int = 0
+    attempted: int = 0
+    ingested: int = 0
+    failed: int = 0
+    skipped: int = 0
+    raw_records: int = 0
+    research_objects: int = 0
+    document_chunks: int = 0
+    source_reports: list[dict[str, Any]] = Field(default_factory=list)
+    items: list[SourceFollowupIngestItemResult] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 class ResearchSource(StrictBaseModel):

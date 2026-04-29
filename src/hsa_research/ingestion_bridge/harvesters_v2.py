@@ -838,6 +838,7 @@ class ClinicalTrialsGovHarvesterV2(HarvesterV2):
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         params = dict(params)
         search_area = params.pop("search_area", "term")
+        require_policy_match = params.pop("require_policy_match", True)
         query_param = "query.cond" if search_area == "condition" else "query.term"
         data = _get_json(
             "https://clinicaltrials.gov/api/v2/studies",
@@ -849,6 +850,8 @@ class ClinicalTrialsGovHarvesterV2(HarvesterV2):
             },
         )
         records = [self.normalize(study) for study in data.get("studies", [])]
+        if not require_policy_match:
+            return records
         return [
             record
             for record in records

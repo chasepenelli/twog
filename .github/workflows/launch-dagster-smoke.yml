@@ -25,6 +25,10 @@ on:
           - "source_health_report_job"
           - "full_text_ops_agent_job"
           - "x_topic_monitor_review_job"
+          - "x_linked_article_followup_job"
+          - "x_linked_article_review_job"
+          - "source_followup_queue_job"
+          - "source_followup_ingest_job"
           - "full_text_source_date_ops_job"
           - "entity_resolution_job"
           - "embedding_index_job"
@@ -40,6 +44,16 @@ on:
         type: string
         required: true
         default: "2700"
+      deployment:
+        description: "Dagster Cloud deployment to launch against"
+        type: string
+        required: true
+        default: "prod"
+      x_linked_article_urls:
+        description: "Optional comma/newline/JSON-list URLs for x_linked_article_followup_job manual validation"
+        type: string
+        required: false
+        default: ""
 
 jobs:
   launch_dagster_smoke:
@@ -49,7 +63,7 @@ jobs:
     env:
       DAGSTER_CLOUD_ORGANIZATION: "twogbio"
       DAGSTER_CLOUD_URL: "https://twogbio.dagster.cloud"
-      DAGSTER_CLOUD_DEPLOYMENT: "prod"
+      DAGSTER_CLOUD_DEPLOYMENT: ${{ inputs.deployment }}
       DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
       DAGSTER_CLOUD_LOCATION: "hsa-dagster"
       DAGSTER_CLOUD_JOB: ${{ inputs.job }}
@@ -63,6 +77,9 @@ jobs:
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
+      HSA_X_LINKED_ARTICLE_APPROVED_BY: "github-actions"
+      HSA_X_LINKED_ARTICLE_APPROVAL_NOTE: "Manual smoke workflow dispatch for controlled x_linked_article follow-up."
+      HSA_X_LINKED_ARTICLE_URLS: ${{ inputs.x_linked_article_urls }}
 
     steps:
       - name: Checkout
@@ -106,6 +123,44 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
+
+          if [ "$DAGSTER_CLOUD_JOB" = "x_linked_article_followup_job" ] && [ -z "$DAGSTER_CLOUD_CONFIG_JSON" ] && [ -n "$HSA_X_LINKED_ARTICLE_URLS" ]; then
+          DAGSTER_CLOUD_CONFIG_JSON="$(
+          python - <<'PY'
+          import json
+          import os
+
+          raw = os.environ["HSA_X_LINKED_ARTICLE_URLS"].strip()
+          parsed = None
+          if raw.startswith("["):
+              try:
+                  loaded = json.loads(raw)
+              except json.JSONDecodeError:
+                  loaded = None
+              if isinstance(loaded, list):
+                  parsed = [str(item).strip() for item in loaded if str(item).strip()]
+          urls = parsed or [
+              item.strip()
+              for item in raw.replace("\n", ",").replace("\r", ",").split(",")
+              if item.strip()
+          ]
+          config = {
+              "ops": {
+                  "x_linked_article_followup_report": {
+                      "config": {
+                          "urls": urls,
+                          "approved_by": os.environ.get("HSA_X_LINKED_ARTICLE_APPROVED_BY"),
+                          "approval_note": os.environ.get("HSA_X_LINKED_ARTICLE_APPROVAL_NOTE"),
+                          "fetch": True,
+                          "parse": True,
+                      }
+                  }
+              }
+          }
+          print(json.dumps(config))
+          PY
+          )"
+          fi
 
           launch_tags='{"github_workflow":"launch-dagster-smoke","github_run_id":"'"$GITHUB_RUN_ID"'","github_run_attempt":"'"$GITHUB_RUN_ATTEMPT"'","dagster_job":"'"$DAGSTER_CLOUD_JOB"'"}'
           launch_args=(
@@ -361,6 +416,43 @@ jobs:
                   }
               )
           print(json.dumps(summaries, indent=2, sort_keys=True))
+          PY
+        shell: bash
+
+      - name: Print hosted X linked article follow-up summary
+        if: ${{ always() && inputs.job == 'x_linked_article_followup_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+
+          from hsa_research.ingestion_bridge.scraper_bridge import ScrapeBridge
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          repository = build_research_repository()
+          reviews = ScrapeBridge(repository).list_reviews(
+              "x_linked_article",
+              review_status=None,
+              limit=5,
+          )
+          print(
+              json.dumps(
+                  [
+                      {
+                          "review_id": str(review.review_id),
+                          "artifact_id": str(review.artifact_id),
+                          "title": review.title,
+                          "canonical_url": review.canonical_url,
+                          "review_status": review.review_status,
+                          "parser_confidence": review.parser_confidence,
+                          "primary_source_links": review.fields.get("primary_source_links", []),
+                      }
+                      for review in reviews
+                  ],
+                  indent=2,
+                  sort_keys=True,
+              )
+          )
           PY
         shell: bash
 
