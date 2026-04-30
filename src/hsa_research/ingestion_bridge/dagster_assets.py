@@ -17,6 +17,7 @@ from .contracts import (
     ClaimCurationRequest,
     ClaimSearchRequest,
     FullTextOpsRequest,
+    ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
     ResearchLeadCollectRequest,
@@ -1799,6 +1800,117 @@ if dg is not None:
     @dg.asset(
         group_name="ai_research",
         config_schema={
+            "topic": dg.Field(
+                str,
+                default_value="canine hemangiosarcoma translational therapy",
+                description="Research topic or question to queue.",
+            ),
+            "disease_scope": dg.Field(
+                str,
+                default_value="canine hemangiosarcoma and human angiosarcoma",
+                description="Disease/scope guardrail for retrieval and synthesis.",
+            ),
+            "source_key": dg.Field(
+                str,
+                is_required=False,
+                description="Optional source key filter.",
+            ),
+            "priority": dg.Field(
+                int,
+                default_value=100,
+                description="Lower values run first.",
+            ),
+            "max_chunks_per_perspective": dg.Field(
+                int,
+                default_value=8,
+                description="Maximum chunks to retrieve per perspective query.",
+            ),
+            "max_claims": dg.Field(
+                int,
+                default_value=12,
+                description="Maximum stored claims to include in the evidence payload.",
+            ),
+            "max_chunk_chars": dg.Field(
+                int,
+                default_value=1800,
+                description="Maximum characters per cited chunk sent to the reviewer.",
+            ),
+            "brief_style": dg.Field(
+                str,
+                default_value="technical",
+                description="Brief style: technical, operator, substack, or vet_partner.",
+            ),
+            "review_mode": dg.Field(
+                str,
+                default_value="deterministic_only",
+                description="Research brief review mode.",
+            ),
+            "review_models": dg.Field(
+                [str],
+                default_value=[],
+                description="OpenRouter model ids to use when using an OpenRouter review mode.",
+            ),
+        },
+    )
+    def research_brief_queue_seed_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manually queue a research brief request from Dagster."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        item = HSAResearchService(repository).queue_research_brief(
+            ResearchBriefQueueRequest(
+                topic=config["topic"],
+                disease_scope=config["disease_scope"],
+                source_key=config.get("source_key"),
+                priority=config["priority"],
+                max_chunks_per_perspective=config["max_chunks_per_perspective"],
+                max_claims=config["max_claims"],
+                max_chunk_chars=config["max_chunk_chars"],
+                brief_style=config["brief_style"],
+                review_mode=config["review_mode"],
+                review_models=config["review_models"],
+                metadata={"dagster_seed_run_id": context.run_id},
+            )
+        )
+        row = {
+            "queue_item_id": str(item.queue_item_id),
+            "status": item.status,
+            "priority": item.priority,
+            "topic": item.topic[:300],
+            "source_key": item.source_key,
+            "brief_style": item.brief_style,
+            "model_profile": item.model_profile,
+            "review_mode": item.review_mode,
+            "attempts": item.attempts,
+            "last_brief_id": str(item.last_brief_id) if item.last_brief_id else None,
+            "last_error": str(item.last_error or "")[:300],
+            "created_at": item.created_at.isoformat(),
+        }
+        report = {
+            "queue_item_count": 1,
+            "status": item.status,
+            "statuses": [item.status],
+            "source_key": item.source_key,
+            "topic_query": item.topic,
+            "queue_items": [row],
+        }
+        return dg.MaterializeResult(
+            value=item.model_dump(mode="json"),
+            metadata={
+                **_research_brief_queue_metadata(report),
+                "queue_item_id": str(item.queue_item_id),
+                "identity_key": item.identity_key,
+            },
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
             "statuses": dg.Field(
                 [str],
                 default_value=["queued"],
@@ -2919,6 +3031,7 @@ if dg is not None:
         research_brief_agent_report,
         research_brief_library_report,
         research_brief_queue_report,
+        research_brief_queue_seed_report,
         research_brief_queue_runner_report,
         research_brief_playground_pack_report,
         research_leads_report,
@@ -3020,6 +3133,10 @@ if dg is not None:
     research_brief_queue_job = dg.define_asset_job(
         "research_brief_queue_job",
         selection=dg.AssetSelection.assets(research_brief_queue_report),
+    )
+    research_brief_queue_seed_job = dg.define_asset_job(
+        "research_brief_queue_seed_job",
+        selection=dg.AssetSelection.assets(research_brief_queue_seed_report),
     )
     research_brief_queue_runner_job = dg.define_asset_job(
         "research_brief_queue_runner_job",
@@ -3245,6 +3362,7 @@ if dg is not None:
             research_brief_agent_job,
             research_brief_library_job,
             research_brief_queue_job,
+            research_brief_queue_seed_job,
             research_brief_queue_runner_job,
             research_brief_playground_pack_job,
             research_leads_job,
@@ -3308,6 +3426,7 @@ else:
     research_brief_agent_job = None
     research_brief_library_job = None
     research_brief_queue_job = None
+    research_brief_queue_seed_job = None
     research_brief_queue_runner_job = None
     research_brief_playground_pack_job = None
     research_leads_job = None

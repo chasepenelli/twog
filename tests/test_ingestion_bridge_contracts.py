@@ -7098,6 +7098,7 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.research_brief_agent_job is not None
     assert dagster_asset_module.research_brief_library_job is not None
     assert dagster_asset_module.research_brief_queue_job is not None
+    assert dagster_asset_module.research_brief_queue_seed_job is not None
     assert dagster_asset_module.research_brief_queue_runner_job is not None
     assert dagster_asset_module.research_brief_playground_pack_job is not None
     assert dagster_asset_module.research_leads_job is not None
