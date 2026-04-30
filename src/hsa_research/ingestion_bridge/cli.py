@@ -21,6 +21,7 @@ from .contracts import (
     FullTextTriageRequest,
     FullTextOpsRequest,
     ResearchBriefEvaluationRequest,
+    ResearchBriefQueueBatchRequest,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
@@ -297,6 +298,78 @@ def main() -> None:
         default="deterministic_only",
     )
     queue_research_brief.add_argument(
+        "--review-model",
+        action="append",
+        default=[],
+        help="OpenRouter model id; repeat to compare multiple models",
+    )
+
+    queue_research_brief_batch = subparsers.add_parser(
+        "queue-research-brief-batch",
+        help="Queue research briefs from watchlist leads and source-health gaps",
+    )
+    queue_research_brief_batch.add_argument(
+        "--mode",
+        choices=("research_leads", "source_health", "both"),
+        default="both",
+        help="Batch source to queue from",
+    )
+    queue_research_brief_batch.add_argument(
+        "--lead-status",
+        action="append",
+        default=[],
+        help="Research lead status to queue; defaults to new and watching",
+    )
+    queue_research_brief_batch.add_argument(
+        "--lead-type",
+        action="append",
+        default=[],
+        help="Optional research lead type filter; repeatable",
+    )
+    queue_research_brief_batch.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="Optional source key filter; repeatable",
+    )
+    queue_research_brief_batch.add_argument(
+        "--source-health-status",
+        action="append",
+        default=[],
+        help="Source health status to queue; defaults to failing, triage, and watch",
+    )
+    queue_research_brief_batch.add_argument(
+        "--include-empty-sources",
+        action="store_true",
+        help="Queue source-health gaps even when no chunks exist yet",
+    )
+    queue_research_brief_batch.add_argument("--limit", type=int, default=25, help="Maximum queue items to create")
+    queue_research_brief_batch.add_argument(
+        "--disease-scope",
+        default="canine hemangiosarcoma and human angiosarcoma",
+        help="Disease/scope guardrail for retrieval and synthesis",
+    )
+    queue_research_brief_batch.add_argument("--priority", type=int, default=80, help="Default queue priority")
+    queue_research_brief_batch.add_argument("--max-chunks", type=int, default=8, help="Chunks per perspective search")
+    queue_research_brief_batch.add_argument("--max-claims", type=int, default=12, help="Claims to include")
+    queue_research_brief_batch.add_argument(
+        "--max-chunk-chars",
+        type=int,
+        default=1800,
+        help="Maximum chars per cited chunk",
+    )
+    queue_research_brief_batch.add_argument(
+        "--brief-style",
+        choices=("technical", "operator", "substack", "vet_partner"),
+        default="technical",
+    )
+    queue_research_brief_batch.add_argument("--model-profile", default="research_brief", help="Logical model profile")
+    queue_research_brief_batch.add_argument(
+        "--review-mode",
+        choices=("external_required", "openrouter_required", "openrouter_compare", "deterministic_only"),
+        default="deterministic_only",
+    )
+    queue_research_brief_batch.add_argument(
         "--review-model",
         action="append",
         default=[],
@@ -945,6 +1018,27 @@ def main() -> None:
                 topic=args.topic,
                 disease_scope=args.disease_scope,
                 source_key=args.source,
+                priority=args.priority,
+                max_chunks_per_perspective=args.max_chunks,
+                max_claims=args.max_claims,
+                max_chunk_chars=args.max_chunk_chars,
+                brief_style=args.brief_style,
+                model_profile=args.model_profile,
+                review_mode=args.review_mode,
+                review_models=args.review_model,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "queue-research-brief-batch":
+        output = HSAResearchService(repo).queue_research_brief_batch(
+            ResearchBriefQueueBatchRequest(
+                mode=args.mode,
+                lead_statuses=args.lead_status or ["new", "watching"],
+                lead_types=args.lead_type,
+                source_keys=args.source,
+                source_health_statuses=args.source_health_status or ["failing", "triage", "watch"],
+                include_empty_sources=args.include_empty_sources,
+                limit=args.limit,
+                disease_scope=args.disease_scope,
                 priority=args.priority,
                 max_chunks_per_perspective=args.max_chunks,
                 max_claims=args.max_claims,

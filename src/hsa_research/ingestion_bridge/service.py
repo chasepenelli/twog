@@ -7,6 +7,7 @@ decorators or Dagster assets.
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID, uuid4
 
 from .contracts import (
@@ -34,6 +35,8 @@ from .contracts import (
     ResearchBriefEvaluationRecord,
     ResearchBriefEvaluationRequest,
     ResearchBriefEvaluationResult,
+    ResearchBriefQueueBatchRequest,
+    ResearchBriefQueueBatchResult,
     ResearchBriefQueueItem,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
@@ -479,6 +482,151 @@ class HSAResearchService:
                     "previous_attempts": item.attempts,
                 }
             },
+        )
+
+    def queue_research_brief_batch(self, request: ResearchBriefQueueBatchRequest) -> ResearchBriefQueueBatchResult:
+        queue_items: list[ResearchBriefQueueItem] = []
+        skipped: list[dict[str, Any]] = []
+        errors: list[str] = []
+        lead_count = 0
+        source_health_count = 0
+
+        def remaining() -> int:
+            return request.limit - len(queue_items)
+
+        if request.mode in ("research_leads", "both") and remaining() > 0:
+            leads = self.repository.list_research_leads(
+                statuses=list(request.lead_statuses),
+                limit=request.limit,
+            )
+            if request.lead_types:
+                allowed_lead_types = set(request.lead_types)
+                leads = [lead for lead in leads if lead.lead_type in allowed_lead_types]
+            for lead in leads[: remaining()]:
+                try:
+                    queue_item = self.queue_research_brief(
+                        ResearchBriefQueueRequest(
+                            topic=_research_brief_topic_from_lead(lead),
+                            disease_scope=request.disease_scope,
+                            source_key=_research_brief_source_key_from_lead(lead),
+                            priority=min(request.priority, lead.priority),
+                            max_chunks_per_perspective=request.max_chunks_per_perspective,
+                            max_claims=request.max_claims,
+                            max_chunk_chars=request.max_chunk_chars,
+                            brief_style=request.brief_style,
+                            model_profile=request.model_profile,
+                            review_mode=request.review_mode,
+                            review_models=request.review_models,
+                            metadata={
+                                **request.metadata,
+                                "batch_queue": {
+                                    "origin": "research_lead",
+                                    "lead_id": str(lead.lead_id),
+                                    "lead_type": lead.lead_type,
+                                    "lead_status": lead.status,
+                                    "origin_source_key": lead.origin_source_key,
+                                    "origin_record_id": lead.origin_record_id,
+                                    "origin_agent_run_id": str(lead.origin_agent_run_id)
+                                    if lead.origin_agent_run_id
+                                    else None,
+                                    "reason": lead.reason,
+                                    "evidence_refs": lead.evidence_refs,
+                                    "topic_tags": lead.topic_tags,
+                                },
+                            },
+                        )
+                    )
+                    queue_items.append(queue_item)
+                    lead_count += 1
+                    self.repository.update_research_lead(
+                        lead.lead_id,
+                        status="queued",
+                        metadata={
+                            "research_brief_queue": {
+                                "queue_item_id": str(queue_item.queue_item_id),
+                                "topic": queue_item.topic,
+                            }
+                        },
+                    )
+                except Exception as exc:  # pragma: no cover - defensive service boundary
+                    errors.append(f"lead {lead.lead_id}: {exc}")
+
+        if request.mode in ("source_health", "both") and remaining() > 0:
+            report = request.source_health_report
+            if report is None:
+                from .source_health import build_source_health_report
+
+                report = build_source_health_report(
+                    self.repository,
+                    source_keys=request.source_keys or None,
+                )
+            allowed_statuses = set(request.source_health_statuses)
+            selected_sources = request.source_keys and set(request.source_keys)
+            source_reports = report.get("sources", [])
+            for source_report in source_reports:
+                if remaining() <= 0:
+                    break
+                source_key = str(source_report.get("source_key") or "")
+                if not source_key:
+                    continue
+                if selected_sources and source_key not in selected_sources:
+                    continue
+                health_status = str(source_report.get("health_status") or "")
+                if health_status not in allowed_statuses:
+                    continue
+                document_chunks = int(source_report.get("document_chunks") or 0)
+                if document_chunks < 1 and not request.include_empty_sources:
+                    skipped.append(
+                        {
+                            "origin": "source_health",
+                            "source_key": source_key,
+                            "reason": "source_has_no_document_chunks",
+                            "health_status": health_status,
+                        }
+                    )
+                    continue
+                try:
+                    queue_item = self.queue_research_brief(
+                        ResearchBriefQueueRequest(
+                            topic=f"Source health gap review for {source_key}",
+                            disease_scope=request.disease_scope,
+                            source_key=source_key,
+                            priority=min(request.priority, _priority_for_source_health(health_status)),
+                            max_chunks_per_perspective=request.max_chunks_per_perspective,
+                            max_claims=request.max_claims,
+                            max_chunk_chars=request.max_chunk_chars,
+                            brief_style=request.brief_style,
+                            model_profile=request.model_profile,
+                            review_mode=request.review_mode,
+                            review_models=request.review_models,
+                            metadata={
+                                **request.metadata,
+                                "batch_queue": {
+                                    "origin": "source_health",
+                                    "source_key": source_key,
+                                    "health_status": health_status,
+                                    "passes_minimum_bar": source_report.get("passes_minimum_bar"),
+                                    "health_score": source_report.get("health_score"),
+                                    "risks": source_report.get("risks", []),
+                                    "recommended_actions": source_report.get("recommended_actions", []),
+                                },
+                            },
+                        )
+                    )
+                    queue_items.append(queue_item)
+                    source_health_count += 1
+                except Exception as exc:  # pragma: no cover - defensive service boundary
+                    errors.append(f"source {source_key}: {exc}")
+
+        return ResearchBriefQueueBatchResult(
+            mode=request.mode,
+            queued_count=len(queue_items),
+            lead_count=lead_count,
+            source_health_count=source_health_count,
+            skipped_count=len(skipped),
+            queue_items=queue_items,
+            skipped=skipped,
+            errors=errors,
         )
 
     def run_next_research_brief_queue_item(
@@ -1060,6 +1208,33 @@ def _source_key_for_validation_plan(
         limit=1,
     )
     return candidates[0].source_key if candidates else None
+
+
+def _research_brief_topic_from_lead(lead: ResearchLeadRecord) -> str:
+    title = lead.title or lead.summary or lead.reason or "Untitled research lead"
+    parts = [f"Review research lead: {title}"]
+    if lead.reason:
+        parts.append(f"Reason: {lead.reason}")
+    if lead.summary and lead.summary != title:
+        parts.append(f"Summary: {lead.summary}")
+    if lead.topic_tags:
+        parts.append(f"Tags: {', '.join(lead.topic_tags[:8])}")
+    return " | ".join(parts)[:1000]
+
+
+def _research_brief_source_key_from_lead(lead: ResearchLeadRecord) -> str | None:
+    if lead.suggested_sources:
+        return lead.suggested_sources[0]
+    return lead.origin_source_key or lead.source_key
+
+
+def _priority_for_source_health(health_status: str) -> int:
+    return {
+        "failing": 30,
+        "triage": 45,
+        "watch": 65,
+        "healthy": 90,
+    }.get(health_status, 80)
 
 
 def _brief_request_from_queue_item(

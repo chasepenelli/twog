@@ -40,6 +40,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchBriefEvaluationResult,
     ResearchBriefFinding,
     ResearchBriefPerspectiveReport,
+    ResearchBriefQueueBatchRequest,
     ResearchBriefQueueItem,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
@@ -2615,6 +2616,71 @@ def test_research_brief_queue_controls_requeue_and_archive(tmp_path):
         assert archived.metadata["queue_control"]["previous_status"] == "completed"
         assert service.archive_research_brief_queue_item(archived.queue_item_id).status == "archived"
         assert service.requeue_research_brief_queue_item(uuid4()) is None
+
+
+def test_research_brief_queue_batch_from_leads_and_source_health(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-queue-batch.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="VEGF resistance signal in canine hemangiosarcoma",
+            lead_type="linked_article",
+            status="new",
+            priority=20,
+            source_key="x_topic",
+            origin_source_key="x_topic",
+            reason="Agent flagged a durable article for synthesis follow-up.",
+            summary="The linked article discusses VEGF resistance and translational therapy signals.",
+            topic_tags=["VEGF", "resistance"],
+            suggested_sources=["pubmed"],
+        )
+    )
+    source_health_report = {
+        "sources": [
+            {
+                "source_key": "chembl",
+                "health_status": "failing",
+                "document_chunks": 0,
+                "passes_minimum_bar": False,
+                "health_score": 0.2,
+                "risks": ["No chunks are present."],
+                "recommended_actions": ["Run structured source refresh."],
+            },
+            {
+                "source_key": "pubmed",
+                "health_status": "triage",
+                "document_chunks": 4,
+                "passes_minimum_bar": False,
+                "health_score": 0.55,
+                "risks": ["No promoted claims are present."],
+                "recommended_actions": ["Inspect curator decisions."],
+            },
+        ]
+    }
+
+    result = service.queue_research_brief_batch(
+        ResearchBriefQueueBatchRequest(
+            mode="both",
+            source_health_report=source_health_report,
+            limit=5,
+            priority=80,
+        )
+    )
+    updated_lead = repo.get_research_lead(lead.lead_id)
+    origins = {item.metadata["batch_queue"]["origin"] for item in result.queue_items}
+
+    assert result.queued_count == 2
+    assert result.lead_count == 1
+    assert result.source_health_count == 1
+    assert result.skipped_count == 1
+    assert result.skipped[0]["source_key"] == "chembl"
+    assert origins == {"research_lead", "source_health"}
+    assert updated_lead is not None
+    assert updated_lead.status == "queued"
+    assert updated_lead.metadata["research_brief_queue"]["queue_item_id"]
+    assert any(item.source_key == "pubmed" for item in result.queue_items)
+    assert any(item.priority == 20 for item in result.queue_items if item.metadata["batch_queue"]["origin"] == "research_lead")
+    assert any(item.priority == 45 for item in result.queue_items if item.metadata["batch_queue"]["origin"] == "source_health")
 
 
 def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
@@ -6245,6 +6311,16 @@ def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp
     completed = repo.update_research_brief_queue_item(queued["queue_item_id"], status="completed")
     assert completed is not None
     archived = mcp_server.archive_research_brief_queue_item_tool(queued["queue_item_id"])
+    repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="PDGF biomarker lead",
+            lead_type="linked_article",
+            status="new",
+            priority=30,
+            suggested_sources=["pubmed"],
+        )
+    )
+    batch = mcp_server.queue_research_brief_batch_tool(mode="research_leads", limit=1)
 
     assert queued["queue_item_id"]
     assert fetched["queue_item_id"] == queued["queue_item_id"]
@@ -6254,6 +6330,8 @@ def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp
     assert requeued["last_error"] is None
     assert archived["status"] == "archived"
     assert archived["metadata"]["queue_control"]["previous_status"] == "completed"
+    assert batch["queued_count"] == 1
+    assert batch["queue_items"][0]["metadata"]["batch_queue"]["origin"] == "research_lead"
 
 
 def test_mcp_retrieval_smoke_helper_dumps_full_read_chain(monkeypatch, tmp_path):
@@ -7738,6 +7816,7 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.validation_plan_job is not None
     assert dagster_asset_module.validation_plan_library_job is not None
     assert dagster_asset_module.research_brief_queue_job is not None
+    assert dagster_asset_module.research_brief_queue_batch_job is not None
     assert dagster_asset_module.research_brief_queue_seed_job is not None
     assert dagster_asset_module.research_brief_queue_runner_job is not None
     assert dagster_asset_module.research_brief_playground_pack_job is not None

@@ -18,6 +18,7 @@ from .contracts import (
     ClaimSearchRequest,
     FullTextOpsRequest,
     ResearchBriefEvaluationRequest,
+    ResearchBriefQueueBatchRequest,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
@@ -703,6 +704,36 @@ if dg is not None:
             "source_key": report.get("source_key"),
             "topic_query": report.get("topic_query"),
             "queue_items": _metadata_table(rows, _RESEARCH_BRIEF_QUEUE_TABLE_COLUMNS),
+        }
+
+    def _research_brief_queue_batch_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        queue_rows = [
+            {
+                "queue_item_id": item.get("queue_item_id"),
+                "status": item.get("status"),
+                "priority": item.get("priority"),
+                "topic": str(item.get("topic") or "")[:300],
+                "source_key": item.get("source_key"),
+                "brief_style": item.get("brief_style"),
+                "model_profile": item.get("model_profile"),
+                "review_mode": item.get("review_mode"),
+                "attempts": item.get("attempts"),
+                "last_brief_id": item.get("last_brief_id"),
+                "last_error": str(item.get("last_error") or "")[:300],
+                "created_at": item.get("created_at"),
+            }
+            for item in report.get("queue_items", [])
+        ]
+        return {
+            "mode": report.get("mode"),
+            "queued_count": dg.MetadataValue.int(int(report.get("queued_count", 0))),
+            "lead_count": dg.MetadataValue.int(int(report.get("lead_count", 0))),
+            "source_health_count": dg.MetadataValue.int(int(report.get("source_health_count", 0))),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0))),
+            "skipped": dg.MetadataValue.json(report.get("skipped", [])),
+            "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "queue_items": _metadata_table(queue_rows, _RESEARCH_BRIEF_QUEUE_TABLE_COLUMNS),
         }
 
     def _research_brief_queue_runner_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -2172,6 +2203,104 @@ if dg is not None:
     @dg.asset(
         group_name="ai_research",
         config_schema={
+            "mode": dg.Field(
+                str,
+                default_value="both",
+                description="Batch source: research_leads, source_health, or both.",
+            ),
+            "lead_statuses": dg.Field(
+                [str],
+                default_value=["new", "watching"],
+                description="Research lead statuses to convert into brief queue items.",
+            ),
+            "lead_types": dg.Field(
+                [str],
+                default_value=[],
+                description="Optional research lead type filters.",
+            ),
+            "source_keys": dg.Field(
+                [str],
+                default_value=[],
+                description="Optional source keys for source-health gap queueing.",
+            ),
+            "source_health_statuses": dg.Field(
+                [str],
+                default_value=["failing", "triage", "watch"],
+                description="Source health statuses eligible for batch queueing.",
+            ),
+            "include_empty_sources": dg.Field(
+                bool,
+                default_value=False,
+                description="Queue source-health gaps even when a source has no chunks yet.",
+            ),
+            "limit": dg.Field(int, default_value=25, description="Maximum queue items to create."),
+            "disease_scope": dg.Field(
+                str,
+                default_value="canine hemangiosarcoma and human angiosarcoma",
+                description="Disease/scope guardrail for retrieval and synthesis.",
+            ),
+            "priority": dg.Field(int, default_value=80, description="Default queue priority."),
+            "max_chunks_per_perspective": dg.Field(
+                int,
+                default_value=8,
+                description="Maximum chunks to retrieve per perspective query.",
+            ),
+            "max_claims": dg.Field(int, default_value=12, description="Maximum claims to include."),
+            "max_chunk_chars": dg.Field(
+                int,
+                default_value=1800,
+                description="Maximum characters per cited chunk sent to the reviewer.",
+            ),
+            "brief_style": dg.Field(str, default_value="technical", description="Research brief style."),
+            "model_profile": dg.Field(str, default_value="research_brief", description="Logical model profile."),
+            "review_mode": dg.Field(str, default_value="deterministic_only", description="Review mode."),
+            "review_models": dg.Field(
+                [str],
+                default_value=[],
+                description="OpenRouter model ids for OpenRouter-backed review modes.",
+            ),
+        },
+    )
+    def research_brief_queue_batch_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Queue research brief batches from watchlist leads and source-health gaps."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).queue_research_brief_batch(
+            ResearchBriefQueueBatchRequest(
+                mode=config["mode"],
+                lead_statuses=config["lead_statuses"],
+                lead_types=config["lead_types"],
+                source_keys=config["source_keys"],
+                source_health_statuses=config["source_health_statuses"],
+                include_empty_sources=config["include_empty_sources"],
+                limit=config["limit"],
+                disease_scope=config["disease_scope"],
+                priority=config["priority"],
+                max_chunks_per_perspective=config["max_chunks_per_perspective"],
+                max_claims=config["max_claims"],
+                max_chunk_chars=config["max_chunk_chars"],
+                brief_style=config["brief_style"],
+                model_profile=config["model_profile"],
+                review_mode=config["review_mode"],
+                review_models=config["review_models"],
+                metadata={"dagster_batch_run_id": context.run_id},
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_research_brief_queue_batch_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
             "topic": dg.Field(
                 str,
                 default_value="canine hemangiosarcoma translational therapy",
@@ -3407,6 +3536,7 @@ if dg is not None:
         validation_plan_report,
         validation_plan_library_report,
         research_brief_queue_report,
+        research_brief_queue_batch_report,
         research_brief_queue_seed_report,
         research_brief_queue_runner_report,
         research_brief_playground_pack_report,
@@ -3525,6 +3655,10 @@ if dg is not None:
     research_brief_queue_job = dg.define_asset_job(
         "research_brief_queue_job",
         selection=dg.AssetSelection.assets(research_brief_queue_report),
+    )
+    research_brief_queue_batch_job = dg.define_asset_job(
+        "research_brief_queue_batch_job",
+        selection=dg.AssetSelection.assets(research_brief_queue_batch_report),
     )
     research_brief_queue_seed_job = dg.define_asset_job(
         "research_brief_queue_seed_job",
@@ -3758,6 +3892,7 @@ if dg is not None:
             validation_plan_job,
             validation_plan_library_job,
             research_brief_queue_job,
+            research_brief_queue_batch_job,
             research_brief_queue_seed_job,
             research_brief_queue_runner_job,
             research_brief_playground_pack_job,
@@ -3826,6 +3961,7 @@ else:
     validation_plan_job = None
     validation_plan_library_job = None
     research_brief_queue_job = None
+    research_brief_queue_batch_job = None
     research_brief_queue_seed_job = None
     research_brief_queue_runner_job = None
     research_brief_playground_pack_job = None

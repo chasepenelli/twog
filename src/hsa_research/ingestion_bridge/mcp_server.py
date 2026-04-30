@@ -25,6 +25,7 @@ from .contracts import (
     HypothesisProposalRequest,
     ModelProfile,
     ResearchBriefEvaluationRequest,
+    ResearchBriefQueueBatchRequest,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
@@ -334,6 +335,49 @@ def queue_research_brief_tool(
         review_models=review_models or [],
     )
     return get_service().queue_research_brief(request).model_dump(mode="json")
+
+
+def queue_research_brief_batch_tool(
+    mode: str = "both",
+    lead_statuses: list[str] | None = None,
+    lead_types: list[str] | None = None,
+    source_keys: list[str] | None = None,
+    source_health_statuses: list[str] | None = None,
+    source_health_report: dict | None = None,
+    include_empty_sources: bool = False,
+    limit: int = 25,
+    disease_scope: str = "canine hemangiosarcoma and human angiosarcoma",
+    priority: int = 80,
+    max_chunks_per_perspective: int = 8,
+    max_claims: int = 12,
+    max_chunk_chars: int = 1800,
+    brief_style: str = "technical",
+    model_profile: str = "research_brief",
+    review_mode: str = "deterministic_only",
+    review_models: list[str] | None = None,
+) -> dict:
+    """Queue research brief requests from watchlist leads and source-health gaps."""
+
+    request = ResearchBriefQueueBatchRequest(
+        mode=mode,  # type: ignore[arg-type]
+        lead_statuses=lead_statuses or ["new", "watching"],  # type: ignore[arg-type]
+        lead_types=lead_types or [],  # type: ignore[arg-type]
+        source_keys=source_keys or [],
+        source_health_statuses=source_health_statuses or ["failing", "triage", "watch"],  # type: ignore[arg-type]
+        source_health_report=source_health_report,
+        include_empty_sources=include_empty_sources,
+        limit=limit,
+        disease_scope=disease_scope,
+        priority=priority,
+        max_chunks_per_perspective=max_chunks_per_perspective,
+        max_claims=max_claims,
+        max_chunk_chars=max_chunk_chars,
+        brief_style=brief_style,  # type: ignore[arg-type]
+        model_profile=model_profile,
+        review_mode=review_mode,  # type: ignore[arg-type]
+        review_models=review_models or [],
+    )
+    return get_service().queue_research_brief_batch(request).model_dump(mode="json")
 
 
 def get_research_brief_queue_item_tool(queue_item_id: str) -> dict:
@@ -992,6 +1036,48 @@ if mcp is not None:
             topic=topic,
             disease_scope=disease_scope,
             source_key=source_key,
+            priority=priority,
+            max_chunks_per_perspective=max_chunks_per_perspective,
+            max_claims=max_claims,
+            max_chunk_chars=max_chunk_chars,
+            brief_style=brief_style,
+            model_profile=model_profile,
+            review_mode=review_mode,
+            review_models=review_models,
+        )
+
+    @mcp.tool()
+    def queue_research_brief_batch(
+        mode: str = "both",
+        lead_statuses: list[str] | None = None,
+        lead_types: list[str] | None = None,
+        source_keys: list[str] | None = None,
+        source_health_statuses: list[str] | None = None,
+        source_health_report: dict | None = None,
+        include_empty_sources: bool = False,
+        limit: int = 25,
+        disease_scope: str = "canine hemangiosarcoma and human angiosarcoma",
+        priority: int = 80,
+        max_chunks_per_perspective: int = 8,
+        max_claims: int = 12,
+        max_chunk_chars: int = 1800,
+        brief_style: str = "technical",
+        model_profile: str = "research_brief",
+        review_mode: str = "deterministic_only",
+        review_models: list[str] | None = None,
+    ) -> dict:
+        """Queue research brief requests from watchlist leads and source-health gaps."""
+
+        return queue_research_brief_batch_tool(
+            mode=mode,
+            lead_statuses=lead_statuses,
+            lead_types=lead_types,
+            source_keys=source_keys,
+            source_health_statuses=source_health_statuses,
+            source_health_report=source_health_report,
+            include_empty_sources=include_empty_sources,
+            limit=limit,
+            disease_scope=disease_scope,
             priority=priority,
             max_chunks_per_perspective=max_chunks_per_perspective,
             max_claims=max_claims,

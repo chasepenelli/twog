@@ -247,6 +247,9 @@ ResearchBriefQueueStatus = Literal[
     "archived",
 ]
 
+ResearchBriefQueueBatchMode = Literal["research_leads", "source_health", "both"]
+SourceHealthStatus = Literal["healthy", "watch", "triage", "failing"]
+
 ResearchBriefEvaluationReadiness = Literal[
     "ready_for_hypothesis_review",
     "needs_more_evidence",
@@ -640,6 +643,47 @@ class ResearchBriefQueueRunResult(StrictBaseModel):
     ran: bool = False
     queue_item: ResearchBriefQueueItem | None = None
     brief: ResearchBriefResult | None = None
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ResearchBriefQueueBatchRequest(StrictBaseModel):
+    mode: ResearchBriefQueueBatchMode = "both"
+    lead_statuses: list[ResearchLeadStatus] = Field(default_factory=lambda: ["new", "watching"], max_length=10)
+    lead_types: list[ResearchLeadType] = Field(default_factory=list, max_length=10)
+    source_keys: list[str] = Field(default_factory=list, max_length=50)
+    source_health_statuses: list[SourceHealthStatus] = Field(
+        default_factory=lambda: ["failing", "triage", "watch"],
+        max_length=4,
+    )
+    source_health_report: dict[str, Any] | None = None
+    include_empty_sources: bool = False
+    limit: int = Field(default=25, ge=1, le=100)
+    disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
+    priority: int = Field(default=80, ge=0, le=1000)
+    max_chunks_per_perspective: int = Field(default=8, ge=1, le=25)
+    max_claims: int = Field(default=12, ge=0, le=50)
+    max_chunk_chars: int = Field(default=1800, ge=500, le=12000)
+    brief_style: Literal["technical", "operator", "substack", "vet_partner"] = "technical"
+    model_profile: str = "research_brief"
+    review_mode: Literal[
+        "external_required",
+        "openrouter_required",
+        "openrouter_compare",
+        "deterministic_only",
+    ] = "deterministic_only"
+    review_models: list[str] = Field(default_factory=list, max_length=10)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchBriefQueueBatchResult(StrictBaseModel):
+    mode: ResearchBriefQueueBatchMode = "both"
+    queued_count: int = 0
+    lead_count: int = 0
+    source_health_count: int = 0
+    skipped_count: int = 0
+    queue_items: list[ResearchBriefQueueItem] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
