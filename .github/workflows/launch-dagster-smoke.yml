@@ -23,6 +23,7 @@ on:
           - "literature_full_text_smoke_job"
           - "structured_source_count_report_job"
           - "source_health_report_job"
+          - "command_center_job"
           - "full_text_ops_agent_job"
           - "research_brief_agent_job"
           - "research_brief_library_job"
@@ -31,6 +32,7 @@ on:
           - "validation_plan_job"
           - "validation_plan_library_job"
           - "research_brief_queue_job"
+          - "research_brief_queue_batch_job"
           - "research_brief_queue_seed_job"
           - "research_brief_queue_runner_job"
           - "research_brief_playground_pack_job"
@@ -755,4 +757,47 @@ jobs:
             --sample-limit 2 \
             $claim_flags \
             --fail-on-failed-sources
+        shell: bash
+
+      - name: Print hosted command center report
+        if: ${{ always() && inputs.job == 'command_center_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+
+          from hsa_research.ingestion_bridge.contracts import CommandCenterRequest
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          report = HSAResearchService(build_research_repository()).build_command_center_report(
+              CommandCenterRequest(
+                  queue_limit=25,
+                  lead_limit=25,
+                  agent_run_limit=25,
+              )
+          ).model_dump(mode="json")
+          print(json.dumps(report, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              summary = report.get("summary", {})
+              recommendations = report.get("recommendations", [])
+              with open(summary_path, "a", encoding="utf-8") as handle:
+                  handle.write("### TWOG command center\n")
+                  handle.write(f"- Brief queue ready: `{summary.get('brief_queue_ready')}`\n")
+                  handle.write(f"- Brief queue failed: `{summary.get('brief_queue_failed')}`\n")
+                  handle.write(f"- Actionable research leads: `{summary.get('research_leads_actionable')}`\n")
+                  handle.write(f"- Recent agent failures: `{summary.get('recent_agent_failures')}`\n")
+                  handle.write(f"- Blocking recommendations: `{summary.get('blocking_recommendations')}`\n")
+                  handle.write("#### Recommendations\n")
+                  if not recommendations:
+                      handle.write("- None\n")
+                  for item in recommendations[:10]:
+                      handle.write(
+                          f"- `{item.get('severity')}` `{item.get('area')}`: "
+                          f"{item.get('action')} ({item.get('job_name') or 'no job'})\n"
+                      )
+          PY
         shell: bash
