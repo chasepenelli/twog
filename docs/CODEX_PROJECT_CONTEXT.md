@@ -119,11 +119,26 @@ The queue layer is also implemented:
 - Dagster `research_brief_queue_seed_job`
 - Dagster `research_brief_queue_runner_job`
 
+The synthesis evaluation layer is implemented:
+
+- `ResearchBriefEvaluationRequest`
+- `ResearchBriefEvaluationResult`
+- `ResearchBriefEvaluationRecord`
+- `research_brief_evaluations` table
+- Service methods to evaluate, fetch, and list brief evaluations
+- MCP tools/resources for persisted evaluations
+- CLI `evaluate-research-brief`
+- CLI `research-brief-evaluations`
+- Dagster `research_brief_evaluation_job`
+- Dagster `research_brief_evaluation_library_job`
+
 Manual queue flow:
 
 1. Use `research_brief_queue_seed_job` to queue a topic.
 2. Use `research_brief_queue_runner_job` to run the next queued topic.
 3. Use `research_brief_library_job` to confirm the persisted brief.
+4. Use `research_brief_evaluation_job` to score synthesis readiness before
+   promoting it into hypothesis review.
 
 ## Recent Commits
 
@@ -199,15 +214,13 @@ not modify it unless explicitly instructed.
 
 Good next lanes:
 
-1. Add a synthesis evaluation layer that scores generated briefs for citation
-   coverage, novelty, contradiction handling, and actionability.
-2. Add richer queue controls: requeue failed items, archive completed items,
+1. Add richer queue controls: requeue failed items, archive completed items,
    and queue batches from source health gaps or watchlist leads.
-3. Add a model comparison run path for one queued brief using OpenRouter with
+2. Add a model comparison run path for one queued brief using OpenRouter with
    controlled cost metadata.
-4. Add a small dashboard/control-panel view for brief queue, lead queue, and
+3. Add a small dashboard/control-panel view for brief queue, lead queue, and
    source health.
-5. Continue full-text parser hardening and source/date partition coverage.
+4. Continue full-text parser hardening and source/date partition coverage.
 
 Use deterministic mode for smoke tests and only enable OpenRouter-backed runs
 when the user explicitly approves model spend.

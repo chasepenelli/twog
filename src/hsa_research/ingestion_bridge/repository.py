@@ -29,6 +29,7 @@ from .contracts import (
     HypothesisDraft,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
+    ResearchBriefEvaluationRecord,
     ResearchBriefQueueItem,
     ResearchBriefRecord,
     ResearchLeadRecord,
@@ -219,6 +220,25 @@ class ResearchRepository(Protocol):
     ) -> list[ResearchBriefRecord]:
         """Return generated research briefs by durable filters."""
 
+    def upsert_research_brief_evaluation(
+        self,
+        record: ResearchBriefEvaluationRecord,
+    ) -> ResearchBriefEvaluationRecord:
+        """Persist a synthesis-quality evaluation for a generated brief."""
+
+    def get_research_brief_evaluation(self, evaluation_id: UUID) -> ResearchBriefEvaluationRecord | None:
+        """Return a generated research brief evaluation."""
+
+    def list_research_brief_evaluations(
+        self,
+        *,
+        brief_id: UUID | None = None,
+        readiness: str | None = None,
+        passes_quality_bar: bool | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchBriefEvaluationRecord]:
+        """Return generated research brief evaluations by durable filters."""
+
     def upsert_research_brief_queue_item(self, item: ResearchBriefQueueItem) -> ResearchBriefQueueItem:
         """Persist a queued research brief request."""
 
@@ -364,6 +384,7 @@ class InMemoryResearchRepository:
         self.source_followups: dict[UUID, SourceFollowupQueueItem] = {}
         self.research_leads: dict[UUID, ResearchLeadRecord] = {}
         self.research_briefs: dict[UUID, ResearchBriefRecord] = {}
+        self.research_brief_evaluations: dict[UUID, ResearchBriefEvaluationRecord] = {}
         self.research_brief_queue: dict[UUID, ResearchBriefQueueItem] = {}
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
         self.agent_runs: dict[UUID, AgentRunRecord] = {}
@@ -880,6 +901,34 @@ class InMemoryResearchRepository:
                 for record in records
                 if normalized in record.topic.lower() or normalized in record.disease_scope.lower()
             ]
+        records.sort(key=lambda record: record.created_at, reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def upsert_research_brief_evaluation(
+        self,
+        record: ResearchBriefEvaluationRecord,
+    ) -> ResearchBriefEvaluationRecord:
+        self.research_brief_evaluations[record.evaluation_id] = record
+        return record
+
+    def get_research_brief_evaluation(self, evaluation_id: UUID) -> ResearchBriefEvaluationRecord | None:
+        return self.research_brief_evaluations.get(evaluation_id)
+
+    def list_research_brief_evaluations(
+        self,
+        *,
+        brief_id: UUID | None = None,
+        readiness: str | None = None,
+        passes_quality_bar: bool | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchBriefEvaluationRecord]:
+        records = list(self.research_brief_evaluations.values())
+        if brief_id:
+            records = [record for record in records if record.brief_id == brief_id]
+        if readiness:
+            records = [record for record in records if record.readiness == readiness]
+        if passes_quality_bar is not None:
+            records = [record for record in records if record.passes_quality_bar == passes_quality_bar]
         records.sort(key=lambda record: record.created_at, reverse=True)
         return records[:limit] if limit is not None else records
 

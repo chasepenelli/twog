@@ -35,6 +35,9 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchObjectType,
     ResearchObjectReadRequest,
     ResearchBriefCitation,
+    ResearchBriefEvaluationRecord,
+    ResearchBriefEvaluationRequest,
+    ResearchBriefEvaluationResult,
     ResearchBriefFinding,
     ResearchBriefPerspectiveReport,
     ResearchBriefQueueItem,
@@ -583,6 +586,59 @@ def test_dagster_full_text_ops_asset_uses_injected_repository(monkeypatch):
     assert calls == ["build_repository"]
     assert result.value["agent_name"] == "full_text_ops_agent"
     assert result.metadata["action_count"] == 1
+
+
+def test_dagster_research_brief_evaluation_asset_uses_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+    brief_id = uuid4()
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    class FakeService:
+        def __init__(self, repository):
+            assert repository is sentinel_repository
+
+        def evaluate_research_brief(self, request):
+            assert isinstance(request, ResearchBriefEvaluationRequest)
+            assert request.brief_id == brief_id
+            return ResearchBriefEvaluationResult(
+                brief_id=brief_id,
+                agent_run_id=uuid4(),
+                topic="VEGF therapy",
+                source_key="pubmed",
+                overall_score=0.82,
+                citation_coverage_score=0.8,
+                perspective_balance_score=0.8,
+                contradiction_handling_score=0.8,
+                novelty_score=0.8,
+                actionability_score=0.8,
+                weakness_transparency_score=0.8,
+                passes_quality_bar=True,
+                readiness="ready_for_hypothesis_review",
+                recommendations=["Promote this brief."],
+            )
+
+    monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
+
+    result = dagster_asset_module.research_brief_evaluation_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "brief_id": str(brief_id),
+                "limit": 1,
+                "minimum_overall_score": 0.7,
+            },
+            run_id="dagster-test-run",
+        ),
+        FakeRepositoryResource(),
+    )
+
+    assert calls == ["build_repository"]
+    assert result.value["brief_id"] == str(brief_id)
+    assert result.metadata["readiness"] == "ready_for_hypothesis_review"
 
 
 def test_dagster_source_health_report_lives_in_control_panel_group():
@@ -2217,6 +2273,53 @@ def test_research_brief_contracts_require_known_citations():
         )
 
 
+def test_research_brief_evaluation_contract_rejects_invalid_values():
+    result = ResearchBriefEvaluationResult(
+        brief_id=uuid4(),
+        topic="VEGF therapy",
+        overall_score=0.8,
+        citation_coverage_score=0.8,
+        perspective_balance_score=0.8,
+        contradiction_handling_score=0.8,
+        novelty_score=0.8,
+        actionability_score=0.8,
+        weakness_transparency_score=0.8,
+        passes_quality_bar=True,
+        readiness="ready_for_hypothesis_review",
+    )
+    record = ResearchBriefEvaluationRecord(
+        evaluation_id=result.evaluation_id,
+        brief_id=result.brief_id,
+        topic=result.topic,
+        overall_score=result.overall_score,
+        passes_quality_bar=result.passes_quality_bar,
+        readiness=result.readiness,
+        result_payload=result.model_dump(mode="json"),
+    )
+
+    assert record.readiness == "ready_for_hypothesis_review"
+    with pytest.raises(ValueError):
+        ResearchBriefEvaluationResult(
+            brief_id=uuid4(),
+            topic="VEGF therapy",
+            overall_score=1.2,
+            citation_coverage_score=0.8,
+            perspective_balance_score=0.8,
+            contradiction_handling_score=0.8,
+            novelty_score=0.8,
+            actionability_score=0.8,
+            weakness_transparency_score=0.8,
+            readiness="ready_for_hypothesis_review",
+        )
+    with pytest.raises(ValueError):
+        ResearchBriefEvaluationRecord(
+            brief_id=uuid4(),
+            topic="VEGF therapy",
+            overall_score=0.5,
+            readiness="not_real",
+        )
+
+
 def test_research_brief_repository_roundtrip_sqlite_and_memory(tmp_path):
     for repo in (
         SQLiteResearchRepository(tmp_path / "research-brief-ledger.sqlite3", seed=False),
@@ -2247,6 +2350,39 @@ def test_research_brief_repository_roundtrip_sqlite_and_memory(tmp_path):
         assert fetched.result_payload["final_brief"] == "Stored synthesis [C1]."
         assert listed[0].brief_id == saved.brief_id
         assert repo.list_research_briefs(status="archived") == []
+
+
+def test_research_brief_evaluation_repository_roundtrip_sqlite_and_memory(tmp_path):
+    for repo in (
+        SQLiteResearchRepository(tmp_path / "research-brief-evaluations.sqlite3", seed=False),
+        InMemoryResearchRepository(),
+    ):
+        brief_id = uuid4()
+        evaluation = ResearchBriefEvaluationRecord(
+            brief_id=brief_id,
+            agent_run_id=uuid4(),
+            topic="VEGF therapy in canine hemangiosarcoma",
+            source_key="pubmed",
+            overall_score=0.82,
+            passes_quality_bar=True,
+            readiness="ready_for_hypothesis_review",
+            summary={"overall_score": 0.82},
+            result_payload={"overall_score": 0.82, "recommendations": ["Promote."]},
+        )
+
+        saved = repo.upsert_research_brief_evaluation(evaluation)
+        fetched = repo.get_research_brief_evaluation(saved.evaluation_id)
+        listed = repo.list_research_brief_evaluations(
+            brief_id=brief_id,
+            readiness="ready_for_hypothesis_review",
+            passes_quality_bar=True,
+        )
+
+        assert fetched is not None
+        assert fetched.evaluation_id == saved.evaluation_id
+        assert fetched.result_payload["overall_score"] == 0.82
+        assert listed[0].evaluation_id == saved.evaluation_id
+        assert repo.list_research_brief_evaluations(passes_quality_bar=False) == []
 
 
 def test_research_brief_queue_contract_and_repository_roundtrip(tmp_path):
@@ -2370,6 +2506,99 @@ def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
         "skeptic_validation_agent",
         "research_synthesis_editor_agent",
     }
+
+
+def test_research_brief_evaluation_service_persists_ready_result(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-evaluation.sqlite3", seed=False)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:evaluation-brief",
+            content_hash="evaluation-brief-raw",
+            source_url="https://pubmed.ncbi.nlm.nih.gov/evaluation-brief/",
+            raw_payload={"pmid": "evaluation-brief"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="VEGF therapy and translational validation in hemangiosarcoma",
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            canonical_url="https://pubmed.ncbi.nlm.nih.gov/evaluation-brief/",
+            dedupe_key="pmid:evaluation-brief",
+            identifiers={"pmid": "evaluation-brief"},
+        ),
+        raw_record_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "Canine hemangiosarcoma and human angiosarcoma share vascular biology. "
+                "VEGF therapy, biomarker validation, species mismatch, toxicity, clinical "
+                "translation, and target selection are all discussed as research needs."
+            ),
+            content_hash="evaluation-brief-chunk",
+        )
+    )
+    service = HSAResearchService(repo)
+    brief = service.run_research_brief(
+        ResearchBriefRequest(
+            topic="VEGF therapy in canine hemangiosarcoma",
+            review_mode="deterministic_only",
+            max_chunks_per_perspective=3,
+            max_claims=0,
+        )
+    )
+
+    result = service.evaluate_research_brief(
+        ResearchBriefEvaluationRequest(brief_id=brief.brief_id)
+    )
+    saved = repo.get_research_brief_evaluation(result.evaluation_id)
+    runs = repo.list_agent_runs(agent_name="research_brief_synthesis_evaluator_agent", status="completed")
+
+    assert result.readiness == "ready_for_hypothesis_review"
+    assert result.passes_quality_bar is True
+    assert result.overall_score >= 0.7
+    assert result.agent_run_id is not None
+    assert saved is not None
+    assert saved.brief_id == brief.brief_id
+    assert runs[0].output_payload["evaluation_id"] == str(result.evaluation_id)
+
+
+def test_research_brief_evaluation_service_blocks_uncited_record(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-evaluation-blocked.sqlite3", seed=False)
+    record = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            topic="VEGF therapy in canine hemangiosarcoma",
+            disease_scope="canine hemangiosarcoma",
+            source_key="pubmed",
+            review_mode="deterministic_only",
+            final_brief="Stored synthesis without citations.",
+            result_payload={
+                "topic": "VEGF therapy in canine hemangiosarcoma",
+                "disease_scope": "canine hemangiosarcoma",
+                "final_brief": "Stored synthesis without citations.",
+                "citations": [],
+                "perspective_reports": [],
+                "ranked_hypotheses": [],
+                "unresolved_questions": [],
+                "evidence": {},
+                "errors": [],
+            },
+        )
+    )
+
+    result = HSAResearchService(repo).evaluate_research_brief(
+        ResearchBriefEvaluationRequest(brief_id=record.brief_id)
+    )
+
+    assert result.readiness == "blocked"
+    assert result.passes_quality_bar is False
+    assert result.citation_coverage_score == 0.0
 
 
 def test_research_brief_queue_runner_persists_brief_and_updates_queue(tmp_path):
@@ -5602,6 +5831,41 @@ def test_mcp_research_brief_tools_dump_json_safe_payloads(monkeypatch, tmp_path)
     assert listed[0]["brief_id"] == str(record.brief_id)
 
 
+def test_mcp_research_brief_evaluation_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "mcp-research-brief-evaluations.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    monkeypatch.setattr(mcp_server, "get_service", lambda: service)
+    record = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            topic="VEGF therapy in canine hemangiosarcoma",
+            disease_scope="canine hemangiosarcoma",
+            source_key="pubmed",
+            review_mode="deterministic_only",
+            final_brief="Stored synthesis without citations.",
+            result_payload={
+                "topic": "VEGF therapy in canine hemangiosarcoma",
+                "disease_scope": "canine hemangiosarcoma",
+                "final_brief": "Stored synthesis without citations.",
+                "citations": [],
+                "perspective_reports": [],
+                "ranked_hypotheses": [],
+                "unresolved_questions": [],
+                "evidence": {},
+                "errors": [],
+            },
+        )
+    )
+
+    evaluated = mcp_server.evaluate_research_brief_tool(brief_id=str(record.brief_id))
+    fetched = mcp_server.get_research_brief_evaluation_tool(evaluated["evaluation_id"])
+    listed = mcp_server.list_research_brief_evaluations_tool(readiness="blocked")
+
+    assert evaluated["brief_id"] == str(record.brief_id)
+    assert evaluated["readiness"] == "blocked"
+    assert fetched["evaluation_id"] == evaluated["evaluation_id"]
+    assert listed[0]["evaluation_id"] == evaluated["evaluation_id"]
+
+
 def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "mcp-research-brief-queue.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -7097,6 +7361,8 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.unpaywall_source_followup_ingest_job is not None
     assert dagster_asset_module.research_brief_agent_job is not None
     assert dagster_asset_module.research_brief_library_job is not None
+    assert dagster_asset_module.research_brief_evaluation_job is not None
+    assert dagster_asset_module.research_brief_evaluation_library_job is not None
     assert dagster_asset_module.research_brief_queue_job is not None
     assert dagster_asset_module.research_brief_queue_seed_job is not None
     assert dagster_asset_module.research_brief_queue_runner_job is not None

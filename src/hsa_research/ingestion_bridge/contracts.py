@@ -247,6 +247,13 @@ ResearchBriefQueueStatus = Literal[
     "archived",
 ]
 
+ResearchBriefEvaluationReadiness = Literal[
+    "ready_for_hypothesis_review",
+    "needs_more_evidence",
+    "needs_human_review",
+    "blocked",
+]
+
 
 class AgentRunRecord(StrictBaseModel):
     agent_run_id: UUID = Field(default_factory=uuid4)
@@ -630,6 +637,60 @@ class ResearchBriefPlaygroundPack(StrictBaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ResearchBriefEvaluationRequest(StrictBaseModel):
+    brief_id: UUID | None = None
+    topic_query: str | None = None
+    source_key: str | None = None
+    limit: int = Field(default=1, ge=1, le=50)
+    minimum_overall_score: float = Field(default=0.7, ge=0.0, le=1.0)
+    model_profile: str = "synthesis_quality_evaluator"
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchBriefEvaluationResult(StrictBaseModel):
+    evaluation_id: UUID = Field(default_factory=uuid4)
+    brief_id: UUID
+    agent_run_id: UUID | None = None
+    agent_name: str = "research_brief_synthesis_evaluator_agent"
+    model_profile: str = "synthesis_quality_evaluator"
+    topic: str
+    source_key: str | None = None
+    overall_score: float = Field(ge=0.0, le=1.0)
+    citation_coverage_score: float = Field(ge=0.0, le=1.0)
+    perspective_balance_score: float = Field(ge=0.0, le=1.0)
+    contradiction_handling_score: float = Field(ge=0.0, le=1.0)
+    novelty_score: float = Field(ge=0.0, le=1.0)
+    actionability_score: float = Field(ge=0.0, le=1.0)
+    weakness_transparency_score: float = Field(ge=0.0, le=1.0)
+    passes_quality_bar: bool = False
+    readiness: ResearchBriefEvaluationReadiness = "needs_more_evidence"
+    strengths: list[str] = Field(default_factory=list, max_length=20)
+    weaknesses: list[str] = Field(default_factory=list, max_length=20)
+    recommendations: list[str] = Field(default_factory=list, max_length=20)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ResearchBriefEvaluationRecord(StrictBaseModel):
+    evaluation_id: UUID = Field(default_factory=uuid4)
+    brief_id: UUID
+    agent_run_id: UUID | None = None
+    topic: str
+    source_key: str | None = None
+    model_profile: str = "synthesis_quality_evaluator"
+    overall_score: float = Field(ge=0.0, le=1.0)
+    passes_quality_bar: bool = False
+    readiness: ResearchBriefEvaluationReadiness = "needs_more_evidence"
+    summary: dict[str, Any] = Field(default_factory=dict)
+    result_payload: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class XTopicLinkedSource(StrictBaseModel):

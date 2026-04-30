@@ -33,6 +33,7 @@ from .contracts import (
     RawSourceRecord,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
+    ResearchBriefEvaluationRecord,
     ResearchBriefQueueItem,
     ResearchBriefRecord,
     ResearchLeadRecord,
@@ -1578,6 +1579,89 @@ class SQLiteResearchRepository(ResearchRepository):
             for row in self.conn.execute(sql, params).fetchall()
         ]
 
+    def upsert_research_brief_evaluation(
+        self,
+        record: ResearchBriefEvaluationRecord,
+    ) -> ResearchBriefEvaluationRecord:
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into research_brief_evaluations (
+              evaluation_id, brief_id, agent_run_id, topic, source_key,
+              model_profile, overall_score, passes_quality_bar, readiness,
+              created_at, updated_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(evaluation_id) do update set
+              brief_id = excluded.brief_id,
+              agent_run_id = excluded.agent_run_id,
+              topic = excluded.topic,
+              source_key = excluded.source_key,
+              model_profile = excluded.model_profile,
+              overall_score = excluded.overall_score,
+              passes_quality_bar = excluded.passes_quality_bar,
+              readiness = excluded.readiness,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(record.evaluation_id),
+                str(record.brief_id),
+                str(record.agent_run_id) if record.agent_run_id else None,
+                record.topic,
+                record.source_key,
+                record.model_profile,
+                record.overall_score,
+                1 if record.passes_quality_bar else 0,
+                record.readiness,
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_research_brief_evaluation(self, evaluation_id: UUID) -> ResearchBriefEvaluationRecord | None:
+        row = self.conn.execute(
+            "select payload from research_brief_evaluations where evaluation_id = ?",
+            (str(evaluation_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return ResearchBriefEvaluationRecord.model_validate(json.loads(row["payload"]))
+
+    def list_research_brief_evaluations(
+        self,
+        *,
+        brief_id: UUID | None = None,
+        readiness: str | None = None,
+        passes_quality_bar: bool | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchBriefEvaluationRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if brief_id:
+            clauses.append("brief_id = ?")
+            params.append(str(brief_id))
+        if readiness:
+            clauses.append("readiness = ?")
+            params.append(readiness)
+        if passes_quality_bar is not None:
+            clauses.append("passes_quality_bar = ?")
+            params.append(1 if passes_quality_bar else 0)
+        sql = "select payload from research_brief_evaluations"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by created_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            ResearchBriefEvaluationRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
     def upsert_research_brief_queue_item(self, item: ResearchBriefQueueItem) -> ResearchBriefQueueItem:
         existing = self.conn.execute(
             "select payload from research_brief_queue where identity_key = ?",
@@ -2653,6 +2737,28 @@ class SQLiteResearchRepository(ResearchRepository):
               on research_briefs(source_key, created_at desc);
             create index if not exists research_briefs_topic_idx
               on research_briefs(topic, created_at desc);
+
+            create table if not exists research_brief_evaluations (
+              evaluation_id text primary key,
+              brief_id text not null,
+              agent_run_id text,
+              topic text not null,
+              source_key text,
+              model_profile text not null,
+              overall_score real not null,
+              passes_quality_bar integer not null default 0,
+              readiness text not null,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp
+            );
+
+            create index if not exists research_brief_evaluations_brief_idx
+              on research_brief_evaluations(brief_id, created_at desc);
+            create index if not exists research_brief_evaluations_readiness_idx
+              on research_brief_evaluations(readiness, created_at desc);
+            create index if not exists research_brief_evaluations_quality_idx
+              on research_brief_evaluations(passes_quality_bar, overall_score desc);
 
             create table if not exists research_brief_queue (
               queue_item_id text primary key,

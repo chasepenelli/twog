@@ -31,6 +31,9 @@ from .contracts import (
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
+    ResearchBriefEvaluationRecord,
+    ResearchBriefEvaluationRequest,
+    ResearchBriefEvaluationResult,
     ResearchBriefQueueItem,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
@@ -78,6 +81,12 @@ from .research_brief_agent import (
     summarize_perspective_report,
     summarize_research_brief,
 )
+from .research_brief_evaluation import (
+    RESEARCH_BRIEF_EVALUATION_AGENT_NAME,
+    RESEARCH_BRIEF_EVALUATION_AGENT_VERSION,
+    evaluate_research_brief_synthesis,
+    summarize_research_brief_evaluation,
+)
 from .repository import ResearchRepository
 from .research_leads import collect_research_leads_from_agent_runs, persist_research_leads_from_agent_result
 from .source_scout import SourceScoutAgent
@@ -116,6 +125,11 @@ DEFAULT_MODEL_PROFILES: dict[str, ModelProfile] = {
         provider="other",
         model_name="openrouter:~anthropic/claude-sonnet-latest",
         purpose="Citation-first multi-perspective research briefs",
+    ),
+    "synthesis_quality_evaluator": ModelProfile(
+        profile_key="synthesis_quality_evaluator",
+        provider="local",
+        purpose="Reproducible quality review for generated research briefs",
     ),
 }
 
@@ -284,6 +298,49 @@ class HSAResearchService:
             status=status,
             source_key=source_key,
             topic_query=topic_query,
+            limit=limit,
+        )
+
+    def evaluate_research_brief(self, request: ResearchBriefEvaluationRequest) -> ResearchBriefEvaluationResult:
+        brief = _select_brief_for_evaluation(self.repository, request)
+        if brief is None:
+            raise ValueError("No persisted research brief matched the evaluation request.")
+        result = AgentRunner(self.repository).run(
+            agent_name=RESEARCH_BRIEF_EVALUATION_AGENT_NAME,
+            agent_version=RESEARCH_BRIEF_EVALUATION_AGENT_VERSION,
+            model_profile=request.model_profile,
+            input_payload={
+                "request": request.model_dump(mode="json"),
+                "brief_id": str(brief.brief_id),
+                "topic": brief.topic,
+                "source_key": brief.source_key,
+            },
+            execute=lambda: evaluate_research_brief_synthesis(brief, request),
+            source_key=brief.source_key,
+            dagster_run_id=request.dagster_run_id,
+            metadata=request.metadata,
+            summarize=summarize_research_brief_evaluation,
+        )
+        self.repository.upsert_research_brief_evaluation(
+            _research_brief_evaluation_record_from_result(result, request)
+        )
+        return result
+
+    def get_research_brief_evaluation(self, evaluation_id: UUID) -> ResearchBriefEvaluationRecord | None:
+        return self.repository.get_research_brief_evaluation(evaluation_id)
+
+    def list_research_brief_evaluations(
+        self,
+        *,
+        brief_id: UUID | None = None,
+        readiness: str | None = None,
+        passes_quality_bar: bool | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchBriefEvaluationRecord]:
+        return self.repository.list_research_brief_evaluations(
+            brief_id=brief_id,
+            readiness=readiness,
+            passes_quality_bar=passes_quality_bar,
             limit=limit,
         )
 
@@ -845,6 +902,46 @@ def _research_brief_record_from_result(
         error_count=len(result.errors),
         metadata={key: value for key, value in metadata.items() if value not in (None, [], {})},
     )
+
+
+def _research_brief_evaluation_record_from_result(
+    result: ResearchBriefEvaluationResult,
+    request: ResearchBriefEvaluationRequest,
+) -> ResearchBriefEvaluationRecord:
+    return ResearchBriefEvaluationRecord(
+        evaluation_id=result.evaluation_id,
+        brief_id=result.brief_id,
+        agent_run_id=result.agent_run_id,
+        topic=result.topic,
+        source_key=result.source_key,
+        model_profile=result.model_profile,
+        overall_score=result.overall_score,
+        passes_quality_bar=result.passes_quality_bar,
+        readiness=result.readiness,
+        summary=summarize_research_brief_evaluation(result),
+        result_payload=result.model_dump(mode="json"),
+        errors=result.errors,
+        created_at=result.created_at,
+        metadata={
+            **request.metadata,
+            "minimum_overall_score": request.minimum_overall_score,
+        },
+    )
+
+
+def _select_brief_for_evaluation(
+    repository: ResearchRepository,
+    request: ResearchBriefEvaluationRequest,
+) -> ResearchBriefRecord | None:
+    if request.brief_id is not None:
+        return repository.get_research_brief(request.brief_id)
+    candidates = repository.list_research_briefs(
+        status="completed",
+        source_key=request.source_key,
+        topic_query=request.topic_query,
+        limit=request.limit,
+    )
+    return candidates[0] if candidates else None
 
 
 def _brief_request_from_queue_item(

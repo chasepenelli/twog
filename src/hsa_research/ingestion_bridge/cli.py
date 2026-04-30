@@ -20,6 +20,7 @@ from .contracts import (
     EntityResolutionRequest,
     FullTextTriageRequest,
     FullTextOpsRequest,
+    ResearchBriefEvaluationRequest,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
@@ -547,6 +548,46 @@ def main() -> None:
     agent_runs.add_argument("--status", default=None, help="Optional status filter")
     agent_runs.add_argument("--source", default=None, help="Optional source key filter")
     agent_runs.add_argument("--limit", type=int, default=50, help="Maximum runs to return")
+
+    evaluate_research_brief = subparsers.add_parser(
+        "evaluate-research-brief",
+        help="Evaluate persisted research brief synthesis quality",
+    )
+    evaluate_research_brief.add_argument("--brief-id", default=None, help="Specific brief_id to evaluate")
+    evaluate_research_brief.add_argument("--topic-query", default=None, help="Latest completed brief topic search")
+    evaluate_research_brief.add_argument("--source", default=None, help="Optional source key filter")
+    evaluate_research_brief.add_argument(
+        "--limit",
+        type=int,
+        default=1,
+        help="Candidate brief search limit when --brief-id is omitted",
+    )
+    evaluate_research_brief.add_argument(
+        "--minimum-overall-score",
+        type=float,
+        default=0.7,
+        help="Minimum weighted score required to pass the quality bar",
+    )
+    evaluate_research_brief.add_argument(
+        "--model-profile",
+        default="synthesis_quality_evaluator",
+        help="Evaluator model/profile label recorded in the ledger",
+    )
+
+    research_brief_evaluations = subparsers.add_parser(
+        "research-brief-evaluations",
+        help="List or fetch persisted research brief evaluations",
+    )
+    research_brief_evaluations.add_argument("--id", default=None, help="Optional evaluation_id to fetch")
+    research_brief_evaluations.add_argument("--brief-id", default=None, help="Optional brief_id filter")
+    research_brief_evaluations.add_argument("--readiness", default=None, help="Optional readiness filter")
+    research_brief_evaluations.add_argument(
+        "--passes-quality-bar",
+        choices=["true", "false"],
+        default=None,
+        help="Optional pass/fail quality-bar filter",
+    )
+    research_brief_evaluations.add_argument("--limit", type=int, default=50, help="Maximum evaluations to return")
 
     model_review_summary = subparsers.add_parser(
         "model-review-summary",
@@ -1090,6 +1131,35 @@ def main() -> None:
                     agent_name=args.agent_name,
                     status=args.status,
                     source_key=args.source,
+                    limit=args.limit,
+                )
+            ]
+    elif args.command == "evaluate-research-brief":
+        output = HSAResearchService(repo).evaluate_research_brief(
+            ResearchBriefEvaluationRequest(
+                brief_id=UUID(args.brief_id) if args.brief_id else None,
+                topic_query=args.topic_query,
+                source_key=args.source,
+                limit=args.limit,
+                minimum_overall_score=args.minimum_overall_score,
+                model_profile=args.model_profile,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "research-brief-evaluations":
+        service = HSAResearchService(repo)
+        if args.id:
+            record = service.get_research_brief_evaluation(UUID(args.id))
+            output = {} if record is None else record.model_dump(mode="json")
+        else:
+            passes_quality_bar = None
+            if args.passes_quality_bar is not None:
+                passes_quality_bar = args.passes_quality_bar == "true"
+            output = [
+                evaluation.model_dump(mode="json")
+                for evaluation in service.list_research_brief_evaluations(
+                    brief_id=UUID(args.brief_id) if args.brief_id else None,
+                    readiness=args.readiness,
+                    passes_quality_bar=passes_quality_bar,
                     limit=args.limit,
                 )
             ]

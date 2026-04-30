@@ -17,6 +17,7 @@ from .contracts import (
     ClaimCurationRequest,
     ClaimSearchRequest,
     FullTextOpsRequest,
+    ResearchBriefEvaluationRequest,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
@@ -170,6 +171,19 @@ _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS = (
     "finding_count",
     "citation_count",
     "research_lead_count",
+    "error_count",
+    "created_at",
+)
+_RESEARCH_BRIEF_EVALUATION_TABLE_COLUMNS = (
+    "evaluation_id",
+    "brief_id",
+    "agent_run_id",
+    "topic",
+    "source_key",
+    "overall_score",
+    "passes_quality_bar",
+    "readiness",
+    "recommendation_count",
     "error_count",
     "created_at",
 )
@@ -577,6 +591,37 @@ if dg is not None:
             "source_key": report.get("source_key"),
             "topic_query": report.get("topic_query"),
             "briefs": _metadata_table(rows, _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS),
+        }
+
+    def _research_brief_evaluation_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        scores = report.get("scores", {})
+        return {
+            "evaluation_id": report.get("evaluation_id"),
+            "brief_id": report.get("brief_id"),
+            "agent_run_id": report.get("agent_run_id"),
+            "topic": report.get("topic"),
+            "source_key": report.get("source_key"),
+            "overall_score": float(report.get("overall_score", 0.0)),
+            "passes_quality_bar": bool(report.get("passes_quality_bar", False)),
+            "readiness": report.get("readiness"),
+            "recommendation_count": len(report.get("recommendations", [])),
+            "error_count": len(report.get("errors", [])),
+            "scores": dg.MetadataValue.json(scores),
+            "evidence": dg.MetadataValue.json(report.get("evidence", {})),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "strengths": dg.MetadataValue.json(report.get("strengths", [])),
+            "weaknesses": dg.MetadataValue.json(report.get("weaknesses", [])),
+            "recommendations": dg.MetadataValue.json(report.get("recommendations", [])),
+        }
+
+    def _research_brief_evaluation_library_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = report.get("evaluations", [])
+        return {
+            "evaluation_count": dg.MetadataValue.int(int(report.get("evaluation_count", 0))),
+            "brief_id": report.get("brief_id"),
+            "readiness": report.get("readiness"),
+            "passes_quality_bar": report.get("passes_quality_bar"),
+            "evaluations": _metadata_table(rows, _RESEARCH_BRIEF_EVALUATION_TABLE_COLUMNS),
         }
 
     def _research_brief_queue_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -1723,6 +1768,136 @@ if dg is not None:
         return dg.MaterializeResult(
             value=report,
             metadata=_research_brief_library_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "brief_id": dg.Field(
+                str,
+                is_required=False,
+                description="Specific persisted brief ID to evaluate.",
+            ),
+            "topic_query": dg.Field(
+                str,
+                is_required=False,
+                description="Latest completed brief topic/scope search when brief_id is omitted.",
+            ),
+            "source_key": dg.Field(
+                str,
+                is_required=False,
+                description="Optional source key filter when brief_id is omitted.",
+            ),
+            "limit": dg.Field(
+                int,
+                default_value=1,
+                description="Candidate brief search limit when brief_id is omitted.",
+            ),
+            "minimum_overall_score": dg.Field(
+                float,
+                default_value=0.7,
+                description="Minimum weighted score required to pass the synthesis quality bar.",
+            ),
+        },
+    )
+    def research_brief_evaluation_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual synthesis-quality evaluation for a persisted research brief."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).evaluate_research_brief(
+            ResearchBriefEvaluationRequest(
+                brief_id=UUID(config["brief_id"]) if config.get("brief_id") else None,
+                topic_query=config.get("topic_query"),
+                source_key=config.get("source_key"),
+                limit=config["limit"],
+                minimum_overall_score=config["minimum_overall_score"],
+                dagster_run_id=context.run_id,
+            )
+        )
+        report = result.model_dump(mode="json")
+        report["scores"] = {
+            "citation_coverage": report.get("citation_coverage_score"),
+            "perspective_balance": report.get("perspective_balance_score"),
+            "contradiction_handling": report.get("contradiction_handling_score"),
+            "novelty": report.get("novelty_score"),
+            "actionability": report.get("actionability_score"),
+            "weakness_transparency": report.get("weakness_transparency_score"),
+        }
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_research_brief_evaluation_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "brief_id": dg.Field(str, is_required=False, description="Optional brief ID filter."),
+            "readiness": dg.Field(str, is_required=False, description="Optional readiness filter."),
+            "passes_quality_bar": dg.Field(
+                bool,
+                is_required=False,
+                description="Optional quality-bar pass/fail filter.",
+            ),
+            "limit": dg.Field(
+                int,
+                default_value=50,
+                description="Maximum persisted evaluations to show.",
+            ),
+        },
+    )
+    def research_brief_evaluation_library_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Control-panel view of persisted research brief synthesis evaluations."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        service = HSAResearchService(repository)
+        evaluations = service.list_research_brief_evaluations(
+            brief_id=UUID(config["brief_id"]) if config.get("brief_id") else None,
+            readiness=config.get("readiness"),
+            passes_quality_bar=config.get("passes_quality_bar"),
+            limit=config["limit"],
+        )
+        rows = [
+            {
+                "evaluation_id": str(record.evaluation_id),
+                "brief_id": str(record.brief_id),
+                "agent_run_id": str(record.agent_run_id) if record.agent_run_id else None,
+                "topic": record.topic[:300],
+                "source_key": record.source_key,
+                "overall_score": record.overall_score,
+                "passes_quality_bar": record.passes_quality_bar,
+                "readiness": record.readiness,
+                "recommendation_count": len((record.result_payload or {}).get("recommendations", [])),
+                "error_count": len(record.errors),
+                "created_at": record.created_at.isoformat(),
+            }
+            for record in evaluations
+        ]
+        report = {
+            "evaluation_count": len(evaluations),
+            "brief_id": config.get("brief_id"),
+            "readiness": config.get("readiness"),
+            "passes_quality_bar": config.get("passes_quality_bar"),
+            "evaluations": rows,
+        }
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_research_brief_evaluation_library_metadata(report),
         )
 
     @dg.asset(
@@ -3030,6 +3205,8 @@ if dg is not None:
         full_text_ops_agent_report,
         research_brief_agent_report,
         research_brief_library_report,
+        research_brief_evaluation_report,
+        research_brief_evaluation_library_report,
         research_brief_queue_report,
         research_brief_queue_seed_report,
         research_brief_queue_runner_report,
@@ -3129,6 +3306,14 @@ if dg is not None:
     research_brief_library_job = dg.define_asset_job(
         "research_brief_library_job",
         selection=dg.AssetSelection.assets(research_brief_library_report),
+    )
+    research_brief_evaluation_job = dg.define_asset_job(
+        "research_brief_evaluation_job",
+        selection=dg.AssetSelection.assets(research_brief_evaluation_report),
+    )
+    research_brief_evaluation_library_job = dg.define_asset_job(
+        "research_brief_evaluation_library_job",
+        selection=dg.AssetSelection.assets(research_brief_evaluation_library_report),
     )
     research_brief_queue_job = dg.define_asset_job(
         "research_brief_queue_job",
@@ -3361,6 +3546,8 @@ if dg is not None:
             full_text_ops_agent_job,
             research_brief_agent_job,
             research_brief_library_job,
+            research_brief_evaluation_job,
+            research_brief_evaluation_library_job,
             research_brief_queue_job,
             research_brief_queue_seed_job,
             research_brief_queue_runner_job,
@@ -3425,6 +3612,8 @@ else:
     full_text_ops_agent_job = None
     research_brief_agent_job = None
     research_brief_library_job = None
+    research_brief_evaluation_job = None
+    research_brief_evaluation_library_job = None
     research_brief_queue_job = None
     research_brief_queue_seed_job = None
     research_brief_queue_runner_job = None

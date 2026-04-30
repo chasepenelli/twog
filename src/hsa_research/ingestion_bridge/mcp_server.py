@@ -24,6 +24,7 @@ from .contracts import (
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
+    ResearchBriefEvaluationRequest,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
@@ -200,6 +201,53 @@ def list_research_briefs_tool(
             status=status,
             source_key=source_key,
             topic_query=topic_query,
+            limit=limit,
+        )
+    ]
+
+
+def evaluate_research_brief_tool(
+    brief_id: str | None = None,
+    topic_query: str | None = None,
+    source_key: str | None = None,
+    limit: int = 1,
+    minimum_overall_score: float = 0.7,
+    model_profile: str = "synthesis_quality_evaluator",
+) -> dict:
+    """Evaluate persisted research brief synthesis quality."""
+
+    request = ResearchBriefEvaluationRequest(
+        brief_id=UUID(brief_id) if brief_id else None,
+        topic_query=topic_query,
+        source_key=source_key,
+        limit=limit,
+        minimum_overall_score=minimum_overall_score,
+        model_profile=model_profile,
+    )
+    return get_service().evaluate_research_brief(request).model_dump(mode="json")
+
+
+def get_research_brief_evaluation_tool(evaluation_id: str) -> dict:
+    """Return a persisted research brief evaluation by ID."""
+
+    record = get_service().get_research_brief_evaluation(UUID(evaluation_id))
+    return {} if record is None else record.model_dump(mode="json")
+
+
+def list_research_brief_evaluations_tool(
+    brief_id: str | None = None,
+    readiness: str | None = None,
+    passes_quality_bar: bool | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Return persisted research brief synthesis evaluations."""
+
+    return [
+        record.model_dump(mode="json")
+        for record in get_service().list_research_brief_evaluations(
+            brief_id=UUID(brief_id) if brief_id else None,
+            readiness=readiness,
+            passes_quality_bar=passes_quality_bar,
             limit=limit,
         )
     ]
@@ -764,6 +812,48 @@ if mcp is not None:
             status=status,
             source_key=source_key,
             topic_query=topic_query,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def evaluate_research_brief(
+        brief_id: str | None = None,
+        topic_query: str | None = None,
+        source_key: str | None = None,
+        limit: int = 1,
+        minimum_overall_score: float = 0.7,
+        model_profile: str = "synthesis_quality_evaluator",
+    ) -> dict:
+        """Evaluate a persisted research brief for synthesis readiness."""
+
+        return evaluate_research_brief_tool(
+            brief_id=brief_id,
+            topic_query=topic_query,
+            source_key=source_key,
+            limit=limit,
+            minimum_overall_score=minimum_overall_score,
+            model_profile=model_profile,
+        )
+
+    @mcp.tool()
+    def get_research_brief_evaluation(evaluation_id: str) -> dict:
+        """Return one persisted research brief synthesis evaluation."""
+
+        return get_research_brief_evaluation_tool(evaluation_id)
+
+    @mcp.tool()
+    def list_research_brief_evaluations(
+        brief_id: str | None = None,
+        readiness: str | None = None,
+        passes_quality_bar: bool | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """List persisted research brief synthesis evaluations."""
+
+        return list_research_brief_evaluations_tool(
+            brief_id=brief_id,
+            readiness=readiness,
+            passes_quality_bar=passes_quality_bar,
             limit=limit,
         )
 
@@ -1376,6 +1466,12 @@ if mcp is not None:
         """Fetch a persisted research brief as an MCP resource."""
 
         return get_research_brief_tool(brief_id)
+
+    @mcp.resource("research-brief-evaluation://{evaluation_id}")
+    def research_brief_evaluation_resource(evaluation_id: str) -> dict:
+        """Fetch a persisted research brief synthesis evaluation as an MCP resource."""
+
+        return get_research_brief_evaluation_tool(evaluation_id)
 
     @mcp.resource("research-brief-queue://{queue_item_id}")
     def research_brief_queue_resource(queue_item_id: str) -> dict:

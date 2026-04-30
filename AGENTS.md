@@ -43,6 +43,7 @@ Future Codex sessions should treat this file as the fastest orientation layer.
 - Citation-first research brief agents.
 - Durable research brief ledger.
 - Research brief queue, queue seed, and queue runner jobs.
+- Research brief synthesis evaluation ledger and Dagster jobs.
 
 ## Validation Commands
 
@@ -62,6 +63,8 @@ Useful jobs include:
 
 - `research_brief_agent_job`
 - `research_brief_library_job`
+- `research_brief_evaluation_job`
+- `research_brief_evaluation_library_job`
 - `research_brief_queue_seed_job`
 - `research_brief_queue_runner_job`
 - `research_leads_job`
