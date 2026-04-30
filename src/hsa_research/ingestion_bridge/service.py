@@ -433,6 +433,54 @@ class HSAResearchService:
             limit=limit,
         )
 
+    def requeue_research_brief_queue_item(
+        self,
+        queue_item_id: UUID,
+        *,
+        priority: int | None = None,
+    ) -> ResearchBriefQueueItem | None:
+        item = self.repository.get_research_brief_queue_item(queue_item_id)
+        if item is None:
+            return None
+        if item.status != "failed":
+            raise ValueError("only failed research brief queue items can be requeued")
+        if priority is not None and not 0 <= priority <= 1000:
+            raise ValueError("priority must be between 0 and 1000")
+        return self.repository.update_research_brief_queue_item(
+            item.queue_item_id,
+            status="queued",
+            priority=priority,
+            last_error=None,
+            metadata={
+                "queue_control": {
+                    "last_action": "requeue",
+                    "previous_status": item.status,
+                    "previous_attempts": item.attempts,
+                }
+            },
+        )
+
+    def archive_research_brief_queue_item(self, queue_item_id: UUID) -> ResearchBriefQueueItem | None:
+        item = self.repository.get_research_brief_queue_item(queue_item_id)
+        if item is None:
+            return None
+        if item.status == "archived":
+            return item
+        if item.status != "completed":
+            raise ValueError("only completed research brief queue items can be archived")
+        return self.repository.update_research_brief_queue_item(
+            item.queue_item_id,
+            status="archived",
+            last_error=None,
+            metadata={
+                "queue_control": {
+                    "last_action": "archive",
+                    "previous_status": item.status,
+                    "previous_attempts": item.attempts,
+                }
+            },
+        )
+
     def run_next_research_brief_queue_item(
         self,
         request: ResearchBriefQueueRunRequest,

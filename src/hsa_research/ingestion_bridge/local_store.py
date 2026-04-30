@@ -1872,6 +1872,7 @@ class SQLiteResearchRepository(ResearchRepository):
         queue_item_id: UUID,
         *,
         status: str | None = None,
+        priority: int | None = None,
         attempts: int | None = None,
         last_brief_id: UUID | None = None,
         last_agent_run_id: UUID | None = None,
@@ -1884,6 +1885,7 @@ class SQLiteResearchRepository(ResearchRepository):
         updated = item.model_copy(
             update={
                 "status": item.status if status is None else status,
+                "priority": item.priority if priority is None else priority,
                 "attempts": item.attempts if attempts is None else attempts,
                 "last_brief_id": item.last_brief_id if last_brief_id is None else last_brief_id,
                 "last_agent_run_id": item.last_agent_run_id if last_agent_run_id is None else last_agent_run_id,
@@ -1897,6 +1899,7 @@ class SQLiteResearchRepository(ResearchRepository):
             """
             update research_brief_queue
             set status = ?,
+                priority = ?,
                 last_brief_id = ?,
                 last_agent_run_id = ?,
                 attempts = ?,
@@ -1906,6 +1909,7 @@ class SQLiteResearchRepository(ResearchRepository):
             """,
             (
                 updated.status,
+                updated.priority,
                 str(updated.last_brief_id) if updated.last_brief_id else None,
                 str(updated.last_agent_run_id) if updated.last_agent_run_id else None,
                 updated.attempts,

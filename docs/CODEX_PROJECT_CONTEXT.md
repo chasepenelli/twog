@@ -202,7 +202,7 @@ DAGSTER_HOME=/tmp/dagster-home DAGSTER_DISABLE_TELEMETRY=1 .venv/bin/dg check de
 Expected current contract test count after the queue work:
 
 ```text
-202 passed
+215 passed
 ```
 
 ## Current Working Tree Note
@@ -214,8 +214,8 @@ not modify it unless explicitly instructed.
 
 Good next lanes:
 
-1. Add richer queue controls: requeue failed items, archive completed items,
-   and queue batches from source health gaps or watchlist leads.
+1. Queue batches from source health gaps or watchlist leads. Basic queue
+   controls now cover failed-item requeue and completed-item archive.
 2. Add a model comparison run path for one queued brief using OpenRouter with
    controlled cost metadata.
 3. Add a small dashboard/control-panel view for brief queue, lead queue, and

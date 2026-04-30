@@ -2551,6 +2551,7 @@ def test_research_brief_queue_contract_and_repository_roundtrip(tmp_path):
         updated = repo.update_research_brief_queue_item(
             item.queue_item_id,
             status="running",
+            priority=5,
             attempts=1,
             metadata={"runner": "test"},
         )
@@ -2561,10 +2562,59 @@ def test_research_brief_queue_contract_and_repository_roundtrip(tmp_path):
         assert duplicate.queue_item_id == item.queue_item_id
         assert updated is not None
         assert updated.status == "running"
+        assert updated.priority == 5
         assert updated.attempts == 1
         assert updated.metadata["runner"] == "test"
         assert repo.get_research_brief_queue_item(item.queue_item_id).queue_item_id == item.queue_item_id
         assert repo.list_research_brief_queue_items(status="running", source_key="pubmed", topic_query="vegf")[0].queue_item_id == item.queue_item_id
+
+
+def test_research_brief_queue_controls_requeue_and_archive(tmp_path):
+    for repo in (
+        SQLiteResearchRepository(tmp_path / "research-brief-queue-controls.sqlite3", seed=False),
+        InMemoryResearchRepository(),
+    ):
+        service = HSAResearchService(repo)
+        queued = service.queue_research_brief(
+            ResearchBriefQueueRequest(
+                topic="Angiogenesis resistance patterns in canine hemangiosarcoma",
+                source_key="pubmed",
+                priority=50,
+            )
+        )
+        failed = repo.update_research_brief_queue_item(
+            queued.queue_item_id,
+            status="failed",
+            attempts=2,
+            last_error="timeout",
+        )
+
+        assert failed is not None
+        with pytest.raises(ValueError, match="priority must be between 0 and 1000"):
+            service.requeue_research_brief_queue_item(failed.queue_item_id, priority=1001)
+
+        requeued = service.requeue_research_brief_queue_item(failed.queue_item_id, priority=5)
+        assert requeued is not None
+        assert requeued.status == "queued"
+        assert requeued.priority == 5
+        assert requeued.attempts == 2
+        assert requeued.last_error is None
+        assert requeued.metadata["queue_control"]["last_action"] == "requeue"
+        assert requeued.metadata["queue_control"]["previous_status"] == "failed"
+
+        with pytest.raises(ValueError, match="only completed"):
+            service.archive_research_brief_queue_item(requeued.queue_item_id)
+
+        completed = repo.update_research_brief_queue_item(requeued.queue_item_id, status="completed")
+        assert completed is not None
+        archived = service.archive_research_brief_queue_item(completed.queue_item_id)
+        assert archived is not None
+        assert archived.status == "archived"
+        assert archived.priority == 5
+        assert archived.metadata["queue_control"]["last_action"] == "archive"
+        assert archived.metadata["queue_control"]["previous_status"] == "completed"
+        assert service.archive_research_brief_queue_item(archived.queue_item_id).status == "archived"
+        assert service.requeue_research_brief_queue_item(uuid4()) is None
 
 
 def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
@@ -6184,10 +6234,26 @@ def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp
     )
     fetched = mcp_server.get_research_brief_queue_item_tool(queued["queue_item_id"])
     listed = mcp_server.list_research_brief_queue_tool(status="queued")
+    failed = repo.update_research_brief_queue_item(
+        queued["queue_item_id"],
+        status="failed",
+        attempts=1,
+        last_error="model timeout",
+    )
+    assert failed is not None
+    requeued = mcp_server.requeue_research_brief_queue_item_tool(queued["queue_item_id"], priority=7)
+    completed = repo.update_research_brief_queue_item(queued["queue_item_id"], status="completed")
+    assert completed is not None
+    archived = mcp_server.archive_research_brief_queue_item_tool(queued["queue_item_id"])
 
     assert queued["queue_item_id"]
     assert fetched["queue_item_id"] == queued["queue_item_id"]
     assert listed[0]["identity_key"] == queued["identity_key"]
+    assert requeued["status"] == "queued"
+    assert requeued["priority"] == 7
+    assert requeued["last_error"] is None
+    assert archived["status"] == "archived"
+    assert archived["metadata"]["queue_control"]["previous_status"] == "completed"
 
 
 def test_mcp_retrieval_smoke_helper_dumps_full_read_chain(monkeypatch, tmp_path):

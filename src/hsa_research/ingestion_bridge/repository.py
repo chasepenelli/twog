@@ -279,6 +279,7 @@ class ResearchRepository(Protocol):
         queue_item_id: UUID,
         *,
         status: str | None = None,
+        priority: int | None = None,
         attempts: int | None = None,
         last_brief_id: UUID | None = None,
         last_agent_run_id: UUID | None = None,
@@ -1040,6 +1041,7 @@ class InMemoryResearchRepository:
         queue_item_id: UUID,
         *,
         status: str | None = None,
+        priority: int | None = None,
         attempts: int | None = None,
         last_brief_id: UUID | None = None,
         last_agent_run_id: UUID | None = None,
@@ -1052,6 +1054,7 @@ class InMemoryResearchRepository:
         updated = item.model_copy(
             update={
                 "status": item.status if status is None else status,
+                "priority": item.priority if priority is None else priority,
                 "attempts": item.attempts if attempts is None else attempts,
                 "last_brief_id": item.last_brief_id if last_brief_id is None else last_brief_id,
                 "last_agent_run_id": item.last_agent_run_id if last_agent_run_id is None else last_agent_run_id,

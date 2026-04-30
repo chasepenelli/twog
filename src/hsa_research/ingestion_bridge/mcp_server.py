@@ -379,6 +379,23 @@ def run_research_brief_queue_tool(
     return get_service().run_next_research_brief_queue_item(request).model_dump(mode="json")
 
 
+def requeue_research_brief_queue_item_tool(
+    queue_item_id: str,
+    priority: int | None = None,
+) -> dict:
+    """Move a failed research brief queue item back to queued."""
+
+    item = get_service().requeue_research_brief_queue_item(UUID(queue_item_id), priority=priority)
+    return {} if item is None else item.model_dump(mode="json")
+
+
+def archive_research_brief_queue_item_tool(queue_item_id: str) -> dict:
+    """Archive a completed research brief queue item."""
+
+    item = get_service().archive_research_brief_queue_item(UUID(queue_item_id))
+    return {} if item is None else item.model_dump(mode="json")
+
+
 def run_retrieval_smoke_tool(
     query: str = "hemangiosarcoma angiogenesis",
     source_key: str | None = None,
@@ -1022,6 +1039,21 @@ if mcp is not None:
             topic_query=topic_query,
             limit=limit,
         )
+
+    @mcp.tool()
+    def requeue_research_brief_queue_item(
+        queue_item_id: str,
+        priority: int | None = None,
+    ) -> dict:
+        """Move a failed research brief queue item back to queued."""
+
+        return requeue_research_brief_queue_item_tool(queue_item_id, priority=priority)
+
+    @mcp.tool()
+    def archive_research_brief_queue_item(queue_item_id: str) -> dict:
+        """Archive a completed research brief queue item."""
+
+        return archive_research_brief_queue_item_tool(queue_item_id)
 
     @mcp.tool()
     def run_retrieval_smoke(

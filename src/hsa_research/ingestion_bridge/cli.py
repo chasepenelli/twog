@@ -313,6 +313,24 @@ def main() -> None:
     research_brief_queue.add_argument("--topic-query", default=None, help="Case-insensitive topic/scope filter")
     research_brief_queue.add_argument("--limit", type=int, default=50, help="Maximum queue items to return")
 
+    requeue_research_brief_queue = subparsers.add_parser(
+        "requeue-research-brief-queue-item",
+        help="Move a failed research brief queue item back to queued",
+    )
+    requeue_research_brief_queue.add_argument("--id", required=True, help="queue_item_id to requeue")
+    requeue_research_brief_queue.add_argument(
+        "--priority",
+        type=int,
+        default=None,
+        help="Optional replacement priority; lower values run first",
+    )
+
+    archive_research_brief_queue = subparsers.add_parser(
+        "archive-research-brief-queue-item",
+        help="Archive a completed research brief queue item",
+    )
+    archive_research_brief_queue.add_argument("--id", required=True, help="queue_item_id to archive")
+
     run_research_brief_queue = subparsers.add_parser(
         "run-research-brief-queue",
         help="Run the next queued research brief request",
@@ -952,6 +970,15 @@ def main() -> None:
                     limit=args.limit,
                 )
             ]
+    elif args.command == "requeue-research-brief-queue-item":
+        item = HSAResearchService(repo).requeue_research_brief_queue_item(
+            UUID(args.id),
+            priority=args.priority,
+        )
+        output = {} if item is None else item.model_dump(mode="json")
+    elif args.command == "archive-research-brief-queue-item":
+        item = HSAResearchService(repo).archive_research_brief_queue_item(UUID(args.id))
+        output = {} if item is None else item.model_dump(mode="json")
     elif args.command == "run-research-brief-queue":
         output = HSAResearchService(repo).run_next_research_brief_queue_item(
             ResearchBriefQueueRunRequest(
