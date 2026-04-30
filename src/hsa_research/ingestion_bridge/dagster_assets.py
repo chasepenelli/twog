@@ -63,6 +63,13 @@ HOSTED_API_REPORT_KEYS = ALL_API_SMOKE_KEYS
 LITERATURE_FULL_TEXT_SMOKE_LIMITS = {
     source_key: 1 for source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS
 }
+SOURCE_FOLLOWUP_LANE_LIMITS = {
+    "pubmed": 25,
+    "crossref": 25,
+    "pmc_oa": 10,
+    "clinicaltrials_gov": 10,
+    "unpaywall": 25,
+}
 SCHEDULE_TIMEZONE = "America/Denver"
 LITERATURE_CORPUS_PARTITION_START_DATE = "2026-01-01"
 LITERATURE_FULL_TEXT_PARTITION_START_DATE = "2026-01-01"
@@ -700,6 +707,9 @@ if dg is not None:
 
     def _source_followup_ingest_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
         return {
+            "lane_name": report.get("lane_name"),
+            "source_keys": dg.MetadataValue.json(report.get("source_keys", [])),
+            "statuses": dg.MetadataValue.json(report.get("statuses", [])),
             "queue_items_seen": int(report.get("queue_items_seen", 0)),
             "attempted": int(report.get("attempted", 0)),
             "ingested": int(report.get("ingested", 0)),
@@ -715,6 +725,80 @@ if dg is not None:
                 _SOURCE_FOLLOWUP_INGEST_TABLE_COLUMNS,
             ),
         }
+
+    _SOURCE_FOLLOWUP_INGEST_CONFIG_SCHEMA = {
+        "source_keys": dg.Field([str], is_required=False, description="Target source keys to process."),
+        "statuses": dg.Field([str], is_required=False, description="Queue statuses to process."),
+        "limit": dg.Field(int, is_required=False, description="Maximum queue rows to process."),
+        "approved_by": dg.Field(str, is_required=False, description="Operator approval identity."),
+        "run_claim_extraction": dg.Field(
+            bool,
+            is_required=False,
+            description="Run entity resolution, claim extraction, and curation after ingest.",
+        ),
+        "dry_run": dg.Field(bool, is_required=False, description="List queue rows without ingesting."),
+    }
+    _SOURCE_FOLLOWUP_LANE_CONFIG_SCHEMA = {
+        key: value for key, value in _SOURCE_FOLLOWUP_INGEST_CONFIG_SCHEMA.items() if key != "source_keys"
+    }
+
+    def _run_source_followup_ingest_asset(
+        context,
+        research_repository: ResearchRepositoryResource,
+        *,
+        lane_name: str,
+        default_source_keys: Sequence[str] | None = None,
+        default_limit: int = 25,
+    ) -> dg.MaterializeResult:
+        from .service import HSAResearchService
+
+        config = context.op_config or {}
+        repository = research_repository.build_repository()
+        if default_source_keys is None:
+            source_keys = config.get("source_keys") or _parse_delimited_string_list(
+                os.getenv("HSA_SOURCE_FOLLOWUP_SOURCE_KEYS")
+            )
+        else:
+            source_keys = list(default_source_keys)
+        statuses = config.get("statuses") or _parse_delimited_string_list(
+            os.getenv("HSA_SOURCE_FOLLOWUP_STATUSES")
+        ) or ["queued", "approved"]
+        limit = int(_config_or_env(config, "limit", "HSA_SOURCE_FOLLOWUP_INGEST_LIMIT", default_limit))
+        approved_by = _config_or_env(config, "approved_by", "HSA_SOURCE_FOLLOWUP_APPROVED_BY", None)
+        run_claim_extraction = _config_or_env_bool(
+            config,
+            "run_claim_extraction",
+            "HSA_SOURCE_FOLLOWUP_RUN_CLAIM_EXTRACTION",
+            True,
+        )
+        dry_run = _config_or_env_bool(config, "dry_run", "HSA_SOURCE_FOLLOWUP_DRY_RUN", False)
+        result = HSAResearchService(repository).ingest_source_followups(
+            SourceFollowupIngestRequest(
+                source_keys=source_keys,
+                statuses=statuses,
+                limit=limit,
+                approved_by=approved_by,
+                run_claim_extraction=run_claim_extraction,
+                dry_run=dry_run,
+                metadata={
+                    "dagster_run_id": context.run_id,
+                    "lane_name": lane_name,
+                },
+            )
+        )
+        report = result.model_dump(mode="json")
+        report.update(
+            {
+                "lane_name": lane_name,
+                "source_keys": source_keys,
+                "statuses": statuses,
+                "limit": limit,
+                "approved_by": approved_by,
+                "run_claim_extraction": run_claim_extraction,
+                "dry_run": dry_run,
+            }
+        )
+        return dg.MaterializeResult(value=report, metadata=_source_followup_ingest_metadata(report))
 
     def _run_literature_full_text_refresh(
         research_repository: ResearchRepositoryResource,
@@ -1829,18 +1913,7 @@ if dg is not None:
 
     @dg.asset(
         group_name="source_followup",
-        config_schema={
-            "source_keys": dg.Field([str], is_required=False, description="Target source keys to process."),
-            "statuses": dg.Field([str], is_required=False, description="Queue statuses to process."),
-            "limit": dg.Field(int, is_required=False, description="Maximum queue rows to process."),
-            "approved_by": dg.Field(str, is_required=False, description="Operator approval identity."),
-            "run_claim_extraction": dg.Field(
-                bool,
-                is_required=False,
-                description="Run entity resolution, claim extraction, and curation after ingest.",
-            ),
-            "dry_run": dg.Field(bool, is_required=False, description="List queue rows without ingesting."),
-        },
+        config_schema=_SOURCE_FOLLOWUP_INGEST_CONFIG_SCHEMA,
     )
     def source_followup_ingest_report(
         context,
@@ -1848,33 +1921,86 @@ if dg is not None:
     ) -> dg.MaterializeResult:
         """Manual primary-source follow-up ingestion through API harvesters."""
 
-        from .service import HSAResearchService
+        return _run_source_followup_ingest_asset(
+            context,
+            research_repository,
+            lane_name="source_followup_ingest",
+        )
 
-        config = context.op_config or {}
-        repository = research_repository.build_repository()
-        source_keys = config.get("source_keys") or _parse_delimited_string_list(
-            os.getenv("HSA_SOURCE_FOLLOWUP_SOURCE_KEYS")
+    @dg.asset(group_name="source_followup", config_schema=_SOURCE_FOLLOWUP_LANE_CONFIG_SCHEMA)
+    def pubmed_source_followup_ingest_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """PubMed-only primary-source follow-up ingestion lane."""
+
+        return _run_source_followup_ingest_asset(
+            context,
+            research_repository,
+            lane_name="pubmed_source_followup_ingest",
+            default_source_keys=("pubmed",),
+            default_limit=SOURCE_FOLLOWUP_LANE_LIMITS["pubmed"],
         )
-        statuses = config.get("statuses") or _parse_delimited_string_list(
-            os.getenv("HSA_SOURCE_FOLLOWUP_STATUSES")
-        ) or ["queued", "approved"]
-        result = HSAResearchService(repository).ingest_source_followups(
-            SourceFollowupIngestRequest(
-                source_keys=source_keys,
-                statuses=statuses,
-                limit=int(_config_or_env(config, "limit", "HSA_SOURCE_FOLLOWUP_INGEST_LIMIT", 25)),
-                approved_by=_config_or_env(config, "approved_by", "HSA_SOURCE_FOLLOWUP_APPROVED_BY", None),
-                run_claim_extraction=_config_or_env_bool(
-                    config,
-                    "run_claim_extraction",
-                    "HSA_SOURCE_FOLLOWUP_RUN_CLAIM_EXTRACTION",
-                    True,
-                ),
-                dry_run=_config_or_env_bool(config, "dry_run", "HSA_SOURCE_FOLLOWUP_DRY_RUN", False),
-            )
+
+    @dg.asset(group_name="source_followup", config_schema=_SOURCE_FOLLOWUP_LANE_CONFIG_SCHEMA)
+    def crossref_source_followup_ingest_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Crossref-only primary-source follow-up ingestion lane."""
+
+        return _run_source_followup_ingest_asset(
+            context,
+            research_repository,
+            lane_name="crossref_source_followup_ingest",
+            default_source_keys=("crossref",),
+            default_limit=SOURCE_FOLLOWUP_LANE_LIMITS["crossref"],
         )
-        report = result.model_dump(mode="json")
-        return dg.MaterializeResult(value=report, metadata=_source_followup_ingest_metadata(report))
+
+    @dg.asset(group_name="source_followup", config_schema=_SOURCE_FOLLOWUP_LANE_CONFIG_SCHEMA)
+    def pmc_oa_source_followup_ingest_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """PMC OA-only primary-source follow-up ingestion lane."""
+
+        return _run_source_followup_ingest_asset(
+            context,
+            research_repository,
+            lane_name="pmc_oa_source_followup_ingest",
+            default_source_keys=("pmc_oa",),
+            default_limit=SOURCE_FOLLOWUP_LANE_LIMITS["pmc_oa"],
+        )
+
+    @dg.asset(group_name="source_followup", config_schema=_SOURCE_FOLLOWUP_LANE_CONFIG_SCHEMA)
+    def clinicaltrials_gov_source_followup_ingest_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """ClinicalTrials.gov-only primary-source follow-up ingestion lane."""
+
+        return _run_source_followup_ingest_asset(
+            context,
+            research_repository,
+            lane_name="clinicaltrials_gov_source_followup_ingest",
+            default_source_keys=("clinicaltrials_gov",),
+            default_limit=SOURCE_FOLLOWUP_LANE_LIMITS["clinicaltrials_gov"],
+        )
+
+    @dg.asset(group_name="source_followup", config_schema=_SOURCE_FOLLOWUP_LANE_CONFIG_SCHEMA)
+    def unpaywall_source_followup_ingest_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Unpaywall-only DOI enrichment follow-up ingestion lane."""
+
+        return _run_source_followup_ingest_asset(
+            context,
+            research_repository,
+            lane_name="unpaywall_source_followup_ingest",
+            default_source_keys=("unpaywall",),
+            default_limit=SOURCE_FOLLOWUP_LANE_LIMITS["unpaywall"],
+        )
 
     @dg.op(
         required_resource_keys={"research_repository"},
@@ -2443,6 +2569,11 @@ if dg is not None:
         x_linked_article_review_report,
         source_followup_queue_report,
         source_followup_ingest_report,
+        pubmed_source_followup_ingest_report,
+        crossref_source_followup_ingest_report,
+        pmc_oa_source_followup_ingest_report,
+        clinicaltrials_gov_source_followup_ingest_report,
+        unpaywall_source_followup_ingest_report,
         entity_resolution_report,
         embedding_index_report,
         embedding_maintenance_report,
@@ -2547,6 +2678,26 @@ if dg is not None:
     source_followup_ingest_job = dg.define_asset_job(
         "source_followup_ingest_job",
         selection=dg.AssetSelection.assets(source_followup_ingest_report),
+    )
+    pubmed_source_followup_ingest_job = dg.define_asset_job(
+        "pubmed_source_followup_ingest_job",
+        selection=dg.AssetSelection.assets(pubmed_source_followup_ingest_report),
+    )
+    crossref_source_followup_ingest_job = dg.define_asset_job(
+        "crossref_source_followup_ingest_job",
+        selection=dg.AssetSelection.assets(crossref_source_followup_ingest_report),
+    )
+    pmc_oa_source_followup_ingest_job = dg.define_asset_job(
+        "pmc_oa_source_followup_ingest_job",
+        selection=dg.AssetSelection.assets(pmc_oa_source_followup_ingest_report),
+    )
+    clinicaltrials_gov_source_followup_ingest_job = dg.define_asset_job(
+        "clinicaltrials_gov_source_followup_ingest_job",
+        selection=dg.AssetSelection.assets(clinicaltrials_gov_source_followup_ingest_report),
+    )
+    unpaywall_source_followup_ingest_job = dg.define_asset_job(
+        "unpaywall_source_followup_ingest_job",
+        selection=dg.AssetSelection.assets(unpaywall_source_followup_ingest_report),
     )
     full_text_source_date_ops_job = dg.JobDefinition(
         name="full_text_source_date_ops_job",
@@ -2675,6 +2826,11 @@ if dg is not None:
             x_linked_article_review_job,
             source_followup_queue_job,
             source_followup_ingest_job,
+            pubmed_source_followup_ingest_job,
+            crossref_source_followup_ingest_job,
+            pmc_oa_source_followup_ingest_job,
+            clinicaltrials_gov_source_followup_ingest_job,
+            unpaywall_source_followup_ingest_job,
             full_text_source_date_ops_job,
             entity_resolution_job,
             embedding_index_job,
@@ -2722,6 +2878,11 @@ else:
     x_linked_article_review_job = None
     source_followup_queue_job = None
     source_followup_ingest_job = None
+    pubmed_source_followup_ingest_job = None
+    crossref_source_followup_ingest_job = None
+    pmc_oa_source_followup_ingest_job = None
+    clinicaltrials_gov_source_followup_ingest_job = None
+    unpaywall_source_followup_ingest_job = None
     full_text_source_date_ops_job = None
     entity_resolution_job = None
     embedding_index_job = None

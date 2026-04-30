@@ -351,12 +351,45 @@ Optional filters:
 - Use `source-followups --source unpaywall --identifier-type doi` to inspect the
   queue before ingesting.
 
+Hosted Dagster lane:
+- `unpaywall_source_followup_ingest_job`
+
 Required QA output:
 - Queued rows have `source_key=unpaywall`, `identifier_type=doi`, and
   `metadata.lookup_mode=doi`.
 - Re-running the queue command is idempotent; existing DOI queue rows should not
   be duplicated.
 - Objects without DOI identifiers are skipped, not title-searched.
+
+### Run Source Follow-Up Ingestion Lanes
+
+Use source-specific lanes when draining primary-source follow-up rows from X,
+linked-article, or fallback recommendations. Prefer these lanes over the mixed
+`source_followup_ingest_job` for hosted runs so a slow or flaky source does not
+block unrelated work.
+
+Hosted Dagster jobs:
+- `pubmed_source_followup_ingest_job`
+- `crossref_source_followup_ingest_job`
+- `pmc_oa_source_followup_ingest_job`
+- `clinicaltrials_gov_source_followup_ingest_job`
+- `unpaywall_source_followup_ingest_job`
+
+Default hosted limits:
+- PubMed: 25
+- Crossref: 25
+- PMC OA: 10
+- ClinicalTrials.gov: 10
+- Unpaywall: 25
+
+Operator notes:
+- Keep `run_claim_extraction=true` for normal runs so new chunks immediately
+  become claim-searchable.
+- Use `dry_run=true` first when a lane has unknown queue state.
+- After draining one or more lanes, run `embedding_index_job`,
+  `embedding_maintenance_job`, then `source_health_report_job`.
+- The mixed `source_followup_ingest_job` remains available for ad hoc local
+  debugging, but hosted operations should use source-specific jobs.
 
 ### Run The Literature Corpus Harvest
 

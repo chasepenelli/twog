@@ -1779,7 +1779,7 @@ def test_source_health_report_includes_operational_readiness(tmp_path):
     assert pubmed["source_query_health"]["active_source_queries"] == 1
     assert pubmed["active_source_queries"] == 1
     assert any("embedding_index_job" in action for action in pubmed["recommended_actions"])
-    assert any("source_followup_ingest_job" in action for action in pubmed["recommended_actions"])
+    assert any("pubmed_source_followup_ingest_job" in action for action in pubmed["recommended_actions"])
 
 
 def test_source_health_report_marks_complete_embeddings(tmp_path):
@@ -6773,6 +6773,11 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.x_linked_article_review_job is not None
     assert dagster_asset_module.source_followup_queue_job is not None
     assert dagster_asset_module.source_followup_ingest_job is not None
+    assert dagster_asset_module.pubmed_source_followup_ingest_job is not None
+    assert dagster_asset_module.crossref_source_followup_ingest_job is not None
+    assert dagster_asset_module.pmc_oa_source_followup_ingest_job is not None
+    assert dagster_asset_module.clinicaltrials_gov_source_followup_ingest_job is not None
+    assert dagster_asset_module.unpaywall_source_followup_ingest_job is not None
     assert dagster_asset_module.research_brief_agent_job is not None
     assert dagster_asset_module.research_brief_playground_pack_job is not None
 

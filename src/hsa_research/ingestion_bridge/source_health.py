@@ -12,6 +12,13 @@ from .structured_orchestration import full_text_source_qa, full_text_triage_summ
 
 COUNT_FIELDS = ("raw_records", "research_objects", "document_chunks", "claims")
 HARD_COUNT_FIELDS = ("raw_records", "research_objects", "document_chunks")
+SOURCE_FOLLOWUP_INGEST_JOBS = {
+    "pubmed": "pubmed_source_followup_ingest_job",
+    "crossref": "crossref_source_followup_ingest_job",
+    "pmc_oa": "pmc_oa_source_followup_ingest_job",
+    "clinicaltrials_gov": "clinicaltrials_gov_source_followup_ingest_job",
+    "unpaywall": "unpaywall_source_followup_ingest_job",
+}
 
 
 def build_source_health_report(
@@ -145,6 +152,7 @@ def build_source_health(
     }
     health_score, signals, risks, recommended_actions = _score_source(
         runtime,
+        source_key=source_key,
         claim_metadata=claim_metadata,
         require_claims=require_claims,
         triage_only=triage_only,
@@ -321,6 +329,7 @@ def _claim_metadata_summary(repository: Any, source_key: str, *, limit: int) -> 
 def _score_source(
     runtime: dict[str, Any],
     *,
+    source_key: str,
     claim_metadata: dict[str, Any],
     require_claims: bool,
     triage_only: bool,
@@ -410,14 +419,15 @@ def _score_source(
     if source_followup_health.get("available"):
         failed = int(source_followup_health.get("failed", 0))
         pending = int(source_followup_health.get("pending", 0))
+        followup_job = SOURCE_FOLLOWUP_INGEST_JOBS.get(source_key, "source_followup_ingest_job")
         if failed > 0:
             risks.append(f"{failed} source follow-up ingest rows failed for this source.")
             recommended_actions.append(
-                "Inspect source_followup_ingest_report failures and rerun source_followup_ingest_job after fixes."
+                f"Inspect {source_key} follow-up ingest failures and rerun {followup_job} after fixes."
             )
         if pending > 0:
             risks.append(f"{pending} source follow-up ingest rows are queued or approved for this source.")
-            recommended_actions.append("Run source_followup_ingest_job to drain approved and queued follow-up records.")
+            recommended_actions.append(f"Run {followup_job} to drain approved and queued follow-up records.")
         if source_followup_health.get("total", 0) and failed == 0 and pending == 0:
             signals.append("source_followups_clear")
     elif source_followup_health.get("error"):

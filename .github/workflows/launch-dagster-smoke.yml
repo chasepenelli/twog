@@ -29,6 +29,11 @@ on:
           - "x_linked_article_review_job"
           - "source_followup_queue_job"
           - "source_followup_ingest_job"
+          - "pubmed_source_followup_ingest_job"
+          - "crossref_source_followup_ingest_job"
+          - "pmc_oa_source_followup_ingest_job"
+          - "clinicaltrials_gov_source_followup_ingest_job"
+          - "unpaywall_source_followup_ingest_job"
           - "full_text_source_date_ops_job"
           - "entity_resolution_job"
           - "embedding_index_job"
@@ -593,7 +598,7 @@ jobs:
         shell: bash
 
       - name: Print hosted source follow-up ingest summary
-        if: ${{ always() && inputs.job == 'source_followup_ingest_job' }}
+        if: ${{ always() && (inputs.job == 'source_followup_ingest_job' || inputs.job == 'pubmed_source_followup_ingest_job' || inputs.job == 'crossref_source_followup_ingest_job' || inputs.job == 'pmc_oa_source_followup_ingest_job' || inputs.job == 'clinicaltrials_gov_source_followup_ingest_job' || inputs.job == 'unpaywall_source_followup_ingest_job') }}
         continue-on-error: true
         run: |
           uv run python - <<'PY'
@@ -603,10 +608,18 @@ jobs:
 
           from hsa_research.ingestion_bridge.storage import build_research_repository
 
+          lane_sources = {
+              "pubmed_source_followup_ingest_job": "pubmed",
+              "crossref_source_followup_ingest_job": "crossref",
+              "pmc_oa_source_followup_ingest_job": "pmc_oa",
+              "clinicaltrials_gov_source_followup_ingest_job": "clinicaltrials_gov",
+              "unpaywall_source_followup_ingest_job": "unpaywall",
+          }
+          source_filter = lane_sources.get(os.environ.get("DAGSTER_CLOUD_JOB", ""))
           repository = build_research_repository()
           items = []
           for status in ("ingested", "failed", "queued", "approved", "skipped"):
-              items.extend(repository.list_source_followups(status=status, limit=50))
+              items.extend(repository.list_source_followups(source_key=source_filter, status=status, limit=50))
           deduped = {item.followup_id: item for item in items}
           ordered = sorted(
               deduped.values(),
@@ -616,6 +629,7 @@ jobs:
           counts_by_status = Counter(item.status for item in ordered)
           counts_by_source = Counter(item.source_key for item in ordered)
           payload = {
+              "source_filter": source_filter,
               "total_items_sampled": len(ordered),
               "counts_by_status": dict(sorted(counts_by_status.items())),
               "counts_by_source": dict(sorted(counts_by_source.items())),
@@ -649,6 +663,8 @@ jobs:
           if summary_path:
               with open(summary_path, "a", encoding="utf-8") as summary:
                   summary.write("### Source follow-up ingest summary\n")
+                  if payload["source_filter"]:
+                      summary.write(f"- Source filter: `{payload['source_filter']}`\n")
                   summary.write(f"- Items sampled: {payload['total_items_sampled']}\n")
                   summary.write(f"- By status: `{dict(sorted(counts_by_status.items()))}`\n")
                   summary.write(f"- By source: `{dict(sorted(counts_by_source.items()))}`\n")
