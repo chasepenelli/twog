@@ -16,6 +16,7 @@ from .claim_curator import curate_claims_for_repository
 from .claim_extractor import extract_claims_for_repository
 from .contracts import (
     ClaimCurationRequest,
+    CommandCenterRequest,
     DoiOpenAccessFollowupQueueRequest,
     EntityResolutionRequest,
     FullTextTriageRequest,
@@ -162,6 +163,41 @@ def main() -> None:
         "--fail-on-failed-sources",
         action="store_true",
         help="Exit non-zero if the report has failed sources",
+    )
+
+    command_center = subparsers.add_parser(
+        "command-center",
+        help="Build the read-only TWOG command-center report",
+    )
+    command_center.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="Optional source key for source-health scope; repeatable",
+    )
+    command_center.add_argument(
+        "--no-source-health",
+        action="store_true",
+        help="Skip source health in the report",
+    )
+    command_center.add_argument(
+        "--no-recent-agents",
+        action="store_true",
+        help="Skip recent agent runs in the report",
+    )
+    command_center.add_argument("--queue-limit", type=int, default=25, help="Maximum queue items to show")
+    command_center.add_argument("--lead-limit", type=int, default=25, help="Maximum research leads to show")
+    command_center.add_argument("--agent-run-limit", type=int, default=25, help="Maximum recent agent runs to show")
+    command_center.add_argument(
+        "--min-health-score",
+        type=float,
+        default=0.65,
+        help="Minimum health score when source health is included",
+    )
+    command_center.add_argument(
+        "--no-require-claims",
+        action="store_true",
+        help="Do not require claims for source-health scoring",
     )
 
     triage_full_text = subparsers.add_parser(
@@ -949,6 +985,19 @@ def main() -> None:
             min_health_score=args.min_health_score,
             require_claims=not args.no_require_claims,
         )
+    elif args.command == "command-center":
+        output = HSAResearchService(repo).build_command_center_report(
+            CommandCenterRequest(
+                source_keys=args.source,
+                include_source_health=not args.no_source_health,
+                include_recent_agents=not args.no_recent_agents,
+                queue_limit=args.queue_limit,
+                lead_limit=args.lead_limit,
+                agent_run_limit=args.agent_run_limit,
+                min_health_score=args.min_health_score,
+                require_claims=not args.no_require_claims,
+            )
+        ).model_dump(mode="json")
     elif args.command == "triage-full-text":
         output = HSAResearchService(repo).triage_full_text_issue(
             FullTextTriageRequest(

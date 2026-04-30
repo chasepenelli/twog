@@ -7,6 +7,7 @@ decorators or Dagster assets.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -22,6 +23,9 @@ from .contracts import (
     ClaimCurationResult,
     ClaimSearchRequest,
     ClaimSearchResults,
+    CommandCenterRecommendation,
+    CommandCenterRequest,
+    CommandCenterResult,
     CommitHypothesisRequest,
     DoiOpenAccessFollowupQueueRequest,
     DocumentChunk,
@@ -626,6 +630,85 @@ class HSAResearchService:
             skipped_count=len(skipped),
             queue_items=queue_items,
             skipped=skipped,
+            errors=errors,
+        )
+
+    def build_command_center_report(self, request: CommandCenterRequest) -> CommandCenterResult:
+        errors: list[str] = []
+        recommendations: list[CommandCenterRecommendation] = []
+
+        all_queue_items = self.repository.list_research_brief_queue_items(limit=None)
+        visible_queue_items = self.repository.list_research_brief_queue_items(limit=request.queue_limit)
+        queue_status_counts = Counter(str(item.status) for item in all_queue_items)
+        research_brief_queue = {
+            "total": len(all_queue_items),
+            "status_counts": dict(sorted(queue_status_counts.items())),
+            "items": [_command_center_queue_item(item) for item in visible_queue_items],
+        }
+
+        all_leads = self.repository.list_research_leads(limit=None)
+        visible_leads = self.repository.list_research_leads(limit=request.lead_limit)
+        lead_status_counts = Counter(str(lead.status) for lead in all_leads)
+        research_leads = {
+            "total": len(all_leads),
+            "status_counts": dict(sorted(lead_status_counts.items())),
+            "items": [_command_center_lead(lead) for lead in visible_leads],
+        }
+
+        source_health_report: dict[str, Any] | None = None
+        if request.include_source_health:
+            if request.source_health_report is not None:
+                source_health_report = request.source_health_report
+            else:
+                try:
+                    from .source_health import build_source_health_report
+
+                    source_health_report = build_source_health_report(
+                        self.repository,
+                        source_keys=request.source_keys or None,
+                        min_health_score=request.min_health_score,
+                        require_claims=request.require_claims,
+                    )
+                except Exception as exc:  # pragma: no cover - defensive reporting boundary
+                    errors.append(f"source_health: {exc}")
+
+        recent_agent_runs: list[dict[str, Any]] = []
+        agent_status_counts: Counter[str] = Counter()
+        if request.include_recent_agents:
+            try:
+                agent_runs = self.repository.list_agent_runs(limit=request.agent_run_limit)
+                agent_status_counts = Counter(str(run.status) for run in agent_runs)
+                recent_agent_runs = [_command_center_agent_run(run) for run in agent_runs]
+            except Exception as exc:  # pragma: no cover - defensive reporting boundary
+                errors.append(f"agent_runs: {exc}")
+
+        _extend_command_center_recommendations(
+            recommendations,
+            queue_status_counts=queue_status_counts,
+            lead_status_counts=lead_status_counts,
+            source_health_report=source_health_report,
+            agent_status_counts=agent_status_counts,
+        )
+        summary = {
+            "brief_queue_total": len(all_queue_items),
+            "brief_queue_ready": queue_status_counts.get("queued", 0),
+            "brief_queue_failed": queue_status_counts.get("failed", 0),
+            "research_leads_total": len(all_leads),
+            "research_leads_actionable": lead_status_counts.get("new", 0) + lead_status_counts.get("watching", 0),
+            "recent_agent_failures": agent_status_counts.get("failed", 0),
+            "source_health_failed": len(source_health_report.get("failed_sources", [])) if source_health_report else None,
+            "source_health_watch": len(source_health_report.get("watch_sources", [])) if source_health_report else None,
+            "source_health_triage": len(source_health_report.get("triage_sources", [])) if source_health_report else None,
+            "recommendation_count": len(recommendations),
+            "blocking_recommendations": sum(1 for item in recommendations if item.severity == "blocking"),
+        }
+        return CommandCenterResult(
+            summary=summary,
+            research_brief_queue=research_brief_queue,
+            research_leads=research_leads,
+            source_health=source_health_report,
+            recent_agent_runs=recent_agent_runs,
+            recommendations=recommendations,
             errors=errors,
         )
 
@@ -1235,6 +1318,166 @@ def _priority_for_source_health(health_status: str) -> int:
         "watch": 65,
         "healthy": 90,
     }.get(health_status, 80)
+
+
+def _command_center_queue_item(item: ResearchBriefQueueItem) -> dict[str, Any]:
+    return {
+        "queue_item_id": str(item.queue_item_id),
+        "status": item.status,
+        "priority": item.priority,
+        "topic": item.topic,
+        "source_key": item.source_key,
+        "brief_style": item.brief_style,
+        "review_mode": item.review_mode,
+        "attempts": item.attempts,
+        "last_brief_id": str(item.last_brief_id) if item.last_brief_id else None,
+        "last_agent_run_id": str(item.last_agent_run_id) if item.last_agent_run_id else None,
+        "last_error": item.last_error,
+        "created_at": item.created_at.isoformat(),
+        "updated_at": item.updated_at.isoformat(),
+        "origin": (item.metadata.get("batch_queue") or {}).get("origin"),
+    }
+
+
+def _command_center_lead(lead: ResearchLeadRecord) -> dict[str, Any]:
+    return {
+        "lead_id": str(lead.lead_id),
+        "status": lead.status,
+        "priority": lead.priority,
+        "lead_type": lead.lead_type,
+        "title": lead.title,
+        "url": lead.url,
+        "source_key": lead.source_key,
+        "origin_source_key": lead.origin_source_key,
+        "reason": lead.reason,
+        "topic_tags": lead.topic_tags,
+        "suggested_sources": lead.suggested_sources,
+        "created_at": lead.created_at.isoformat(),
+        "updated_at": lead.updated_at.isoformat(),
+        "queue_item_id": (lead.metadata.get("research_brief_queue") or {}).get("queue_item_id"),
+    }
+
+
+def _command_center_agent_run(run: AgentRunRecord) -> dict[str, Any]:
+    return {
+        "agent_run_id": str(run.agent_run_id),
+        "agent_name": run.agent_name,
+        "agent_version": run.agent_version,
+        "model_profile": run.model_profile,
+        "status": str(run.status),
+        "source_key": run.source_key,
+        "partition_date": run.partition_date,
+        "dagster_run_id": run.dagster_run_id,
+        "started_at": run.started_at.isoformat(),
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "error_count": len(run.errors),
+        "summary": run.summary,
+    }
+
+
+def _extend_command_center_recommendations(
+    recommendations: list[CommandCenterRecommendation],
+    *,
+    queue_status_counts: Counter[str],
+    lead_status_counts: Counter[str],
+    source_health_report: dict[str, Any] | None,
+    agent_status_counts: Counter[str],
+) -> None:
+    if queue_status_counts.get("failed", 0) > 0:
+        recommendations.append(
+            CommandCenterRecommendation(
+                area="brief_queue",
+                severity="watch",
+                action="Inspect or requeue failed research brief queue items.",
+                reason=f"{queue_status_counts['failed']} queued brief item(s) are failed.",
+                job_name="research_brief_queue_job",
+                metadata={"failed_count": queue_status_counts["failed"]},
+            )
+        )
+    if queue_status_counts.get("queued", 0) > 0:
+        recommendations.append(
+            CommandCenterRecommendation(
+                area="brief_queue",
+                severity="info",
+                action="Run the queued research brief worker.",
+                reason=f"{queue_status_counts['queued']} brief item(s) are ready to run.",
+                job_name="research_brief_queue_runner_job",
+                metadata={"queued_count": queue_status_counts["queued"]},
+            )
+        )
+    actionable_leads = lead_status_counts.get("new", 0) + lead_status_counts.get("watching", 0)
+    if actionable_leads > 0:
+        recommendations.append(
+            CommandCenterRecommendation(
+                area="research_leads",
+                severity="info",
+                action="Batch queue actionable research leads for synthesis.",
+                reason=f"{actionable_leads} lead(s) are new or watching.",
+                job_name="research_brief_queue_batch_job",
+                metadata={"actionable_leads": actionable_leads, "mode": "research_leads"},
+            )
+        )
+    if source_health_report:
+        failed_sources = source_health_report.get("failed_sources", [])
+        triage_sources = source_health_report.get("triage_sources", [])
+        watch_sources = source_health_report.get("watch_sources", [])
+        embedding_missing_sources = source_health_report.get("embedding_missing_sources", [])
+        full_text_blocking_sources = source_health_report.get("full_text_blocking_sources", [])
+        if failed_sources:
+            recommendations.append(
+                CommandCenterRecommendation(
+                    area="source_health",
+                    severity="blocking",
+                    action="Inspect failed source health before expanding synthesis volume.",
+                    reason=f"{len(failed_sources)} source(s) are below the minimum health bar.",
+                    job_name="source_health_report_job",
+                    metadata={"failed_sources": failed_sources},
+                )
+            )
+        if triage_sources or watch_sources:
+            recommendations.append(
+                CommandCenterRecommendation(
+                    area="source_health",
+                    severity="watch",
+                    action="Queue source-health gap reviews for synthesis triage.",
+                    reason=f"{len(triage_sources)} triage and {len(watch_sources)} watch source(s) need review.",
+                    job_name="research_brief_queue_batch_job",
+                    metadata={"triage_sources": triage_sources, "watch_sources": watch_sources, "mode": "source_health"},
+                )
+            )
+        if embedding_missing_sources:
+            recommendations.append(
+                CommandCenterRecommendation(
+                    area="embeddings",
+                    severity="watch",
+                    action="Refresh and maintain the embedding index.",
+                    reason=f"{len(embedding_missing_sources)} source(s) have missing embeddings.",
+                    job_name="embedding_maintenance_job",
+                    metadata={"embedding_missing_sources": embedding_missing_sources},
+                )
+            )
+        if full_text_blocking_sources:
+            recommendations.append(
+                CommandCenterRecommendation(
+                    area="full_text",
+                    severity="blocking",
+                    action="Run full-text ops before enabling aggressive full-text schedules.",
+                    reason=f"{len(full_text_blocking_sources)} full-text source(s) are blocking.",
+                    job_name="full_text_ops_agent_job",
+                    metadata={"full_text_blocking_sources": full_text_blocking_sources},
+                )
+            )
+    if agent_status_counts.get("failed", 0) > 0:
+        recommendations.append(
+            CommandCenterRecommendation(
+                area="agents",
+                severity="watch",
+                action="Inspect recent failed agent runs.",
+                reason=f"{agent_status_counts['failed']} recent agent run(s) failed.",
+                job_name="agent_runs",
+                metadata={"failed_agent_runs": agent_status_counts["failed"]},
+            )
+        )
 
 
 def _brief_request_from_queue_item(

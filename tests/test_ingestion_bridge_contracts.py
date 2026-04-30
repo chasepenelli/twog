@@ -18,6 +18,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ClaimSearchRequest,
     ClaimSearchResult,
     ClaimType,
+    CommandCenterRequest,
     CommitHypothesisRequest,
     DoiOpenAccessFollowupQueueRequest,
     DocumentChunk,
@@ -2681,6 +2682,64 @@ def test_research_brief_queue_batch_from_leads_and_source_health(tmp_path):
     assert any(item.source_key == "pubmed" for item in result.queue_items)
     assert any(item.priority == 20 for item in result.queue_items if item.metadata["batch_queue"]["origin"] == "research_lead")
     assert any(item.priority == 45 for item in result.queue_items if item.metadata["batch_queue"]["origin"] == "source_health")
+
+
+def test_command_center_report_summarizes_operational_state(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "command-center.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    queued = service.queue_research_brief(
+        ResearchBriefQueueRequest(
+            topic="VEGF synthesis queue item",
+            source_key="pubmed",
+            priority=10,
+        )
+    )
+    repo.update_research_brief_queue_item(queued.queue_item_id, status="failed", last_error="model timeout")
+    repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Angiosarcoma trial lead",
+            lead_type="linked_article",
+            status="new",
+            priority=25,
+            suggested_sources=["clinicaltrials_gov"],
+        )
+    )
+    repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="research_synthesis_editor_agent",
+            status=RunStatus.FAILED,
+            errors=["failed synthesis smoke"],
+        )
+    )
+    source_health_report = {
+        "failed_sources": ["chembl"],
+        "triage_sources": ["pubmed"],
+        "watch_sources": ["openalex"],
+        "embedding_missing_sources": ["pubmed"],
+        "full_text_blocking_sources": ["pmc_oa"],
+        "sources": [],
+        "summary": {},
+    }
+
+    report = service.build_command_center_report(
+        CommandCenterRequest(
+            source_health_report=source_health_report,
+            queue_limit=10,
+            lead_limit=10,
+            agent_run_limit=10,
+        )
+    )
+    recommendation_areas = {item.area for item in report.recommendations}
+
+    assert report.summary["brief_queue_failed"] == 1
+    assert report.summary["research_leads_actionable"] == 1
+    assert report.summary["recent_agent_failures"] == 1
+    assert report.summary["source_health_failed"] == 1
+    assert report.summary["blocking_recommendations"] >= 2
+    assert report.research_brief_queue["status_counts"]["failed"] == 1
+    assert report.research_leads["status_counts"]["new"] == 1
+    assert report.source_health == source_health_report
+    assert recommendation_areas >= {"brief_queue", "research_leads", "source_health", "embeddings", "full_text", "agents"}
 
 
 def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
@@ -6321,6 +6380,7 @@ def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp
         )
     )
     batch = mcp_server.queue_research_brief_batch_tool(mode="research_leads", limit=1)
+    command_center = mcp_server.command_center_tool(include_source_health=False, queue_limit=5, lead_limit=5)
 
     assert queued["queue_item_id"]
     assert fetched["queue_item_id"] == queued["queue_item_id"]
@@ -6332,6 +6392,8 @@ def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp
     assert archived["metadata"]["queue_control"]["previous_status"] == "completed"
     assert batch["queued_count"] == 1
     assert batch["queue_items"][0]["metadata"]["batch_queue"]["origin"] == "research_lead"
+    assert command_center["summary"]["brief_queue_total"] >= 1
+    assert command_center["recommendations"]
 
 
 def test_mcp_retrieval_smoke_helper_dumps_full_read_chain(monkeypatch, tmp_path):
@@ -7804,6 +7866,7 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.x_linked_article_review_job is not None
     assert dagster_asset_module.source_followup_queue_job is not None
     assert dagster_asset_module.source_followup_ingest_job is not None
+    assert dagster_asset_module.command_center_job is not None
     assert dagster_asset_module.pubmed_source_followup_ingest_job is not None
     assert dagster_asset_module.crossref_source_followup_ingest_job is not None
     assert dagster_asset_module.pmc_oa_source_followup_ingest_job is not None

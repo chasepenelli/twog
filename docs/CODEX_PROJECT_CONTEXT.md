@@ -175,6 +175,7 @@ Useful manual GitHub smoke jobs:
 
 - `research_brief_agent_job`
 - `research_brief_library_job`
+- `command_center_job`
 - `research_brief_queue_job`
 - `research_brief_queue_batch_job`
 - `research_brief_queue_seed_job`
@@ -200,10 +201,10 @@ git diff --check
 DAGSTER_HOME=/tmp/dagster-home DAGSTER_DISABLE_TELEMETRY=1 .venv/bin/dg check defs
 ```
 
-Expected current contract test count after the queue batch work:
+Expected current contract test count after the command-center work:
 
 ```text
-216 passed
+217 passed
 ```
 
 ## Current Working Tree Note
@@ -215,13 +216,12 @@ not modify it unless explicitly instructed.
 
 Good next lanes:
 
-1. Add a command-center read model/API that summarizes brief queue, lead queue,
-   source health, full-text ops, and recent agent runs for a future UI.
-2. Add a model comparison run path for one queued brief using OpenRouter with
+1. Add a model comparison run path for one queued brief using OpenRouter with
    controlled cost metadata.
-3. Continue full-text parser hardening and source/date partition coverage.
-4. Add source-health driven batch queue presets once the command-center read
-   model makes pending work easy to inspect.
+2. Continue full-text parser hardening and source/date partition coverage.
+3. Add command-center UI/client rendering over `command_center_job` output.
+4. Add source-health driven batch queue presets once hosted command-center
+   snapshots show which sources produce the most useful pending work.
 
 Use deterministic mode for smoke tests and only enable OpenRouter-backed runs
 when the user explicitly approves model spend.

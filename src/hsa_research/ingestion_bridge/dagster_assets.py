@@ -16,6 +16,7 @@ from typing import Any
 from .contracts import (
     ClaimCurationRequest,
     ClaimSearchRequest,
+    CommandCenterRequest,
     FullTextOpsRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefQueueBatchRequest,
@@ -124,6 +125,13 @@ _SOURCE_HEALTH_TABLE_COLUMNS = (
     "full_text_triage_should_retry",
     "full_text_triage_should_block_schedule",
     "full_text_qa",
+)
+_COMMAND_CENTER_RECOMMENDATION_TABLE_COLUMNS = (
+    "severity",
+    "area",
+    "action",
+    "job_name",
+    "reason",
 )
 _FULL_TEXT_TRIAGE_TABLE_COLUMNS = (
     "source_key",
@@ -456,6 +464,38 @@ if dg is not None:
             "source_health_table": _metadata_table(
                 report.get("sources", []),
                 _SOURCE_HEALTH_TABLE_COLUMNS,
+            ),
+        }
+
+    def _command_center_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        summary = report.get("summary", {})
+        recommendations = report.get("recommendations", [])
+        recommendation_rows = [
+            {
+                "severity": item.get("severity"),
+                "area": item.get("area"),
+                "action": item.get("action"),
+                "job_name": item.get("job_name"),
+                "reason": str(item.get("reason") or "")[:500],
+            }
+            for item in recommendations
+        ]
+        queue = report.get("research_brief_queue", {})
+        leads = report.get("research_leads", {})
+        return {
+            "brief_queue_ready": dg.MetadataValue.int(int(summary.get("brief_queue_ready") or 0)),
+            "brief_queue_failed": dg.MetadataValue.int(int(summary.get("brief_queue_failed") or 0)),
+            "research_leads_actionable": dg.MetadataValue.int(int(summary.get("research_leads_actionable") or 0)),
+            "recent_agent_failures": dg.MetadataValue.int(int(summary.get("recent_agent_failures") or 0)),
+            "recommendation_count": dg.MetadataValue.int(int(summary.get("recommendation_count") or 0)),
+            "blocking_recommendations": dg.MetadataValue.int(int(summary.get("blocking_recommendations") or 0)),
+            "summary": dg.MetadataValue.json(summary),
+            "queue_status_counts": dg.MetadataValue.json(queue.get("status_counts", {})),
+            "lead_status_counts": dg.MetadataValue.json(leads.get("status_counts", {})),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "recommendations": _metadata_table(
+                recommendation_rows,
+                _COMMAND_CENTER_RECOMMENDATION_TABLE_COLUMNS,
             ),
         }
 
@@ -1711,6 +1751,55 @@ if dg is not None:
             require_claims=True,
         )
         return dg.MaterializeResult(value=report, metadata=_source_health_report_metadata(report))
+
+    @dg.asset(
+        group_name="control_panel",
+        config_schema={
+            "source_keys": dg.Field(
+                [str],
+                default_value=[],
+                description="Optional source keys for source-health scope.",
+            ),
+            "include_source_health": dg.Field(
+                bool,
+                default_value=True,
+                description="Include source health in the command-center report.",
+            ),
+            "include_recent_agents": dg.Field(
+                bool,
+                default_value=True,
+                description="Include recent agent runs in the command-center report.",
+            ),
+            "queue_limit": dg.Field(int, default_value=25, description="Maximum queue items to show."),
+            "lead_limit": dg.Field(int, default_value=25, description="Maximum research leads to show."),
+            "agent_run_limit": dg.Field(int, default_value=25, description="Maximum recent agent runs to show."),
+            "min_health_score": dg.Field(float, default_value=0.65, description="Minimum source health score."),
+            "require_claims": dg.Field(bool, default_value=True, description="Require claims for source health."),
+        },
+    )
+    def command_center_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Read-only command-center snapshot for TWOG operations."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_command_center_report(
+            CommandCenterRequest(
+                source_keys=config["source_keys"],
+                include_source_health=config["include_source_health"],
+                include_recent_agents=config["include_recent_agents"],
+                queue_limit=config["queue_limit"],
+                lead_limit=config["lead_limit"],
+                agent_run_limit=config["agent_run_limit"],
+                min_health_score=config["min_health_score"],
+                require_claims=config["require_claims"],
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_command_center_report_metadata(report))
 
     @dg.asset(group_name="agent_ops")
     def full_text_ops_agent_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
@@ -3528,6 +3617,7 @@ if dg is not None:
         literature_full_text_source_date_report,
         structured_source_count_report,
         source_health_report,
+        command_center_report,
         full_text_ops_agent_report,
         research_brief_agent_report,
         research_brief_library_report,
@@ -3623,6 +3713,10 @@ if dg is not None:
     source_health_report_job = dg.define_asset_job(
         "source_health_report_job",
         selection=dg.AssetSelection.assets(source_health_report),
+    )
+    command_center_job = dg.define_asset_job(
+        "command_center_job",
+        selection=dg.AssetSelection.assets(command_center_report),
     )
     full_text_ops_agent_job = dg.define_asset_job(
         "full_text_ops_agent_job",
@@ -3884,6 +3978,7 @@ if dg is not None:
             literature_full_text_source_date_job,
             structured_source_count_report_job,
             source_health_report_job,
+            command_center_job,
             full_text_ops_agent_job,
             research_brief_agent_job,
             research_brief_library_job,
@@ -3953,6 +4048,7 @@ else:
     literature_full_text_source_date_job = None
     structured_source_count_report_job = None
     source_health_report_job = None
+    command_center_job = None
     full_text_ops_agent_job = None
     research_brief_agent_job = None
     research_brief_library_job = None

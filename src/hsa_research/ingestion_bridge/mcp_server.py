@@ -17,6 +17,7 @@ from .contracts import (
     ChunkContextRequest,
     ClaimCurationRequest,
     ClaimSearchRequest,
+    CommandCenterRequest,
     CommitHypothesisRequest,
     DoiOpenAccessFollowupQueueRequest,
     FullTextTriageRequest,
@@ -771,6 +772,31 @@ def list_agent_runs_tool(
     ]
 
 
+def command_center_tool(
+    source_keys: list[str] | None = None,
+    include_source_health: bool = True,
+    include_recent_agents: bool = True,
+    queue_limit: int = 25,
+    lead_limit: int = 25,
+    agent_run_limit: int = 25,
+    min_health_score: float = 0.65,
+    require_claims: bool = True,
+) -> dict:
+    """Return the read-only TWOG command-center report."""
+
+    request = CommandCenterRequest(
+        source_keys=source_keys or [],
+        include_source_health=include_source_health,
+        include_recent_agents=include_recent_agents,
+        queue_limit=queue_limit,
+        lead_limit=lead_limit,
+        agent_run_limit=agent_run_limit,
+        min_health_score=min_health_score,
+        require_claims=require_claims,
+    )
+    return get_service().build_command_center_report(request).model_dump(mode="json")
+
+
 if mcp is not None:
 
     @mcp.tool()
@@ -1449,6 +1475,30 @@ if mcp is not None:
             status=status,
             source_key=source_key,
             limit=limit,
+        )
+
+    @mcp.tool()
+    def command_center(
+        source_keys: list[str] | None = None,
+        include_source_health: bool = True,
+        include_recent_agents: bool = True,
+        queue_limit: int = 25,
+        lead_limit: int = 25,
+        agent_run_limit: int = 25,
+        min_health_score: float = 0.65,
+        require_claims: bool = True,
+    ) -> dict:
+        """Return the read-only TWOG command-center report."""
+
+        return command_center_tool(
+            source_keys=source_keys,
+            include_source_health=include_source_health,
+            include_recent_agents=include_recent_agents,
+            queue_limit=queue_limit,
+            lead_limit=lead_limit,
+            agent_run_limit=agent_run_limit,
+            min_health_score=min_health_score,
+            require_claims=require_claims,
         )
 
     @mcp.tool()

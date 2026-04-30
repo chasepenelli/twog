@@ -191,6 +191,16 @@ ResearchBriefStance = Literal[
 
 ResearchBriefEvidenceStrength = Literal["high", "medium", "low", "unknown"]
 
+CommandCenterArea = Literal[
+    "brief_queue",
+    "research_leads",
+    "source_health",
+    "embeddings",
+    "full_text",
+    "agents",
+]
+CommandCenterSeverity = Literal["info", "watch", "blocking"]
+
 XTopicIdentifierType = Literal[
     "doi",
     "pmid",
@@ -684,6 +694,38 @@ class ResearchBriefQueueBatchResult(StrictBaseModel):
     skipped_count: int = 0
     queue_items: list[ResearchBriefQueueItem] = Field(default_factory=list)
     skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class CommandCenterRequest(StrictBaseModel):
+    source_keys: list[str] = Field(default_factory=list, max_length=50)
+    include_source_health: bool = True
+    include_recent_agents: bool = True
+    source_health_report: dict[str, Any] | None = None
+    queue_limit: int = Field(default=25, ge=1, le=200)
+    lead_limit: int = Field(default=25, ge=1, le=200)
+    agent_run_limit: int = Field(default=25, ge=1, le=200)
+    min_health_score: float = Field(default=0.65, ge=0.0, le=1.0)
+    require_claims: bool = True
+
+
+class CommandCenterRecommendation(StrictBaseModel):
+    area: CommandCenterArea
+    severity: CommandCenterSeverity
+    action: str
+    reason: str
+    job_name: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommandCenterResult(StrictBaseModel):
+    summary: dict[str, Any] = Field(default_factory=dict)
+    research_brief_queue: dict[str, Any] = Field(default_factory=dict)
+    research_leads: dict[str, Any] = Field(default_factory=dict)
+    source_health: dict[str, Any] | None = None
+    recent_agent_runs: list[dict[str, Any]] = Field(default_factory=list)
+    recommendations: list[CommandCenterRecommendation] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
