@@ -355,6 +355,74 @@ jobs:
             --deployment "$DAGSTER_CLOUD_DEPLOYMENT" || true
         shell: bash
 
+      - name: Print hosted research brief queue summary
+        if: ${{ always() && (inputs.job == 'research_brief_queue_batch_job' || inputs.job == 'research_brief_queue_runner_job' || inputs.job == 'research_brief_queue_seed_job') }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          from collections import Counter
+
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          service = HSAResearchService(build_research_repository())
+          queue_items = service.list_research_brief_queue_items(limit=25)
+          briefs = service.list_research_briefs(limit=10)
+          counts_by_status = Counter(item.status for item in queue_items)
+          payload = {
+              "queue_items_sampled": len(queue_items),
+              "counts_by_status": dict(sorted(counts_by_status.items())),
+              "queue_items": [
+                  {
+                      "queue_item_id": str(item.queue_item_id),
+                      "status": item.status,
+                      "priority": item.priority,
+                      "source_key": item.source_key,
+                      "review_mode": item.review_mode,
+                      "attempts": item.attempts,
+                      "last_brief_id": str(item.last_brief_id) if item.last_brief_id else None,
+                      "last_agent_run_id": str(item.last_agent_run_id) if item.last_agent_run_id else None,
+                      "last_error": item.last_error,
+                      "topic": item.topic[:300],
+                      "updated_at": item.updated_at.isoformat(),
+                  }
+                  for item in queue_items[:10]
+              ],
+              "recent_briefs": [
+                  {
+                      "brief_id": str(brief.brief_id),
+                      "status": brief.status,
+                      "source_key": brief.source_key,
+                      "review_mode": brief.review_mode,
+                      "citation_count": brief.citation_count,
+                      "finding_count": brief.finding_count,
+                      "hypothesis_count": brief.hypothesis_count,
+                      "error_count": brief.error_count,
+                      "topic": brief.topic[:300],
+                      "updated_at": brief.updated_at.isoformat(),
+                  }
+                  for brief in briefs[:10]
+              ],
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Research brief queue summary\n")
+                  summary.write(f"- Queue items sampled: `{payload['queue_items_sampled']}`\n")
+                  summary.write(f"- By status: `{dict(sorted(counts_by_status.items()))}`\n")
+                  for item in payload["queue_items"][:5]:
+                      summary.write(
+                          f"- `{item['status']}` `{item['queue_item_id']}`: "
+                          f"{item['topic']} "
+                          f"(brief={item['last_brief_id'] or 'none'}, errors={bool(item['last_error'])})\n"
+                      )
+          PY
+        shell: bash
+
       - name: Print hosted embedding maintenance report
         if: ${{ inputs.job == 'embedding_maintenance_job' }}
         run: |

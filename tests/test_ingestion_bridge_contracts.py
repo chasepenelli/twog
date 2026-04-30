@@ -3077,7 +3077,42 @@ def test_research_brief_queue_runner_persists_brief_and_updates_queue(tmp_path):
     assert updated is not None
     assert updated.status == "completed"
     assert updated.last_brief_id == result.brief.brief_id
-    assert repo.get_research_brief(result.brief.brief_id) is not None
+    saved_brief = repo.get_research_brief(result.brief.brief_id)
+    assert saved_brief is not None
+    assert saved_brief.status == "completed"
+
+
+def test_research_brief_queue_runner_fails_unusable_brief(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-queue-runner-fail.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    queued = service.queue_research_brief(
+        ResearchBriefQueueRequest(
+            topic="Unbacked linked article lead",
+            source_key="x_linked_article",
+            review_mode="deterministic_only",
+            max_claims=0,
+            max_chunks_per_perspective=2,
+        )
+    )
+
+    result = service.run_next_research_brief_queue_item(
+        ResearchBriefQueueRunRequest(source_key="x_linked_article")
+    )
+    updated = repo.get_research_brief_queue_item(queued.queue_item_id)
+
+    assert result.ran is True
+    assert result.brief is not None
+    assert result.errors
+    assert "did not meet completion bar" in result.errors[0]
+    assert updated is not None
+    assert updated.status == "failed"
+    assert updated.last_brief_id == result.brief.brief_id
+    assert updated.last_agent_run_id == result.brief.agent_run_id
+    assert updated.last_error is not None
+    assert "citations" in updated.last_error
+    saved_brief = repo.get_research_brief(result.brief.brief_id)
+    assert saved_brief is not None
+    assert saved_brief.status == "failed"
 
 
 def test_research_brief_skeptic_retrieval_prefers_clinical_outcome_evidence(tmp_path):

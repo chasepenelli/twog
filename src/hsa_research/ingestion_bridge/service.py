@@ -734,6 +734,21 @@ class HSAResearchService:
         ) or item
         try:
             brief = self.run_research_brief(_brief_request_from_queue_item(running, request))
+            completion_error = _research_brief_completion_error(brief)
+            if completion_error is not None:
+                failed = self.repository.update_research_brief_queue_item(
+                    running.queue_item_id,
+                    status="failed",
+                    last_brief_id=brief.brief_id,
+                    last_agent_run_id=brief.agent_run_id,
+                    last_error=completion_error,
+                ) or running
+                return ResearchBriefQueueRunResult(
+                    ran=True,
+                    queue_item=failed,
+                    brief=brief,
+                    errors=[completion_error, *brief.errors],
+                )
             completed = self.repository.update_research_brief_queue_item(
                 running.queue_item_id,
                 status="completed",
@@ -1220,7 +1235,7 @@ def _research_brief_record_from_result(
         brief_style=result.brief_style,
         model_profile=result.model_profile,
         review_mode=request.review_mode,
-        status="completed",
+        status="failed" if _research_brief_completion_error(result) is not None else "completed",
         final_brief=result.final_brief,
         summary=summarize_research_brief(result),
         result_payload=result.model_dump(mode="json"),
@@ -1232,6 +1247,21 @@ def _research_brief_record_from_result(
         error_count=len(result.errors),
         metadata={key: value for key, value in metadata.items() if value not in (None, [], {})},
     )
+
+
+def _research_brief_completion_error(result: ResearchBriefResult) -> str | None:
+    finding_count = sum(len(report.findings) for report in result.perspective_reports)
+    missing: list[str] = []
+    if not result.citations:
+        missing.append("citations")
+    if finding_count < 1:
+        missing.append("findings")
+    if not result.ranked_hypotheses:
+        missing.append("ranked_hypotheses")
+    if not missing:
+        return None
+    suffix = f"; agent_error_count={len(result.errors)}" if result.errors else ""
+    return f"research brief did not meet completion bar; missing {', '.join(missing)}{suffix}"
 
 
 def _research_brief_evaluation_record_from_result(
