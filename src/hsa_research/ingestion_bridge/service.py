@@ -31,6 +31,10 @@ from .contracts import (
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
+    ResearchBriefQueueItem,
+    ResearchBriefQueueRequest,
+    ResearchBriefQueueRunRequest,
+    ResearchBriefQueueRunResult,
     ResearchBriefRecord,
     ResearchBriefPlaygroundPack,
     ResearchBriefRequest,
@@ -282,6 +286,82 @@ class HSAResearchService:
             topic_query=topic_query,
             limit=limit,
         )
+
+    def queue_research_brief(self, request: ResearchBriefQueueRequest) -> ResearchBriefQueueItem:
+        return self.repository.upsert_research_brief_queue_item(
+            ResearchBriefQueueItem(
+                topic=request.topic,
+                disease_scope=request.disease_scope,
+                source_key=request.source_key,
+                priority=request.priority,
+                max_chunks_per_perspective=request.max_chunks_per_perspective,
+                max_claims=request.max_claims,
+                max_chunk_chars=request.max_chunk_chars,
+                brief_style=request.brief_style,
+                model_profile=request.model_profile,
+                review_mode=request.review_mode,
+                review_models=request.review_models,
+                metadata=request.metadata,
+            )
+        )
+
+    def get_research_brief_queue_item(self, queue_item_id: UUID) -> ResearchBriefQueueItem | None:
+        return self.repository.get_research_brief_queue_item(queue_item_id)
+
+    def list_research_brief_queue_items(
+        self,
+        *,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        source_key: str | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchBriefQueueItem]:
+        return self.repository.list_research_brief_queue_items(
+            status=status,
+            statuses=statuses,
+            source_key=source_key,
+            topic_query=topic_query,
+            limit=limit,
+        )
+
+    def run_next_research_brief_queue_item(
+        self,
+        request: ResearchBriefQueueRunRequest,
+    ) -> ResearchBriefQueueRunResult:
+        candidates = self.repository.list_research_brief_queue_items(
+            statuses=list(request.statuses),
+            source_key=request.source_key,
+            topic_query=request.topic_query,
+            limit=request.limit,
+        )
+        if not candidates:
+            return ResearchBriefQueueRunResult(ran=False)
+
+        item = candidates[0]
+        running = self.repository.update_research_brief_queue_item(
+            item.queue_item_id,
+            status="running",
+            attempts=item.attempts + 1,
+            last_error=None,
+        ) or item
+        try:
+            brief = self.run_research_brief(_brief_request_from_queue_item(running, request))
+            completed = self.repository.update_research_brief_queue_item(
+                running.queue_item_id,
+                status="completed",
+                last_brief_id=brief.brief_id,
+                last_agent_run_id=brief.agent_run_id,
+                last_error=None,
+            ) or running
+            return ResearchBriefQueueRunResult(ran=True, queue_item=completed, brief=brief)
+        except Exception as exc:
+            failed = self.repository.update_research_brief_queue_item(
+                running.queue_item_id,
+                status="failed",
+                last_error=str(exc),
+            ) or running
+            return ResearchBriefQueueRunResult(ran=True, queue_item=failed, errors=[str(exc)])
 
     def run_retrieval_smoke(self, request: RetrievalSmokeRequest) -> RetrievalSmokeResult:
         """Exercise the full read path: search, chunk context, and parent object."""
@@ -764,6 +844,29 @@ def _research_brief_record_from_result(
         research_lead_count=int(result.evidence.get("research_lead_count", 0)),
         error_count=len(result.errors),
         metadata={key: value for key, value in metadata.items() if value not in (None, [], {})},
+    )
+
+
+def _brief_request_from_queue_item(
+    item: ResearchBriefQueueItem,
+    request: ResearchBriefQueueRunRequest,
+) -> ResearchBriefRequest:
+    return ResearchBriefRequest(
+        topic=item.topic,
+        disease_scope=item.disease_scope,
+        source_key=item.source_key,
+        max_chunks_per_perspective=item.max_chunks_per_perspective,
+        max_claims=item.max_claims,
+        max_chunk_chars=item.max_chunk_chars,
+        brief_style=item.brief_style,
+        model_profile=item.model_profile,
+        review_mode=item.review_mode,
+        review_models=item.review_models,
+        dagster_run_id=request.dagster_run_id,
+        metadata={
+            **item.metadata,
+            "research_brief_queue_item_id": str(item.queue_item_id),
+        },
     )
 
 

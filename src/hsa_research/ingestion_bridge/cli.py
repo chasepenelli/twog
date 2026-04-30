@@ -20,6 +20,8 @@ from .contracts import (
     EntityResolutionRequest,
     FullTextTriageRequest,
     FullTextOpsRequest,
+    ResearchBriefQueueRequest,
+    ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
     ResearchLeadCollectRequest,
     RetrievalSmokeRequest,
@@ -265,6 +267,63 @@ def main() -> None:
     research_briefs.add_argument("--source", default=None, help="Optional source key filter")
     research_briefs.add_argument("--topic-query", default=None, help="Case-insensitive topic/scope filter")
     research_briefs.add_argument("--limit", type=int, default=50, help="Maximum briefs to return")
+
+    queue_research_brief = subparsers.add_parser(
+        "queue-research-brief",
+        help="Queue a research brief request for later runner execution",
+    )
+    queue_research_brief.add_argument("--topic", required=True, help="Research question or topic to brief")
+    queue_research_brief.add_argument(
+        "--disease-scope",
+        default="canine hemangiosarcoma and human angiosarcoma",
+        help="Disease/scope guardrail for retrieval and synthesis",
+    )
+    queue_research_brief.add_argument("--source", default=None, help="Optional source key filter")
+    queue_research_brief.add_argument("--priority", type=int, default=100, help="Lower values run first")
+    queue_research_brief.add_argument("--max-chunks", type=int, default=8, help="Chunks per perspective search")
+    queue_research_brief.add_argument("--max-claims", type=int, default=12, help="Claims to include")
+    queue_research_brief.add_argument("--max-chunk-chars", type=int, default=1800, help="Maximum chars per cited chunk")
+    queue_research_brief.add_argument(
+        "--brief-style",
+        choices=("technical", "operator", "substack", "vet_partner"),
+        default="technical",
+    )
+    queue_research_brief.add_argument("--model-profile", default="research_brief", help="Logical model profile")
+    queue_research_brief.add_argument(
+        "--review-mode",
+        choices=("external_required", "openrouter_required", "openrouter_compare", "deterministic_only"),
+        default="deterministic_only",
+    )
+    queue_research_brief.add_argument(
+        "--review-model",
+        action="append",
+        default=[],
+        help="OpenRouter model id; repeat to compare multiple models",
+    )
+
+    research_brief_queue = subparsers.add_parser(
+        "research-brief-queue",
+        help="List or fetch queued research brief requests",
+    )
+    research_brief_queue.add_argument("--id", default=None, help="Optional queue_item_id to fetch")
+    research_brief_queue.add_argument("--status", default=None, help="Queue status filter")
+    research_brief_queue.add_argument("--source", default=None, help="Optional source key filter")
+    research_brief_queue.add_argument("--topic-query", default=None, help="Case-insensitive topic/scope filter")
+    research_brief_queue.add_argument("--limit", type=int, default=50, help="Maximum queue items to return")
+
+    run_research_brief_queue = subparsers.add_parser(
+        "run-research-brief-queue",
+        help="Run the next queued research brief request",
+    )
+    run_research_brief_queue.add_argument(
+        "--status",
+        action="append",
+        default=[],
+        help="Queue status to pull from; defaults to queued",
+    )
+    run_research_brief_queue.add_argument("--source", default=None, help="Optional source key filter")
+    run_research_brief_queue.add_argument("--topic-query", default=None, help="Case-insensitive topic/scope filter")
+    run_research_brief_queue.add_argument("--limit", type=int, default=1, help="Candidate queue items to inspect")
 
     research_brief_playground = subparsers.add_parser(
         "research-brief-playground-pack",
@@ -761,7 +820,7 @@ def main() -> None:
         ).model_dump(mode="json")
     elif args.command == "research-brief":
         output = HSAResearchService(repo).run_research_brief(
-            ResearchBriefRequest(
+                ResearchBriefRequest(
                 topic=args.topic,
                 disease_scope=args.disease_scope,
                 source_key=args.source,
@@ -789,6 +848,46 @@ def main() -> None:
                     limit=args.limit,
                 )
             ]
+    elif args.command == "queue-research-brief":
+        output = HSAResearchService(repo).queue_research_brief(
+            ResearchBriefQueueRequest(
+                topic=args.topic,
+                disease_scope=args.disease_scope,
+                source_key=args.source,
+                priority=args.priority,
+                max_chunks_per_perspective=args.max_chunks,
+                max_claims=args.max_claims,
+                max_chunk_chars=args.max_chunk_chars,
+                brief_style=args.brief_style,
+                model_profile=args.model_profile,
+                review_mode=args.review_mode,
+                review_models=args.review_model,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "research-brief-queue":
+        service = HSAResearchService(repo)
+        if args.id:
+            item = service.get_research_brief_queue_item(UUID(args.id))
+            output = {} if item is None else item.model_dump(mode="json")
+        else:
+            output = [
+                item.model_dump(mode="json")
+                for item in service.list_research_brief_queue_items(
+                    status=args.status,
+                    source_key=args.source,
+                    topic_query=args.topic_query,
+                    limit=args.limit,
+                )
+            ]
+    elif args.command == "run-research-brief-queue":
+        output = HSAResearchService(repo).run_next_research_brief_queue_item(
+            ResearchBriefQueueRunRequest(
+                statuses=args.status or ["queued"],
+                source_key=args.source,
+                topic_query=args.topic_query,
+                limit=args.limit,
+            )
+        ).model_dump(mode="json")
     elif args.command == "research-brief-playground-pack":
         output = HSAResearchService(repo).build_research_brief_playground_pack(
             ResearchBriefRequest(

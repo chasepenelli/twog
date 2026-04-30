@@ -24,6 +24,8 @@ from .contracts import (
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
+    ResearchBriefQueueRequest,
+    ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
     ResearchChunkSearchRequest,
     ResearchLeadCollectRequest,
@@ -201,6 +203,80 @@ def list_research_briefs_tool(
             limit=limit,
         )
     ]
+
+
+def queue_research_brief_tool(
+    topic: str,
+    disease_scope: str = "canine hemangiosarcoma and human angiosarcoma",
+    source_key: str | None = None,
+    priority: int = 100,
+    max_chunks_per_perspective: int = 8,
+    max_claims: int = 12,
+    max_chunk_chars: int = 1800,
+    brief_style: str = "technical",
+    model_profile: str = "research_brief",
+    review_mode: str = "deterministic_only",
+    review_models: list[str] | None = None,
+) -> dict:
+    """Queue a research brief request for later execution."""
+
+    request = ResearchBriefQueueRequest(
+        topic=topic,
+        disease_scope=disease_scope,
+        source_key=source_key,
+        priority=priority,
+        max_chunks_per_perspective=max_chunks_per_perspective,
+        max_claims=max_claims,
+        max_chunk_chars=max_chunk_chars,
+        brief_style=brief_style,  # type: ignore[arg-type]
+        model_profile=model_profile,
+        review_mode=review_mode,  # type: ignore[arg-type]
+        review_models=review_models or [],
+    )
+    return get_service().queue_research_brief(request).model_dump(mode="json")
+
+
+def get_research_brief_queue_item_tool(queue_item_id: str) -> dict:
+    """Return a queued research brief request by ID."""
+
+    item = get_service().get_research_brief_queue_item(UUID(queue_item_id))
+    return {} if item is None else item.model_dump(mode="json")
+
+
+def list_research_brief_queue_tool(
+    status: str | None = None,
+    source_key: str | None = None,
+    topic_query: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """List queued research brief requests."""
+
+    return [
+        item.model_dump(mode="json")
+        for item in get_service().list_research_brief_queue_items(
+            status=status,
+            source_key=source_key,
+            topic_query=topic_query,
+            limit=limit,
+        )
+    ]
+
+
+def run_research_brief_queue_tool(
+    statuses: list[str] | None = None,
+    source_key: str | None = None,
+    topic_query: str | None = None,
+    limit: int = 1,
+) -> dict:
+    """Run the next queued research brief request."""
+
+    request = ResearchBriefQueueRunRequest(
+        statuses=statuses or ["queued"],  # type: ignore[arg-type]
+        source_key=source_key,
+        topic_query=topic_query,
+        limit=limit,
+    )
+    return get_service().run_next_research_brief_queue_item(request).model_dump(mode="json")
 
 
 def run_retrieval_smoke_tool(
@@ -686,6 +762,74 @@ if mcp is not None:
 
         return list_research_briefs_tool(
             status=status,
+            source_key=source_key,
+            topic_query=topic_query,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def queue_research_brief(
+        topic: str,
+        disease_scope: str = "canine hemangiosarcoma and human angiosarcoma",
+        source_key: str | None = None,
+        priority: int = 100,
+        max_chunks_per_perspective: int = 8,
+        max_claims: int = 12,
+        max_chunk_chars: int = 1800,
+        brief_style: str = "technical",
+        model_profile: str = "research_brief",
+        review_mode: str = "deterministic_only",
+        review_models: list[str] | None = None,
+    ) -> dict:
+        """Queue a citation-first research brief request."""
+
+        return queue_research_brief_tool(
+            topic=topic,
+            disease_scope=disease_scope,
+            source_key=source_key,
+            priority=priority,
+            max_chunks_per_perspective=max_chunks_per_perspective,
+            max_claims=max_claims,
+            max_chunk_chars=max_chunk_chars,
+            brief_style=brief_style,
+            model_profile=model_profile,
+            review_mode=review_mode,
+            review_models=review_models,
+        )
+
+    @mcp.tool()
+    def get_research_brief_queue_item(queue_item_id: str) -> dict:
+        """Return one queued research brief request."""
+
+        return get_research_brief_queue_item_tool(queue_item_id)
+
+    @mcp.tool()
+    def list_research_brief_queue(
+        status: str | None = None,
+        source_key: str | None = None,
+        topic_query: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """List queued research brief requests."""
+
+        return list_research_brief_queue_tool(
+            status=status,
+            source_key=source_key,
+            topic_query=topic_query,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def run_research_brief_queue(
+        statuses: list[str] | None = None,
+        source_key: str | None = None,
+        topic_query: str | None = None,
+        limit: int = 1,
+    ) -> dict:
+        """Run the next queued research brief request."""
+
+        return run_research_brief_queue_tool(
+            statuses=statuses,
             source_key=source_key,
             topic_query=topic_query,
             limit=limit,
@@ -1232,6 +1376,12 @@ if mcp is not None:
         """Fetch a persisted research brief as an MCP resource."""
 
         return get_research_brief_tool(brief_id)
+
+    @mcp.resource("research-brief-queue://{queue_item_id}")
+    def research_brief_queue_resource(queue_item_id: str) -> dict:
+        """Fetch a queued research brief request as an MCP resource."""
+
+        return get_research_brief_queue_item_tool(queue_item_id)
 
     @mcp.resource("artifact://{artifact_id}")
     def artifact_resource(artifact_id: str) -> dict:

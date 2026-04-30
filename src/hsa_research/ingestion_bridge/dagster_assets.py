@@ -17,6 +17,7 @@ from .contracts import (
     ClaimCurationRequest,
     ClaimSearchRequest,
     FullTextOpsRequest,
+    ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
     ResearchLeadCollectRequest,
     ResearchObject,
@@ -169,6 +170,20 @@ _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS = (
     "citation_count",
     "research_lead_count",
     "error_count",
+    "created_at",
+)
+_RESEARCH_BRIEF_QUEUE_TABLE_COLUMNS = (
+    "queue_item_id",
+    "status",
+    "priority",
+    "topic",
+    "source_key",
+    "brief_style",
+    "model_profile",
+    "review_mode",
+    "attempts",
+    "last_brief_id",
+    "last_error",
     "created_at",
 )
 _RESEARCH_LEAD_TABLE_COLUMNS = (
@@ -561,6 +576,36 @@ if dg is not None:
             "source_key": report.get("source_key"),
             "topic_query": report.get("topic_query"),
             "briefs": _metadata_table(rows, _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS),
+        }
+
+    def _research_brief_queue_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = report.get("queue_items", [])
+        return {
+            "queue_item_count": dg.MetadataValue.int(int(report.get("queue_item_count", 0))),
+            "status": report.get("status"),
+            "statuses": dg.MetadataValue.json(report.get("statuses", [])),
+            "source_key": report.get("source_key"),
+            "topic_query": report.get("topic_query"),
+            "queue_items": _metadata_table(rows, _RESEARCH_BRIEF_QUEUE_TABLE_COLUMNS),
+        }
+
+    def _research_brief_queue_runner_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        brief = report.get("brief") or {}
+        queue_item = report.get("queue_item") or {}
+        return {
+            "ran": bool(report.get("ran", False)),
+            "queue_item_id": queue_item.get("queue_item_id"),
+            "queue_status": queue_item.get("status"),
+            "brief_id": brief.get("brief_id"),
+            "agent_run_id": brief.get("agent_run_id"),
+            "topic": brief.get("topic") or queue_item.get("topic"),
+            "citation_count": dg.MetadataValue.int(len(brief.get("citations", []))),
+            "finding_count": dg.MetadataValue.int(
+                sum(len(item.get("findings", [])) for item in brief.get("perspective_reports", []))
+            ),
+            "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "brief_preview": dg.MetadataValue.md(str(brief.get("final_brief") or "")[:4000]),
         }
 
     def _research_brief_playground_pack_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -1682,6 +1727,128 @@ if dg is not None:
     @dg.asset(
         group_name="ai_research",
         config_schema={
+            "status": dg.Field(
+                str,
+                is_required=False,
+                description="Optional queue status filter.",
+            ),
+            "source_key": dg.Field(
+                str,
+                is_required=False,
+                description="Optional source key filter.",
+            ),
+            "topic_query": dg.Field(
+                str,
+                is_required=False,
+                description="Optional case-insensitive topic/scope search filter.",
+            ),
+            "limit": dg.Field(
+                int,
+                default_value=50,
+                description="Maximum queued brief requests to show.",
+            ),
+        },
+    )
+    def research_brief_queue_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Control-panel view of queued research brief requests."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        service = HSAResearchService(repository)
+        items = service.list_research_brief_queue_items(
+            status=config.get("status"),
+            source_key=config.get("source_key"),
+            topic_query=config.get("topic_query"),
+            limit=config["limit"],
+        )
+        rows = [
+            {
+                "queue_item_id": str(item.queue_item_id),
+                "status": item.status,
+                "priority": item.priority,
+                "topic": item.topic[:300],
+                "source_key": item.source_key,
+                "brief_style": item.brief_style,
+                "model_profile": item.model_profile,
+                "review_mode": item.review_mode,
+                "attempts": item.attempts,
+                "last_brief_id": str(item.last_brief_id) if item.last_brief_id else None,
+                "last_error": str(item.last_error or "")[:300],
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in items
+        ]
+        report = {
+            "queue_item_count": len(items),
+            "status": config.get("status"),
+            "statuses": [config["status"]] if config.get("status") else [],
+            "source_key": config.get("source_key"),
+            "topic_query": config.get("topic_query"),
+            "queue_items": rows,
+        }
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_research_brief_queue_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "statuses": dg.Field(
+                [str],
+                default_value=["queued"],
+                description="Queue statuses eligible for execution.",
+            ),
+            "source_key": dg.Field(
+                str,
+                is_required=False,
+                description="Optional source key filter.",
+            ),
+            "topic_query": dg.Field(
+                str,
+                is_required=False,
+                description="Optional case-insensitive topic/scope search filter.",
+            ),
+            "limit": dg.Field(
+                int,
+                default_value=1,
+                description="Candidate queued brief requests to inspect.",
+            ),
+        },
+    )
+    def research_brief_queue_runner_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Run the next queued research brief request and persist the output."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).run_next_research_brief_queue_item(
+            ResearchBriefQueueRunRequest(
+                statuses=config["statuses"],
+                source_key=config.get("source_key"),
+                topic_query=config.get("topic_query"),
+                limit=config["limit"],
+                dagster_run_id=context.run_id,
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_research_brief_queue_runner_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
             "topic": dg.Field(
                 str,
                 default_value="canine hemangiosarcoma translational therapy",
@@ -2751,6 +2918,8 @@ if dg is not None:
         full_text_ops_agent_report,
         research_brief_agent_report,
         research_brief_library_report,
+        research_brief_queue_report,
+        research_brief_queue_runner_report,
         research_brief_playground_pack_report,
         research_leads_report,
         x_topic_monitor_review_report,
@@ -2847,6 +3016,14 @@ if dg is not None:
     research_brief_library_job = dg.define_asset_job(
         "research_brief_library_job",
         selection=dg.AssetSelection.assets(research_brief_library_report),
+    )
+    research_brief_queue_job = dg.define_asset_job(
+        "research_brief_queue_job",
+        selection=dg.AssetSelection.assets(research_brief_queue_report),
+    )
+    research_brief_queue_runner_job = dg.define_asset_job(
+        "research_brief_queue_runner_job",
+        selection=dg.AssetSelection.assets(research_brief_queue_runner_report),
     )
     research_brief_playground_pack_job = dg.define_asset_job(
         "research_brief_playground_pack_job",
@@ -3067,6 +3244,8 @@ if dg is not None:
             full_text_ops_agent_job,
             research_brief_agent_job,
             research_brief_library_job,
+            research_brief_queue_job,
+            research_brief_queue_runner_job,
             research_brief_playground_pack_job,
             research_leads_job,
             x_topic_monitor_review_job,
@@ -3128,6 +3307,8 @@ else:
     full_text_ops_agent_job = None
     research_brief_agent_job = None
     research_brief_library_job = None
+    research_brief_queue_job = None
+    research_brief_queue_runner_job = None
     research_brief_playground_pack_job = None
     research_leads_job = None
     x_topic_monitor_review_job = None

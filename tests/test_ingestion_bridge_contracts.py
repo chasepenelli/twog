@@ -37,6 +37,9 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchBriefCitation,
     ResearchBriefFinding,
     ResearchBriefPerspectiveReport,
+    ResearchBriefQueueItem,
+    ResearchBriefQueueRequest,
+    ResearchBriefQueueRunRequest,
     ResearchBriefRecord,
     ResearchBriefRequest,
     ResearchBriefResult,
@@ -2246,6 +2249,49 @@ def test_research_brief_repository_roundtrip_sqlite_and_memory(tmp_path):
         assert repo.list_research_briefs(status="archived") == []
 
 
+def test_research_brief_queue_contract_and_repository_roundtrip(tmp_path):
+    for repo in (
+        SQLiteResearchRepository(tmp_path / "research-brief-queue.sqlite3", seed=False),
+        InMemoryResearchRepository(),
+    ):
+        item = repo.upsert_research_brief_queue_item(
+            ResearchBriefQueueItem(
+                topic=" VEGF therapy in canine hemangiosarcoma ",
+                disease_scope="canine hemangiosarcoma",
+                source_key="pubmed",
+                priority=10,
+                review_mode="deterministic_only",
+                review_models=["model-a", "model-a"],
+            )
+        )
+        duplicate = repo.upsert_research_brief_queue_item(
+            ResearchBriefQueueItem(
+                topic="VEGF therapy in canine hemangiosarcoma",
+                disease_scope="canine hemangiosarcoma",
+                source_key="pubmed",
+                priority=20,
+                review_mode="deterministic_only",
+            )
+        )
+        updated = repo.update_research_brief_queue_item(
+            item.queue_item_id,
+            status="running",
+            attempts=1,
+            metadata={"runner": "test"},
+        )
+
+        assert item.identity_key is not None
+        assert item.topic == "VEGF therapy in canine hemangiosarcoma"
+        assert item.review_models == ["model-a"]
+        assert duplicate.queue_item_id == item.queue_item_id
+        assert updated is not None
+        assert updated.status == "running"
+        assert updated.attempts == 1
+        assert updated.metadata["runner"] == "test"
+        assert repo.get_research_brief_queue_item(item.queue_item_id).queue_item_id == item.queue_item_id
+        assert repo.list_research_brief_queue_items(status="running", source_key="pubmed", topic_query="vegf")[0].queue_item_id == item.queue_item_id
+
+
 def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "research-brief.sqlite3", seed=False)
     raw_record_id = repo.upsert_raw_record(
@@ -2324,6 +2370,66 @@ def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
         "skeptic_validation_agent",
         "research_synthesis_editor_agent",
     }
+
+
+def test_research_brief_queue_runner_persists_brief_and_updates_queue(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-queue-runner.sqlite3", seed=False)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:queue-brief",
+            content_hash="queue-brief-raw",
+            source_url="https://pubmed.ncbi.nlm.nih.gov/queue-brief/",
+            raw_payload={"pmid": "queue-brief"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="VEGF queue runner evidence in canine hemangiosarcoma",
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            canonical_url="https://pubmed.ncbi.nlm.nih.gov/queue-brief/",
+            dedupe_key="pmid:queue-brief",
+            identifiers={"pmid": "queue-brief"},
+        ),
+        raw_record_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "Canine hemangiosarcoma VEGF therapy evidence includes clinical outcome, "
+                "toxicity, translational relevance, biomarker uncertainty, and target selection."
+            ),
+            content_hash="queue-brief-chunk",
+        )
+    )
+    service = HSAResearchService(repo)
+    queued = service.queue_research_brief(
+        ResearchBriefQueueRequest(
+            topic="VEGF therapy in canine hemangiosarcoma",
+            source_key="pubmed",
+            review_mode="deterministic_only",
+            max_claims=0,
+            max_chunks_per_perspective=2,
+        )
+    )
+
+    result = service.run_next_research_brief_queue_item(
+        ResearchBriefQueueRunRequest(source_key="pubmed")
+    )
+    updated = repo.get_research_brief_queue_item(queued.queue_item_id)
+
+    assert result.ran is True
+    assert result.brief is not None
+    assert result.brief.brief_id is not None
+    assert updated is not None
+    assert updated.status == "completed"
+    assert updated.last_brief_id == result.brief.brief_id
+    assert repo.get_research_brief(result.brief.brief_id) is not None
 
 
 def test_research_brief_skeptic_retrieval_prefers_clinical_outcome_evidence(tmp_path):
@@ -5496,6 +5602,24 @@ def test_mcp_research_brief_tools_dump_json_safe_payloads(monkeypatch, tmp_path)
     assert listed[0]["brief_id"] == str(record.brief_id)
 
 
+def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "mcp-research-brief-queue.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    monkeypatch.setattr(mcp_server, "get_service", lambda: service)
+
+    queued = mcp_server.queue_research_brief_tool(
+        topic="VEGF therapy in canine hemangiosarcoma",
+        source_key="pubmed",
+        review_mode="deterministic_only",
+    )
+    fetched = mcp_server.get_research_brief_queue_item_tool(queued["queue_item_id"])
+    listed = mcp_server.list_research_brief_queue_tool(status="queued")
+
+    assert queued["queue_item_id"]
+    assert fetched["queue_item_id"] == queued["queue_item_id"]
+    assert listed[0]["identity_key"] == queued["identity_key"]
+
+
 def test_mcp_retrieval_smoke_helper_dumps_full_read_chain(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -6973,6 +7097,8 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.unpaywall_source_followup_ingest_job is not None
     assert dagster_asset_module.research_brief_agent_job is not None
     assert dagster_asset_module.research_brief_library_job is not None
+    assert dagster_asset_module.research_brief_queue_job is not None
+    assert dagster_asset_module.research_brief_queue_runner_job is not None
     assert dagster_asset_module.research_brief_playground_pack_job is not None
     assert dagster_asset_module.research_leads_job is not None
 

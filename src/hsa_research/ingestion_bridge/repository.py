@@ -29,6 +29,7 @@ from .contracts import (
     HypothesisDraft,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
+    ResearchBriefQueueItem,
     ResearchBriefRecord,
     ResearchLeadRecord,
     ResearchObject,
@@ -218,6 +219,36 @@ class ResearchRepository(Protocol):
     ) -> list[ResearchBriefRecord]:
         """Return generated research briefs by durable filters."""
 
+    def upsert_research_brief_queue_item(self, item: ResearchBriefQueueItem) -> ResearchBriefQueueItem:
+        """Persist a queued research brief request."""
+
+    def get_research_brief_queue_item(self, queue_item_id: UUID) -> ResearchBriefQueueItem | None:
+        """Return one queued research brief request."""
+
+    def list_research_brief_queue_items(
+        self,
+        *,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        source_key: str | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchBriefQueueItem]:
+        """Return queued research brief requests by durable filters."""
+
+    def update_research_brief_queue_item(
+        self,
+        queue_item_id: UUID,
+        *,
+        status: str | None = None,
+        attempts: int | None = None,
+        last_brief_id: UUID | None = None,
+        last_agent_run_id: UUID | None = None,
+        last_error: str | None = None,
+        metadata: dict | None = None,
+    ) -> ResearchBriefQueueItem | None:
+        """Update queued research brief lifecycle fields."""
+
     def upsert_artifact(self, artifact: ArtifactHandle) -> ArtifactHandle:
         """Persist artifact metadata."""
 
@@ -333,6 +364,7 @@ class InMemoryResearchRepository:
         self.source_followups: dict[UUID, SourceFollowupQueueItem] = {}
         self.research_leads: dict[UUID, ResearchLeadRecord] = {}
         self.research_briefs: dict[UUID, ResearchBriefRecord] = {}
+        self.research_brief_queue: dict[UUID, ResearchBriefQueueItem] = {}
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
         self.agent_runs: dict[UUID, AgentRunRecord] = {}
 
@@ -850,6 +882,90 @@ class InMemoryResearchRepository:
             ]
         records.sort(key=lambda record: record.created_at, reverse=True)
         return records[:limit] if limit is not None else records
+
+    def upsert_research_brief_queue_item(self, item: ResearchBriefQueueItem) -> ResearchBriefQueueItem:
+        existing = next(
+            (
+                candidate
+                for candidate in self.research_brief_queue.values()
+                if candidate.identity_key == item.identity_key
+            ),
+            None,
+        )
+        if existing:
+            item = item.model_copy(
+                update={
+                    "queue_item_id": existing.queue_item_id,
+                    "status": existing.status,
+                    "attempts": existing.attempts,
+                    "last_brief_id": existing.last_brief_id,
+                    "last_agent_run_id": existing.last_agent_run_id,
+                    "last_error": existing.last_error,
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **item.metadata},
+                }
+            )
+        self.research_brief_queue[item.queue_item_id] = item
+        return item
+
+    def get_research_brief_queue_item(self, queue_item_id: UUID) -> ResearchBriefQueueItem | None:
+        return self.research_brief_queue.get(queue_item_id)
+
+    def list_research_brief_queue_items(
+        self,
+        *,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        source_key: str | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchBriefQueueItem]:
+        items = list(self.research_brief_queue.values())
+        if status:
+            items = [item for item in items if item.status == status]
+        if statuses:
+            allowed = set(statuses)
+            items = [item for item in items if item.status in allowed]
+        if source_key:
+            items = [item for item in items if item.source_key == source_key]
+        if topic_query:
+            normalized = topic_query.lower()
+            items = [
+                item
+                for item in items
+                if normalized in item.topic.lower() or normalized in item.disease_scope.lower()
+            ]
+        items.sort(key=lambda item: (item.priority, item.created_at))
+        return items[:limit] if limit is not None else items
+
+    def update_research_brief_queue_item(
+        self,
+        queue_item_id: UUID,
+        *,
+        status: str | None = None,
+        attempts: int | None = None,
+        last_brief_id: UUID | None = None,
+        last_agent_run_id: UUID | None = None,
+        last_error: str | None = None,
+        metadata: dict | None = None,
+    ) -> ResearchBriefQueueItem | None:
+        item = self.research_brief_queue.get(queue_item_id)
+        if item is None:
+            return None
+        updated = item.model_copy(
+            update={
+                "status": item.status if status is None else status,
+                "attempts": item.attempts if attempts is None else attempts,
+                "last_brief_id": item.last_brief_id if last_brief_id is None else last_brief_id,
+                "last_agent_run_id": item.last_agent_run_id if last_agent_run_id is None else last_agent_run_id,
+                "last_error": last_error,
+                "updated_at": datetime.now(UTC),
+                "metadata": {**item.metadata, **(metadata or {})},
+            }
+        )
+        self.research_brief_queue[queue_item_id] = updated
+        return updated
 
     def upsert_artifact(self, artifact: ArtifactHandle) -> ArtifactHandle:
         self.artifacts[artifact.artifact_id] = artifact

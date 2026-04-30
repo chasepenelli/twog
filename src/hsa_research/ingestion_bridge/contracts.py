@@ -239,6 +239,14 @@ ResearchBriefStatus = Literal[
     "archived",
 ]
 
+ResearchBriefQueueStatus = Literal[
+    "queued",
+    "running",
+    "completed",
+    "failed",
+    "archived",
+]
+
 
 class AgentRunRecord(StrictBaseModel):
     agent_run_id: UUID = Field(default_factory=uuid4)
@@ -514,6 +522,90 @@ class ResearchBriefRecord(StrictBaseModel):
             seen_agent_run_ids.add(agent_run_id)
         self.agent_run_ids = deduped_agent_run_ids
         return self
+
+
+class ResearchBriefQueueItem(StrictBaseModel):
+    queue_item_id: UUID = Field(default_factory=uuid4)
+    identity_key: str | None = None
+    status: ResearchBriefQueueStatus = "queued"
+    priority: int = Field(default=100, ge=0, le=1000)
+    topic: str = Field(min_length=3, max_length=1000)
+    disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
+    source_key: str | None = None
+    max_chunks_per_perspective: int = Field(default=8, ge=1, le=25)
+    max_claims: int = Field(default=12, ge=0, le=50)
+    max_chunk_chars: int = Field(default=1800, ge=500, le=12000)
+    brief_style: Literal["technical", "operator", "substack", "vet_partner"] = "technical"
+    model_profile: str = "research_brief"
+    review_mode: Literal[
+        "external_required",
+        "openrouter_required",
+        "openrouter_compare",
+        "deterministic_only",
+    ] = "deterministic_only"
+    review_models: list[str] = Field(default_factory=list, max_length=10)
+    last_brief_id: UUID | None = None
+    last_agent_run_id: UUID | None = None
+    attempts: int = Field(default=0, ge=0)
+    last_error: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_queue_item(self) -> "ResearchBriefQueueItem":
+        self.topic = self.topic.strip()
+        self.disease_scope = self.disease_scope.strip()
+        self.review_models = _dedupe_strings(self.review_models)
+        if not self.identity_key:
+            source = self.source_key or "all_sources"
+            self.identity_key = (
+                "research_brief_queue:"
+                f"{_identity_slug(self.topic)}:"
+                f"{_identity_slug(self.disease_scope)}:"
+                f"{_identity_slug(source)}:"
+                f"{self.brief_style}:"
+                f"{self.review_mode}"
+            )
+        else:
+            self.identity_key = self.identity_key.strip()
+        return self
+
+
+class ResearchBriefQueueRequest(StrictBaseModel):
+    topic: str = Field(min_length=3, max_length=1000)
+    disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
+    source_key: str | None = None
+    priority: int = Field(default=100, ge=0, le=1000)
+    max_chunks_per_perspective: int = Field(default=8, ge=1, le=25)
+    max_claims: int = Field(default=12, ge=0, le=50)
+    max_chunk_chars: int = Field(default=1800, ge=500, le=12000)
+    brief_style: Literal["technical", "operator", "substack", "vet_partner"] = "technical"
+    model_profile: str = "research_brief"
+    review_mode: Literal[
+        "external_required",
+        "openrouter_required",
+        "openrouter_compare",
+        "deterministic_only",
+    ] = "deterministic_only"
+    review_models: list[str] = Field(default_factory=list, max_length=10)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchBriefQueueRunRequest(StrictBaseModel):
+    statuses: list[ResearchBriefQueueStatus] = Field(default_factory=lambda: ["queued"], max_length=5)
+    source_key: str | None = None
+    topic_query: str | None = None
+    limit: int = Field(default=1, ge=1, le=10)
+    dagster_run_id: str | None = None
+
+
+class ResearchBriefQueueRunResult(StrictBaseModel):
+    ran: bool = False
+    queue_item: ResearchBriefQueueItem | None = None
+    brief: ResearchBriefResult | None = None
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ResearchBriefPlaygroundPrompt(StrictBaseModel):

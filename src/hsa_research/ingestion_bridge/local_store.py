@@ -33,6 +33,7 @@ from .contracts import (
     RawSourceRecord,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
+    ResearchBriefQueueItem,
     ResearchBriefRecord,
     ResearchLeadRecord,
     ResolvedEntity,
@@ -1577,6 +1578,172 @@ class SQLiteResearchRepository(ResearchRepository):
             for row in self.conn.execute(sql, params).fetchall()
         ]
 
+    def upsert_research_brief_queue_item(self, item: ResearchBriefQueueItem) -> ResearchBriefQueueItem:
+        existing = self.conn.execute(
+            "select payload from research_brief_queue where identity_key = ?",
+            (item.identity_key,),
+        ).fetchone()
+        if existing is not None:
+            existing_item = ResearchBriefQueueItem.model_validate(json.loads(existing["payload"]))
+            item = item.model_copy(
+                update={
+                    "queue_item_id": existing_item.queue_item_id,
+                    "status": existing_item.status,
+                    "attempts": existing_item.attempts,
+                    "last_brief_id": existing_item.last_brief_id,
+                    "last_agent_run_id": existing_item.last_agent_run_id,
+                    "last_error": existing_item.last_error,
+                    "created_at": existing_item.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing_item.metadata, **item.metadata},
+                }
+            )
+        payload = item.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into research_brief_queue (
+              queue_item_id, identity_key, status, priority, topic, disease_scope,
+              source_key, brief_style, model_profile, review_mode, last_brief_id,
+              last_agent_run_id, attempts, created_at, updated_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(identity_key) do update set
+              status = excluded.status,
+              priority = excluded.priority,
+              topic = excluded.topic,
+              disease_scope = excluded.disease_scope,
+              source_key = excluded.source_key,
+              brief_style = excluded.brief_style,
+              model_profile = excluded.model_profile,
+              review_mode = excluded.review_mode,
+              last_brief_id = excluded.last_brief_id,
+              last_agent_run_id = excluded.last_agent_run_id,
+              attempts = excluded.attempts,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(item.queue_item_id),
+                item.identity_key,
+                item.status,
+                item.priority,
+                item.topic,
+                item.disease_scope,
+                item.source_key,
+                item.brief_style,
+                item.model_profile,
+                item.review_mode,
+                str(item.last_brief_id) if item.last_brief_id else None,
+                str(item.last_agent_run_id) if item.last_agent_run_id else None,
+                item.attempts,
+                item.created_at.isoformat(),
+                item.updated_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            "select payload from research_brief_queue where identity_key = ?",
+            (item.identity_key,),
+        ).fetchone()
+        return ResearchBriefQueueItem.model_validate(json.loads(row["payload"]))
+
+    def get_research_brief_queue_item(self, queue_item_id: UUID) -> ResearchBriefQueueItem | None:
+        row = self.conn.execute(
+            "select payload from research_brief_queue where queue_item_id = ?",
+            (str(queue_item_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return ResearchBriefQueueItem.model_validate(json.loads(row["payload"]))
+
+    def list_research_brief_queue_items(
+        self,
+        *,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        source_key: str | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchBriefQueueItem]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            clauses.append(f"status in ({placeholders})")
+            params.extend(statuses)
+        if source_key:
+            clauses.append("source_key = ?")
+            params.append(source_key)
+        if topic_query:
+            clauses.append("(lower(topic) like ? or lower(disease_scope) like ?)")
+            normalized = f"%{topic_query.lower()}%"
+            params.extend([normalized, normalized])
+        sql = "select payload from research_brief_queue"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by priority asc, created_at asc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            ResearchBriefQueueItem.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
+    def update_research_brief_queue_item(
+        self,
+        queue_item_id: UUID,
+        *,
+        status: str | None = None,
+        attempts: int | None = None,
+        last_brief_id: UUID | None = None,
+        last_agent_run_id: UUID | None = None,
+        last_error: str | None = None,
+        metadata: dict | None = None,
+    ) -> ResearchBriefQueueItem | None:
+        item = self.get_research_brief_queue_item(queue_item_id)
+        if item is None:
+            return None
+        updated = item.model_copy(
+            update={
+                "status": item.status if status is None else status,
+                "attempts": item.attempts if attempts is None else attempts,
+                "last_brief_id": item.last_brief_id if last_brief_id is None else last_brief_id,
+                "last_agent_run_id": item.last_agent_run_id if last_agent_run_id is None else last_agent_run_id,
+                "last_error": last_error,
+                "updated_at": datetime.now(UTC),
+                "metadata": {**item.metadata, **(metadata or {})},
+            }
+        )
+        payload = updated.model_dump(mode="json")
+        self.conn.execute(
+            """
+            update research_brief_queue
+            set status = ?,
+                last_brief_id = ?,
+                last_agent_run_id = ?,
+                attempts = ?,
+                updated_at = ?,
+                payload = ?
+            where queue_item_id = ?
+            """,
+            (
+                updated.status,
+                str(updated.last_brief_id) if updated.last_brief_id else None,
+                str(updated.last_agent_run_id) if updated.last_agent_run_id else None,
+                updated.attempts,
+                updated.updated_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+                str(queue_item_id),
+            ),
+        )
+        self.conn.commit()
+        return updated
+
     def upsert_artifact(self, artifact: ArtifactHandle) -> ArtifactHandle:
         payload = artifact.model_dump(mode="json")
         self.conn.execute(
@@ -2486,6 +2653,32 @@ class SQLiteResearchRepository(ResearchRepository):
               on research_briefs(source_key, created_at desc);
             create index if not exists research_briefs_topic_idx
               on research_briefs(topic, created_at desc);
+
+            create table if not exists research_brief_queue (
+              queue_item_id text primary key,
+              identity_key text not null unique,
+              status text not null default 'queued',
+              priority integer not null default 100,
+              topic text not null,
+              disease_scope text not null,
+              source_key text,
+              brief_style text not null,
+              model_profile text not null,
+              review_mode text not null,
+              last_brief_id text,
+              last_agent_run_id text,
+              attempts integer not null default 0,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp
+            );
+
+            create index if not exists research_brief_queue_status_idx
+              on research_brief_queue(status, priority, created_at);
+            create index if not exists research_brief_queue_source_idx
+              on research_brief_queue(source_key, status, priority, created_at);
+            create index if not exists research_brief_queue_topic_idx
+              on research_brief_queue(topic, created_at);
 
             create table if not exists artifacts (
               artifact_id text primary key,
