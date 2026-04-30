@@ -25,6 +25,7 @@ on:
           - "source_health_report_job"
           - "full_text_ops_agent_job"
           - "research_brief_agent_job"
+          - "research_brief_library_job"
           - "research_brief_playground_pack_job"
           - "research_leads_job"
           - "x_topic_monitor_review_job"

@@ -29,6 +29,7 @@ from .contracts import (
     HypothesisDraft,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
+    ResearchBriefRecord,
     ResearchLeadRecord,
     ResearchObject,
     ResolvedEntity,
@@ -201,6 +202,22 @@ class ResearchRepository(Protocol):
     ) -> list[AgentRunRecord]:
         """Return recent agent runs by durable filters."""
 
+    def upsert_research_brief(self, record: ResearchBriefRecord) -> ResearchBriefRecord:
+        """Persist a generated research brief and its full typed payload."""
+
+    def get_research_brief(self, brief_id: UUID) -> ResearchBriefRecord | None:
+        """Return a generated research brief."""
+
+    def list_research_briefs(
+        self,
+        *,
+        status: str | None = None,
+        source_key: str | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchBriefRecord]:
+        """Return generated research briefs by durable filters."""
+
     def upsert_artifact(self, artifact: ArtifactHandle) -> ArtifactHandle:
         """Persist artifact metadata."""
 
@@ -315,6 +332,7 @@ class InMemoryResearchRepository:
         self.scrape_profile_reviews: dict[str, ScrapeSourceProfileReview] = {}
         self.source_followups: dict[UUID, SourceFollowupQueueItem] = {}
         self.research_leads: dict[UUID, ResearchLeadRecord] = {}
+        self.research_briefs: dict[UUID, ResearchBriefRecord] = {}
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
         self.agent_runs: dict[UUID, AgentRunRecord] = {}
 
@@ -802,6 +820,36 @@ class InMemoryResearchRepository:
             runs = [run for run in runs if run.source_key == source_key]
         runs.sort(key=lambda run: run.started_at, reverse=True)
         return runs[:limit]
+
+    def upsert_research_brief(self, record: ResearchBriefRecord) -> ResearchBriefRecord:
+        self.research_briefs[record.brief_id] = record
+        return record
+
+    def get_research_brief(self, brief_id: UUID) -> ResearchBriefRecord | None:
+        return self.research_briefs.get(brief_id)
+
+    def list_research_briefs(
+        self,
+        *,
+        status: str | None = None,
+        source_key: str | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchBriefRecord]:
+        records = list(self.research_briefs.values())
+        if status:
+            records = [record for record in records if record.status == status]
+        if source_key:
+            records = [record for record in records if record.source_key == source_key]
+        if topic_query:
+            normalized = topic_query.lower()
+            records = [
+                record
+                for record in records
+                if normalized in record.topic.lower() or normalized in record.disease_scope.lower()
+            ]
+        records.sort(key=lambda record: record.created_at, reverse=True)
+        return records[:limit] if limit is not None else records
 
     def upsert_artifact(self, artifact: ArtifactHandle) -> ArtifactHandle:
         self.artifacts[artifact.artifact_id] = artifact

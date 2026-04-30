@@ -37,6 +37,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchBriefCitation,
     ResearchBriefFinding,
     ResearchBriefPerspectiveReport,
+    ResearchBriefRecord,
     ResearchBriefRequest,
     ResearchBriefResult,
     ResearchLeadCollectRequest,
@@ -2181,6 +2182,21 @@ def test_research_brief_contracts_require_known_citations():
     )
 
     assert result.final_brief.endswith("[C1].")
+    brief_record = ResearchBriefRecord(
+        agent_run_id=uuid4(),
+        agent_run_ids=[uuid4()],
+        topic="VEGF therapy",
+        disease_scope="canine hemangiosarcoma",
+        source_key="pubmed",
+        review_mode="deterministic_only",
+        final_brief=result.final_brief,
+        result_payload=result.model_dump(mode="json"),
+        citation_count=1,
+        finding_count=1,
+        hypothesis_count=1,
+    )
+    assert brief_record.status == "completed"
+    assert brief_record.citation_count == 1
     with pytest.raises(ValueError):
         ResearchBriefPerspectiveReport(
             perspective="evidence_scout",
@@ -2196,6 +2212,38 @@ def test_research_brief_contracts_require_known_citations():
             final_brief="The stored evidence supports review.",
             citations=[citation],
         )
+
+
+def test_research_brief_repository_roundtrip_sqlite_and_memory(tmp_path):
+    for repo in (
+        SQLiteResearchRepository(tmp_path / "research-brief-ledger.sqlite3", seed=False),
+        InMemoryResearchRepository(),
+    ):
+        record = ResearchBriefRecord(
+            agent_run_id=uuid4(),
+            topic="VEGF therapy in canine hemangiosarcoma",
+            disease_scope="canine hemangiosarcoma and human angiosarcoma",
+            source_key="pubmed",
+            brief_style="technical",
+            model_profile="research_brief",
+            review_mode="deterministic_only",
+            final_brief="Stored synthesis [C1].",
+            summary={"finding_count": 1},
+            result_payload={"final_brief": "Stored synthesis [C1]."},
+            citation_count=1,
+            finding_count=1,
+            research_lead_count=2,
+        )
+
+        saved = repo.upsert_research_brief(record)
+        fetched = repo.get_research_brief(saved.brief_id)
+        listed = repo.list_research_briefs(source_key="pubmed", topic_query="vegf")
+
+        assert fetched is not None
+        assert fetched.brief_id == saved.brief_id
+        assert fetched.result_payload["final_brief"] == "Stored synthesis [C1]."
+        assert listed[0].brief_id == saved.brief_id
+        assert repo.list_research_briefs(status="archived") == []
 
 
 def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
@@ -2261,7 +2309,15 @@ def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
     assert result.citations
     assert result.evidence["research_lead_count"] == 1
     assert result.ranked_hypotheses
+    assert result.brief_id is not None
     assert result.agent_run_id is not None
+    saved_brief = repo.get_research_brief(result.brief_id)
+    assert saved_brief is not None
+    assert saved_brief.agent_run_id == result.agent_run_id
+    assert saved_brief.citation_count == len(result.citations)
+    assert saved_brief.research_lead_count == 1
+    assert saved_brief.result_payload["brief_id"] == str(result.brief_id)
+    assert HSAResearchService(repo).list_research_briefs(topic_query="VEGF")[0].brief_id == result.brief_id
     assert {run.agent_name for run in runs} >= {
         "evidence_scout_agent",
         "translational_hypothesis_agent",
@@ -5414,6 +5470,32 @@ def test_mcp_research_lead_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
     assert listed[0]["identity_key"] == lead.identity_key
 
 
+def test_mcp_research_brief_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "mcp-research-briefs.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    monkeypatch.setattr(mcp_server, "get_service", lambda: service)
+    record = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            agent_run_id=uuid4(),
+            topic="VEGF therapy in canine hemangiosarcoma",
+            disease_scope="canine hemangiosarcoma",
+            source_key="pubmed",
+            review_mode="deterministic_only",
+            final_brief="Stored MCP synthesis [C1].",
+            result_payload={"final_brief": "Stored MCP synthesis [C1]."},
+            citation_count=1,
+            finding_count=1,
+        )
+    )
+
+    fetched = mcp_server.get_research_brief_tool(str(record.brief_id))
+    listed = mcp_server.list_research_briefs_tool(topic_query="vegf")
+
+    assert fetched["brief_id"] == str(record.brief_id)
+    assert fetched["result_payload"]["final_brief"] == "Stored MCP synthesis [C1]."
+    assert listed[0]["brief_id"] == str(record.brief_id)
+
+
 def test_mcp_retrieval_smoke_helper_dumps_full_read_chain(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -6890,6 +6972,7 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.clinicaltrials_gov_source_followup_ingest_job is not None
     assert dagster_asset_module.unpaywall_source_followup_ingest_job is not None
     assert dagster_asset_module.research_brief_agent_job is not None
+    assert dagster_asset_module.research_brief_library_job is not None
     assert dagster_asset_module.research_brief_playground_pack_job is not None
     assert dagster_asset_module.research_leads_job is not None
 

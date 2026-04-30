@@ -157,6 +157,20 @@ _RESEARCH_BRIEF_CITATION_TABLE_COLUMNS = (
     "score",
     "relevance",
 )
+_RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS = (
+    "brief_id",
+    "agent_run_id",
+    "status",
+    "topic",
+    "source_key",
+    "brief_style",
+    "model_profile",
+    "finding_count",
+    "citation_count",
+    "research_lead_count",
+    "error_count",
+    "created_at",
+)
 _RESEARCH_LEAD_TABLE_COLUMNS = (
     "lead_id",
     "lead_type",
@@ -515,6 +529,7 @@ if dg is not None:
             for citation in report.get("citations", [])[:50]
         ]
         return {
+            "brief_id": report.get("brief_id"),
             "agent_run_id": report.get("agent_run_id"),
             "agent_run_ids": dg.MetadataValue.json(report.get("agent_run_ids", [])),
             "topic": report.get("topic"),
@@ -536,6 +551,16 @@ if dg is not None:
             ),
             "citations": _metadata_table(citation_rows, _RESEARCH_BRIEF_CITATION_TABLE_COLUMNS),
             "brief_preview": dg.MetadataValue.md(str(report.get("final_brief") or "")[:4000]),
+        }
+
+    def _research_brief_library_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = report.get("briefs", [])
+        return {
+            "brief_count": dg.MetadataValue.int(int(report.get("brief_count", 0))),
+            "status": report.get("status"),
+            "source_key": report.get("source_key"),
+            "topic_query": report.get("topic_query"),
+            "briefs": _metadata_table(rows, _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS),
         }
 
     def _research_brief_playground_pack_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -1582,6 +1607,77 @@ if dg is not None:
         )
         report = result.model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_research_brief_report_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "status": dg.Field(
+                str,
+                is_required=False,
+                description="Optional persisted brief status filter.",
+            ),
+            "source_key": dg.Field(
+                str,
+                is_required=False,
+                description="Optional source key filter.",
+            ),
+            "topic_query": dg.Field(
+                str,
+                is_required=False,
+                description="Optional case-insensitive topic/scope search filter.",
+            ),
+            "limit": dg.Field(
+                int,
+                default_value=50,
+                description="Maximum persisted briefs to show.",
+            ),
+        },
+    )
+    def research_brief_library_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Control-panel view of persisted research brief outputs."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        service = HSAResearchService(repository)
+        records = service.list_research_briefs(
+            status=config.get("status"),
+            source_key=config.get("source_key"),
+            topic_query=config.get("topic_query"),
+            limit=config["limit"],
+        )
+        rows = [
+            {
+                "brief_id": str(record.brief_id),
+                "agent_run_id": str(record.agent_run_id) if record.agent_run_id else None,
+                "status": record.status,
+                "topic": record.topic[:300],
+                "source_key": record.source_key,
+                "brief_style": record.brief_style,
+                "model_profile": record.model_profile,
+                "finding_count": record.finding_count,
+                "citation_count": record.citation_count,
+                "research_lead_count": record.research_lead_count,
+                "error_count": record.error_count,
+                "created_at": record.created_at.isoformat(),
+            }
+            for record in records
+        ]
+        report = {
+            "brief_count": len(records),
+            "status": config.get("status"),
+            "source_key": config.get("source_key"),
+            "topic_query": config.get("topic_query"),
+            "briefs": rows,
+        }
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_research_brief_library_metadata(report),
+        )
 
     @dg.asset(
         group_name="ai_research",
@@ -2654,6 +2750,7 @@ if dg is not None:
         source_health_report,
         full_text_ops_agent_report,
         research_brief_agent_report,
+        research_brief_library_report,
         research_brief_playground_pack_report,
         research_leads_report,
         x_topic_monitor_review_report,
@@ -2746,6 +2843,10 @@ if dg is not None:
     research_brief_agent_job = dg.define_asset_job(
         "research_brief_agent_job",
         selection=dg.AssetSelection.assets(research_brief_agent_report),
+    )
+    research_brief_library_job = dg.define_asset_job(
+        "research_brief_library_job",
+        selection=dg.AssetSelection.assets(research_brief_library_report),
     )
     research_brief_playground_pack_job = dg.define_asset_job(
         "research_brief_playground_pack_job",
@@ -2965,6 +3066,7 @@ if dg is not None:
             source_health_report_job,
             full_text_ops_agent_job,
             research_brief_agent_job,
+            research_brief_library_job,
             research_brief_playground_pack_job,
             research_leads_job,
             x_topic_monitor_review_job,
@@ -3025,6 +3127,7 @@ else:
     source_health_report_job = None
     full_text_ops_agent_job = None
     research_brief_agent_job = None
+    research_brief_library_job = None
     research_brief_playground_pack_job = None
     research_leads_job = None
     x_topic_monitor_review_job = None

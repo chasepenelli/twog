@@ -33,6 +33,7 @@ from .contracts import (
     RawSourceRecord,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
+    ResearchBriefRecord,
     ResearchLeadRecord,
     ResolvedEntity,
     ResearchObject,
@@ -1484,6 +1485,98 @@ class SQLiteResearchRepository(ResearchRepository):
             for row in self.conn.execute(sql, params).fetchall()
         ]
 
+    def upsert_research_brief(self, record: ResearchBriefRecord) -> ResearchBriefRecord:
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into research_briefs (
+              brief_id, agent_run_id, topic, disease_scope, source_key,
+              brief_style, model_profile, review_mode, status, citation_count,
+              finding_count, hypothesis_count, research_lead_count, error_count,
+              created_at, updated_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(brief_id) do update set
+              agent_run_id = excluded.agent_run_id,
+              topic = excluded.topic,
+              disease_scope = excluded.disease_scope,
+              source_key = excluded.source_key,
+              brief_style = excluded.brief_style,
+              model_profile = excluded.model_profile,
+              review_mode = excluded.review_mode,
+              status = excluded.status,
+              citation_count = excluded.citation_count,
+              finding_count = excluded.finding_count,
+              hypothesis_count = excluded.hypothesis_count,
+              research_lead_count = excluded.research_lead_count,
+              error_count = excluded.error_count,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(record.brief_id),
+                str(record.agent_run_id) if record.agent_run_id else None,
+                record.topic,
+                record.disease_scope,
+                record.source_key,
+                record.brief_style,
+                record.model_profile,
+                record.review_mode,
+                record.status,
+                record.citation_count,
+                record.finding_count,
+                record.hypothesis_count,
+                record.research_lead_count,
+                record.error_count,
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_research_brief(self, brief_id: UUID) -> ResearchBriefRecord | None:
+        row = self.conn.execute(
+            "select payload from research_briefs where brief_id = ?",
+            (str(brief_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return ResearchBriefRecord.model_validate(json.loads(row["payload"]))
+
+    def list_research_briefs(
+        self,
+        *,
+        status: str | None = None,
+        source_key: str | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchBriefRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if source_key:
+            clauses.append("source_key = ?")
+            params.append(source_key)
+        if topic_query:
+            clauses.append("(lower(topic) like ? or lower(disease_scope) like ?)")
+            normalized = f"%{topic_query.lower()}%"
+            params.extend([normalized, normalized])
+        sql = "select payload from research_briefs"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by created_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            ResearchBriefRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
     def upsert_artifact(self, artifact: ArtifactHandle) -> ArtifactHandle:
         payload = artifact.model_dump(mode="json")
         self.conn.execute(
@@ -2366,6 +2459,33 @@ class SQLiteResearchRepository(ResearchRepository):
               on agent_runs(agent_name, status, created_at desc);
             create index if not exists agent_runs_source_idx
               on agent_runs(source_key, created_at desc);
+
+            create table if not exists research_briefs (
+              brief_id text primary key,
+              agent_run_id text,
+              topic text not null,
+              disease_scope text not null,
+              source_key text,
+              brief_style text not null,
+              model_profile text not null,
+              review_mode text not null,
+              status text not null,
+              citation_count integer not null default 0,
+              finding_count integer not null default 0,
+              hypothesis_count integer not null default 0,
+              research_lead_count integer not null default 0,
+              error_count integer not null default 0,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp
+            );
+
+            create index if not exists research_briefs_status_idx
+              on research_briefs(status, created_at desc);
+            create index if not exists research_briefs_source_idx
+              on research_briefs(source_key, created_at desc);
+            create index if not exists research_briefs_topic_idx
+              on research_briefs(topic, created_at desc);
 
             create table if not exists artifacts (
               artifact_id text primary key,

@@ -177,6 +177,32 @@ def build_research_brief_playground_pack_tool(
     return get_service().build_research_brief_playground_pack(request).model_dump(mode="json")
 
 
+def get_research_brief_tool(brief_id: str) -> dict:
+    """Return a persisted research brief by ID."""
+
+    record = get_service().get_research_brief(UUID(brief_id))
+    return {} if record is None else record.model_dump(mode="json")
+
+
+def list_research_briefs_tool(
+    status: str | None = None,
+    source_key: str | None = None,
+    topic_query: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Return persisted research brief ledger rows."""
+
+    return [
+        record.model_dump(mode="json")
+        for record in get_service().list_research_briefs(
+            status=status,
+            source_key=source_key,
+            topic_query=topic_query,
+            limit=limit,
+        )
+    ]
+
+
 def run_retrieval_smoke_tool(
     query: str = "hemangiosarcoma angiogenesis",
     source_key: str | None = None,
@@ -641,6 +667,28 @@ if mcp is not None:
             max_chunk_chars=max_chunk_chars,
             brief_style=brief_style,
             model_profile=model_profile,
+        )
+
+    @mcp.tool()
+    def get_research_brief(brief_id: str) -> dict:
+        """Return one persisted research brief ledger record."""
+
+        return get_research_brief_tool(brief_id)
+
+    @mcp.tool()
+    def list_research_briefs(
+        status: str | None = None,
+        source_key: str | None = None,
+        topic_query: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """List persisted research brief ledger records."""
+
+        return list_research_briefs_tool(
+            status=status,
+            source_key=source_key,
+            topic_query=topic_query,
+            limit=limit,
         )
 
     @mcp.tool()
@@ -1178,6 +1226,12 @@ if mcp is not None:
         """Fetch a persisted research watchlist lead as an MCP resource."""
 
         return get_research_lead_tool(lead_id)
+
+    @mcp.resource("research-brief://{brief_id}")
+    def research_brief_resource(brief_id: str) -> dict:
+        """Fetch a persisted research brief as an MCP resource."""
+
+        return get_research_brief_tool(brief_id)
 
     @mcp.resource("artifact://{artifact_id}")
     def artifact_resource(artifact_id: str) -> dict:

@@ -31,6 +31,7 @@ from .contracts import (
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
+    ResearchBriefRecord,
     ResearchBriefPlaygroundPack,
     ResearchBriefRequest,
     ResearchBriefResult,
@@ -235,7 +236,7 @@ class HSAResearchService:
                 for perspective in PERSPECTIVE_ORDER
             )
         ]
-        return runner.run(
+        result = runner.run(
             agent_name=RESEARCH_SYNTHESIS_EDITOR_AGENT_NAME,
             agent_version=RESEARCH_BRIEF_AGENT_VERSION,
             model_profile=request.model_profile,
@@ -253,12 +254,34 @@ class HSAResearchService:
             metadata=request.metadata,
             summarize=summarize_research_brief,
         )
+        brief_id = result.brief_id or uuid4()
+        result = result.model_copy(update={"brief_id": brief_id})
+        self.repository.upsert_research_brief(_research_brief_record_from_result(result, request))
+        return result
 
     def build_research_brief_playground_pack(
         self,
         request: ResearchBriefRequest,
     ) -> ResearchBriefPlaygroundPack:
         return ResearchBriefAgent(self.repository).build_playground_pack(request)
+
+    def get_research_brief(self, brief_id: UUID) -> ResearchBriefRecord | None:
+        return self.repository.get_research_brief(brief_id)
+
+    def list_research_briefs(
+        self,
+        *,
+        status: str | None = None,
+        source_key: str | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchBriefRecord]:
+        return self.repository.list_research_briefs(
+            status=status,
+            source_key=source_key,
+            topic_query=topic_query,
+            limit=limit,
+        )
 
     def run_retrieval_smoke(self, request: RetrievalSmokeRequest) -> RetrievalSmokeResult:
         """Exercise the full read path: search, chunk context, and parent object."""
@@ -707,6 +730,40 @@ def _truncate_chunk(chunk: DocumentChunk, max_chars: int) -> DocumentChunk:
                 "original_text_chars": len(chunk.text_content),
             },
         }
+    )
+
+
+def _research_brief_record_from_result(
+    result: ResearchBriefResult,
+    request: ResearchBriefRequest,
+) -> ResearchBriefRecord:
+    finding_count = sum(len(report.findings) for report in result.perspective_reports)
+    metadata = {
+        **request.metadata,
+        "dagster_run_id": request.dagster_run_id,
+        "review_models": request.review_models,
+    }
+    return ResearchBriefRecord(
+        brief_id=result.brief_id or uuid4(),
+        agent_run_id=result.agent_run_id,
+        agent_run_ids=result.agent_run_ids,
+        topic=result.topic,
+        disease_scope=result.disease_scope,
+        source_key=request.source_key,
+        brief_style=result.brief_style,
+        model_profile=result.model_profile,
+        review_mode=request.review_mode,
+        status="completed",
+        final_brief=result.final_brief,
+        summary=summarize_research_brief(result),
+        result_payload=result.model_dump(mode="json"),
+        citation_count=len(result.citations),
+        finding_count=finding_count,
+        hypothesis_count=len(result.ranked_hypotheses),
+        unresolved_question_count=len(result.unresolved_questions),
+        research_lead_count=int(result.evidence.get("research_lead_count", 0)),
+        error_count=len(result.errors),
+        metadata={key: value for key, value in metadata.items() if value not in (None, [], {})},
     )
 
 

@@ -256,6 +256,16 @@ def main() -> None:
         help="OpenRouter model id; repeat to compare multiple models",
     )
 
+    research_briefs = subparsers.add_parser(
+        "research-briefs",
+        help="List or fetch persisted research briefs",
+    )
+    research_briefs.add_argument("--id", default=None, help="Optional brief_id to fetch")
+    research_briefs.add_argument("--status", default=None, help="Brief status filter")
+    research_briefs.add_argument("--source", default=None, help="Optional source key filter")
+    research_briefs.add_argument("--topic-query", default=None, help="Case-insensitive topic/scope filter")
+    research_briefs.add_argument("--limit", type=int, default=50, help="Maximum briefs to return")
+
     research_brief_playground = subparsers.add_parser(
         "research-brief-playground-pack",
         help="Export playground-ready prompts for the research brief perspective agents",
@@ -764,6 +774,21 @@ def main() -> None:
                 review_models=args.review_model,
             )
         ).model_dump(mode="json")
+    elif args.command == "research-briefs":
+        service = HSAResearchService(repo)
+        if args.id:
+            record = service.get_research_brief(UUID(args.id))
+            output = {} if record is None else record.model_dump(mode="json")
+        else:
+            output = [
+                record.model_dump(mode="json")
+                for record in service.list_research_briefs(
+                    status=args.status,
+                    source_key=args.source,
+                    topic_query=args.topic_query,
+                    limit=args.limit,
+                )
+            ]
     elif args.command == "research-brief-playground-pack":
         output = HSAResearchService(repo).build_research_brief_playground_pack(
             ResearchBriefRequest(

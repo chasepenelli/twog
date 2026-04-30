@@ -233,6 +233,12 @@ ResearchLeadStatus = Literal[
     "archived",
 ]
 
+ResearchBriefStatus = Literal[
+    "completed",
+    "failed",
+    "archived",
+]
+
 
 class AgentRunRecord(StrictBaseModel):
     agent_run_id: UUID = Field(default_factory=uuid4)
@@ -433,6 +439,7 @@ class ResearchBriefPerspectiveReport(StrictBaseModel):
 
 
 class ResearchBriefResult(StrictBaseModel):
+    brief_id: UUID | None = None
     agent_run_id: UUID | None = None
     agent_run_ids: list[UUID] = Field(default_factory=list)
     agent_name: str = "research_synthesis_editor_agent"
@@ -462,6 +469,50 @@ class ResearchBriefResult(StrictBaseModel):
             raise ValueError(f"ranked hypotheses reference unknown citations: {sorted(set(unknown))}")
         if self.final_brief and self.citations and not re_search_citation_token(self.final_brief):
             raise ValueError("final_brief must include citation tokens such as [C1]")
+        return self
+
+
+class ResearchBriefRecord(StrictBaseModel):
+    brief_id: UUID = Field(default_factory=uuid4)
+    agent_run_id: UUID | None = None
+    agent_run_ids: list[UUID] = Field(default_factory=list)
+    topic: str = Field(min_length=3, max_length=1000)
+    disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
+    source_key: str | None = None
+    brief_style: Literal["technical", "operator", "substack", "vet_partner"] = "technical"
+    model_profile: str = "research_brief"
+    review_mode: Literal[
+        "external_required",
+        "openrouter_required",
+        "openrouter_compare",
+        "deterministic_only",
+    ] = "openrouter_required"
+    status: ResearchBriefStatus = "completed"
+    final_brief: str = ""
+    summary: dict[str, Any] = Field(default_factory=dict)
+    result_payload: dict[str, Any] = Field(default_factory=dict)
+    citation_count: int = Field(default=0, ge=0)
+    finding_count: int = Field(default=0, ge=0)
+    hypothesis_count: int = Field(default=0, ge=0)
+    unresolved_question_count: int = Field(default=0, ge=0)
+    research_lead_count: int = Field(default=0, ge=0)
+    error_count: int = Field(default=0, ge=0)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_brief_summary(self) -> "ResearchBriefRecord":
+        self.topic = self.topic.strip()
+        self.disease_scope = self.disease_scope.strip()
+        seen_agent_run_ids: set[UUID] = set()
+        deduped_agent_run_ids: list[UUID] = []
+        for agent_run_id in self.agent_run_ids:
+            if agent_run_id in seen_agent_run_ids:
+                continue
+            deduped_agent_run_ids.append(agent_run_id)
+            seen_agent_run_ids.add(agent_run_id)
+        self.agent_run_ids = deduped_agent_run_ids
         return self
 
 
