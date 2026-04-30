@@ -26,6 +26,7 @@ from .contracts import (
     ModelProfile,
     ResearchBriefRequest,
     ResearchChunkSearchRequest,
+    ResearchLeadCollectRequest,
     ResearchObjectReadRequest,
     RetrievalSmokeRequest,
     SourceScoutRequest,
@@ -410,6 +411,49 @@ def list_source_followups_tool(
             source_key=source_key,
             status=status,
             identifier_type=identifier_type,
+            limit=limit,
+        )
+    ]
+
+
+def collect_research_leads_tool(
+    agent_names: list[str] | None = None,
+    statuses: list[str] | None = None,
+    limit: int = 50,
+    include_existing: bool = False,
+) -> dict:
+    """Collect watchlist leads from recent agent runs."""
+
+    request = ResearchLeadCollectRequest(
+        agent_names=agent_names or ["x_linked_article_review_agent", "x_topic_review_agent"],
+        statuses=statuses or ["completed"],
+        limit=limit,
+        include_existing=include_existing,
+    )
+    return get_service().collect_research_leads(request).model_dump(mode="json")
+
+
+def get_research_lead_tool(lead_id: str) -> dict:
+    """Return a persisted research watchlist lead."""
+
+    record = get_service().get_research_lead(UUID(lead_id))
+    return {} if record is None else record.model_dump(mode="json")
+
+
+def list_research_leads_tool(
+    status: str | None = None,
+    lead_type: str | None = None,
+    source_key: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Return persisted research watchlist leads."""
+
+    return [
+        lead.model_dump(mode="json")
+        for lead in get_service().list_research_leads(
+            status=status,
+            lead_type=lead_type,
+            source_key=source_key,
             limit=limit,
         )
     ]
@@ -828,6 +872,44 @@ if mcp is not None:
         )
 
     @mcp.tool()
+    def collect_research_leads(
+        agent_names: list[str] | None = None,
+        statuses: list[str] | None = None,
+        limit: int = 50,
+        include_existing: bool = False,
+    ) -> dict:
+        """Collect watchlist leads from recent agent runs."""
+
+        return collect_research_leads_tool(
+            agent_names=agent_names,
+            statuses=statuses,
+            limit=limit,
+            include_existing=include_existing,
+        )
+
+    @mcp.tool()
+    def get_research_lead(lead_id: str) -> dict:
+        """Return a persisted research watchlist lead."""
+
+        return get_research_lead_tool(lead_id)
+
+    @mcp.tool()
+    def list_research_leads(
+        status: str | None = None,
+        lead_type: str | None = None,
+        source_key: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return persisted research watchlist leads."""
+
+        return list_research_leads_tool(
+            status=status,
+            lead_type=lead_type,
+            source_key=source_key,
+            limit=limit,
+        )
+
+    @mcp.tool()
     def ingest_source_followups(
         source_keys: list[str] | None = None,
         statuses: list[str] | None = None,
@@ -1090,6 +1172,12 @@ if mcp is not None:
         """Fetch a persisted agent run as an MCP resource."""
 
         return get_agent_run_tool(agent_run_id)
+
+    @mcp.resource("research-lead://{lead_id}")
+    def research_lead_resource(lead_id: str) -> dict:
+        """Fetch a persisted research watchlist lead as an MCP resource."""
+
+        return get_research_lead_tool(lead_id)
 
     @mcp.resource("artifact://{artifact_id}")
     def artifact_resource(artifact_id: str) -> dict:

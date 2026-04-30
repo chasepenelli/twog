@@ -21,6 +21,7 @@ from .contracts import (
     FullTextTriageRequest,
     FullTextOpsRequest,
     ResearchBriefRequest,
+    ResearchLeadCollectRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
@@ -426,6 +427,33 @@ def main() -> None:
     )
     list_source_followups.add_argument("--identifier-type", default=None, help="Identifier type filter")
     list_source_followups.add_argument("--limit", type=int, default=50, help="Maximum queue rows")
+
+    collect_research_leads = subparsers.add_parser(
+        "collect-research-leads",
+        help="Collect watchlist leads from recent agent runs",
+    )
+    collect_research_leads.add_argument(
+        "--agent-name",
+        action="append",
+        default=[],
+        help="Agent name to scan; repeatable. Defaults to X topic and linked-article review agents.",
+    )
+    collect_research_leads.add_argument(
+        "--status",
+        action="append",
+        default=[],
+        help="Agent run status to scan; repeatable. Defaults to completed.",
+    )
+    collect_research_leads.add_argument("--limit", type=int, default=50, help="Maximum recent runs per agent/status")
+    collect_research_leads.add_argument("--include-existing", action="store_true", help="Return existing leads too")
+
+    research_leads = subparsers.add_parser("research-leads", help="List, fetch, or update watchlist research leads")
+    research_leads.add_argument("--id", default=None, help="Optional lead_id to fetch")
+    research_leads.add_argument("--status", default=None, help="Lead status filter or new status with --set-status")
+    research_leads.add_argument("--lead-type", default=None, help="Lead type filter")
+    research_leads.add_argument("--source", default=None, help="Source key filter")
+    research_leads.add_argument("--limit", type=int, default=50, help="Maximum leads to return")
+    research_leads.add_argument("--set-status", default=None, help="Update a lead status; requires --id")
 
     ingest_source_followups = subparsers.add_parser(
         "ingest-source-followups",
@@ -888,6 +916,33 @@ def main() -> None:
                 limit=args.limit,
             )
         ]
+    elif args.command == "collect-research-leads":
+        output = HSAResearchService(repo).collect_research_leads(
+            ResearchLeadCollectRequest(
+                agent_names=args.agent_name or ["x_linked_article_review_agent", "x_topic_review_agent"],
+                statuses=args.status or ["completed"],
+                limit=args.limit,
+                include_existing=args.include_existing,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "research-leads":
+        service = HSAResearchService(repo)
+        if args.id and args.set_status:
+            lead = service.update_research_lead(UUID(args.id), status=args.set_status)
+            output = {} if lead is None else lead.model_dump(mode="json")
+        elif args.id:
+            lead = service.get_research_lead(UUID(args.id))
+            output = {} if lead is None else lead.model_dump(mode="json")
+        else:
+            output = [
+                lead.model_dump(mode="json")
+                for lead in service.list_research_leads(
+                    status=args.status,
+                    lead_type=args.lead_type,
+                    source_key=args.source,
+                    limit=args.limit,
+                )
+            ]
     elif args.command == "ingest-source-followups":
         output = HSAResearchService(repo).ingest_source_followups(
             SourceFollowupIngestRequest(

@@ -25,6 +25,43 @@ def re_search_citation_token(value: str) -> bool:
     return bool(re.search(r"\[C\d+\]", value))
 
 
+def _normalize_optional_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    return normalized.split("#", 1)[0].rstrip(").,;")
+
+
+def _identity_slug(value: str) -> str:
+    return "-".join(re.findall(r"[a-z0-9]+", value.lower()))[:160] or "unknown"
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value).strip()
+        if not normalized or normalized in seen:
+            continue
+        deduped.append(normalized)
+        seen.add(normalized)
+    return deduped
+
+
+def _dedupe_lower_tokens(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = re.sub(r"\s+", "_", str(value).strip().lower())
+        if not normalized or normalized in seen:
+            continue
+        deduped.append(normalized)
+        seen.add(normalized)
+    return deduped
+
+
 class SourceKind(str, Enum):
     SCHOLARLY_METADATA = "scholarly_metadata"
     OPEN_ACCESS_FULL_TEXT = "open_access_full_text"
@@ -177,6 +214,25 @@ SourceFollowupStatus = Literal[
     "rejected",
 ]
 
+ResearchLeadType = Literal[
+    "conference_abstract",
+    "institutional_article",
+    "press_release",
+    "preprint",
+    "social_post",
+    "linked_article",
+    "unknown",
+]
+
+ResearchLeadStatus = Literal[
+    "new",
+    "watching",
+    "queued",
+    "ingested",
+    "dismissed",
+    "archived",
+]
+
 
 class AgentRunRecord(StrictBaseModel):
     agent_run_id: UUID = Field(default_factory=uuid4)
@@ -194,6 +250,71 @@ class AgentRunRecord(StrictBaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchLeadRecord(StrictBaseModel):
+    lead_id: UUID = Field(default_factory=uuid4)
+    identity_key: str | None = None
+    title: str | None = None
+    url: str | None = None
+    lead_type: ResearchLeadType = "unknown"
+    status: ResearchLeadStatus = "new"
+    priority: int = Field(default=100, ge=0, le=1000)
+    source_key: str | None = None
+    origin_source_key: str | None = None
+    origin_record_id: str | None = None
+    origin_review_id: UUID | None = None
+    origin_artifact_id: UUID | None = None
+    origin_agent_run_id: UUID | None = None
+    reason: str | None = None
+    summary: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+    topic_tags: list[str] = Field(default_factory=list)
+    identifiers: dict[str, str] = Field(default_factory=dict)
+    suggested_sources: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_identity(self) -> "ResearchLeadRecord":
+        self.title = self.title.strip() if self.title else None
+        self.url = _normalize_optional_url(self.url)
+        self.topic_tags = _dedupe_lower_tokens(self.topic_tags)
+        self.evidence_refs = _dedupe_strings(self.evidence_refs)
+        self.suggested_sources = _dedupe_lower_tokens(self.suggested_sources)
+        if not self.identity_key:
+            if self.url:
+                self.identity_key = f"research_lead:url:{self.url.lower()}"
+            elif self.origin_agent_run_id and (self.origin_review_id or self.origin_record_id):
+                origin = self.origin_review_id or self.origin_record_id
+                self.identity_key = f"research_lead:origin:{self.origin_agent_run_id}:{origin}"
+            elif self.title:
+                self.identity_key = f"research_lead:title:{_identity_slug(self.title)}"
+            else:
+                self.identity_key = f"research_lead:id:{self.lead_id}"
+        else:
+            self.identity_key = self.identity_key.strip()
+        return self
+
+
+class ResearchLeadCollectRequest(StrictBaseModel):
+    agent_names: list[str] = Field(
+        default_factory=lambda: ["x_linked_article_review_agent", "x_topic_review_agent"],
+        max_length=20,
+    )
+    statuses: list[str] = Field(default_factory=lambda: ["completed"], max_length=10)
+    limit: int = Field(default=50, ge=1, le=500)
+    include_existing: bool = False
+
+
+class ResearchLeadCollectResult(StrictBaseModel):
+    agent_runs_seen: int = 0
+    leads_created: int = 0
+    skipped_existing: int = 0
+    items: list[ResearchLeadRecord] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class FullTextOpsRequest(StrictBaseModel):

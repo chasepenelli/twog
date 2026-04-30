@@ -18,6 +18,7 @@ from .contracts import (
     ClaimSearchRequest,
     FullTextOpsRequest,
     ResearchBriefRequest,
+    ResearchLeadCollectRequest,
     ResearchObject,
     SourceFollowupIngestRequest,
     SourceFollowupQueueRequest,
@@ -155,6 +156,18 @@ _RESEARCH_BRIEF_CITATION_TABLE_COLUMNS = (
     "match_type",
     "score",
     "relevance",
+)
+_RESEARCH_LEAD_TABLE_COLUMNS = (
+    "lead_id",
+    "lead_type",
+    "status",
+    "priority",
+    "source_key",
+    "title",
+    "url",
+    "topic_tags",
+    "suggested_sources",
+    "reason",
 )
 _RESEARCH_BRIEF_PLAYGROUND_PROMPT_TABLE_COLUMNS = (
     "perspective",
@@ -509,6 +522,7 @@ if dg is not None:
             "review_mode": evidence.get("review_mode"),
             "retrieval_strategy": evidence.get("retrieval_strategy"),
             "search_query_count": dg.MetadataValue.int(int(evidence.get("search_query_count", 0))),
+            "research_lead_count": dg.MetadataValue.int(int(evidence.get("research_lead_count", 0))),
             "perspective_count": len(perspective_reports),
             "finding_count": dg.MetadataValue.int(int(finding_count)),
             "hypothesis_count": dg.MetadataValue.int(len(report.get("ranked_hypotheses", []))),
@@ -544,6 +558,7 @@ if dg is not None:
             "citation_count": dg.MetadataValue.int(len(report.get("citations", []))),
             "retrieval_strategy": evidence.get("retrieval_strategy"),
             "search_query_count": dg.MetadataValue.int(int(evidence.get("search_query_count", 0))),
+            "research_lead_count": dg.MetadataValue.int(int(evidence.get("research_lead_count", 0))),
             "error_count": len(report.get("errors", [])),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "evidence": dg.MetadataValue.json(evidence),
@@ -551,6 +566,33 @@ if dg is not None:
                 prompt_rows,
                 _RESEARCH_BRIEF_PLAYGROUND_PROMPT_TABLE_COLUMNS,
             ),
+        }
+
+    def _research_leads_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        leads = report.get("items", [])
+        rows = [
+            {
+                "lead_id": lead.get("lead_id"),
+                "lead_type": lead.get("lead_type"),
+                "status": lead.get("status"),
+                "priority": lead.get("priority"),
+                "source_key": lead.get("source_key"),
+                "title": str(lead.get("title") or "")[:300],
+                "url": lead.get("url"),
+                "topic_tags": lead.get("topic_tags", []),
+                "suggested_sources": lead.get("suggested_sources", []),
+                "reason": str(lead.get("reason") or "")[:500],
+            }
+            for lead in leads[:100]
+        ]
+        return {
+            "agent_runs_seen": dg.MetadataValue.int(int(report.get("agent_runs_seen", 0))),
+            "leads_created": dg.MetadataValue.int(int(report.get("leads_created", 0))),
+            "skipped_existing": dg.MetadataValue.int(int(report.get("skipped_existing", 0))),
+            "lead_count": dg.MetadataValue.int(len(leads)),
+            "error_count": len(report.get("errors", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "research_leads": _metadata_table(rows, _RESEARCH_LEAD_TABLE_COLUMNS),
         }
 
     def _x_topic_monitor_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -1610,6 +1652,55 @@ if dg is not None:
             metadata=_research_brief_playground_pack_metadata(report),
         )
 
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "agent_names": dg.Field(
+                [str],
+                default_value=["x_linked_article_review_agent", "x_topic_review_agent"],
+                description="Agent names to scan for non-ingestible research leads.",
+            ),
+            "statuses": dg.Field(
+                [str],
+                default_value=["completed"],
+                description="Agent run statuses to scan.",
+            ),
+            "limit": dg.Field(
+                int,
+                default_value=50,
+                description="Maximum recent runs to scan per agent/status.",
+            ),
+            "include_existing": dg.Field(
+                bool,
+                default_value=False,
+                description="Include already persisted leads in the materialization output.",
+            ),
+        },
+    )
+    def research_leads_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Collect watchlist leads from review-agent runs for future synthesis."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config or {}
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).collect_research_leads(
+            ResearchLeadCollectRequest(
+                agent_names=config.get("agent_names") or ["x_linked_article_review_agent", "x_topic_review_agent"],
+                statuses=config.get("statuses") or ["completed"],
+                limit=int(config.get("limit") or 50),
+                include_existing=bool(config.get("include_existing", False)),
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_research_leads_report_metadata(report),
+        )
+
     @dg.asset(group_name="social_monitoring")
     def x_topic_monitor_review_report(
         research_repository: ResearchRepositoryResource,
@@ -2564,6 +2655,7 @@ if dg is not None:
         full_text_ops_agent_report,
         research_brief_agent_report,
         research_brief_playground_pack_report,
+        research_leads_report,
         x_topic_monitor_review_report,
         x_linked_article_followup_report,
         x_linked_article_review_report,
@@ -2658,6 +2750,10 @@ if dg is not None:
     research_brief_playground_pack_job = dg.define_asset_job(
         "research_brief_playground_pack_job",
         selection=dg.AssetSelection.assets(research_brief_playground_pack_report),
+    )
+    research_leads_job = dg.define_asset_job(
+        "research_leads_job",
+        selection=dg.AssetSelection.assets(research_leads_report),
     )
     x_topic_monitor_review_job = dg.define_asset_job(
         "x_topic_monitor_review_job",
@@ -2788,6 +2884,13 @@ if dg is not None:
         execution_timezone=SCHEDULE_TIMEZONE,
         default_status=dg.DefaultScheduleStatus.RUNNING,
     )
+    research_leads_daily_schedule = dg.ScheduleDefinition(
+        name="research_leads_daily_schedule",
+        job=research_leads_job,
+        cron_schedule="35 4 * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
+    )
     embedding_index_daily_schedule = dg.ScheduleDefinition(
         name="embedding_index_daily_schedule",
         job=embedding_index_job,
@@ -2863,6 +2966,7 @@ if dg is not None:
             full_text_ops_agent_job,
             research_brief_agent_job,
             research_brief_playground_pack_job,
+            research_leads_job,
             x_topic_monitor_review_job,
             x_linked_article_followup_job,
             x_linked_article_review_job,
@@ -2889,6 +2993,7 @@ if dg is not None:
             pmc_oa_source_followup_ingest_daily_schedule,
             clinicaltrials_gov_source_followup_ingest_daily_schedule,
             unpaywall_source_followup_ingest_daily_schedule,
+            research_leads_daily_schedule,
             embedding_index_daily_schedule,
             embedding_maintenance_daily_schedule,
             source_health_daily_schedule,
@@ -2921,6 +3026,7 @@ else:
     full_text_ops_agent_job = None
     research_brief_agent_job = None
     research_brief_playground_pack_job = None
+    research_leads_job = None
     x_topic_monitor_review_job = None
     x_linked_article_followup_job = None
     x_linked_article_review_job = None
@@ -2946,6 +3052,7 @@ else:
     pmc_oa_source_followup_ingest_daily_schedule = None
     clinicaltrials_gov_source_followup_ingest_daily_schedule = None
     unpaywall_source_followup_ingest_daily_schedule = None
+    research_leads_daily_schedule = None
     embedding_index_daily_schedule = None
     embedding_maintenance_daily_schedule = None
     source_health_daily_schedule = None

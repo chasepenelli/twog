@@ -29,6 +29,7 @@ from .contracts import (
     RawSourceRecord,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
+    ResearchLeadRecord,
     ResolvedEntity,
     ResearchObject,
     ResearchSource,
@@ -1765,6 +1766,145 @@ class PostgresResearchRepository(ResearchRepository):
         )
         return updated
 
+    def upsert_research_lead(self, lead: ResearchLeadRecord) -> ResearchLeadRecord:
+        existing = self._fetchone(
+            "select payload from research_leads where identity_key = %s",
+            (lead.identity_key,),
+        )
+        if existing is not None:
+            existing_lead = ResearchLeadRecord.model_validate(_payload(existing))
+            lead = lead.model_copy(
+                update={
+                    "lead_id": existing_lead.lead_id,
+                    "status": existing_lead.status,
+                    "created_at": existing_lead.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing_lead.metadata, **lead.metadata},
+                }
+            )
+        payload = lead.model_dump(mode="json")
+        self._execute(
+            """
+            insert into research_leads (
+              lead_id, identity_key, lead_type, status, priority, source_key,
+              origin_source_key, origin_record_id, origin_review_id,
+              origin_artifact_id, origin_agent_run_id, created_at, updated_at,
+              payload
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict(identity_key) do update set
+              lead_type = excluded.lead_type,
+              status = excluded.status,
+              priority = excluded.priority,
+              source_key = excluded.source_key,
+              origin_source_key = excluded.origin_source_key,
+              origin_record_id = excluded.origin_record_id,
+              origin_review_id = excluded.origin_review_id,
+              origin_artifact_id = excluded.origin_artifact_id,
+              origin_agent_run_id = excluded.origin_agent_run_id,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(lead.lead_id),
+                lead.identity_key,
+                lead.lead_type,
+                lead.status,
+                lead.priority,
+                lead.source_key,
+                lead.origin_source_key,
+                lead.origin_record_id,
+                str(lead.origin_review_id) if lead.origin_review_id else None,
+                str(lead.origin_artifact_id) if lead.origin_artifact_id else None,
+                str(lead.origin_agent_run_id) if lead.origin_agent_run_id else None,
+                lead.created_at,
+                lead.updated_at,
+                self._json(payload),
+            ),
+        )
+        row = self._fetchone(
+            "select payload from research_leads where identity_key = %s",
+            (lead.identity_key,),
+        )
+        return ResearchLeadRecord.model_validate(_payload(row))
+
+    def get_research_lead(self, lead_id: UUID) -> ResearchLeadRecord | None:
+        row = self._fetchone(
+            "select payload from research_leads where lead_id = %s",
+            (str(lead_id),),
+        )
+        if row is None:
+            return None
+        return ResearchLeadRecord.model_validate(_payload(row))
+
+    def list_research_leads(
+        self,
+        *,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        lead_type: str | None = None,
+        source_key: str | None = None,
+        limit: int | None = None,
+    ) -> list[ResearchLeadRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        if statuses:
+            placeholders = ",".join("%s" for _ in statuses)
+            clauses.append(f"status in ({placeholders})")
+            params.extend(statuses)
+        if lead_type:
+            clauses.append("lead_type = %s")
+            params.append(lead_type)
+        if source_key:
+            clauses.append("(source_key = %s or origin_source_key = %s)")
+            params.extend([source_key, source_key])
+        sql = "select payload from research_leads"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by priority asc, created_at asc"
+        if limit is not None:
+            sql += " limit %s"
+            params.append(limit)
+        return [ResearchLeadRecord.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
+
+    def update_research_lead(
+        self,
+        lead_id: UUID,
+        *,
+        status: str | None = None,
+        metadata: dict | None = None,
+    ) -> ResearchLeadRecord | None:
+        lead = self.get_research_lead(lead_id)
+        if lead is None:
+            return None
+        updated = lead.model_copy(
+            update={
+                "status": lead.status if status is None else status,
+                "updated_at": datetime.now(UTC),
+                "metadata": {**lead.metadata, **(metadata or {})},
+            }
+        )
+        payload = updated.model_dump(mode="json")
+        self._execute(
+            """
+            update research_leads
+            set status = %s,
+                updated_at = %s,
+                payload = %s
+            where lead_id = %s
+            """,
+            (
+                updated.status,
+                updated.updated_at,
+                self._json(payload),
+                str(lead_id),
+            ),
+        )
+        return updated
+
     def upsert_claim(self, claim: ClaimSearchResult) -> ClaimSearchResult:
         payload = claim.model_dump(mode="json")
         self._execute(
@@ -2157,6 +2297,30 @@ class PostgresResearchRepository(ResearchRepository):
               on source_followup_queue(source_key, status, priority, created_at);
             create index if not exists source_followup_queue_identifier_idx
               on source_followup_queue(identifier_type, identifier);
+
+            create table if not exists research_leads (
+              lead_id text primary key,
+              identity_key text not null unique,
+              lead_type text not null,
+              status text not null default 'new',
+              priority integer not null default 100,
+              source_key text,
+              origin_source_key text,
+              origin_record_id text,
+              origin_review_id text,
+              origin_artifact_id text,
+              origin_agent_run_id text,
+              payload jsonb not null,
+              created_at timestamptz not null default now(),
+              updated_at timestamptz not null default now()
+            );
+
+            create index if not exists research_leads_status_idx
+              on research_leads(status, priority, created_at);
+            create index if not exists research_leads_source_idx
+              on research_leads(source_key, status, priority, created_at);
+            create index if not exists research_leads_agent_idx
+              on research_leads(origin_agent_run_id, created_at desc);
 
             create table if not exists scrape_source_profile_reviews (
               source_key text primary key,

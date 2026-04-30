@@ -25,11 +25,13 @@ from .contracts import (
     ResearchBriefRequest,
     ResearchBriefResult,
     ResearchBriefStance,
+    ResearchLeadRecord,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
     TextEmbeddingSearchRequest,
 )
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, LocalDeterministicEmbeddingProvider
+from .research_leads import active_research_leads_for_brief
 from .repository import ResearchRepository
 
 
@@ -56,6 +58,7 @@ _ALLOWED_STRENGTHS = {"high", "medium", "low", "unknown"}
 _RESEARCH_BRIEF_SYSTEM_PROMPT = """You are a scientific research brief agent.
 Use only the provided citation IDs. Do not invent papers, identifiers, or claims.
 Every finding must cite at least one supplied citation ID.
+Research leads are watchlist context only; they can inform open_questions but cannot support findings.
 Return strict JSON with: summary, findings, errors.
 Each finding requires: claim, stance, citations, evidence_strength, reasoning, open_questions.
 Allowed stances: supporting, contradicting, uncertain, opportunity, risk.
@@ -66,6 +69,7 @@ Allowed evidence_strength values: high, medium, low, unknown."""
 class ResearchBriefEvidenceBundle:
     citations: list[ResearchBriefCitation]
     claims: list[ClaimSearchResult]
+    research_leads: list[ResearchLeadRecord]
     search_queries: dict[str, list[str]]
     errors: list[str]
 
@@ -158,9 +162,21 @@ class ResearchBriefAgent:
             except Exception as exc:
                 errors.append(f"claim search failed: {exc}")
 
+        research_leads: list[ResearchLeadRecord] = []
+        try:
+            research_leads = active_research_leads_for_brief(
+                self.repository,
+                topic=request.topic,
+                disease_scope=request.disease_scope,
+                source_key=request.source_key,
+            )
+        except Exception as exc:
+            errors.append(f"research lead lookup failed: {exc}")
+
         return ResearchBriefEvidenceBundle(
             citations=citations,
             claims=claims,
+            research_leads=research_leads,
             search_queries=search_queries,
             errors=errors,
         )
@@ -182,6 +198,7 @@ class ResearchBriefAgent:
             evidence={
                 "search_queries": evidence.search_queries,
                 "claim_count": len(evidence.claims),
+                "research_lead_count": len(evidence.research_leads),
                 "citation_count": len(citations),
                 "retrieval_strategy": "embedding_keyword_blended_perspective_rerank",
                 "search_query_count": sum(len(queries) for queries in evidence.search_queries.values()),
@@ -246,6 +263,7 @@ class ResearchBriefAgent:
                 "search_queries": evidence.search_queries,
                 "claim_count": len(evidence.claims),
                 "citation_count": len(citations),
+                "research_lead_count": len(evidence.research_leads),
                 "review_mode": request.review_mode,
                 "retrieval_strategy": "embedding_keyword_blended_perspective_rerank",
                 "search_query_count": sum(len(queries) for queries in evidence.search_queries.values()),
@@ -711,6 +729,7 @@ def _deterministic_perspective_report(
             "review_mode": request.review_mode,
             "deterministic_floor": True,
             "claim_count": len(evidence.claims),
+            "research_lead_count": len(evidence.research_leads),
         },
         errors=list(evidence.errors),
     )
@@ -887,6 +906,7 @@ def _research_brief_response_contract() -> dict[str, Any]:
         "hard_rules": [
             "Every finding must cite at least one supplied citation ID.",
             "Do not cite papers, identifiers, URLs, or claims that are not supplied in EVIDENCE_PAYLOAD_JSON.",
+            "Research leads are watchlist context only; they cannot satisfy citation requirements.",
             "Do not browse or rely on outside knowledge unless a human explicitly asks for a separate web-research pass.",
             "Prefer saying the evidence is weak over filling gaps with plausible biology.",
         ],
@@ -934,11 +954,33 @@ def _perspective_payload(
         "instructions": _perspective_instruction(perspective),
         "citations": [citation.model_dump(mode="json") for citation in citations],
         "claims": [claim.model_dump(mode="json") for claim in evidence.claims],
+        "research_leads": [
+            _research_lead_payload(lead)
+            for lead in evidence.research_leads[:20]
+        ],
         "requirements": {
             "use_only_supplied_citation_ids": True,
             "every_finding_requires_citation": True,
+            "research_leads_are_watchlist_context_not_citable_evidence": True,
             "preserve_uncertainty": True,
         },
+    }
+
+
+def _research_lead_payload(lead: ResearchLeadRecord) -> dict[str, Any]:
+    return {
+        "lead_id": str(lead.lead_id),
+        "title": lead.title,
+        "url": lead.url,
+        "lead_type": lead.lead_type,
+        "status": lead.status,
+        "priority": lead.priority,
+        "source_key": lead.source_key,
+        "reason": lead.reason,
+        "summary": lead.summary,
+        "topic_tags": lead.topic_tags,
+        "suggested_sources": lead.suggested_sources,
+        "origin_agent_run_id": str(lead.origin_agent_run_id) if lead.origin_agent_run_id else None,
     }
 
 

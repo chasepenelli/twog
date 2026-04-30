@@ -39,6 +39,8 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchBriefPerspectiveReport,
     ResearchBriefRequest,
     ResearchBriefResult,
+    ResearchLeadCollectRequest,
+    ResearchLeadRecord,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
@@ -269,6 +271,28 @@ def test_source_followup_and_linked_article_review_contracts_validate():
         XLinkedArticleReviewAction(review_id=uuid4(), source_record_id="x", action="bad", severity="watch", reason="bad")
 
 
+def test_research_lead_contracts_validate_and_normalize_identity():
+    lead = ResearchLeadRecord(
+        title="  AACR HSA Abstract  ",
+        url="https://example.edu/news/hsa#section",
+        lead_type="institutional_article",
+        status="new",
+        topic_tags=["HSA", "hsa", "Angiosarcoma"],
+        suggested_sources=["PubMed", "pubmed"],
+    )
+
+    assert lead.title == "AACR HSA Abstract"
+    assert lead.url == "https://example.edu/news/hsa"
+    assert lead.identity_key == "research_lead:url:https://example.edu/news/hsa"
+    assert lead.topic_tags == ["hsa", "angiosarcoma"]
+    assert lead.suggested_sources == ["pubmed"]
+    assert ResearchLeadCollectRequest().agent_names == ["x_linked_article_review_agent", "x_topic_review_agent"]
+    with pytest.raises(ValueError):
+        ResearchLeadRecord(title="x", lead_type="bad")
+    with pytest.raises(ValueError):
+        ResearchLeadRecord(title="x", status="bad")
+
+
 def test_agent_run_repository_roundtrip_sqlite_and_memory(tmp_path):
     sqlite_repo = SQLiteResearchRepository(tmp_path / "agent-runs.sqlite3", seed=False)
     memory_repo = InMemoryResearchRepository()
@@ -298,6 +322,41 @@ def test_agent_run_repository_roundtrip_sqlite_and_memory(tmp_path):
         assert repo.get_agent_run(record.agent_run_id).summary == {"actions": 1}
         assert repo.list_agent_runs(agent_name="full_text_ops_agent", status="completed", source_key="europe_pmc")
         assert repo.list_agent_runs(agent_name="source_scout_agent") == []
+
+
+def test_research_lead_repository_roundtrip_sqlite_and_memory(tmp_path):
+    sqlite_repo = SQLiteResearchRepository(tmp_path / "research-leads.sqlite3", seed=False)
+    memory_repo = InMemoryResearchRepository()
+
+    for repo in (sqlite_repo, memory_repo):
+        lead = repo.upsert_research_lead(
+            ResearchLeadRecord(
+                title="Institutional HSA lead",
+                url="https://example.edu/research/hsa",
+                lead_type="institutional_article",
+                source_key="x_linked_article",
+                reason="Parser found a credible non-durable item.",
+                topic_tags=["hemangiosarcoma"],
+            )
+        )
+        duplicate = repo.upsert_research_lead(
+            ResearchLeadRecord(
+                title="Institutional HSA lead duplicate",
+                url="https://example.edu/research/hsa",
+                lead_type="institutional_article",
+                source_key="x_linked_article",
+                reason="Same URL.",
+            )
+        )
+        updated = repo.update_research_lead(lead.lead_id, status="watching", metadata={"reviewed": True})
+
+        assert duplicate.lead_id == lead.lead_id
+        assert updated is not None
+        assert updated.status == "watching"
+        assert updated.metadata["reviewed"] is True
+        assert repo.get_research_lead(lead.lead_id).identity_key == lead.identity_key
+        assert repo.list_research_leads(status="watching", source_key="x_linked_article")
+        assert repo.list_research_leads(lead_type="institutional_article", limit=1)[0].lead_id == lead.lead_id
 
 
 def test_model_review_summary_compacts_agent_run_payload():
@@ -2175,6 +2234,16 @@ def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
             content_hash="brief-chunk",
         )
     )
+    repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="VEGF hemangiosarcoma conference abstract needs durable source review",
+            url="https://www.abstractsonline.com/vegf-hsa",
+            lead_type="conference_abstract",
+            source_key="x_linked_article",
+            reason="Agent found a credible but non-durable lead.",
+            topic_tags=["hemangiosarcoma", "therapy"],
+        )
+    )
 
     result = HSAResearchService(repo).run_research_brief(
         ResearchBriefRequest(
@@ -2190,6 +2259,7 @@ def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
     assert result.final_brief.startswith("# Research Brief")
     assert "[C1]" in result.final_brief
     assert result.citations
+    assert result.evidence["research_lead_count"] == 1
     assert result.ranked_hypotheses
     assert result.agent_run_id is not None
     assert {run.agent_name for run in runs} >= {
@@ -2320,6 +2390,16 @@ def test_research_brief_playground_pack_exports_prompt_contracts(tmp_path):
             content_hash="brief-playground-chunk",
         )
     )
+    repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="VEGF hemangiosarcoma institutional article for review",
+            url="https://example.edu/vegf-hsa-review",
+            lead_type="institutional_article",
+            source_key="x_topic_monitor",
+            reason="Social monitoring found a credible non-durable source.",
+            topic_tags=["hemangiosarcoma", "therapy"],
+        )
+    )
 
     pack = HSAResearchService(repo).build_research_brief_playground_pack(
         ResearchBriefRequest(
@@ -2337,10 +2417,13 @@ def test_research_brief_playground_pack_exports_prompt_contracts(tmp_path):
     ]
     assert pack.evidence["mode"] == "manual_playground_prompt_pack"
     assert pack.evidence["retrieval_strategy"] == "embedding_keyword_blended_perspective_rerank"
+    assert pack.evidence["research_lead_count"] == 1
     assert pack.prompts[0].response_contract["required"] == ["summary", "findings", "errors"]
     assert "EVIDENCE_PAYLOAD_JSON" in pack.prompts[0].user_prompt
     assert "Return JSON only" in pack.prompts[0].user_prompt
     assert pack.prompts[0].prompt_payload["requirements"]["use_only_supplied_citation_ids"] is True
+    assert pack.prompts[0].prompt_payload["requirements"]["research_leads_are_watchlist_context_not_citable_evidence"] is True
+    assert pack.prompts[0].prompt_payload["research_leads"][0]["lead_type"] == "institutional_article"
     assert pack.prompts[2].prompt_payload["perspective"] == "skeptic_validation"
     assert any("clinical outcomes" in item for item in pack.prompts[2].evaluation_rubric)
 
@@ -5311,6 +5394,26 @@ def test_mcp_agent_run_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
     assert runs_payload[0]["agent_run_id"] == payload["agent_run_id"]
 
 
+def test_mcp_research_lead_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "mcp-research-leads.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    monkeypatch.setattr(mcp_server, "get_service", lambda: service)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="HSA institutional article",
+            url="https://example.edu/hsa",
+            lead_type="institutional_article",
+            source_key="x_linked_article",
+        )
+    )
+
+    fetched = mcp_server.get_research_lead_tool(str(lead.lead_id))
+    listed = mcp_server.list_research_leads_tool(status="new")
+
+    assert fetched["lead_id"] == str(lead.lead_id)
+    assert listed[0]["identity_key"] == lead.identity_key
+
+
 def test_mcp_retrieval_smoke_helper_dumps_full_read_chain(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -6621,6 +6724,14 @@ def test_x_linked_article_review_agent_uses_context_without_queueing_it(tmp_path
     assert action.metadata["context_links"][0]["reason"] == "conference_abstract_link"
     assert result.queue_candidate_count == 0
     assert result.needs_human_review_count == 1
+    leads = repo.list_research_leads(status="new", source_key="x_linked_article")
+    assert len(leads) == 1
+    assert leads[0].origin_review_id == review.review_id
+    assert leads[0].url == "https://cancer.ufl.edu/article"
+    assert "angiosarcoma" in leads[0].topic_tags
+
+    collected = HSAResearchService(repo).collect_research_leads(ResearchLeadCollectRequest())
+    assert collected.skipped_existing == 1
 
 
 def test_x_linked_article_review_openrouter_preserves_queue_guardrail(tmp_path, monkeypatch):
@@ -6780,6 +6891,7 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.unpaywall_source_followup_ingest_job is not None
     assert dagster_asset_module.research_brief_agent_job is not None
     assert dagster_asset_module.research_brief_playground_pack_job is not None
+    assert dagster_asset_module.research_leads_job is not None
 
 
 def test_dagster_schedules_source_followup_lanes():
@@ -6795,6 +6907,8 @@ def test_dagster_schedules_source_followup_lanes():
     assert dagster_asset_module.clinicaltrials_gov_source_followup_ingest_daily_schedule.cron_schedule == "5 4 * * *"
     assert dagster_asset_module.unpaywall_source_followup_ingest_daily_schedule is not None
     assert dagster_asset_module.unpaywall_source_followup_ingest_daily_schedule.cron_schedule == "20 4 * * *"
+    assert dagster_asset_module.research_leads_daily_schedule is not None
+    assert dagster_asset_module.research_leads_daily_schedule.cron_schedule == "35 4 * * *"
 
 
 def test_scrape_bridge_ingest_requires_approval(tmp_path, monkeypatch):

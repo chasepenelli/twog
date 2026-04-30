@@ -29,6 +29,7 @@ from .contracts import (
     HypothesisDraft,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
+    ResearchLeadRecord,
     ResearchObject,
     ResolvedEntity,
     RunStatus,
@@ -270,6 +271,32 @@ class ResearchRepository(Protocol):
     ) -> SourceFollowupQueueItem | None:
         """Update source follow-up queue lifecycle fields."""
 
+    def upsert_research_lead(self, lead: ResearchLeadRecord) -> ResearchLeadRecord:
+        """Persist a watchlist lead for evidence not yet cleanly ingestible."""
+
+    def get_research_lead(self, lead_id: UUID) -> ResearchLeadRecord | None:
+        """Return a watchlist lead."""
+
+    def list_research_leads(
+        self,
+        *,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        lead_type: str | None = None,
+        source_key: str | None = None,
+        limit: int | None = None,
+    ) -> list[ResearchLeadRecord]:
+        """Return watchlist leads by durable filters."""
+
+    def update_research_lead(
+        self,
+        lead_id: UUID,
+        *,
+        status: str | None = None,
+        metadata: dict | None = None,
+    ) -> ResearchLeadRecord | None:
+        """Update watchlist lead lifecycle fields."""
+
 
 class InMemoryResearchRepository:
     """Small deterministic repository for local development and MCP smoke tests."""
@@ -287,6 +314,7 @@ class InMemoryResearchRepository:
         self.scrape_reviews: dict[UUID, ScrapeReviewRecord] = {}
         self.scrape_profile_reviews: dict[str, ScrapeSourceProfileReview] = {}
         self.source_followups: dict[UUID, SourceFollowupQueueItem] = {}
+        self.research_leads: dict[UUID, ResearchLeadRecord] = {}
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
         self.agent_runs: dict[UUID, AgentRunRecord] = {}
 
@@ -938,6 +966,73 @@ class InMemoryResearchRepository:
             }
         )
         self.source_followups[followup_id] = updated
+        return updated
+
+    def upsert_research_lead(self, lead: ResearchLeadRecord) -> ResearchLeadRecord:
+        existing = next(
+            (
+                candidate
+                for candidate in self.research_leads.values()
+                if candidate.identity_key == lead.identity_key
+            ),
+            None,
+        )
+        if existing:
+            lead = lead.model_copy(
+                update={
+                    "lead_id": existing.lead_id,
+                    "status": existing.status,
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **lead.metadata},
+                }
+            )
+        self.research_leads[lead.lead_id] = lead
+        return lead
+
+    def get_research_lead(self, lead_id: UUID) -> ResearchLeadRecord | None:
+        return self.research_leads.get(lead_id)
+
+    def list_research_leads(
+        self,
+        *,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        lead_type: str | None = None,
+        source_key: str | None = None,
+        limit: int | None = None,
+    ) -> list[ResearchLeadRecord]:
+        leads = list(self.research_leads.values())
+        if status:
+            leads = [lead for lead in leads if lead.status == status]
+        if statuses:
+            allowed = set(statuses)
+            leads = [lead for lead in leads if lead.status in allowed]
+        if lead_type:
+            leads = [lead for lead in leads if lead.lead_type == lead_type]
+        if source_key:
+            leads = [lead for lead in leads if lead.source_key == source_key or lead.origin_source_key == source_key]
+        leads.sort(key=lambda lead: (lead.priority, lead.created_at))
+        return leads[:limit] if limit is not None else leads
+
+    def update_research_lead(
+        self,
+        lead_id: UUID,
+        *,
+        status: str | None = None,
+        metadata: dict | None = None,
+    ) -> ResearchLeadRecord | None:
+        lead = self.research_leads.get(lead_id)
+        if lead is None:
+            return None
+        updated = lead.model_copy(
+            update={
+                "status": lead.status if status is None else status,
+                "updated_at": datetime.now(UTC),
+                "metadata": {**lead.metadata, **(metadata or {})},
+            }
+        )
+        self.research_leads[lead_id] = updated
         return updated
 
 

@@ -37,6 +37,9 @@ from .contracts import (
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
     ResearchChunkSearchResults,
+    ResearchLeadCollectRequest,
+    ResearchLeadCollectResult,
+    ResearchLeadRecord,
     ResearchObjectReadRequest,
     ResearchObjectReadResult,
     RetrievalSmokeRequest,
@@ -71,6 +74,7 @@ from .research_brief_agent import (
     summarize_research_brief,
 )
 from .repository import ResearchRepository
+from .research_leads import collect_research_leads_from_agent_runs, persist_research_leads_from_agent_result
 from .source_scout import SourceScoutAgent
 from .source_followup import (
     ingest_source_followups,
@@ -391,7 +395,7 @@ class HSAResearchService:
         )
 
     def run_x_topic_review(self, request: XTopicReviewRequest) -> XTopicReviewResult:
-        return AgentRunner(self.repository).run(
+        result = AgentRunner(self.repository).run(
             agent_name=X_TOPIC_REVIEW_AGENT_NAME,
             agent_version=X_TOPIC_REVIEW_AGENT_VERSION,
             model_profile=request.model_profile,
@@ -406,6 +410,8 @@ class HSAResearchService:
                 "rejected_count": result.rejected_count,
             },
         )
+        persist_research_leads_from_agent_result(self.repository, result)
+        return result
 
     def run_x_linked_article_followup(
         self,
@@ -417,7 +423,7 @@ class HSAResearchService:
         self,
         request: XLinkedArticleReviewRequest,
     ) -> XLinkedArticleReviewResult:
-        return AgentRunner(self.repository).run(
+        result = AgentRunner(self.repository).run(
             agent_name=X_LINKED_ARTICLE_REVIEW_AGENT_NAME,
             agent_version=X_LINKED_ARTICLE_REVIEW_AGENT_VERSION,
             model_profile=request.model_profile,
@@ -432,6 +438,8 @@ class HSAResearchService:
                 "rejected_count": result.rejected_count,
             },
         )
+        persist_research_leads_from_agent_result(self.repository, result)
+        return result
 
     def queue_source_followups(self, request: SourceFollowupQueueRequest) -> SourceFollowupQueueResult:
         return queue_source_followups_from_scrape_reviews(self.repository, request)
@@ -459,6 +467,38 @@ class HSAResearchService:
             identifier_type=identifier_type,
             limit=limit,
         )
+
+    def collect_research_leads(self, request: ResearchLeadCollectRequest) -> ResearchLeadCollectResult:
+        return collect_research_leads_from_agent_runs(self.repository, request)
+
+    def get_research_lead(self, lead_id: UUID) -> ResearchLeadRecord | None:
+        return self.repository.get_research_lead(lead_id)
+
+    def list_research_leads(
+        self,
+        *,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        lead_type: str | None = None,
+        source_key: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchLeadRecord]:
+        return self.repository.list_research_leads(
+            status=status,
+            statuses=statuses,
+            lead_type=lead_type,
+            source_key=source_key,
+            limit=limit,
+        )
+
+    def update_research_lead(
+        self,
+        lead_id: UUID,
+        *,
+        status: str | None = None,
+        metadata: dict | None = None,
+    ) -> ResearchLeadRecord | None:
+        return self.repository.update_research_lead(lead_id, status=status, metadata=metadata)
 
     def get_agent_run(self, agent_run_id: UUID) -> AgentRunRecord | None:
         return self.repository.get_agent_run(agent_run_id)
