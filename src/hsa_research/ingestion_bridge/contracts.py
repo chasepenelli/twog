@@ -254,6 +254,35 @@ ResearchBriefEvaluationReadiness = Literal[
     "blocked",
 ]
 
+ValidationPlanStatus = Literal[
+    "draft",
+    "ready_for_review",
+    "blocked",
+    "archived",
+]
+
+ValidationPlanReadiness = Literal[
+    "ready_for_expert_review",
+    "needs_better_synthesis",
+    "blocked",
+]
+
+ValidationPlanTaskType = Literal[
+    "literature_review",
+    "expert_review",
+    "target_validation",
+    "protein_structure",
+    "compound_screen",
+    "docking",
+    "boltz",
+    "md",
+    "admet",
+    "safety",
+    "omics",
+    "wet_lab",
+    "partner_review",
+]
+
 
 class AgentRunRecord(StrictBaseModel):
     agent_run_id: UUID = Field(default_factory=uuid4)
@@ -1649,6 +1678,72 @@ class AsyncRunHandle(StrictBaseModel):
     cost_estimate_usd: float | None = None
     artifact_ids: list[UUID] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ValidationPlanTask(StrictBaseModel):
+    task_id: UUID = Field(default_factory=uuid4)
+    task_type: ValidationPlanTaskType
+    title: str = Field(min_length=1, max_length=500)
+    objective: str = Field(min_length=1, max_length=2000)
+    rationale: str = Field(min_length=1, max_length=3000)
+    validation_request: ValidationRequest | None = None
+    required_inputs: list[str] = Field(default_factory=list, max_length=25)
+    expected_outputs: list[str] = Field(default_factory=list, max_length=25)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=25)
+    priority: int = Field(default=100, ge=1, le=1000)
+    requires_human_approval: bool = True
+    tool_hint: str | None = Field(default=None, max_length=200)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ValidationPlanRequest(StrictBaseModel):
+    brief_id: UUID | None = None
+    evaluation_id: UUID | None = None
+    topic_query: str | None = None
+    source_key: str | None = None
+    require_ready_evaluation: bool = True
+    max_tasks: int = Field(default=8, ge=1, le=25)
+    model_profile: str = "validation_planner"
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ValidationPlanResult(StrictBaseModel):
+    plan_id: UUID = Field(default_factory=uuid4)
+    agent_run_id: UUID | None = None
+    agent_name: str = "validation_planning_agent"
+    model_profile: str = "validation_planner"
+    brief_id: UUID
+    evaluation_id: UUID | None = None
+    topic: str
+    source_key: str | None = None
+    status: ValidationPlanStatus = "draft"
+    readiness: ValidationPlanReadiness = "needs_better_synthesis"
+    hypothesis_drafts: list[HypothesisDraft] = Field(default_factory=list, max_length=25)
+    tasks: list[ValidationPlanTask] = Field(default_factory=list, max_length=25)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ValidationPlanRecord(StrictBaseModel):
+    plan_id: UUID = Field(default_factory=uuid4)
+    agent_run_id: UUID | None = None
+    brief_id: UUID
+    evaluation_id: UUID | None = None
+    topic: str
+    source_key: str | None = None
+    model_profile: str = "validation_planner"
+    status: ValidationPlanStatus = "draft"
+    readiness: ValidationPlanReadiness = "needs_better_synthesis"
+    task_count: int = Field(default=0, ge=0)
+    hypothesis_count: int = Field(default=0, ge=0)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    result_payload: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

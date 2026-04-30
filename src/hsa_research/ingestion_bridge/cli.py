@@ -36,6 +36,7 @@ from .contracts import (
     SourceFollowupQueueRequest,
     SourceQuery,
     SourceScoutRequest,
+    ValidationPlanRequest,
     XLinkedArticleReviewRequest,
     XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
@@ -588,6 +589,37 @@ def main() -> None:
         help="Optional pass/fail quality-bar filter",
     )
     research_brief_evaluations.add_argument("--limit", type=int, default=50, help="Maximum evaluations to return")
+
+    plan_validation = subparsers.add_parser(
+        "plan-validation",
+        help="Create a recommend-only validation plan from a persisted research brief",
+    )
+    plan_validation.add_argument("--brief-id", default=None, help="Specific brief_id to plan from")
+    plan_validation.add_argument("--evaluation-id", default=None, help="Specific evaluation_id to plan from")
+    plan_validation.add_argument("--topic-query", default=None, help="Latest completed brief topic search")
+    plan_validation.add_argument("--source", default=None, help="Optional source key filter")
+    plan_validation.add_argument(
+        "--allow-unready",
+        action="store_true",
+        help="Allow planning even when the latest synthesis evaluation has not passed",
+    )
+    plan_validation.add_argument("--max-tasks", type=int, default=8, help="Maximum validation tasks to propose")
+    plan_validation.add_argument(
+        "--model-profile",
+        default="validation_planner",
+        help="Planner model/profile label recorded in the ledger",
+    )
+
+    validation_plans = subparsers.add_parser(
+        "validation-plans",
+        help="List or fetch persisted validation plans",
+    )
+    validation_plans.add_argument("--id", default=None, help="Optional plan_id to fetch")
+    validation_plans.add_argument("--brief-id", default=None, help="Optional brief_id filter")
+    validation_plans.add_argument("--evaluation-id", default=None, help="Optional evaluation_id filter")
+    validation_plans.add_argument("--status", default=None, help="Optional status filter")
+    validation_plans.add_argument("--readiness", default=None, help="Optional readiness filter")
+    validation_plans.add_argument("--limit", type=int, default=50, help="Maximum plans to return")
 
     model_review_summary = subparsers.add_parser(
         "model-review-summary",
@@ -1160,6 +1192,34 @@ def main() -> None:
                     brief_id=UUID(args.brief_id) if args.brief_id else None,
                     readiness=args.readiness,
                     passes_quality_bar=passes_quality_bar,
+                    limit=args.limit,
+                )
+            ]
+    elif args.command == "plan-validation":
+        output = HSAResearchService(repo).plan_validation(
+            ValidationPlanRequest(
+                brief_id=UUID(args.brief_id) if args.brief_id else None,
+                evaluation_id=UUID(args.evaluation_id) if args.evaluation_id else None,
+                topic_query=args.topic_query,
+                source_key=args.source,
+                require_ready_evaluation=not args.allow_unready,
+                max_tasks=args.max_tasks,
+                model_profile=args.model_profile,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "validation-plans":
+        service = HSAResearchService(repo)
+        if args.id:
+            record = service.get_validation_plan(UUID(args.id))
+            output = {} if record is None else record.model_dump(mode="json")
+        else:
+            output = [
+                plan.model_dump(mode="json")
+                for plan in service.list_validation_plans(
+                    brief_id=UUID(args.brief_id) if args.brief_id else None,
+                    evaluation_id=UUID(args.evaluation_id) if args.evaluation_id else None,
+                    status=args.status,
+                    readiness=args.readiness,
                     limit=args.limit,
                 )
             ]

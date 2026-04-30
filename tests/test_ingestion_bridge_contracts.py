@@ -63,6 +63,10 @@ from hsa_research.ingestion_bridge.contracts import (
     SourceQuery,
     TextEmbedding,
     TextEmbeddingSearchRequest,
+    ValidationPlanRecord,
+    ValidationPlanRequest,
+    ValidationPlanResult,
+    ValidationPlanTask,
     ValidationRequest,
     ClaimCurationRequest,
     SourceScoutRequest,
@@ -203,6 +207,47 @@ def test_agent_run_and_full_text_ops_contracts_validate():
         FullTextOpsAction(source_key="europe_pmc", action="mark_clean", severity="bad", reason="bad")
     with pytest.raises(ValueError):
         AgentRunRecord(agent_name="x", status="bad")
+
+
+def test_validation_plan_contracts_validate():
+    validation_request = ValidationRequest(
+        validation_type="expert_review",
+        objective="Review the hypothesis before validation.",
+        require_approval=True,
+    )
+    task = ValidationPlanTask(
+        task_type="expert_review",
+        title="Expert review",
+        objective="Assess whether this should move into validation.",
+        rationale="The brief is source-traceable and ready for review.",
+        validation_request=validation_request,
+        evidence_refs=["brief:1", "evaluation:1", "C1"],
+    )
+    result = ValidationPlanResult(
+        brief_id=uuid4(),
+        topic="VEGF in canine HSA",
+        status="ready_for_review",
+        readiness="ready_for_expert_review",
+        tasks=[task],
+    )
+    record = ValidationPlanRecord(
+        plan_id=result.plan_id,
+        brief_id=result.brief_id,
+        topic=result.topic,
+        status=result.status,
+        readiness=result.readiness,
+        task_count=1,
+        result_payload=result.model_dump(mode="json"),
+    )
+
+    assert record.status == "ready_for_review"
+    assert result.tasks[0].validation_request.validation_type == "expert_review"
+    with pytest.raises(ValueError):
+        ValidationPlanTask(task_type="bad", title="x", objective="x", rationale="x")
+    with pytest.raises(ValueError):
+        ValidationPlanResult(brief_id=uuid4(), topic="x", status="bad")
+    with pytest.raises(ValueError):
+        ValidationPlanResult(brief_id=uuid4(), topic="x", readiness="bad")
 
 
 def test_x_linked_article_followup_contracts_validate():
@@ -639,6 +684,63 @@ def test_dagster_research_brief_evaluation_asset_uses_injected_repository(monkey
     assert calls == ["build_repository"]
     assert result.value["brief_id"] == str(brief_id)
     assert result.metadata["readiness"] == "ready_for_hypothesis_review"
+
+
+def test_dagster_validation_plan_asset_uses_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+    brief_id = uuid4()
+    evaluation_id = uuid4()
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    class FakeService:
+        def __init__(self, repository):
+            assert repository is sentinel_repository
+
+        def plan_validation(self, request):
+            assert isinstance(request, ValidationPlanRequest)
+            assert request.evaluation_id == evaluation_id
+            return ValidationPlanResult(
+                brief_id=brief_id,
+                evaluation_id=evaluation_id,
+                agent_run_id=uuid4(),
+                topic="VEGF therapy",
+                source_key="pubmed",
+                status="ready_for_review",
+                readiness="ready_for_expert_review",
+                tasks=[
+                    ValidationPlanTask(
+                        task_type="expert_review",
+                        title="Expert review",
+                        objective="Assess the validation path.",
+                        rationale="Ready brief.",
+                        evidence_refs=["C1"],
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
+
+    result = dagster_asset_module.validation_plan_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "evaluation_id": str(evaluation_id),
+                "require_ready_evaluation": True,
+                "max_tasks": 8,
+            },
+            run_id="dagster-test-run",
+        ),
+        FakeRepositoryResource(),
+    )
+
+    assert calls == ["build_repository"]
+    assert result.value["brief_id"] == str(brief_id)
+    assert result.metadata["readiness"] == "ready_for_expert_review"
+    assert result.metadata["task_count"].value == 1
 
 
 def test_dagster_source_health_report_lives_in_control_panel_group():
@@ -2385,6 +2487,43 @@ def test_research_brief_evaluation_repository_roundtrip_sqlite_and_memory(tmp_pa
         assert repo.list_research_brief_evaluations(passes_quality_bar=False) == []
 
 
+def test_validation_plan_repository_roundtrip_sqlite_and_memory(tmp_path):
+    for repo in (
+        SQLiteResearchRepository(tmp_path / "validation-plans.sqlite3", seed=False),
+        InMemoryResearchRepository(),
+    ):
+        brief_id = uuid4()
+        evaluation_id = uuid4()
+        record = ValidationPlanRecord(
+            brief_id=brief_id,
+            evaluation_id=evaluation_id,
+            agent_run_id=uuid4(),
+            topic="VEGF validation path",
+            source_key="pubmed",
+            status="ready_for_review",
+            readiness="ready_for_expert_review",
+            task_count=2,
+            hypothesis_count=1,
+            result_payload={"plan_id": "payload"},
+            summary={"task_count": 2},
+        )
+
+        saved = repo.upsert_validation_plan(record)
+        fetched = repo.get_validation_plan(saved.plan_id)
+        listed = repo.list_validation_plans(
+            brief_id=brief_id,
+            evaluation_id=evaluation_id,
+            status="ready_for_review",
+            readiness="ready_for_expert_review",
+            limit=1,
+        )
+
+        assert fetched is not None
+        assert fetched.plan_id == saved.plan_id
+        assert listed[0].plan_id == saved.plan_id
+        assert repo.list_validation_plans(status="blocked") == []
+
+
 def test_research_brief_queue_contract_and_repository_roundtrip(tmp_path):
     for repo in (
         SQLiteResearchRepository(tmp_path / "research-brief-queue.sqlite3", seed=False),
@@ -2599,6 +2738,111 @@ def test_research_brief_evaluation_service_blocks_uncited_record(tmp_path):
     assert result.readiness == "blocked"
     assert result.passes_quality_bar is False
     assert result.citation_coverage_score == 0.0
+
+
+def test_validation_planning_service_persists_ready_recommend_only_plan(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-planning.sqlite3", seed=False)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:validation-plan",
+            content_hash="validation-plan-raw",
+            source_url="https://pubmed.ncbi.nlm.nih.gov/validation-plan/",
+            raw_payload={"pmid": "validation-plan"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="VEGF therapy and target validation in canine hemangiosarcoma",
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            canonical_url="https://pubmed.ncbi.nlm.nih.gov/validation-plan/",
+            dedupe_key="pmid:validation-plan",
+            identifiers={"pmid": "validation-plan"},
+        ),
+        raw_record_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "Canine hemangiosarcoma and human angiosarcoma share vascular biology. "
+                "VEGF, KDR, toxicity, biomarker expression, docking, and translational "
+                "target validation are discussed as testable research paths."
+            ),
+            content_hash="validation-plan-chunk",
+        )
+    )
+    service = HSAResearchService(repo)
+    brief = service.run_research_brief(
+        ResearchBriefRequest(
+            topic="VEGF target validation in canine hemangiosarcoma",
+            review_mode="deterministic_only",
+            max_chunks_per_perspective=3,
+            max_claims=0,
+        )
+    )
+    evaluation = service.evaluate_research_brief(ResearchBriefEvaluationRequest(brief_id=brief.brief_id))
+
+    result = service.plan_validation(
+        ValidationPlanRequest(evaluation_id=evaluation.evaluation_id, max_tasks=6)
+    )
+    saved = repo.get_validation_plan(result.plan_id)
+    runs = repo.list_agent_runs(agent_name="validation_planning_agent", status="completed")
+
+    assert result.status == "ready_for_review"
+    assert result.readiness == "ready_for_expert_review"
+    assert result.agent_run_id is not None
+    assert result.hypothesis_drafts
+    assert result.tasks
+    assert all(task.requires_human_approval for task in result.tasks)
+    assert all(task.validation_request is None or task.validation_request.require_approval for task in result.tasks)
+    assert saved is not None
+    assert saved.brief_id == brief.brief_id
+    assert saved.evaluation_id == evaluation.evaluation_id
+    assert saved.task_count == len(result.tasks)
+    assert runs[0].output_payload["plan_id"] == str(result.plan_id)
+    assert service.get_run_status(uuid4()) is None
+
+
+def test_validation_planning_blocks_when_evaluation_is_not_ready(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-planning-blocked.sqlite3", seed=False)
+    brief = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            topic="Uncited VEGF hypothesis",
+            disease_scope="canine hemangiosarcoma",
+            source_key="pubmed",
+            review_mode="deterministic_only",
+            final_brief="Uncited synthesis.",
+            result_payload={
+                "topic": "Uncited VEGF hypothesis",
+                "disease_scope": "canine hemangiosarcoma",
+                "final_brief": "Uncited synthesis.",
+                "citations": [],
+                "perspective_reports": [],
+                "ranked_hypotheses": [],
+                "unresolved_questions": [],
+                "evidence": {},
+                "errors": [],
+            },
+        )
+    )
+    evaluation = HSAResearchService(repo).evaluate_research_brief(
+        ResearchBriefEvaluationRequest(brief_id=brief.brief_id)
+    )
+
+    result = HSAResearchService(repo).plan_validation(
+        ValidationPlanRequest(evaluation_id=evaluation.evaluation_id)
+    )
+
+    assert result.status == "blocked"
+    assert result.readiness == "needs_better_synthesis"
+    assert result.hypothesis_drafts == []
+    assert result.tasks[0].task_type == "expert_review"
+    assert any("not ready" in error for error in result.errors)
 
 
 def test_research_brief_queue_runner_persists_brief_and_updates_queue(tmp_path):
@@ -5866,6 +6110,68 @@ def test_mcp_research_brief_evaluation_tools_dump_json_safe_payloads(monkeypatch
     assert listed[0]["evaluation_id"] == evaluated["evaluation_id"]
 
 
+def test_mcp_validation_plan_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "mcp-validation-plans.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    monkeypatch.setattr(mcp_server, "get_service", lambda: service)
+    object_id = uuid4()
+    chunk_id = uuid4()
+    citation = ResearchBriefCitation(
+        citation_id="C1",
+        chunk_id=chunk_id,
+        research_object_id=object_id,
+        source_key="pubmed",
+        quote="VEGF target validation is discussed.",
+    )
+    finding = ResearchBriefFinding(
+        claim="VEGF target validation should be prioritized in canine HSA.",
+        stance="opportunity",
+        citations=["C1"],
+        evidence_strength="medium",
+        reasoning="The cited evidence supports a testable translational target path.",
+    )
+    result = ResearchBriefResult(
+        brief_id=uuid4(),
+        topic="VEGF target validation in canine HSA",
+        disease_scope="canine hemangiosarcoma",
+        final_brief="VEGF target validation is a candidate path [C1].",
+        ranked_hypotheses=[finding],
+        citations=[citation],
+    )
+    brief_record = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            brief_id=result.brief_id,
+            topic=result.topic,
+            disease_scope=result.disease_scope,
+            source_key="pubmed",
+            final_brief=result.final_brief,
+            result_payload=result.model_dump(mode="json"),
+            citation_count=1,
+            hypothesis_count=1,
+        )
+    )
+    evaluation = repo.upsert_research_brief_evaluation(
+        ResearchBriefEvaluationRecord(
+            brief_id=brief_record.brief_id,
+            topic=brief_record.topic,
+            source_key=brief_record.source_key,
+            overall_score=0.85,
+            passes_quality_bar=True,
+            readiness="ready_for_hypothesis_review",
+            result_payload={"readiness": "ready_for_hypothesis_review"},
+        )
+    )
+
+    planned = mcp_server.plan_validation_tool(evaluation_id=str(evaluation.evaluation_id))
+    fetched = mcp_server.get_validation_plan_tool(planned["plan_id"])
+    listed = mcp_server.list_validation_plans_tool(readiness="ready_for_expert_review")
+
+    assert planned["agent_run_id"]
+    assert planned["tasks"]
+    assert fetched["plan_id"] == planned["plan_id"]
+    assert listed[0]["plan_id"] == planned["plan_id"]
+
+
 def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "mcp-research-brief-queue.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -7363,6 +7669,8 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.research_brief_library_job is not None
     assert dagster_asset_module.research_brief_evaluation_job is not None
     assert dagster_asset_module.research_brief_evaluation_library_job is not None
+    assert dagster_asset_module.validation_plan_job is not None
+    assert dagster_asset_module.validation_plan_library_job is not None
     assert dagster_asset_module.research_brief_queue_job is not None
     assert dagster_asset_module.research_brief_queue_seed_job is not None
     assert dagster_asset_module.research_brief_queue_runner_job is not None

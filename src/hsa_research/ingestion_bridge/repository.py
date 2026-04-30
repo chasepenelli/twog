@@ -34,6 +34,7 @@ from .contracts import (
     ResearchBriefRecord,
     ResearchLeadRecord,
     ResearchObject,
+    ValidationPlanRecord,
     ResolvedEntity,
     RunStatus,
     SourceFollowupQueueItem,
@@ -239,6 +240,23 @@ class ResearchRepository(Protocol):
     ) -> list[ResearchBriefEvaluationRecord]:
         """Return generated research brief evaluations by durable filters."""
 
+    def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:
+        """Persist a recommend-only validation plan derived from a research brief."""
+
+    def get_validation_plan(self, plan_id: UUID) -> ValidationPlanRecord | None:
+        """Return a persisted validation plan."""
+
+    def list_validation_plans(
+        self,
+        *,
+        brief_id: UUID | None = None,
+        evaluation_id: UUID | None = None,
+        status: str | None = None,
+        readiness: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ValidationPlanRecord]:
+        """Return persisted validation plans by durable filters."""
+
     def upsert_research_brief_queue_item(self, item: ResearchBriefQueueItem) -> ResearchBriefQueueItem:
         """Persist a queued research brief request."""
 
@@ -385,6 +403,7 @@ class InMemoryResearchRepository:
         self.research_leads: dict[UUID, ResearchLeadRecord] = {}
         self.research_briefs: dict[UUID, ResearchBriefRecord] = {}
         self.research_brief_evaluations: dict[UUID, ResearchBriefEvaluationRecord] = {}
+        self.validation_plans: dict[UUID, ValidationPlanRecord] = {}
         self.research_brief_queue: dict[UUID, ResearchBriefQueueItem] = {}
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
         self.agent_runs: dict[UUID, AgentRunRecord] = {}
@@ -929,6 +948,34 @@ class InMemoryResearchRepository:
             records = [record for record in records if record.readiness == readiness]
         if passes_quality_bar is not None:
             records = [record for record in records if record.passes_quality_bar == passes_quality_bar]
+        records.sort(key=lambda record: record.created_at, reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:
+        self.validation_plans[record.plan_id] = record
+        return record
+
+    def get_validation_plan(self, plan_id: UUID) -> ValidationPlanRecord | None:
+        return self.validation_plans.get(plan_id)
+
+    def list_validation_plans(
+        self,
+        *,
+        brief_id: UUID | None = None,
+        evaluation_id: UUID | None = None,
+        status: str | None = None,
+        readiness: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ValidationPlanRecord]:
+        records = list(self.validation_plans.values())
+        if brief_id:
+            records = [record for record in records if record.brief_id == brief_id]
+        if evaluation_id:
+            records = [record for record in records if record.evaluation_id == evaluation_id]
+        if status:
+            records = [record for record in records if record.status == status]
+        if readiness:
+            records = [record for record in records if record.readiness == readiness]
         records.sort(key=lambda record: record.created_at, reverse=True)
         return records[:limit] if limit is not None else records
 

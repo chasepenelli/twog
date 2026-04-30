@@ -60,6 +60,9 @@ from .contracts import (
     SourceFollowupQueueResult,
     SourceFollowupQueueItem,
     TextEmbeddingSearchRequest,
+    ValidationPlanRecord,
+    ValidationPlanRequest,
+    ValidationPlanResult,
     ValidationRequest,
     XLinkedArticleReviewRequest,
     XLinkedArticleReviewResult,
@@ -89,6 +92,13 @@ from .research_brief_evaluation import (
 )
 from .repository import ResearchRepository
 from .research_leads import collect_research_leads_from_agent_runs, persist_research_leads_from_agent_result
+from .validation_planning import (
+    VALIDATION_PLANNING_AGENT_NAME,
+    VALIDATION_PLANNING_AGENT_VERSION,
+    plan_validation_from_research_brief,
+    summarize_validation_plan,
+    validation_plan_record_from_result,
+)
 from .source_scout import SourceScoutAgent
 from .source_followup import (
     ingest_source_followups,
@@ -130,6 +140,11 @@ DEFAULT_MODEL_PROFILES: dict[str, ModelProfile] = {
         profile_key="synthesis_quality_evaluator",
         provider="local",
         purpose="Reproducible quality review for generated research briefs",
+    ),
+    "validation_planner": ModelProfile(
+        profile_key="validation_planner",
+        provider="local",
+        purpose="Recommend-only hypothesis and validation planning from evaluated briefs",
     ),
 }
 
@@ -341,6 +356,42 @@ class HSAResearchService:
             brief_id=brief_id,
             readiness=readiness,
             passes_quality_bar=passes_quality_bar,
+            limit=limit,
+        )
+
+    def plan_validation(self, request: ValidationPlanRequest) -> ValidationPlanResult:
+        source_key = request.source_key or _source_key_for_validation_plan(self.repository, request)
+        result = AgentRunner(self.repository).run(
+            agent_name=VALIDATION_PLANNING_AGENT_NAME,
+            agent_version=VALIDATION_PLANNING_AGENT_VERSION,
+            model_profile=request.model_profile,
+            input_payload=request.model_dump(mode="json"),
+            source_key=source_key,
+            dagster_run_id=request.dagster_run_id,
+            metadata=request.metadata,
+            execute=lambda: plan_validation_from_research_brief(self.repository, request),
+            summarize=summarize_validation_plan,
+        )
+        self.repository.upsert_validation_plan(validation_plan_record_from_result(result, request))
+        return result
+
+    def get_validation_plan(self, plan_id: UUID) -> ValidationPlanRecord | None:
+        return self.repository.get_validation_plan(plan_id)
+
+    def list_validation_plans(
+        self,
+        *,
+        brief_id: UUID | None = None,
+        evaluation_id: UUID | None = None,
+        status: str | None = None,
+        readiness: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ValidationPlanRecord]:
+        return self.repository.list_validation_plans(
+            brief_id=brief_id,
+            evaluation_id=evaluation_id,
+            status=status,
+            readiness=readiness,
             limit=limit,
         )
 
@@ -942,6 +993,25 @@ def _select_brief_for_evaluation(
         limit=request.limit,
     )
     return candidates[0] if candidates else None
+
+
+def _source_key_for_validation_plan(
+    repository: ResearchRepository,
+    request: ValidationPlanRequest,
+) -> str | None:
+    if request.evaluation_id is not None:
+        evaluation = repository.get_research_brief_evaluation(request.evaluation_id)
+        return evaluation.source_key if evaluation else None
+    if request.brief_id is not None:
+        brief = repository.get_research_brief(request.brief_id)
+        return brief.source_key if brief else None
+    candidates = repository.list_research_briefs(
+        status="completed",
+        source_key=request.source_key,
+        topic_query=request.topic_query,
+        limit=1,
+    )
+    return candidates[0].source_key if candidates else None
 
 
 def _brief_request_from_queue_item(

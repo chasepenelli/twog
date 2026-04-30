@@ -27,6 +27,7 @@ from .contracts import (
     SourceFollowupQueueRequest,
     SourceQuery,
     SourceScoutRequest,
+    ValidationPlanRequest,
     XLinkedArticleReviewRequest,
     XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
@@ -185,6 +186,30 @@ _RESEARCH_BRIEF_EVALUATION_TABLE_COLUMNS = (
     "readiness",
     "recommendation_count",
     "error_count",
+    "created_at",
+)
+_VALIDATION_PLAN_TASK_TABLE_COLUMNS = (
+    "task_id",
+    "task_type",
+    "title",
+    "priority",
+    "validation_type",
+    "target_name",
+    "candidate_name",
+    "tool_hint",
+    "evidence_refs",
+)
+_VALIDATION_PLAN_LIBRARY_TABLE_COLUMNS = (
+    "plan_id",
+    "brief_id",
+    "evaluation_id",
+    "agent_run_id",
+    "topic",
+    "source_key",
+    "status",
+    "readiness",
+    "task_count",
+    "hypothesis_count",
     "created_at",
 )
 _RESEARCH_BRIEF_QUEUE_TABLE_COLUMNS = (
@@ -622,6 +647,51 @@ if dg is not None:
             "readiness": report.get("readiness"),
             "passes_quality_bar": report.get("passes_quality_bar"),
             "evaluations": _metadata_table(rows, _RESEARCH_BRIEF_EVALUATION_TABLE_COLUMNS),
+        }
+
+    def _validation_plan_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        task_rows = []
+        for task in report.get("tasks", []):
+            validation_request = task.get("validation_request") or {}
+            task_rows.append(
+                {
+                    "task_id": task.get("task_id"),
+                    "task_type": task.get("task_type"),
+                    "title": str(task.get("title") or "")[:300],
+                    "priority": task.get("priority"),
+                    "validation_type": validation_request.get("validation_type"),
+                    "target_name": validation_request.get("target_name"),
+                    "candidate_name": validation_request.get("candidate_name"),
+                    "tool_hint": task.get("tool_hint"),
+                    "evidence_refs": task.get("evidence_refs", []),
+                }
+            )
+        return {
+            "plan_id": report.get("plan_id"),
+            "brief_id": report.get("brief_id"),
+            "evaluation_id": report.get("evaluation_id"),
+            "agent_run_id": report.get("agent_run_id"),
+            "topic": report.get("topic"),
+            "source_key": report.get("source_key"),
+            "status": report.get("status"),
+            "readiness": report.get("readiness"),
+            "hypothesis_count": dg.MetadataValue.int(len(report.get("hypothesis_drafts", []))),
+            "task_count": dg.MetadataValue.int(len(report.get("tasks", []))),
+            "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "evidence": dg.MetadataValue.json(report.get("evidence", {})),
+            "tasks": _metadata_table(task_rows, _VALIDATION_PLAN_TASK_TABLE_COLUMNS),
+        }
+
+    def _validation_plan_library_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = report.get("plans", [])
+        return {
+            "plan_count": dg.MetadataValue.int(int(report.get("plan_count", 0))),
+            "brief_id": report.get("brief_id"),
+            "evaluation_id": report.get("evaluation_id"),
+            "status": report.get("status"),
+            "readiness": report.get("readiness"),
+            "plans": _metadata_table(rows, _VALIDATION_PLAN_LIBRARY_TABLE_COLUMNS),
         }
 
     def _research_brief_queue_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -1898,6 +1968,133 @@ if dg is not None:
         return dg.MaterializeResult(
             value=report,
             metadata=_research_brief_evaluation_library_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "brief_id": dg.Field(
+                str,
+                is_required=False,
+                description="Specific persisted brief ID to plan from.",
+            ),
+            "evaluation_id": dg.Field(
+                str,
+                is_required=False,
+                description="Specific persisted evaluation ID to plan from.",
+            ),
+            "topic_query": dg.Field(
+                str,
+                is_required=False,
+                description="Latest completed brief topic/scope search when IDs are omitted.",
+            ),
+            "source_key": dg.Field(
+                str,
+                is_required=False,
+                description="Optional source key filter when IDs are omitted.",
+            ),
+            "require_ready_evaluation": dg.Field(
+                bool,
+                default_value=True,
+                description="Require a passing synthesis evaluation before proposing validation tasks.",
+            ),
+            "max_tasks": dg.Field(
+                int,
+                default_value=8,
+                description="Maximum validation tasks to propose.",
+            ),
+        },
+    )
+    def validation_plan_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual recommend-only validation plan from a persisted research brief."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).plan_validation(
+            ValidationPlanRequest(
+                brief_id=UUID(config["brief_id"]) if config.get("brief_id") else None,
+                evaluation_id=UUID(config["evaluation_id"]) if config.get("evaluation_id") else None,
+                topic_query=config.get("topic_query"),
+                source_key=config.get("source_key"),
+                require_ready_evaluation=config["require_ready_evaluation"],
+                max_tasks=config["max_tasks"],
+                dagster_run_id=context.run_id,
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_validation_plan_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "brief_id": dg.Field(str, is_required=False, description="Optional brief ID filter."),
+            "evaluation_id": dg.Field(str, is_required=False, description="Optional evaluation ID filter."),
+            "status": dg.Field(str, is_required=False, description="Optional plan status filter."),
+            "readiness": dg.Field(str, is_required=False, description="Optional readiness filter."),
+            "limit": dg.Field(
+                int,
+                default_value=50,
+                description="Maximum persisted validation plans to show.",
+            ),
+        },
+    )
+    def validation_plan_library_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Control-panel view of persisted recommend-only validation plans."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        service = HSAResearchService(repository)
+        plans = service.list_validation_plans(
+            brief_id=UUID(config["brief_id"]) if config.get("brief_id") else None,
+            evaluation_id=UUID(config["evaluation_id"]) if config.get("evaluation_id") else None,
+            status=config.get("status"),
+            readiness=config.get("readiness"),
+            limit=config["limit"],
+        )
+        rows = [
+            {
+                "plan_id": str(record.plan_id),
+                "brief_id": str(record.brief_id),
+                "evaluation_id": str(record.evaluation_id) if record.evaluation_id else None,
+                "agent_run_id": str(record.agent_run_id) if record.agent_run_id else None,
+                "topic": record.topic[:300],
+                "source_key": record.source_key,
+                "status": record.status,
+                "readiness": record.readiness,
+                "task_count": record.task_count,
+                "hypothesis_count": record.hypothesis_count,
+                "created_at": record.created_at.isoformat(),
+            }
+            for record in plans
+        ]
+        report = {
+            "plan_count": len(plans),
+            "brief_id": config.get("brief_id"),
+            "evaluation_id": config.get("evaluation_id"),
+            "status": config.get("status"),
+            "readiness": config.get("readiness"),
+            "plans": rows,
+        }
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_validation_plan_library_metadata(report),
         )
 
     @dg.asset(
@@ -3207,6 +3404,8 @@ if dg is not None:
         research_brief_library_report,
         research_brief_evaluation_report,
         research_brief_evaluation_library_report,
+        validation_plan_report,
+        validation_plan_library_report,
         research_brief_queue_report,
         research_brief_queue_seed_report,
         research_brief_queue_runner_report,
@@ -3314,6 +3513,14 @@ if dg is not None:
     research_brief_evaluation_library_job = dg.define_asset_job(
         "research_brief_evaluation_library_job",
         selection=dg.AssetSelection.assets(research_brief_evaluation_library_report),
+    )
+    validation_plan_job = dg.define_asset_job(
+        "validation_plan_job",
+        selection=dg.AssetSelection.assets(validation_plan_report),
+    )
+    validation_plan_library_job = dg.define_asset_job(
+        "validation_plan_library_job",
+        selection=dg.AssetSelection.assets(validation_plan_library_report),
     )
     research_brief_queue_job = dg.define_asset_job(
         "research_brief_queue_job",
@@ -3548,6 +3755,8 @@ if dg is not None:
             research_brief_library_job,
             research_brief_evaluation_job,
             research_brief_evaluation_library_job,
+            validation_plan_job,
+            validation_plan_library_job,
             research_brief_queue_job,
             research_brief_queue_seed_job,
             research_brief_queue_runner_job,
@@ -3614,6 +3823,8 @@ else:
     research_brief_library_job = None
     research_brief_evaluation_job = None
     research_brief_evaluation_library_job = None
+    validation_plan_job = None
+    validation_plan_library_job = None
     research_brief_queue_job = None
     research_brief_queue_seed_job = None
     research_brief_queue_runner_job = None

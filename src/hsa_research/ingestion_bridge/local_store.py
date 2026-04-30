@@ -47,6 +47,7 @@ from .contracts import (
     TextEmbedding,
     TextEmbeddingSearchRequest,
     TextEmbeddingSearchResult,
+    ValidationPlanRecord,
     ValidationRequest,
 )
 from .repository import ResearchRepository, cosine_similarity, keyword_chunk_score, keyword_terms, seed_claims
@@ -1662,6 +1663,94 @@ class SQLiteResearchRepository(ResearchRepository):
             for row in self.conn.execute(sql, params).fetchall()
         ]
 
+    def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into validation_plans (
+              plan_id, agent_run_id, brief_id, evaluation_id, topic, source_key,
+              model_profile, status, readiness, task_count, hypothesis_count,
+              created_at, updated_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(plan_id) do update set
+              agent_run_id = excluded.agent_run_id,
+              brief_id = excluded.brief_id,
+              evaluation_id = excluded.evaluation_id,
+              topic = excluded.topic,
+              source_key = excluded.source_key,
+              model_profile = excluded.model_profile,
+              status = excluded.status,
+              readiness = excluded.readiness,
+              task_count = excluded.task_count,
+              hypothesis_count = excluded.hypothesis_count,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(record.plan_id),
+                str(record.agent_run_id) if record.agent_run_id else None,
+                str(record.brief_id),
+                str(record.evaluation_id) if record.evaluation_id else None,
+                record.topic,
+                record.source_key,
+                record.model_profile,
+                record.status,
+                record.readiness,
+                record.task_count,
+                record.hypothesis_count,
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_validation_plan(self, plan_id: UUID) -> ValidationPlanRecord | None:
+        row = self.conn.execute(
+            "select payload from validation_plans where plan_id = ?",
+            (str(plan_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return ValidationPlanRecord.model_validate(json.loads(row["payload"]))
+
+    def list_validation_plans(
+        self,
+        *,
+        brief_id: UUID | None = None,
+        evaluation_id: UUID | None = None,
+        status: str | None = None,
+        readiness: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ValidationPlanRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if brief_id:
+            clauses.append("brief_id = ?")
+            params.append(str(brief_id))
+        if evaluation_id:
+            clauses.append("evaluation_id = ?")
+            params.append(str(evaluation_id))
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if readiness:
+            clauses.append("readiness = ?")
+            params.append(readiness)
+        sql = "select payload from validation_plans"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by created_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            ValidationPlanRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
     def upsert_research_brief_queue_item(self, item: ResearchBriefQueueItem) -> ResearchBriefQueueItem:
         existing = self.conn.execute(
             "select payload from research_brief_queue where identity_key = ?",
@@ -2759,6 +2848,30 @@ class SQLiteResearchRepository(ResearchRepository):
               on research_brief_evaluations(readiness, created_at desc);
             create index if not exists research_brief_evaluations_quality_idx
               on research_brief_evaluations(passes_quality_bar, overall_score desc);
+
+            create table if not exists validation_plans (
+              plan_id text primary key,
+              agent_run_id text,
+              brief_id text not null,
+              evaluation_id text,
+              topic text not null,
+              source_key text,
+              model_profile text not null,
+              status text not null,
+              readiness text not null,
+              task_count integer not null default 0,
+              hypothesis_count integer not null default 0,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp
+            );
+
+            create index if not exists validation_plans_brief_idx
+              on validation_plans(brief_id, created_at desc);
+            create index if not exists validation_plans_evaluation_idx
+              on validation_plans(evaluation_id, created_at desc);
+            create index if not exists validation_plans_status_idx
+              on validation_plans(status, readiness, created_at desc);
 
             create table if not exists research_brief_queue (
               queue_item_id text primary key,

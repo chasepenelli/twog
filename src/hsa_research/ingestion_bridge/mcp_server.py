@@ -35,6 +35,7 @@ from .contracts import (
     SourceScoutRequest,
     SourceFollowupIngestRequest,
     SourceFollowupQueueRequest,
+    ValidationPlanRequest,
     ValidationRequest,
     XLinkedArticleReviewRequest,
     XLinkedArticleFollowupRequest,
@@ -248,6 +249,57 @@ def list_research_brief_evaluations_tool(
             brief_id=UUID(brief_id) if brief_id else None,
             readiness=readiness,
             passes_quality_bar=passes_quality_bar,
+            limit=limit,
+        )
+    ]
+
+
+def plan_validation_tool(
+    brief_id: str | None = None,
+    evaluation_id: str | None = None,
+    topic_query: str | None = None,
+    source_key: str | None = None,
+    require_ready_evaluation: bool = True,
+    max_tasks: int = 8,
+    model_profile: str = "validation_planner",
+) -> dict:
+    """Create a recommend-only validation plan from a persisted research brief."""
+
+    request = ValidationPlanRequest(
+        brief_id=UUID(brief_id) if brief_id else None,
+        evaluation_id=UUID(evaluation_id) if evaluation_id else None,
+        topic_query=topic_query,
+        source_key=source_key,
+        require_ready_evaluation=require_ready_evaluation,
+        max_tasks=max_tasks,
+        model_profile=model_profile,
+    )
+    return get_service().plan_validation(request).model_dump(mode="json")
+
+
+def get_validation_plan_tool(plan_id: str) -> dict:
+    """Return a persisted validation plan by ID."""
+
+    record = get_service().get_validation_plan(UUID(plan_id))
+    return {} if record is None else record.model_dump(mode="json")
+
+
+def list_validation_plans_tool(
+    brief_id: str | None = None,
+    evaluation_id: str | None = None,
+    status: str | None = None,
+    readiness: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Return persisted validation plans."""
+
+    return [
+        record.model_dump(mode="json")
+        for record in get_service().list_validation_plans(
+            brief_id=UUID(brief_id) if brief_id else None,
+            evaluation_id=UUID(evaluation_id) if evaluation_id else None,
+            status=status,
+            readiness=readiness,
             limit=limit,
         )
     ]
@@ -854,6 +906,52 @@ if mcp is not None:
             brief_id=brief_id,
             readiness=readiness,
             passes_quality_bar=passes_quality_bar,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def plan_validation(
+        brief_id: str | None = None,
+        evaluation_id: str | None = None,
+        topic_query: str | None = None,
+        source_key: str | None = None,
+        require_ready_evaluation: bool = True,
+        max_tasks: int = 8,
+        model_profile: str = "validation_planner",
+    ) -> dict:
+        """Create a recommend-only validation plan from a persisted research brief."""
+
+        return plan_validation_tool(
+            brief_id=brief_id,
+            evaluation_id=evaluation_id,
+            topic_query=topic_query,
+            source_key=source_key,
+            require_ready_evaluation=require_ready_evaluation,
+            max_tasks=max_tasks,
+            model_profile=model_profile,
+        )
+
+    @mcp.tool()
+    def get_validation_plan(plan_id: str) -> dict:
+        """Return one persisted validation plan."""
+
+        return get_validation_plan_tool(plan_id)
+
+    @mcp.tool()
+    def list_validation_plans(
+        brief_id: str | None = None,
+        evaluation_id: str | None = None,
+        status: str | None = None,
+        readiness: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """List persisted validation plans."""
+
+        return list_validation_plans_tool(
+            brief_id=brief_id,
+            evaluation_id=evaluation_id,
+            status=status,
+            readiness=readiness,
             limit=limit,
         )
 
@@ -1472,6 +1570,12 @@ if mcp is not None:
         """Fetch a persisted research brief synthesis evaluation as an MCP resource."""
 
         return get_research_brief_evaluation_tool(evaluation_id)
+
+    @mcp.resource("validation-plan://{plan_id}")
+    def validation_plan_resource(plan_id: str) -> dict:
+        """Fetch a persisted recommend-only validation plan as an MCP resource."""
+
+        return get_validation_plan_tool(plan_id)
 
     @mcp.resource("research-brief-queue://{queue_item_id}")
     def research_brief_queue_resource(queue_item_id: str) -> dict:

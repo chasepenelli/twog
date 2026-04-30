@@ -28,6 +28,8 @@ on:
           - "research_brief_library_job"
           - "research_brief_evaluation_job"
           - "research_brief_evaluation_library_job"
+          - "validation_plan_job"
+          - "validation_plan_library_job"
           - "research_brief_queue_job"
           - "research_brief_queue_seed_job"
           - "research_brief_queue_runner_job"
