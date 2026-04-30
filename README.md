@@ -75,3 +75,10 @@ uv run hsa-ingestion-bridge structured-pipeline --source pubchem --limit 1
 Structured source SOPs live in `docs/STRUCTURED_SOURCE_SOPS.md`. Each source has
 an explicit evidence boundary so the system does not overstate what an API
 record can prove.
+
+## Codex Project Context
+
+Future Codex sessions should start with `AGENTS.md` and
+`docs/CODEX_PROJECT_CONTEXT.md`. These files summarize the active architecture,
+hosted Dagster+ state, current agent lanes, validation commands, and recent
+smoke runs.
