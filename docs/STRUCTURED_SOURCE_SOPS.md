@@ -375,6 +375,16 @@ Hosted Dagster jobs:
 - `clinicaltrials_gov_source_followup_ingest_job`
 - `unpaywall_source_followup_ingest_job`
 
+Dagster schedules:
+- `source_followup_queue_daily_schedule`: `5 3 * * *`, running.
+- `pubmed_source_followup_ingest_daily_schedule`: `20 3 * * *`, running.
+- `crossref_source_followup_ingest_daily_schedule`: `35 3 * * *`, running.
+- `pmc_oa_source_followup_ingest_daily_schedule`: `50 3 * * *`, running.
+- `clinicaltrials_gov_source_followup_ingest_daily_schedule`: `5 4 * * *`,
+  running.
+- `unpaywall_source_followup_ingest_daily_schedule`: `20 4 * * *`, running.
+- Timezone: `America/Denver`.
+
 Default hosted limits:
 - PubMed: 25
 - Crossref: 25

@@ -2746,6 +2746,48 @@ if dg is not None:
         execution_timezone=SCHEDULE_TIMEZONE,
         default_status=dg.DefaultScheduleStatus.RUNNING,
     )
+    source_followup_queue_daily_schedule = dg.ScheduleDefinition(
+        name="source_followup_queue_daily_schedule",
+        job=source_followup_queue_job,
+        cron_schedule="5 3 * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
+    )
+    pubmed_source_followup_ingest_daily_schedule = dg.ScheduleDefinition(
+        name="pubmed_source_followup_ingest_daily_schedule",
+        job=pubmed_source_followup_ingest_job,
+        cron_schedule="20 3 * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
+    )
+    crossref_source_followup_ingest_daily_schedule = dg.ScheduleDefinition(
+        name="crossref_source_followup_ingest_daily_schedule",
+        job=crossref_source_followup_ingest_job,
+        cron_schedule="35 3 * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
+    )
+    pmc_oa_source_followup_ingest_daily_schedule = dg.ScheduleDefinition(
+        name="pmc_oa_source_followup_ingest_daily_schedule",
+        job=pmc_oa_source_followup_ingest_job,
+        cron_schedule="50 3 * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
+    )
+    clinicaltrials_gov_source_followup_ingest_daily_schedule = dg.ScheduleDefinition(
+        name="clinicaltrials_gov_source_followup_ingest_daily_schedule",
+        job=clinicaltrials_gov_source_followup_ingest_job,
+        cron_schedule="5 4 * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
+    )
+    unpaywall_source_followup_ingest_daily_schedule = dg.ScheduleDefinition(
+        name="unpaywall_source_followup_ingest_daily_schedule",
+        job=unpaywall_source_followup_ingest_job,
+        cron_schedule="20 4 * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
+    )
     embedding_index_daily_schedule = dg.ScheduleDefinition(
         name="embedding_index_daily_schedule",
         job=embedding_index_job,
@@ -2841,6 +2883,12 @@ if dg is not None:
             literature_corpus_daily_schedule,
             literature_full_text_weekly_schedule,
             all_api_smoke_weekly_schedule,
+            source_followup_queue_daily_schedule,
+            pubmed_source_followup_ingest_daily_schedule,
+            crossref_source_followup_ingest_daily_schedule,
+            pmc_oa_source_followup_ingest_daily_schedule,
+            clinicaltrials_gov_source_followup_ingest_daily_schedule,
+            unpaywall_source_followup_ingest_daily_schedule,
             embedding_index_daily_schedule,
             embedding_maintenance_daily_schedule,
             source_health_daily_schedule,
@@ -2892,6 +2940,12 @@ else:
     literature_full_text_weekly_schedule = None
     literature_full_text_source_date_daily_schedule = None
     all_api_smoke_weekly_schedule = None
+    source_followup_queue_daily_schedule = None
+    pubmed_source_followup_ingest_daily_schedule = None
+    crossref_source_followup_ingest_daily_schedule = None
+    pmc_oa_source_followup_ingest_daily_schedule = None
+    clinicaltrials_gov_source_followup_ingest_daily_schedule = None
+    unpaywall_source_followup_ingest_daily_schedule = None
     embedding_index_daily_schedule = None
     embedding_maintenance_daily_schedule = None
     source_health_daily_schedule = None

@@ -193,6 +193,13 @@ than chained. The initial production cadence is:
   after clean Sonnet-reviewed `pmc_oa` and `europe_pmc` source/date ops runs on
   2026-04-28.
 - `all_api_smoke_weekly_schedule`: `0 3 * * 2`, running.
+- `source_followup_queue_daily_schedule`: `5 3 * * *`, running.
+- `pubmed_source_followup_ingest_daily_schedule`: `20 3 * * *`, running.
+- `crossref_source_followup_ingest_daily_schedule`: `35 3 * * *`, running.
+- `pmc_oa_source_followup_ingest_daily_schedule`: `50 3 * * *`, running.
+- `clinicaltrials_gov_source_followup_ingest_daily_schedule`: `5 4 * * *`,
+  running.
+- `unpaywall_source_followup_ingest_daily_schedule`: `20 4 * * *`, running.
 - `embedding_index_daily_schedule`: `0 5 * * *`, running.
 - `embedding_maintenance_daily_schedule`: `45 5 * * *`, running.
 - `source_health_daily_schedule`: `15 6 * * *`, running.
@@ -404,6 +411,14 @@ Current executable scaffold:
 - `literature_full_text_weekly_schedule`: stopped weekly full-text lane until a
   hosted full-text run is clean.
 - `all_api_smoke_weekly_schedule`: weekly all-source API heartbeat.
+- `source_followup_queue_daily_schedule`: daily queue promotion from linked
+  article and agent recommendations.
+- Source-specific follow-up ingest schedules:
+  `pubmed_source_followup_ingest_daily_schedule`,
+  `crossref_source_followup_ingest_daily_schedule`,
+  `pmc_oa_source_followup_ingest_daily_schedule`,
+  `clinicaltrials_gov_source_followup_ingest_daily_schedule`, and
+  `unpaywall_source_followup_ingest_daily_schedule`.
 - `embedding_index_daily_schedule`: daily deterministic embedding refresh.
 - `embedding_maintenance_daily_schedule`: daily orphan cleanup and active-model
   coverage gate.

@@ -6782,6 +6782,21 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.research_brief_playground_pack_job is not None
 
 
+def test_dagster_schedules_source_followup_lanes():
+    assert dagster_asset_module.source_followup_queue_daily_schedule is not None
+    assert dagster_asset_module.source_followup_queue_daily_schedule.cron_schedule == "5 3 * * *"
+    assert dagster_asset_module.pubmed_source_followup_ingest_daily_schedule is not None
+    assert dagster_asset_module.pubmed_source_followup_ingest_daily_schedule.cron_schedule == "20 3 * * *"
+    assert dagster_asset_module.crossref_source_followup_ingest_daily_schedule is not None
+    assert dagster_asset_module.crossref_source_followup_ingest_daily_schedule.cron_schedule == "35 3 * * *"
+    assert dagster_asset_module.pmc_oa_source_followup_ingest_daily_schedule is not None
+    assert dagster_asset_module.pmc_oa_source_followup_ingest_daily_schedule.cron_schedule == "50 3 * * *"
+    assert dagster_asset_module.clinicaltrials_gov_source_followup_ingest_daily_schedule is not None
+    assert dagster_asset_module.clinicaltrials_gov_source_followup_ingest_daily_schedule.cron_schedule == "5 4 * * *"
+    assert dagster_asset_module.unpaywall_source_followup_ingest_daily_schedule is not None
+    assert dagster_asset_module.unpaywall_source_followup_ingest_daily_schedule.cron_schedule == "20 4 * * *"
+
+
 def test_scrape_bridge_ingest_requires_approval(tmp_path, monkeypatch):
     profile = ScrapeSourceProfile(
         source_key="test_scraper",
