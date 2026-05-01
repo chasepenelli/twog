@@ -913,6 +913,68 @@ class ResearchBriefEvaluationRecord(StrictBaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+ResearchBriefQualityStatus = Literal[
+    "ready_for_validation",
+    "ready_for_hypothesis_review",
+    "needs_more_evidence",
+    "needs_human_review",
+    "blocked",
+    "needs_evaluation",
+    "brief_failed",
+]
+
+
+class ResearchBriefQualityReportRequest(StrictBaseModel):
+    status: ResearchBriefStatus | None = None
+    source_key: str | None = None
+    topic_query: str | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+    include_evaluations: bool = True
+
+
+class ResearchBriefQualityRow(StrictBaseModel):
+    brief_id: UUID
+    evaluation_id: UUID | None = None
+    agent_run_id: UUID | None = None
+    status: ResearchBriefStatus
+    quality_status: ResearchBriefQualityStatus
+    topic: str
+    source_key: str | None = None
+    brief_style: Literal["technical", "operator", "substack", "vet_partner"] = "technical"
+    model_profile: str = "research_brief"
+    review_mode: Literal[
+        "external_required",
+        "openrouter_required",
+        "openrouter_compare",
+        "deterministic_only",
+    ] = "openrouter_required"
+    review_models: list[str] = Field(default_factory=list)
+    citation_count: int = Field(default=0, ge=0)
+    finding_count: int = Field(default=0, ge=0)
+    hypothesis_count: int = Field(default=0, ge=0)
+    error_count: int = Field(default=0, ge=0)
+    passes_completion_bar: bool = False
+    passes_quality_bar: bool | None = None
+    readiness: ResearchBriefEvaluationReadiness | None = None
+    overall_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    created_at: datetime
+    updated_at: datetime
+
+
+class ResearchBriefQualityReportResult(StrictBaseModel):
+    brief_count: int = 0
+    evaluated_count: int = 0
+    ready_count: int = 0
+    failed_count: int = 0
+    needs_evaluation_count: int = 0
+    average_overall_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    quality_status_counts: dict[str, int] = Field(default_factory=dict)
+    rows: list[ResearchBriefQualityRow] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class XTopicLinkedSource(StrictBaseModel):
     url: str
     recommended_source_key: str | None = None

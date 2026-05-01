@@ -19,6 +19,7 @@ from .contracts import (
     CommandCenterRequest,
     FullTextOpsRequest,
     ResearchBriefEvaluationRequest,
+    ResearchBriefQualityReportRequest,
     ResearchBriefQueueBatchRequest,
     ResearchBriefQueueMaintenanceRequest,
     ResearchBriefQueueRequest,
@@ -197,6 +198,24 @@ _RESEARCH_BRIEF_EVALUATION_TABLE_COLUMNS = (
     "readiness",
     "recommendation_count",
     "error_count",
+    "created_at",
+)
+_RESEARCH_BRIEF_QUALITY_TABLE_COLUMNS = (
+    "brief_id",
+    "evaluation_id",
+    "status",
+    "quality_status",
+    "topic",
+    "source_key",
+    "review_mode",
+    "review_models",
+    "citation_count",
+    "finding_count",
+    "hypothesis_count",
+    "error_count",
+    "overall_score",
+    "passes_quality_bar",
+    "readiness",
     "created_at",
 )
 _VALIDATION_PLAN_TASK_TABLE_COLUMNS = (
@@ -702,6 +721,32 @@ if dg is not None:
             "readiness": report.get("readiness"),
             "passes_quality_bar": report.get("passes_quality_bar"),
             "evaluations": _metadata_table(rows, _RESEARCH_BRIEF_EVALUATION_TABLE_COLUMNS),
+        }
+
+    def _research_brief_quality_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = [
+            {
+                **row,
+                "topic": str(row.get("topic") or "")[:300],
+                "review_models": ", ".join(row.get("review_models") or []),
+            }
+            for row in report.get("rows", [])
+        ]
+        return {
+            "brief_count": dg.MetadataValue.int(int(report.get("brief_count", 0))),
+            "evaluated_count": dg.MetadataValue.int(int(report.get("evaluated_count", 0))),
+            "ready_count": dg.MetadataValue.int(int(report.get("ready_count", 0))),
+            "failed_count": dg.MetadataValue.int(int(report.get("failed_count", 0))),
+            "needs_evaluation_count": dg.MetadataValue.int(int(report.get("needs_evaluation_count", 0))),
+            "average_overall_score": (
+                float(report["average_overall_score"])
+                if report.get("average_overall_score") is not None
+                else None
+            ),
+            "status_counts": dg.MetadataValue.json(report.get("status_counts", {})),
+            "quality_status_counts": dg.MetadataValue.json(report.get("quality_status_counts", {})),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "briefs": _metadata_table(rows, _RESEARCH_BRIEF_QUALITY_TABLE_COLUMNS),
         }
 
     def _validation_plan_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -2164,6 +2209,60 @@ if dg is not None:
         return dg.MaterializeResult(
             value=report,
             metadata=_research_brief_evaluation_library_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "status": dg.Field(
+                str,
+                is_required=False,
+                description="Optional persisted brief status filter.",
+            ),
+            "source_key": dg.Field(
+                str,
+                is_required=False,
+                description="Optional source key filter.",
+            ),
+            "topic_query": dg.Field(
+                str,
+                is_required=False,
+                description="Optional case-insensitive topic/scope search filter.",
+            ),
+            "limit": dg.Field(
+                int,
+                default_value=50,
+                description="Maximum persisted briefs to score.",
+            ),
+            "include_evaluations": dg.Field(
+                bool,
+                default_value=True,
+                description="Join each brief to its latest persisted synthesis evaluation.",
+            ),
+        },
+    )
+    def research_brief_quality_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Control-panel quality view for persisted research briefs."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_research_brief_quality_report(
+            ResearchBriefQualityReportRequest(
+                status=config.get("status"),
+                source_key=config.get("source_key"),
+                topic_query=config.get("topic_query"),
+                limit=config["limit"],
+                include_evaluations=config["include_evaluations"],
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_research_brief_quality_metadata(report),
         )
 
     @dg.asset(
@@ -3859,6 +3958,7 @@ if dg is not None:
         research_brief_library_report,
         research_brief_evaluation_report,
         research_brief_evaluation_library_report,
+        research_brief_quality_report,
         validation_plan_report,
         validation_plan_library_report,
         research_brief_queue_report,
@@ -3975,6 +4075,10 @@ if dg is not None:
     research_brief_evaluation_library_job = dg.define_asset_job(
         "research_brief_evaluation_library_job",
         selection=dg.AssetSelection.assets(research_brief_evaluation_library_report),
+    )
+    research_brief_quality_job = dg.define_asset_job(
+        "research_brief_quality_job",
+        selection=dg.AssetSelection.assets(research_brief_quality_report),
     )
     validation_plan_job = dg.define_asset_job(
         "validation_plan_job",
@@ -4230,6 +4334,7 @@ if dg is not None:
             research_brief_library_job,
             research_brief_evaluation_job,
             research_brief_evaluation_library_job,
+            research_brief_quality_job,
             validation_plan_job,
             validation_plan_library_job,
             research_brief_queue_job,
@@ -4302,6 +4407,7 @@ else:
     research_brief_library_job = None
     research_brief_evaluation_job = None
     research_brief_evaluation_library_job = None
+    research_brief_quality_job = None
     validation_plan_job = None
     validation_plan_library_job = None
     research_brief_queue_job = None

@@ -29,6 +29,7 @@ on:
           - "research_brief_library_job"
           - "research_brief_evaluation_job"
           - "research_brief_evaluation_library_job"
+          - "research_brief_quality_job"
           - "validation_plan_job"
           - "validation_plan_library_job"
           - "research_brief_queue_job"

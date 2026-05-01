@@ -40,6 +40,9 @@ from .contracts import (
     ResearchBriefEvaluationRecord,
     ResearchBriefEvaluationRequest,
     ResearchBriefEvaluationResult,
+    ResearchBriefQualityReportRequest,
+    ResearchBriefQualityReportResult,
+    ResearchBriefQualityRow,
     ResearchBriefQueueBatchRequest,
     ResearchBriefQueueBatchResult,
     ResearchBriefQueueItem,
@@ -375,6 +378,50 @@ class HSAResearchService:
             readiness=readiness,
             passes_quality_bar=passes_quality_bar,
             limit=limit,
+        )
+
+    def build_research_brief_quality_report(
+        self,
+        request: ResearchBriefQualityReportRequest,
+    ) -> ResearchBriefQualityReportResult:
+        briefs = self.repository.list_research_briefs(
+            status=request.status,
+            source_key=request.source_key,
+            topic_query=request.topic_query,
+            limit=request.limit,
+        )
+        rows: list[ResearchBriefQualityRow] = []
+        errors: list[str] = []
+        scores: list[float] = []
+        for brief in briefs:
+            try:
+                latest_evaluation = None
+                if request.include_evaluations:
+                    evaluations = self.repository.list_research_brief_evaluations(
+                        brief_id=brief.brief_id,
+                        limit=1,
+                    )
+                    latest_evaluation = evaluations[0] if evaluations else None
+                row = _research_brief_quality_row(brief, latest_evaluation)
+                rows.append(row)
+                if row.overall_score is not None:
+                    scores.append(row.overall_score)
+            except Exception as exc:  # pragma: no cover - defensive control-panel boundary
+                errors.append(f"brief {brief.brief_id}: {exc}")
+
+        status_counts = Counter(row.status for row in rows)
+        quality_status_counts = Counter(row.quality_status for row in rows)
+        return ResearchBriefQualityReportResult(
+            brief_count=len(rows),
+            evaluated_count=sum(1 for row in rows if row.evaluation_id is not None),
+            ready_count=sum(1 for row in rows if row.quality_status == "ready_for_validation"),
+            failed_count=sum(1 for row in rows if row.quality_status == "brief_failed"),
+            needs_evaluation_count=sum(1 for row in rows if row.quality_status == "needs_evaluation"),
+            average_overall_score=(sum(scores) / len(scores)) if scores else None,
+            status_counts=dict(sorted(status_counts.items())),
+            quality_status_counts=dict(sorted(quality_status_counts.items())),
+            rows=rows,
+            errors=errors,
         )
 
     def plan_validation(self, request: ValidationPlanRequest) -> ValidationPlanResult:
@@ -1429,6 +1476,49 @@ def _research_brief_evaluation_record_from_result(
             **request.metadata,
             "minimum_overall_score": request.minimum_overall_score,
         },
+    )
+
+
+def _research_brief_quality_row(
+    brief: ResearchBriefRecord,
+    evaluation: ResearchBriefEvaluationRecord | None,
+) -> ResearchBriefQualityRow:
+    passes_completion_bar = (
+        brief.status == "completed"
+        and brief.citation_count > 0
+        and brief.finding_count > 0
+        and brief.hypothesis_count > 0
+    )
+    if not passes_completion_bar:
+        quality_status = "brief_failed"
+    elif evaluation is None:
+        quality_status = "needs_evaluation"
+    elif evaluation.passes_quality_bar:
+        quality_status = "ready_for_validation"
+    else:
+        quality_status = evaluation.readiness
+    return ResearchBriefQualityRow(
+        brief_id=brief.brief_id,
+        evaluation_id=evaluation.evaluation_id if evaluation else None,
+        agent_run_id=brief.agent_run_id,
+        status=brief.status,
+        quality_status=quality_status,
+        topic=brief.topic,
+        source_key=brief.source_key,
+        brief_style=brief.brief_style,
+        model_profile=brief.model_profile,
+        review_mode=brief.review_mode,
+        review_models=list(brief.metadata.get("review_models") or []),
+        citation_count=brief.citation_count,
+        finding_count=brief.finding_count,
+        hypothesis_count=brief.hypothesis_count,
+        error_count=brief.error_count,
+        passes_completion_bar=passes_completion_bar,
+        passes_quality_bar=evaluation.passes_quality_bar if evaluation else None,
+        readiness=evaluation.readiness if evaluation else None,
+        overall_score=evaluation.overall_score if evaluation else None,
+        created_at=brief.created_at,
+        updated_at=brief.updated_at,
     )
 
 

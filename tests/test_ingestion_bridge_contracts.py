@@ -42,6 +42,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchBriefEvaluationResult,
     ResearchBriefFinding,
     ResearchBriefPerspectiveReport,
+    ResearchBriefQualityReportRequest,
     ResearchBriefQueueBatchRequest,
     ResearchBriefQueueItem,
     ResearchBriefQueueMaintenanceRequest,
@@ -2602,6 +2603,65 @@ def test_research_brief_evaluation_repository_roundtrip_sqlite_and_memory(tmp_pa
         assert fetched.result_payload["overall_score"] == 0.82
         assert listed[0].evaluation_id == saved.evaluation_id
         assert repo.list_research_brief_evaluations(passes_quality_bar=False) == []
+
+
+def test_research_brief_quality_report_joins_latest_evaluations(tmp_path):
+    for repo in (
+        SQLiteResearchRepository(tmp_path / "research-brief-quality.sqlite3", seed=False),
+        InMemoryResearchRepository(),
+    ):
+        service = HSAResearchService(repo)
+        ready_brief = repo.upsert_research_brief(
+            ResearchBriefRecord(
+                agent_run_id=uuid4(),
+                topic="VEGF therapy in canine hemangiosarcoma",
+                disease_scope="canine hemangiosarcoma and human angiosarcoma",
+                source_key="pubmed",
+                review_mode="openrouter_required",
+                final_brief="Stored synthesis [C1].",
+                citation_count=3,
+                finding_count=2,
+                hypothesis_count=1,
+                metadata={"review_models": ["anthropic/claude-sonnet-test"]},
+            )
+        )
+        failed_brief = repo.upsert_research_brief(
+            ResearchBriefRecord(
+                topic="Evidence-light linked article",
+                disease_scope="canine hemangiosarcoma and human angiosarcoma",
+                source_key="x_linked_article",
+                status="failed",
+                review_mode="openrouter_required",
+                error_count=4,
+            )
+        )
+        repo.upsert_research_brief_evaluation(
+            ResearchBriefEvaluationRecord(
+                brief_id=ready_brief.brief_id,
+                agent_run_id=uuid4(),
+                topic=ready_brief.topic,
+                source_key="pubmed",
+                overall_score=0.88,
+                passes_quality_bar=True,
+                readiness="ready_for_hypothesis_review",
+                summary={"overall_score": 0.88},
+                result_payload={"recommendations": ["Promote to validation."]},
+            )
+        )
+
+        report = service.build_research_brief_quality_report(
+            ResearchBriefQualityReportRequest(limit=10)
+        )
+        rows_by_id = {row.brief_id: row for row in report.rows}
+
+        assert report.brief_count == 2
+        assert report.evaluated_count == 1
+        assert report.ready_count == 1
+        assert report.failed_count == 1
+        assert report.average_overall_score == pytest.approx(0.88)
+        assert rows_by_id[ready_brief.brief_id].quality_status == "ready_for_validation"
+        assert rows_by_id[ready_brief.brief_id].review_models == ["anthropic/claude-sonnet-test"]
+        assert rows_by_id[failed_brief.brief_id].quality_status == "brief_failed"
 
 
 def test_validation_plan_repository_roundtrip_sqlite_and_memory(tmp_path):
@@ -8479,6 +8539,7 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.research_brief_library_job is not None
     assert dagster_asset_module.research_brief_evaluation_job is not None
     assert dagster_asset_module.research_brief_evaluation_library_job is not None
+    assert dagster_asset_module.research_brief_quality_job is not None
     assert dagster_asset_module.validation_plan_job is not None
     assert dagster_asset_module.validation_plan_library_job is not None
     assert dagster_asset_module.research_brief_queue_job is not None
