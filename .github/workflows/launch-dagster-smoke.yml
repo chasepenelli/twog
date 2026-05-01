@@ -426,6 +426,44 @@ jobs:
           PY
         shell: bash
 
+      - name: Print hosted research brief quality summary
+        if: ${{ always() && inputs.job == 'research_brief_quality_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+
+          from hsa_research.ingestion_bridge.contracts import ResearchBriefQualityReportRequest
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          service = HSAResearchService(build_research_repository())
+          report = service.build_research_brief_quality_report(
+              ResearchBriefQualityReportRequest(limit=25, include_evaluations=True)
+          ).model_dump(mode="json")
+          print(json.dumps(report, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Research brief quality summary\n")
+                  summary.write(f"- Briefs sampled: `{report['brief_count']}`\n")
+                  summary.write(f"- Evaluated: `{report['evaluated_count']}`\n")
+                  summary.write(f"- Ready: `{report['ready_count']}`\n")
+                  summary.write(f"- Failed: `{report['failed_count']}`\n")
+                  summary.write(f"- Needs evaluation: `{report['needs_evaluation_count']}`\n")
+                  summary.write(f"- Quality statuses: `{report['quality_status_counts']}`\n")
+                  for row in report["rows"][:5]:
+                      summary.write(
+                          f"- `{row['quality_status']}` `{row['brief_id']}`: "
+                          f"{row['topic'][:160]} "
+                          f"(citations={row['citation_count']}, findings={row['finding_count']}, "
+                          f"hypotheses={row['hypothesis_count']})\n"
+                      )
+          PY
+        shell: bash
+
       - name: Print hosted embedding maintenance report
         if: ${{ inputs.job == 'embedding_maintenance_job' }}
         run: |
