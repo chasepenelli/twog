@@ -468,6 +468,54 @@ jobs:
           PY
         shell: bash
 
+      - name: Print hosted research brief follow-up queue summary
+        if: ${{ always() && inputs.job == 'research_brief_followup_queue_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+
+          from hsa_research.ingestion_bridge.contracts import ResearchBriefFollowupQueueRequest
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          run_config = json.loads(os.getenv("DAGSTER_CLOUD_CONFIG_JSON") or "{}")
+          op_config = (
+              run_config.get("ops", {})
+              .get("research_brief_followup_queue_report", {})
+              .get("config", {})
+          )
+          service = HSAResearchService(build_research_repository())
+          report = service.queue_research_brief_followups(
+              ResearchBriefFollowupQueueRequest(
+                  status=op_config.get("status"),
+                  source_key=op_config.get("source_key"),
+                  topic_query=op_config.get("topic_query"),
+                  limit=op_config.get("limit", 50),
+                  include_evaluations=op_config.get("include_evaluations", True),
+                  max_limitations_per_brief=op_config.get("max_limitations_per_brief", 20),
+                  dry_run=True,
+              )
+          ).model_dump(mode="json")
+          print(json.dumps(report, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Research brief follow-up queue summary\n")
+                  summary.write(f"- Candidate briefs: `{report['candidate_brief_count']}`\n")
+                  summary.write(f"- Evidence limitations: `{report['limitation_count']}`\n")
+                  summary.write(f"- Existing leads: `{report['existing_count']}`\n")
+                  summary.write(f"- Skipped rows: `{report['skipped_count']}`\n")
+                  for lead in report["followup_leads"][:5]:
+                      summary.write(
+                          f"- `{lead['status']}` `{lead['lead_id']}`: "
+                          f"{(lead.get('title') or '')[:160]}\n"
+                      )
+          PY
+        shell: bash
+
       - name: Print hosted research brief evaluation summary
         if: ${{ always() && (inputs.job == 'research_brief_evaluation_job' || inputs.job == 'research_brief_evaluation_library_job') }}
         continue-on-error: true
