@@ -25,6 +25,9 @@ from .contracts import (
     ResearchBriefEvaluationRecord,
     ResearchBriefEvaluationRequest,
     ResearchBriefEvaluationResult,
+    ResearchFollowupLeadResult,
+    ResearchFollowupResolverRequest,
+    ResearchFollowupResolverResult,
     ResearchSource,
     RetrievalSmokeRequest,
     RetrievalSmokeResult,
@@ -61,6 +64,7 @@ from .local_ingest import LocalIngestionPipeline
 from .claim_extractor import LocalRuleClaimExtractor, extract_claims_for_repository
 from .full_text_triage import FullTextTriageAgent, triage_full_text_issue
 from .full_text_ops import FullTextOpsAgent
+from .research_followup_resolver import resolve_research_followup_leads
 from .query_policy import build_scholarly_source_queries, comparative_required_query
 from .service import HSAResearchService, get_service
 from .local_store import SQLiteResearchRepository
@@ -109,6 +113,9 @@ __all__ = [
     "ResearchBriefEvaluationRecord",
     "ResearchBriefEvaluationRequest",
     "ResearchBriefEvaluationResult",
+    "ResearchFollowupLeadResult",
+    "ResearchFollowupResolverRequest",
+    "ResearchFollowupResolverResult",
     "ResearchSource",
     "RetrievalSmokeRequest",
     "RetrievalSmokeResult",
@@ -138,6 +145,7 @@ __all__ = [
     "get_service",
     "index_embeddings_for_repository",
     "maintain_embedding_index",
+    "resolve_research_followup_leads",
     "scout_sources_for_repository",
     "triage_full_text_issue",
     "run_x_linked_article_followup",

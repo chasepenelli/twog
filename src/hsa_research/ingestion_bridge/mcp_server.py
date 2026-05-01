@@ -31,6 +31,7 @@ from .contracts import (
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
     ResearchChunkSearchRequest,
+    ResearchFollowupResolverRequest,
     ResearchLeadCollectRequest,
     ResearchObjectReadRequest,
     RetrievalSmokeRequest,
@@ -723,7 +724,47 @@ def list_research_leads_tool(
     ]
 
 
+def resolve_research_followups_tool(
+    lead_ids: list[str] | None = None,
+    statuses: list[str] | None = None,
+    source_keys: list[str] | None = None,
+    search_source_keys: list[str] | None = None,
+    limit: int = 25,
+    ingest_source_followups: bool = True,
+    search_missing_identifiers: bool = True,
+    promote_ready_leads: bool = True,
+    run_claim_extraction: bool = True,
+    dry_run: bool = False,
+    min_evidence_chunks: int = 1,
+    search_limit_per_source: int = 2,
+    max_search_terms: int = 12,
+    approved_by: str | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """Resolve evidence-light research leads into durable source evidence."""
+
+    request = ResearchFollowupResolverRequest(
+        lead_ids=[UUID(lead_id) for lead_id in (lead_ids or [])],
+        statuses=statuses or ["followup"],  # type: ignore[list-item]
+        source_keys=source_keys or [],
+        search_source_keys=search_source_keys or [],
+        limit=limit,
+        ingest_source_followups=ingest_source_followups,
+        search_missing_identifiers=search_missing_identifiers,
+        promote_ready_leads=promote_ready_leads,
+        run_claim_extraction=run_claim_extraction,
+        dry_run=dry_run,
+        min_evidence_chunks=min_evidence_chunks,
+        search_limit_per_source=search_limit_per_source,
+        max_search_terms=max_search_terms,
+        approved_by=approved_by,
+        metadata=metadata or {},
+    )
+    return get_service().resolve_research_followups(request).model_dump(mode="json")
+
+
 def ingest_source_followups_tool(
+    followup_ids: list[str] | None = None,
     source_keys: list[str] | None = None,
     statuses: list[str] | None = None,
     limit: int = 25,
@@ -735,6 +776,7 @@ def ingest_source_followups_tool(
     """Ingest queued primary-source follow-ups through existing API harvesters."""
 
     request = SourceFollowupIngestRequest(
+        followup_ids=[UUID(followup_id) for followup_id in (followup_ids or [])],
         source_keys=source_keys or [],
         statuses=statuses or ["queued", "approved"],  # type: ignore[list-item]
         limit=limit,
@@ -1434,7 +1476,46 @@ if mcp is not None:
         )
 
     @mcp.tool()
+    def resolve_research_followups(
+        lead_ids: list[str] | None = None,
+        statuses: list[str] | None = None,
+        source_keys: list[str] | None = None,
+        search_source_keys: list[str] | None = None,
+        limit: int = 25,
+        ingest_source_followups: bool = True,
+        search_missing_identifiers: bool = True,
+        promote_ready_leads: bool = True,
+        run_claim_extraction: bool = True,
+        dry_run: bool = False,
+        min_evidence_chunks: int = 1,
+        search_limit_per_source: int = 2,
+        max_search_terms: int = 12,
+        approved_by: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Resolve evidence-light research leads into durable source evidence."""
+
+        return resolve_research_followups_tool(
+            lead_ids=lead_ids,
+            statuses=statuses,
+            source_keys=source_keys,
+            search_source_keys=search_source_keys,
+            limit=limit,
+            ingest_source_followups=ingest_source_followups,
+            search_missing_identifiers=search_missing_identifiers,
+            promote_ready_leads=promote_ready_leads,
+            run_claim_extraction=run_claim_extraction,
+            dry_run=dry_run,
+            min_evidence_chunks=min_evidence_chunks,
+            search_limit_per_source=search_limit_per_source,
+            max_search_terms=max_search_terms,
+            approved_by=approved_by,
+            metadata=metadata,
+        )
+
+    @mcp.tool()
     def ingest_source_followups(
+        followup_ids: list[str] | None = None,
         source_keys: list[str] | None = None,
         statuses: list[str] | None = None,
         limit: int = 25,
@@ -1446,6 +1527,7 @@ if mcp is not None:
         """Ingest queued source follow-ups through the primary API harvesters."""
 
         return ingest_source_followups_tool(
+            followup_ids=followup_ids,
             source_keys=source_keys,
             statuses=statuses,
             limit=limit,

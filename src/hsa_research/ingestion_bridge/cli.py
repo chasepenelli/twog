@@ -26,6 +26,7 @@ from .contracts import (
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
+    ResearchFollowupResolverRequest,
     ResearchLeadCollectRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
@@ -653,11 +654,53 @@ def main() -> None:
     research_leads.add_argument("--limit", type=int, default=50, help="Maximum leads to return")
     research_leads.add_argument("--set-status", default=None, help="Update a lead status; requires --id")
 
+    research_followup_resolver = subparsers.add_parser(
+        "resolve-research-followups",
+        help="Resolve evidence-light research leads into durable source evidence",
+    )
+    research_followup_resolver.add_argument("--lead-id", action="append", default=[], help="Specific lead ID")
+    research_followup_resolver.add_argument(
+        "--status",
+        action="append",
+        default=[],
+        help="Lead status to resolve; defaults to followup",
+    )
+    research_followup_resolver.add_argument("--source", action="append", default=[], help="Lead source filter")
+    research_followup_resolver.add_argument(
+        "--search-source",
+        action="append",
+        default=[],
+        help="Durable source to search when a lead has no identifier",
+    )
+    research_followup_resolver.add_argument("--limit", type=int, default=25, help="Maximum leads to inspect")
+    research_followup_resolver.add_argument(
+        "--no-ingest-source-followups",
+        action="store_true",
+        help="Do not ingest queued identifier follow-ups",
+    )
+    research_followup_resolver.add_argument(
+        "--no-search-missing-identifiers",
+        action="store_true",
+        help="Do not search durable sources for leads without identifiers",
+    )
+    research_followup_resolver.add_argument(
+        "--no-promote",
+        action="store_true",
+        help="Attach evidence but keep leads in followup",
+    )
+    research_followup_resolver.add_argument("--no-claim-extraction", action="store_true")
+    research_followup_resolver.add_argument("--dry-run", action="store_true")
+    research_followup_resolver.add_argument("--min-evidence-chunks", type=int, default=1)
+    research_followup_resolver.add_argument("--search-limit-per-source", type=int, default=2)
+    research_followup_resolver.add_argument("--max-search-terms", type=int, default=12)
+    research_followup_resolver.add_argument("--approved-by", default=None)
+
     ingest_source_followups = subparsers.add_parser(
         "ingest-source-followups",
         help="Ingest queued primary-source follow-ups through API harvesters",
     )
     ingest_source_followups.add_argument("--source", action="append", default=[], help="Target source key")
+    ingest_source_followups.add_argument("--followup-id", action="append", default=[], help="Specific follow-up row")
     ingest_source_followups.add_argument(
         "--status",
         action="append",
@@ -1310,9 +1353,29 @@ def main() -> None:
                     limit=args.limit,
                 )
             ]
+    elif args.command == "resolve-research-followups":
+        output = HSAResearchService(repo).resolve_research_followups(
+            ResearchFollowupResolverRequest(
+                lead_ids=[UUID(lead_id) for lead_id in args.lead_id],
+                statuses=args.status or ["followup"],
+                source_keys=args.source,
+                search_source_keys=args.search_source,
+                limit=args.limit,
+                ingest_source_followups=not args.no_ingest_source_followups,
+                search_missing_identifiers=not args.no_search_missing_identifiers,
+                promote_ready_leads=not args.no_promote,
+                run_claim_extraction=not args.no_claim_extraction,
+                dry_run=args.dry_run,
+                min_evidence_chunks=args.min_evidence_chunks,
+                search_limit_per_source=args.search_limit_per_source,
+                max_search_terms=args.max_search_terms,
+                approved_by=args.approved_by,
+            )
+        ).model_dump(mode="json")
     elif args.command == "ingest-source-followups":
         output = HSAResearchService(repo).ingest_source_followups(
             SourceFollowupIngestRequest(
+                followup_ids=[UUID(followup_id) for followup_id in args.followup_id],
                 source_keys=args.source,
                 statuses=args.status or ["queued", "approved"],
                 limit=args.limit,

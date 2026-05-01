@@ -48,6 +48,9 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchBriefRecord,
     ResearchBriefRequest,
     ResearchBriefResult,
+    ResearchFollowupLeadResult,
+    ResearchFollowupResolverRequest,
+    ResearchFollowupResolverResult,
     ResearchLeadCollectRequest,
     ResearchLeadRecord,
     RetrievalSmokeRequest,
@@ -89,6 +92,7 @@ from hsa_research.ingestion_bridge.claim_extractor import LocalRuleClaimExtracto
 from hsa_research.ingestion_bridge.chunker import chunk_text
 from hsa_research.ingestion_bridge.full_text_triage import FullTextTriageAgent
 from hsa_research.ingestion_bridge import full_text_ops
+from hsa_research.ingestion_bridge import research_followup_resolver
 from hsa_research.ingestion_bridge import source_followup
 from hsa_research.ingestion_bridge.full_text_ops import FullTextOpsAgent
 from hsa_research.ingestion_bridge.dagster_assets import (
@@ -345,6 +349,49 @@ def test_research_lead_contracts_validate_and_normalize_identity():
         ResearchLeadRecord(title="x", lead_type="bad")
     with pytest.raises(ValueError):
         ResearchLeadRecord(title="x", status="bad")
+
+
+def test_research_followup_resolver_contracts_validate():
+    lead_id = uuid4()
+    request = ResearchFollowupResolverRequest(
+        lead_ids=[lead_id],
+        statuses=["followup"],
+        search_source_keys=["pubmed"],
+        limit=1,
+        min_evidence_chunks=1,
+    )
+    lead_result = ResearchFollowupLeadResult(
+        lead_id=lead_id,
+        status_before="followup",
+        status_after="watching",
+        actions=["promoted_to_watching"],
+        evidence_refs=["chunk:1"],
+        durable_source_keys=["pubmed"],
+        promoted=True,
+    )
+    result = ResearchFollowupResolverResult(
+        leads_seen=1,
+        promoted_leads=1,
+        lead_results=[lead_result],
+    )
+
+    assert request.statuses == ["followup"]
+    assert result.lead_results[0].promoted is True
+    with pytest.raises(ValueError):
+        ResearchFollowupResolverRequest(limit=0)
+    with pytest.raises(ValueError):
+        ResearchFollowupLeadResult(
+            lead_id=lead_id,
+            status_before="followup",
+            status_after="bad",
+        )
+    with pytest.raises(ValueError):
+        ResearchFollowupLeadResult(
+            lead_id=lead_id,
+            status_before="followup",
+            status_after="watching",
+            actions=["bad"],
+        )
 
 
 def test_agent_run_repository_roundtrip_sqlite_and_memory(tmp_path):
@@ -743,6 +790,71 @@ def test_dagster_validation_plan_asset_uses_injected_repository(monkeypatch):
     assert result.value["brief_id"] == str(brief_id)
     assert result.metadata["readiness"] == "ready_for_expert_review"
     assert result.metadata["task_count"].value == 1
+
+
+def test_dagster_research_followup_resolver_asset_uses_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+    lead_id = uuid4()
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    class FakeService:
+        def __init__(self, repository):
+            assert repository is sentinel_repository
+
+        def resolve_research_followups(self, request):
+            assert isinstance(request, ResearchFollowupResolverRequest)
+            assert request.lead_ids == [lead_id]
+            assert request.dagster_run_id == "dagster-test-run"
+            return ResearchFollowupResolverResult(
+                agent_run_id=uuid4(),
+                leads_seen=1,
+                promoted_leads=1,
+                lead_results=[
+                    ResearchFollowupLeadResult(
+                        lead_id=lead_id,
+                        status_before="followup",
+                        status_after="watching",
+                        actions=["promoted_to_watching"],
+                        evidence_refs=["chunk:1"],
+                        durable_source_keys=["pubmed"],
+                        promoted=True,
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
+
+    result = dagster_asset_module.research_followup_resolver_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "lead_ids": [str(lead_id)],
+                "statuses": ["followup"],
+                "source_keys": [],
+                "search_source_keys": ["pubmed"],
+                "limit": 25,
+                "ingest_source_followups": True,
+                "search_missing_identifiers": True,
+                "promote_ready_leads": True,
+                "run_claim_extraction": True,
+                "dry_run": False,
+                "min_evidence_chunks": 1,
+                "search_limit_per_source": 2,
+                "max_search_terms": 12,
+            },
+            run_id="dagster-test-run",
+        ),
+        FakeRepositoryResource(),
+    )
+
+    assert calls == ["build_repository"]
+    assert result.value["leads_seen"] == 1
+    assert result.metadata["promoted_leads"].value == 1
+    assert result.metadata["lead_results"].records[0].data["durable_source_keys"] == '["pubmed"]'
 
 
 def test_dagster_source_health_report_lives_in_control_panel_group():
@@ -2751,6 +2863,186 @@ def test_research_brief_queue_batch_routes_identifier_leads_to_source_followup(t
     assert len(followups) == 1
     assert followups[0].identifier == "10.1234/hsa.followup"
     assert followups[0].metadata["followup_type"] == "research_lead_evidence_enrichment"
+
+
+def test_research_followup_resolver_promotes_lead_with_ingested_source_followup(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-followup-resolver-ingested.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Angiosarcoma DOI follow-up",
+            lead_type="linked_article",
+            status="followup",
+            priority=20,
+            source_key="x_linked_article",
+            origin_source_key="x_linked_article",
+            identifiers={"doi": "10.1234/HSA.RESOLVED"},
+        )
+    )
+    followup = repo.upsert_source_followup(
+        SourceFollowupQueueItem(
+            source_key="crossref",
+            identifier_type="doi",
+            identifier="10.1234/hsa.resolved",
+            status="ingested",
+            metadata={
+                "research_lead_id": str(lead.lead_id),
+                "last_ingestion_report": {
+                    "research_objects": 1,
+                    "document_chunks": 2,
+                    "fetch_run_id": str(uuid4()),
+                },
+            },
+        )
+    )
+
+    result = service.resolve_research_followups(
+        ResearchFollowupResolverRequest(
+            lead_ids=[lead.lead_id],
+            search_missing_identifiers=False,
+        )
+    )
+    updated = repo.get_research_lead(lead.lead_id)
+
+    assert result.leads_seen == 1
+    assert result.promoted_leads == 1
+    assert result.lead_results[0].source_followup_ids == [followup.followup_id]
+    assert result.lead_results[0].durable_source_keys == ["crossref"]
+    assert updated is not None
+    assert updated.status == "watching"
+    assert updated.source_key == "crossref"
+    assert updated.suggested_sources == ["crossref"]
+    assert f"source_followup:{followup.followup_id}" in updated.evidence_refs
+
+
+def test_research_followup_resolver_uses_stored_durable_chunks_before_promotion(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-followup-resolver-chunks.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    _seed_minimal_source_claim(repo, "pubmed")
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="PubMed source record canine HSA",
+            lead_type="linked_article",
+            status="followup",
+            priority=20,
+            source_key="x_topic",
+            origin_source_key="x_topic",
+            reason="Needs durable stored evidence.",
+            topic_tags=["canine", "hemangiosarcoma"],
+        )
+    )
+
+    result = service.resolve_research_followups(
+        ResearchFollowupResolverRequest(
+            lead_ids=[lead.lead_id],
+            search_source_keys=["pubmed"],
+            ingest_source_followups=False,
+            search_missing_identifiers=False,
+        )
+    )
+    updated = repo.get_research_lead(lead.lead_id)
+
+    assert result.promoted_leads == 1
+    assert result.lead_results[0].durable_source_keys == ["pubmed"]
+    assert any(ref.startswith("chunk:") for ref in result.lead_results[0].evidence_refs)
+    assert updated is not None
+    assert updated.status == "watching"
+    assert updated.source_key == "pubmed"
+    assert updated.suggested_sources == ["pubmed"]
+
+
+def test_research_followup_resolver_keeps_unresolved_lead_in_followup(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-followup-resolver-manual.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="UF institutional article without primary source",
+            lead_type="institutional_article",
+            status="followup",
+            source_key="x_linked_article",
+            origin_source_key="x_linked_article",
+        )
+    )
+
+    result = service.resolve_research_followups(
+        ResearchFollowupResolverRequest(
+            lead_ids=[lead.lead_id],
+            search_missing_identifiers=False,
+        )
+    )
+    updated = repo.get_research_lead(lead.lead_id)
+
+    assert result.promoted_leads == 0
+    assert result.manual_research_required == 1
+    assert "manual_research_required" in result.lead_results[0].actions
+    assert updated is not None
+    assert updated.status == "followup"
+    assert updated.metadata["research_followup_resolver"]["requires_manual_research"] is True
+
+
+def test_research_followup_resolver_ingests_only_linked_followup(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-followup-resolver-ingest.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Angiosarcoma DOI follow-up",
+            lead_type="linked_article",
+            status="followup",
+            source_key="x_linked_article",
+            origin_source_key="x_linked_article",
+            identifiers={"doi": "10.1234/HSA.INGEST"},
+        )
+    )
+    unrelated = repo.upsert_source_followup(
+        SourceFollowupQueueItem(
+            source_key="crossref",
+            identifier_type="doi",
+            identifier="10.9999/unrelated",
+            status="queued",
+        )
+    )
+
+    def fake_ingest(repository, request):
+        assert len(request.followup_ids) == 1
+        assert unrelated.followup_id not in request.followup_ids
+        item = repository.get_source_followup(request.followup_ids[0])
+        assert item is not None
+        repository.update_source_followup(
+            item.followup_id,
+            status="ingested",
+            attempts=item.attempts + 1,
+            metadata={
+                "research_lead_id": str(lead.lead_id),
+                "last_ingestion_report": {"research_objects": 1, "document_chunks": 1},
+            },
+        )
+
+    class FakeIngestResult:
+        ingested = 1
+
+        def model_dump(self, mode):
+            return {"ingested": 1, "items": []}
+
+    def fake_ingest_result(repository, request):
+        fake_ingest(repository, request)
+        return FakeIngestResult()
+
+    monkeypatch.setattr(research_followup_resolver, "ingest_source_followups", fake_ingest_result)
+
+    result = service.resolve_research_followups(
+        ResearchFollowupResolverRequest(
+            lead_ids=[lead.lead_id],
+            search_missing_identifiers=False,
+        )
+    )
+    updated = repo.get_research_lead(lead.lead_id)
+
+    assert result.source_followups_queued == 1
+    assert result.source_followups_ingested == 1
+    assert result.promoted_leads == 1
+    assert repo.get_source_followup(unrelated.followup_id).status == "queued"
+    assert updated is not None
+    assert updated.status == "watching"
 
 
 def test_command_center_report_summarizes_operational_state(tmp_path):
@@ -6495,6 +6787,18 @@ def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp
         )
     )
     batch = mcp_server.queue_research_brief_batch_tool(mode="research_leads", limit=1)
+    followup_lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Evidence light linked article",
+            lead_type="linked_article",
+            status="followup",
+            source_key="x_linked_article",
+        )
+    )
+    resolver = mcp_server.resolve_research_followups_tool(
+        lead_ids=[str(followup_lead.lead_id)],
+        search_missing_identifiers=False,
+    )
     command_center = mcp_server.command_center_tool(include_source_health=False, queue_limit=5, lead_limit=5)
 
     assert queued["queue_item_id"]
@@ -6507,6 +6811,8 @@ def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp
     assert archived["metadata"]["queue_control"]["previous_status"] == "completed"
     assert batch["queued_count"] == 1
     assert batch["queue_items"][0]["metadata"]["batch_queue"]["origin"] == "research_lead"
+    assert resolver["leads_seen"] == 1
+    assert resolver["manual_research_required"] == 1
     assert command_center["summary"]["brief_queue_total"] >= 1
     assert command_center["recommendations"]
 
@@ -7999,6 +8305,7 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.research_brief_queue_runner_job is not None
     assert dagster_asset_module.research_brief_playground_pack_job is not None
     assert dagster_asset_module.research_leads_job is not None
+    assert dagster_asset_module.research_followup_resolver_job is not None
 
 
 def test_dagster_schedules_source_followup_lanes():

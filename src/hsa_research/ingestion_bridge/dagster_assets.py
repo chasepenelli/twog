@@ -23,6 +23,7 @@ from .contracts import (
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
+    ResearchFollowupResolverRequest,
     ResearchLeadCollectRequest,
     ResearchObject,
     SourceFollowupIngestRequest,
@@ -246,6 +247,18 @@ _RESEARCH_LEAD_TABLE_COLUMNS = (
     "topic_tags",
     "suggested_sources",
     "reason",
+)
+_RESEARCH_FOLLOWUP_RESOLVER_TABLE_COLUMNS = (
+    "lead_id",
+    "status_before",
+    "status_after",
+    "actions",
+    "source_followup_ids",
+    "durable_source_keys",
+    "evidence_refs",
+    "manual_research_required",
+    "promoted",
+    "errors",
 )
 _RESEARCH_BRIEF_PLAYGROUND_PROMPT_TABLE_COLUMNS = (
     "perspective",
@@ -851,6 +864,37 @@ if dg is not None:
             "error_count": len(report.get("errors", [])),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "research_leads": _metadata_table(rows, _RESEARCH_LEAD_TABLE_COLUMNS),
+        }
+
+    def _research_followup_resolver_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = [
+            {
+                "lead_id": item.get("lead_id"),
+                "status_before": item.get("status_before"),
+                "status_after": item.get("status_after"),
+                "actions": item.get("actions", []),
+                "source_followup_ids": item.get("source_followup_ids", []),
+                "durable_source_keys": item.get("durable_source_keys", []),
+                "evidence_refs": item.get("evidence_refs", [])[:10],
+                "manual_research_required": item.get("manual_research_required"),
+                "promoted": item.get("promoted"),
+                "errors": item.get("errors", []),
+            }
+            for item in report.get("lead_results", [])
+        ]
+        return {
+            "agent_run_id": report.get("agent_run_id"),
+            "leads_seen": dg.MetadataValue.int(int(report.get("leads_seen", 0))),
+            "source_followups_queued": dg.MetadataValue.int(int(report.get("source_followups_queued", 0))),
+            "source_followups_ingested": dg.MetadataValue.int(int(report.get("source_followups_ingested", 0))),
+            "durable_source_searches": dg.MetadataValue.int(int(report.get("durable_source_searches", 0))),
+            "promoted_leads": dg.MetadataValue.int(int(report.get("promoted_leads", 0))),
+            "manual_research_required": dg.MetadataValue.int(int(report.get("manual_research_required", 0))),
+            "kept_in_followup": dg.MetadataValue.int(int(report.get("kept_in_followup", 0))),
+            "failed_leads": dg.MetadataValue.int(int(report.get("failed_leads", 0))),
+            "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "lead_results": _metadata_table(rows, _RESEARCH_FOLLOWUP_RESOLVER_TABLE_COLUMNS),
         }
 
     def _x_topic_monitor_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -2667,6 +2711,83 @@ if dg is not None:
             metadata=_research_leads_report_metadata(report),
         )
 
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "lead_ids": dg.Field([str], default_value=[], description="Specific follow-up lead IDs."),
+            "statuses": dg.Field([str], default_value=["followup"], description="Lead statuses to inspect."),
+            "source_keys": dg.Field([str], default_value=[], description="Optional lead source filters."),
+            "search_source_keys": dg.Field(
+                [str],
+                default_value=[],
+                description="Durable sources to search when a lead lacks identifiers.",
+            ),
+            "limit": dg.Field(int, default_value=25, description="Maximum leads to resolve."),
+            "ingest_source_followups": dg.Field(
+                bool,
+                default_value=True,
+                description="Ingest queued identifier follow-ups before promotion checks.",
+            ),
+            "search_missing_identifiers": dg.Field(
+                bool,
+                default_value=True,
+                description="Search durable sources for leads without DOI/PMID/PMCID/NCT identifiers.",
+            ),
+            "promote_ready_leads": dg.Field(
+                bool,
+                default_value=True,
+                description="Move leads back to watching only after durable evidence is attached.",
+            ),
+            "run_claim_extraction": dg.Field(
+                bool,
+                default_value=True,
+                description="Run entity, claim extraction, and curation for identifier follow-up ingest.",
+            ),
+            "dry_run": dg.Field(bool, default_value=False, description="Plan work without mutating lead state."),
+            "min_evidence_chunks": dg.Field(int, default_value=1, description="Minimum evidence chunks to promote."),
+            "search_limit_per_source": dg.Field(int, default_value=2, description="Search ingest limit per source."),
+            "max_search_terms": dg.Field(int, default_value=12, description="Maximum terms in generated source query."),
+            "approved_by": dg.Field(str, is_required=False, description="Operator identity for follow-up ingest."),
+        },
+    )
+    def research_followup_resolver_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Resolve evidence-light research leads before they enter synthesis."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config or {}
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).resolve_research_followups(
+            ResearchFollowupResolverRequest(
+                lead_ids=[UUID(lead_id) for lead_id in config["lead_ids"]],
+                statuses=config["statuses"],
+                source_keys=config["source_keys"],
+                search_source_keys=config["search_source_keys"],
+                limit=config["limit"],
+                ingest_source_followups=config["ingest_source_followups"],
+                search_missing_identifiers=config["search_missing_identifiers"],
+                promote_ready_leads=config["promote_ready_leads"],
+                run_claim_extraction=config["run_claim_extraction"],
+                dry_run=config["dry_run"],
+                min_evidence_chunks=config["min_evidence_chunks"],
+                search_limit_per_source=config["search_limit_per_source"],
+                max_search_terms=config["max_search_terms"],
+                approved_by=config.get("approved_by"),
+                dagster_run_id=context.run_id,
+                metadata={"dagster_asset": "research_followup_resolver_report"},
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_research_followup_resolver_metadata(report),
+        )
+
     @dg.asset(group_name="social_monitoring")
     def x_topic_monitor_review_report(
         research_repository: ResearchRepositoryResource,
@@ -3632,6 +3753,7 @@ if dg is not None:
         research_brief_queue_runner_report,
         research_brief_playground_pack_report,
         research_leads_report,
+        research_followup_resolver_report,
         x_topic_monitor_review_report,
         x_linked_article_followup_report,
         x_linked_article_review_report,
@@ -3770,6 +3892,10 @@ if dg is not None:
     research_leads_job = dg.define_asset_job(
         "research_leads_job",
         selection=dg.AssetSelection.assets(research_leads_report),
+    )
+    research_followup_resolver_job = dg.define_asset_job(
+        "research_followup_resolver_job",
+        selection=dg.AssetSelection.assets(research_followup_resolver_report),
     )
     x_topic_monitor_review_job = dg.define_asset_job(
         "x_topic_monitor_review_job",
@@ -3993,6 +4119,7 @@ if dg is not None:
             research_brief_queue_runner_job,
             research_brief_playground_pack_job,
             research_leads_job,
+            research_followup_resolver_job,
             x_topic_monitor_review_job,
             x_linked_article_followup_job,
             x_linked_article_review_job,
@@ -4063,6 +4190,7 @@ else:
     research_brief_queue_runner_job = None
     research_brief_playground_pack_job = None
     research_leads_job = None
+    research_followup_resolver_job = None
     x_topic_monitor_review_job = None
     x_linked_article_followup_job = None
     x_linked_article_review_job = None

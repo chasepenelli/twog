@@ -230,6 +230,19 @@ def _select_queue_items(
     repository: ResearchRepository,
     request: SourceFollowupIngestRequest,
 ) -> list[SourceFollowupQueueItem]:
+    if request.followup_ids:
+        allowed_statuses = set(request.statuses)
+        selected_items: list[SourceFollowupQueueItem] = []
+        for followup_id in request.followup_ids:
+            item = repository.get_source_followup(followup_id)
+            if item is None or item.status not in allowed_statuses:
+                continue
+            if request.source_keys and item.source_key not in set(request.source_keys):
+                continue
+            selected_items.append(item)
+        selected_items.sort(key=lambda item: (item.priority, item.created_at))
+        return selected_items[: request.limit]
+
     items: list[SourceFollowupQueueItem] = []
     source_keys = request.source_keys or [None]
     per_source_limit = request.limit if len(source_keys) == 1 else None

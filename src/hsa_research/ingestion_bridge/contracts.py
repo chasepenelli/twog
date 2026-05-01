@@ -381,6 +381,68 @@ class ResearchLeadCollectResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+ResearchFollowupResolverActionName = Literal[
+    "queued_source_followup",
+    "ingested_source_followup",
+    "searched_durable_sources",
+    "promoted_to_watching",
+    "manual_research_required",
+    "kept_in_followup",
+    "failed",
+]
+
+
+class ResearchFollowupResolverRequest(StrictBaseModel):
+    lead_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    statuses: list[ResearchLeadStatus] = Field(default_factory=lambda: ["followup"], max_length=10)
+    source_keys: list[str] = Field(default_factory=list, max_length=50)
+    search_source_keys: list[str] = Field(default_factory=list, max_length=20)
+    limit: int = Field(default=25, ge=1, le=200)
+    ingest_source_followups: bool = True
+    search_missing_identifiers: bool = True
+    promote_ready_leads: bool = True
+    run_claim_extraction: bool = True
+    dry_run: bool = False
+    min_evidence_chunks: int = Field(default=1, ge=1, le=25)
+    search_limit_per_source: int = Field(default=2, ge=1, le=25)
+    max_search_terms: int = Field(default=12, ge=3, le=30)
+    approved_by: str | None = None
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchFollowupLeadResult(StrictBaseModel):
+    lead_id: UUID
+    title: str | None = None
+    status_before: ResearchLeadStatus
+    status_after: ResearchLeadStatus
+    actions: list[ResearchFollowupResolverActionName] = Field(default_factory=list)
+    source_followup_ids: list[UUID] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    durable_source_keys: list[str] = Field(default_factory=list)
+    manual_research_required: bool = False
+    promoted: bool = False
+    errors: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchFollowupResolverResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    agent_name: str = "research_followup_resolver_agent"
+    model_profile: str = "deterministic_resolver"
+    leads_seen: int = 0
+    source_followups_queued: int = 0
+    source_followups_ingested: int = 0
+    durable_source_searches: int = 0
+    promoted_leads: int = 0
+    manual_research_required: int = 0
+    kept_in_followup: int = 0
+    failed_leads: int = 0
+    lead_results: list[ResearchFollowupLeadResult] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class FullTextOpsRequest(StrictBaseModel):
     source_keys: list[str] = Field(default_factory=list)
     partition_date: str | None = None
@@ -1011,6 +1073,7 @@ class SourceFollowupIngestItemResult(StrictBaseModel):
 
 
 class SourceFollowupIngestRequest(StrictBaseModel):
+    followup_ids: list[UUID] = Field(default_factory=list, max_length=500)
     source_keys: list[str] = Field(default_factory=list)
     statuses: list[SourceFollowupStatus] = Field(default_factory=lambda: ["queued", "approved"])
     limit: int = Field(default=25, ge=1, le=500)

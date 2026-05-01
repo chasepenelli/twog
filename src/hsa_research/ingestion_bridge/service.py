@@ -52,6 +52,8 @@ from .contracts import (
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
     ResearchChunkSearchResults,
+    ResearchFollowupResolverRequest,
+    ResearchFollowupResolverResult,
     ResearchLeadCollectRequest,
     ResearchLeadCollectResult,
     ResearchLeadRecord,
@@ -99,6 +101,12 @@ from .research_brief_evaluation import (
 )
 from .repository import ResearchRepository
 from .research_leads import collect_research_leads_from_agent_runs, persist_research_leads_from_agent_result
+from .research_followup_resolver import (
+    RESEARCH_FOLLOWUP_RESOLVER_AGENT_NAME,
+    RESEARCH_FOLLOWUP_RESOLVER_AGENT_VERSION,
+    resolve_research_followup_leads,
+    summarize_research_followup_resolver,
+)
 from .validation_planning import (
     VALIDATION_PLANNING_AGENT_NAME,
     VALIDATION_PLANNING_AGENT_VERSION,
@@ -984,6 +992,21 @@ class HSAResearchService:
     def collect_research_leads(self, request: ResearchLeadCollectRequest) -> ResearchLeadCollectResult:
         return collect_research_leads_from_agent_runs(self.repository, request)
 
+    def resolve_research_followups(
+        self,
+        request: ResearchFollowupResolverRequest,
+    ) -> ResearchFollowupResolverResult:
+        return AgentRunner(self.repository).run(
+            agent_name=RESEARCH_FOLLOWUP_RESOLVER_AGENT_NAME,
+            agent_version=RESEARCH_FOLLOWUP_RESOLVER_AGENT_VERSION,
+            model_profile="deterministic_resolver",
+            input_payload=request.model_dump(mode="json"),
+            dagster_run_id=request.dagster_run_id,
+            metadata=request.metadata,
+            execute=lambda: resolve_research_followup_leads(self.repository, request),
+            summarize=summarize_research_followup_resolver,
+        )
+
     def get_research_lead(self, lead_id: UUID) -> ResearchLeadRecord | None:
         return self.repository.get_research_lead(lead_id)
 
@@ -1572,7 +1595,7 @@ def _extend_command_center_recommendations(
                 severity="watch",
                 action="Resolve research follow-up leads before synthesis.",
                 reason=f"{followup_leads} lead(s) need durable evidence before briefing.",
-                job_name="research_leads_job",
+                job_name="research_followup_resolver_job",
                 metadata={"followup_leads": followup_leads},
             )
         )

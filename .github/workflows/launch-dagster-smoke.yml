@@ -37,6 +37,7 @@ on:
           - "research_brief_queue_runner_job"
           - "research_brief_playground_pack_job"
           - "research_leads_job"
+          - "research_followup_resolver_job"
           - "x_topic_monitor_review_job"
           - "x_linked_article_followup_job"
           - "x_linked_article_review_job"
