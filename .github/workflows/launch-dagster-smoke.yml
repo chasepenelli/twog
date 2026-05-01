@@ -30,6 +30,7 @@ on:
           - "research_brief_evaluation_job"
           - "research_brief_evaluation_library_job"
           - "research_brief_quality_job"
+          - "research_brief_followup_queue_job"
           - "validation_plan_job"
           - "validation_plan_library_job"
           - "research_brief_queue_job"
@@ -452,6 +453,7 @@ jobs:
                   summary.write(f"- Evaluated: `{report['evaluated_count']}`\n")
                   summary.write(f"- Ready: `{report['ready_count']}`\n")
                   summary.write(f"- Failed: `{report['failed_count']}`\n")
+                  summary.write(f"- Needs follow-up research: `{report.get('followup_count', 0)}`\n")
                   summary.write(f"- Needs evaluation: `{report['needs_evaluation_count']}`\n")
                   summary.write(f"- Quality statuses: `{report['quality_status_counts']}`\n")
                   for row in report["rows"][:5]:

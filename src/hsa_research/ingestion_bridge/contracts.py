@@ -952,6 +952,7 @@ ResearchBriefQualityStatus = Literal[
     "needs_human_review",
     "blocked",
     "needs_evaluation",
+    "needs_followup_research",
     "brief_failed",
 ]
 
@@ -1000,11 +1001,35 @@ class ResearchBriefQualityReportResult(StrictBaseModel):
     evaluated_count: int = 0
     ready_count: int = 0
     failed_count: int = 0
+    followup_count: int = 0
     needs_evaluation_count: int = 0
     average_overall_score: float | None = Field(default=None, ge=0.0, le=1.0)
     status_counts: dict[str, int] = Field(default_factory=dict)
     quality_status_counts: dict[str, int] = Field(default_factory=dict)
     rows: list[ResearchBriefQualityRow] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ResearchBriefFollowupQueueRequest(StrictBaseModel):
+    status: ResearchBriefStatus | None = None
+    source_key: str | None = None
+    topic_query: str | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+    include_evaluations: bool = True
+    max_limitations_per_brief: int = Field(default=20, ge=1, le=50)
+    dry_run: bool = False
+
+
+class ResearchBriefFollowupQueueResult(StrictBaseModel):
+    candidate_brief_count: int = 0
+    limitation_count: int = 0
+    queued_count: int = 0
+    existing_count: int = 0
+    skipped_count: int = 0
+    dry_run: bool = False
+    followup_leads: list[ResearchLeadRecord] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

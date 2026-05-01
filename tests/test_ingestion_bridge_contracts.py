@@ -40,6 +40,8 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchBriefEvaluationRecord,
     ResearchBriefEvaluationRequest,
     ResearchBriefEvaluationResult,
+    ResearchBriefFollowupQueueRequest,
+    ResearchBriefFollowupQueueResult,
     ResearchBriefFinding,
     ResearchBriefPerspectiveReport,
     ResearchBriefQualityReportRequest,
@@ -794,6 +796,59 @@ def test_dagster_validation_plan_asset_uses_injected_repository(monkeypatch):
     assert result.value["brief_id"] == str(brief_id)
     assert result.metadata["readiness"] == "ready_for_expert_review"
     assert result.metadata["task_count"].value == 1
+
+
+def test_dagster_research_brief_followup_queue_asset_uses_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+    lead_id = uuid4()
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    class FakeService:
+        def __init__(self, repository):
+            assert repository is sentinel_repository
+
+        def queue_research_brief_followups(self, request):
+            assert isinstance(request, ResearchBriefFollowupQueueRequest)
+            assert request.limit == 10
+            assert request.dry_run is True
+            return ResearchBriefFollowupQueueResult(
+                candidate_brief_count=1,
+                limitation_count=1,
+                queued_count=0,
+                dry_run=True,
+                followup_leads=[
+                    ResearchLeadRecord(
+                        lead_id=lead_id,
+                        identity_key=f"research_lead:brief_followup:{lead_id}",
+                        title="Follow up evidence limitation",
+                        status="followup",
+                        evidence_refs=["research_brief:test"],
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
+
+    result = dagster_asset_module.research_brief_followup_queue_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "limit": 10,
+                "include_evaluations": True,
+                "max_limitations_per_brief": 20,
+                "dry_run": True,
+            }
+        ),
+        FakeRepositoryResource(),
+    )
+
+    assert calls == ["build_repository"]
+    assert result.value["candidate_brief_count"] == 1
+    assert result.metadata["limitation_count"].value == 1
 
 
 def test_dagster_research_followup_resolver_asset_uses_injected_repository(monkeypatch):
@@ -2562,6 +2617,26 @@ def test_research_brief_evaluation_contract_rejects_invalid_values():
         )
 
 
+def test_research_brief_followup_queue_contracts_validate():
+    lead = ResearchLeadRecord(
+        identity_key="research_lead:brief_followup:test",
+        title="Follow up evidence limitation",
+        status="followup",
+        evidence_refs=["research_brief:abc"],
+    )
+    result = ResearchBriefFollowupQueueResult(
+        candidate_brief_count=1,
+        limitation_count=1,
+        queued_count=1,
+        followup_leads=[lead],
+    )
+
+    assert ResearchBriefFollowupQueueRequest(limit=25).max_limitations_per_brief == 20
+    assert result.followup_leads[0].status == "followup"
+    with pytest.raises(ValueError):
+        ResearchBriefFollowupQueueRequest(max_limitations_per_brief=0)
+
+
 def test_research_brief_repository_roundtrip_sqlite_and_memory(tmp_path):
     for repo in (
         SQLiteResearchRepository(tmp_path / "research-brief-ledger.sqlite3", seed=False),
@@ -2669,6 +2744,22 @@ def test_research_brief_quality_report_joins_latest_evaluations(tmp_path):
                 error_count=4,
             )
         )
+        followup_brief = repo.upsert_research_brief(
+            ResearchBriefRecord(
+                topic="Conference-only angiosarcoma lead",
+                disease_scope="canine hemangiosarcoma and human angiosarcoma",
+                source_key="x_linked_article",
+                status="completed",
+                review_mode="openrouter_required",
+                result_payload={
+                    "evidence_limitations": [
+                        "Only a conference abstract was supplied; find durable peer-reviewed evidence."
+                    ],
+                    "errors": [],
+                },
+                evidence_limitation_count=1,
+            )
+        )
         repo.upsert_research_brief_evaluation(
             ResearchBriefEvaluationRecord(
                 brief_id=ready_brief.brief_id,
@@ -2688,10 +2779,11 @@ def test_research_brief_quality_report_joins_latest_evaluations(tmp_path):
         )
         rows_by_id = {row.brief_id: row for row in report.rows}
 
-        assert report.brief_count == 2
+        assert report.brief_count == 3
         assert report.evaluated_count == 1
         assert report.ready_count == 1
         assert report.failed_count == 1
+        assert report.followup_count == 1
         assert report.average_overall_score == pytest.approx(0.88)
         assert rows_by_id[ready_brief.brief_id].quality_status == "ready_for_validation"
         assert rows_by_id[ready_brief.brief_id].review_models == ["anthropic/claude-sonnet-test"]
@@ -2699,6 +2791,48 @@ def test_research_brief_quality_report_joins_latest_evaluations(tmp_path):
         assert rows_by_id[ready_brief.brief_id].hard_error_count == 0
         assert rows_by_id[ready_brief.brief_id].evidence_limitation_count == 1
         assert rows_by_id[failed_brief.brief_id].quality_status == "brief_failed"
+        assert rows_by_id[followup_brief.brief_id].quality_status == "needs_followup_research"
+
+
+def test_research_brief_followup_queue_creates_idempotent_followup_leads(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-followup-queue.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            topic="AACR angiosarcoma abstract",
+            disease_scope="canine hemangiosarcoma and human angiosarcoma",
+            source_key="x_linked_article",
+            status="completed",
+            review_mode="openrouter_required",
+            result_payload={
+                "evidence_limitations": [
+                    "Only a conference abstract was supplied; find durable peer-reviewed evidence.",
+                    "No PMID, DOI, PMCID, or NCT identifier was available.",
+                ],
+                "errors": [],
+            },
+            evidence_limitation_count=2,
+        )
+    )
+
+    result = service.queue_research_brief_followups(
+        ResearchBriefFollowupQueueRequest(limit=10)
+    )
+    rerun = service.queue_research_brief_followups(
+        ResearchBriefFollowupQueueRequest(limit=10)
+    )
+    leads = repo.list_research_leads(status="followup", limit=10)
+
+    assert result.candidate_brief_count == 1
+    assert result.limitation_count == 2
+    assert result.queued_count == 2
+    assert result.existing_count == 0
+    assert rerun.queued_count == 0
+    assert rerun.existing_count == 2
+    assert len(leads) == 2
+    assert {lead.origin_record_id for lead in leads} == {str(brief.brief_id)}
+    assert all(f"research_brief:{brief.brief_id}" in lead.evidence_refs for lead in leads)
+    assert all(lead.metadata["research_followup_queue"]["origin"] == "research_brief_quality" for lead in leads)
 
 
 def test_validation_plan_repository_roundtrip_sqlite_and_memory(tmp_path):
@@ -8780,6 +8914,7 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.research_brief_evaluation_job is not None
     assert dagster_asset_module.research_brief_evaluation_library_job is not None
     assert dagster_asset_module.research_brief_quality_job is not None
+    assert dagster_asset_module.research_brief_followup_queue_job is not None
     assert dagster_asset_module.validation_plan_job is not None
     assert dagster_asset_module.validation_plan_library_job is not None
     assert dagster_asset_module.research_brief_queue_job is not None

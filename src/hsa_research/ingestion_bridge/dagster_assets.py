@@ -19,6 +19,7 @@ from .contracts import (
     CommandCenterRequest,
     FullTextOpsRequest,
     ResearchBriefEvaluationRequest,
+    ResearchBriefFollowupQueueRequest,
     ResearchBriefQualityReportRequest,
     ResearchBriefQueueBatchRequest,
     ResearchBriefQueueMaintenanceRequest,
@@ -222,6 +223,16 @@ _RESEARCH_BRIEF_QUALITY_TABLE_COLUMNS = (
     "overall_score",
     "passes_quality_bar",
     "readiness",
+    "created_at",
+)
+_RESEARCH_BRIEF_FOLLOWUP_QUEUE_TABLE_COLUMNS = (
+    "lead_id",
+    "status",
+    "source_key",
+    "origin_record_id",
+    "title",
+    "reason",
+    "evidence_refs",
     "created_at",
 )
 _VALIDATION_PLAN_TASK_TABLE_COLUMNS = (
@@ -743,6 +754,7 @@ if dg is not None:
             "evaluated_count": dg.MetadataValue.int(int(report.get("evaluated_count", 0))),
             "ready_count": dg.MetadataValue.int(int(report.get("ready_count", 0))),
             "failed_count": dg.MetadataValue.int(int(report.get("failed_count", 0))),
+            "followup_count": dg.MetadataValue.int(int(report.get("followup_count", 0))),
             "needs_evaluation_count": dg.MetadataValue.int(int(report.get("needs_evaluation_count", 0))),
             "average_overall_score": (
                 float(report["average_overall_score"])
@@ -753,6 +765,28 @@ if dg is not None:
             "quality_status_counts": dg.MetadataValue.json(report.get("quality_status_counts", {})),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "briefs": _metadata_table(rows, _RESEARCH_BRIEF_QUALITY_TABLE_COLUMNS),
+        }
+
+    def _research_brief_followup_queue_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = [
+            {
+                **lead,
+                "title": str(lead.get("title") or "")[:300],
+                "reason": str(lead.get("reason") or "")[:300],
+                "evidence_refs": ", ".join(lead.get("evidence_refs") or []),
+            }
+            for lead in report.get("followup_leads", [])
+        ]
+        return {
+            "candidate_brief_count": dg.MetadataValue.int(int(report.get("candidate_brief_count", 0))),
+            "limitation_count": dg.MetadataValue.int(int(report.get("limitation_count", 0))),
+            "queued_count": dg.MetadataValue.int(int(report.get("queued_count", 0))),
+            "existing_count": dg.MetadataValue.int(int(report.get("existing_count", 0))),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0))),
+            "dry_run": bool(report.get("dry_run", False)),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "skipped": dg.MetadataValue.json(report.get("skipped", [])),
+            "followup_leads": _metadata_table(rows, _RESEARCH_BRIEF_FOLLOWUP_QUEUE_TABLE_COLUMNS),
         }
 
     def _validation_plan_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -2271,6 +2305,72 @@ if dg is not None:
         return dg.MaterializeResult(
             value=report,
             metadata=_research_brief_quality_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "status": dg.Field(
+                str,
+                is_required=False,
+                description="Optional persisted brief status filter.",
+            ),
+            "source_key": dg.Field(
+                str,
+                is_required=False,
+                description="Optional source key filter.",
+            ),
+            "topic_query": dg.Field(
+                str,
+                is_required=False,
+                description="Optional case-insensitive topic/scope search filter.",
+            ),
+            "limit": dg.Field(
+                int,
+                default_value=50,
+                description="Maximum persisted briefs to inspect.",
+            ),
+            "include_evaluations": dg.Field(
+                bool,
+                default_value=True,
+                description="Join each brief to its latest persisted synthesis evaluation.",
+            ),
+            "max_limitations_per_brief": dg.Field(
+                int,
+                default_value=20,
+                description="Maximum evidence limitations to queue per brief.",
+            ),
+            "dry_run": dg.Field(
+                bool,
+                default_value=False,
+                description="Preview follow-up leads without writing them.",
+            ),
+        },
+    )
+    def research_brief_followup_queue_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Queue evidence-limited research briefs into the follow-up research lane."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).queue_research_brief_followups(
+            ResearchBriefFollowupQueueRequest(
+                status=config.get("status"),
+                source_key=config.get("source_key"),
+                topic_query=config.get("topic_query"),
+                limit=config["limit"],
+                include_evaluations=config["include_evaluations"],
+                max_limitations_per_brief=config["max_limitations_per_brief"],
+                dry_run=config["dry_run"],
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_research_brief_followup_queue_metadata(report),
         )
 
     @dg.asset(
@@ -3967,6 +4067,7 @@ if dg is not None:
         research_brief_evaluation_report,
         research_brief_evaluation_library_report,
         research_brief_quality_report,
+        research_brief_followup_queue_report,
         validation_plan_report,
         validation_plan_library_report,
         research_brief_queue_report,
@@ -4087,6 +4188,10 @@ if dg is not None:
     research_brief_quality_job = dg.define_asset_job(
         "research_brief_quality_job",
         selection=dg.AssetSelection.assets(research_brief_quality_report),
+    )
+    research_brief_followup_queue_job = dg.define_asset_job(
+        "research_brief_followup_queue_job",
+        selection=dg.AssetSelection.assets(research_brief_followup_queue_report),
     )
     validation_plan_job = dg.define_asset_job(
         "validation_plan_job",
@@ -4343,6 +4448,7 @@ if dg is not None:
             research_brief_evaluation_job,
             research_brief_evaluation_library_job,
             research_brief_quality_job,
+            research_brief_followup_queue_job,
             validation_plan_job,
             validation_plan_library_job,
             research_brief_queue_job,
@@ -4416,6 +4522,7 @@ else:
     research_brief_evaluation_job = None
     research_brief_evaluation_library_job = None
     research_brief_quality_job = None
+    research_brief_followup_queue_job = None
     validation_plan_job = None
     validation_plan_library_job = None
     research_brief_queue_job = None

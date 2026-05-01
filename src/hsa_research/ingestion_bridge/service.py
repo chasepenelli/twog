@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import UTC, datetime
+import hashlib
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -40,6 +41,8 @@ from .contracts import (
     ResearchBriefEvaluationRecord,
     ResearchBriefEvaluationRequest,
     ResearchBriefEvaluationResult,
+    ResearchBriefFollowupQueueRequest,
+    ResearchBriefFollowupQueueResult,
     ResearchBriefQualityReportRequest,
     ResearchBriefQualityReportResult,
     ResearchBriefQualityRow,
@@ -417,11 +420,96 @@ class HSAResearchService:
             evaluated_count=sum(1 for row in rows if row.evaluation_id is not None),
             ready_count=sum(1 for row in rows if row.quality_status == "ready_for_validation"),
             failed_count=sum(1 for row in rows if row.quality_status == "brief_failed"),
+            followup_count=sum(1 for row in rows if row.quality_status == "needs_followup_research"),
             needs_evaluation_count=sum(1 for row in rows if row.quality_status == "needs_evaluation"),
             average_overall_score=(sum(scores) / len(scores)) if scores else None,
             status_counts=dict(sorted(status_counts.items())),
             quality_status_counts=dict(sorted(quality_status_counts.items())),
             rows=rows,
+            errors=errors,
+        )
+
+    def queue_research_brief_followups(
+        self,
+        request: ResearchBriefFollowupQueueRequest,
+    ) -> ResearchBriefFollowupQueueResult:
+        briefs = self.repository.list_research_briefs(
+            status=request.status,
+            source_key=request.source_key,
+            topic_query=request.topic_query,
+            limit=request.limit,
+        )
+        existing_identity_keys = {
+            lead.identity_key
+            for lead in self.repository.list_research_leads(limit=None)
+            if lead.identity_key
+        }
+        followup_leads: list[ResearchLeadRecord] = []
+        skipped: list[dict[str, Any]] = []
+        errors: list[str] = []
+        candidate_brief_count = 0
+        limitation_count = 0
+        queued_count = 0
+        existing_count = 0
+
+        for brief in briefs:
+            try:
+                latest_evaluation = None
+                if request.include_evaluations:
+                    evaluations = self.repository.list_research_brief_evaluations(
+                        brief_id=brief.brief_id,
+                        limit=1,
+                    )
+                    latest_evaluation = evaluations[0] if evaluations else None
+                row = _research_brief_quality_row(brief, latest_evaluation)
+                if row.quality_status != "needs_followup_research":
+                    skipped.append(
+                        {
+                            "brief_id": str(brief.brief_id),
+                            "quality_status": row.quality_status,
+                            "reason": "brief_does_not_need_followup_research",
+                        }
+                    )
+                    continue
+
+                candidate_brief_count += 1
+                leads = _research_brief_followup_leads_from_brief(
+                    brief,
+                    row,
+                    max_limitations=request.max_limitations_per_brief,
+                )
+                if not leads:
+                    skipped.append(
+                        {
+                            "brief_id": str(brief.brief_id),
+                            "quality_status": row.quality_status,
+                            "reason": "no_evidence_limitations_available",
+                        }
+                    )
+                    continue
+
+                for lead in leads:
+                    limitation_count += 1
+                    identity_key = lead.identity_key
+                    if identity_key in existing_identity_keys:
+                        existing_count += 1
+                    else:
+                        queued_count += 1
+                        existing_identity_keys.add(identity_key)
+                    persisted = lead if request.dry_run else self.repository.upsert_research_lead(lead)
+                    followup_leads.append(persisted)
+            except Exception as exc:  # pragma: no cover - defensive control-panel boundary
+                errors.append(f"brief {brief.brief_id}: {exc}")
+
+        return ResearchBriefFollowupQueueResult(
+            candidate_brief_count=candidate_brief_count,
+            limitation_count=limitation_count,
+            queued_count=0 if request.dry_run else queued_count,
+            existing_count=existing_count,
+            skipped_count=len(skipped),
+            dry_run=request.dry_run,
+            followup_leads=followup_leads,
+            skipped=skipped,
             errors=errors,
         )
 
@@ -1511,7 +1599,10 @@ def _research_brief_quality_row(
         and brief.hypothesis_count > 0
     )
     if not passes_completion_bar:
-        quality_status = "brief_failed"
+        if hard_error_count == 0 and evidence_limitation_count > 0:
+            quality_status = "needs_followup_research"
+        else:
+            quality_status = "brief_failed"
     elif evaluation is None:
         quality_status = "needs_evaluation"
     elif evaluation.passes_quality_bar:
@@ -1552,16 +1643,102 @@ def _research_brief_record_error_counts(brief: ResearchBriefRecord) -> tuple[int
     if not result_payload:
         return hard_error_count, evidence_limitation_count
 
-    errors = [str(error) for error in result_payload.get("errors", [])]
+    errors = _as_text_list(result_payload.get("errors", []))
     if errors and "hard_errors" not in result_payload and "evidence_limitations" not in result_payload:
         hard_errors, evidence_limitations = split_research_brief_errors(errors)
         return len(hard_errors), len(evidence_limitations)
 
     if "hard_errors" in result_payload:
-        hard_error_count = len(result_payload.get("hard_errors") or [])
+        hard_error_count = len(_as_text_list(result_payload.get("hard_errors", [])))
     if "evidence_limitations" in result_payload:
-        evidence_limitation_count = len(result_payload.get("evidence_limitations") or [])
+        evidence_limitation_count = len(_as_text_list(result_payload.get("evidence_limitations", [])))
     return hard_error_count, evidence_limitation_count
+
+
+def _research_brief_followup_leads_from_brief(
+    brief: ResearchBriefRecord,
+    row: ResearchBriefQualityRow,
+    *,
+    max_limitations: int,
+) -> list[ResearchLeadRecord]:
+    limitations = _research_brief_record_evidence_limitations(brief)[:max_limitations]
+    leads: list[ResearchLeadRecord] = []
+    for limitation in limitations:
+        limitation_digest = hashlib.sha1(limitation.lower().encode("utf-8")).hexdigest()[:12]
+        leads.append(
+            ResearchLeadRecord(
+                identity_key=f"research_lead:brief_followup:{brief.brief_id}:{limitation_digest}",
+                title=f"Follow up research gap: {brief.topic}"[:240],
+                lead_type="unknown",
+                status="followup",
+                priority=25,
+                source_key=brief.source_key,
+                origin_source_key="research_brief_quality",
+                origin_record_id=str(brief.brief_id),
+                origin_agent_run_id=brief.agent_run_id,
+                reason=limitation[:1000],
+                summary=(
+                    "Research brief did not meet the completion bar because supplied evidence was insufficient. "
+                    "Find durable source evidence before routing this back into synthesis."
+                ),
+                evidence_refs=[f"research_brief:{brief.brief_id}"],
+                topic_tags=[
+                    "research_brief",
+                    "evidence_gap",
+                    "followup_research",
+                    brief.source_key or "",
+                    brief.disease_scope,
+                ],
+                metadata={
+                    "research_followup_queue": {
+                        "origin": "research_brief_quality",
+                        "brief_id": str(brief.brief_id),
+                        "topic": brief.topic,
+                        "source_key": brief.source_key,
+                        "quality_status": row.quality_status,
+                        "hard_error_count": row.hard_error_count,
+                        "evidence_limitation_count": row.evidence_limitation_count,
+                        "limitation": limitation,
+                        "requires_manual_research": True,
+                    }
+                },
+            )
+        )
+    return leads
+
+
+def _research_brief_record_evidence_limitations(brief: ResearchBriefRecord) -> list[str]:
+    result_payload = brief.result_payload or {}
+    limitations: list[str] = []
+    limitations.extend(_as_text_list(result_payload.get("evidence_limitations", [])))
+    for report in result_payload.get("perspective_reports", []):
+        if isinstance(report, dict):
+            limitations.extend(_as_text_list(report.get("evidence_limitations", [])))
+    if not limitations:
+        errors = _as_text_list(result_payload.get("errors", []))
+        _, limitations = split_research_brief_errors(errors)
+    return _dedupe_texts(limitations)
+
+
+def _as_text_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _dedupe_texts(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value).strip()
+        key = normalized.lower()
+        if not normalized or key in seen:
+            continue
+        deduped.append(normalized)
+        seen.add(key)
+    return deduped
 
 
 def _select_brief_for_evaluation(
