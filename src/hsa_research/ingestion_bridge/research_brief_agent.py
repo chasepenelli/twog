@@ -1172,14 +1172,25 @@ def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) ->
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is required for OpenRouter research brief mode.")
+    user_payload = {
+        "instructions": [
+            "Review the evidence payload from the assigned perspective.",
+            "Return JSON only. Do not include markdown or prose outside JSON.",
+            "Use only citation IDs present in the evidence payload.",
+            "Keep summary, claims, reasoning, and open questions concise.",
+            "Return at most three findings.",
+        ],
+        "response_contract": _research_brief_response_contract(),
+        "evidence_payload": review_payload,
+    }
     payload = {
         "model": model_name,
         "temperature": float(os.getenv("HSA_RESEARCH_BRIEF_TEMPERATURE", "0.2")),
-        "max_tokens": int(os.getenv("HSA_RESEARCH_BRIEF_MAX_TOKENS", "2500")),
+        "max_tokens": int(os.getenv("HSA_RESEARCH_BRIEF_MAX_TOKENS", "6000")),
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": _RESEARCH_BRIEF_SYSTEM_PROMPT},
-            {"role": "user", "content": json.dumps(review_payload, sort_keys=True, default=str)},
+            {"role": "user", "content": json.dumps(user_payload, sort_keys=True, default=str)},
         ],
     }
     request = urllib.request.Request(

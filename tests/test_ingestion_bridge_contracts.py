@@ -3230,6 +3230,59 @@ def test_research_brief_model_json_loader_repairs_common_llm_commas():
     assert payload["errors"] == []
 
 
+def test_research_brief_openrouter_payload_includes_contract(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "id": "or-test",
+                    "model": "anthropic/claude-sonnet-test",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "summary": "Reviewed.",
+                                        "findings": [],
+                                        "errors": [],
+                                    }
+                                )
+                            }
+                        }
+                    ],
+                    "usage": {"total_tokens": 100},
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["timeout"] = timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.delenv("HSA_RESEARCH_BRIEF_MAX_TOKENS", raising=False)
+    monkeypatch.setattr(research_brief_agent.urllib.request, "urlopen", fake_urlopen)
+
+    review = research_brief_agent._openrouter_review_model(
+        "anthropic/claude-sonnet-test",
+        {"topic": "VEGF therapy", "citations": [{"citation_id": "C1"}]},
+    )
+    user_payload = json.loads(captured["payload"]["messages"][1]["content"])
+
+    assert captured["payload"]["max_tokens"] == 6000
+    assert user_payload["response_contract"]["required"] == ["summary", "findings", "errors"]
+    assert user_payload["evidence_payload"]["topic"] == "VEGF therapy"
+    assert review["metadata"]["request_id"] == "or-test"
+
+
 def test_research_brief_evaluation_service_persists_ready_result(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "research-brief-evaluation.sqlite3", seed=False)
     raw_record_id = repo.upsert_raw_record(
