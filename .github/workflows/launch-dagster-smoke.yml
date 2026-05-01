@@ -857,6 +857,7 @@ jobs:
                   handle.write(f"- Brief queue ready: `{summary.get('brief_queue_ready')}`\n")
                   handle.write(f"- Brief queue failed: `{summary.get('brief_queue_failed')}`\n")
                   handle.write(f"- Actionable research leads: `{summary.get('research_leads_actionable')}`\n")
+                  handle.write(f"- Research follow-up leads: `{summary.get('research_leads_followup')}`\n")
                   handle.write(f"- Recent agent failures: `{summary.get('recent_agent_failures')}`\n")
                   handle.write(f"- Blocking recommendations: `{summary.get('blocking_recommendations')}`\n")
                   handle.write("#### Recommendations\n")

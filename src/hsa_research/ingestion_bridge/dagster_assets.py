@@ -768,6 +768,7 @@ if dg is not None:
             "mode": report.get("mode"),
             "queued_count": dg.MetadataValue.int(int(report.get("queued_count", 0))),
             "lead_count": dg.MetadataValue.int(int(report.get("lead_count", 0))),
+            "research_followup_count": dg.MetadataValue.int(int(report.get("research_followup_count", 0))),
             "source_health_count": dg.MetadataValue.int(int(report.get("source_health_count", 0))),
             "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0))),
             "skipped": dg.MetadataValue.json(report.get("skipped", [])),

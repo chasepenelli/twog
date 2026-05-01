@@ -2672,6 +2672,7 @@ def test_research_brief_queue_batch_from_leads_and_source_health(tmp_path):
 
     assert result.queued_count == 2
     assert result.lead_count == 1
+    assert result.research_followup_count == 0
     assert result.source_health_count == 1
     assert result.skipped_count == 1
     assert result.skipped[0]["source_key"] == "chembl"
@@ -2682,6 +2683,74 @@ def test_research_brief_queue_batch_from_leads_and_source_health(tmp_path):
     assert any(item.source_key == "pubmed" for item in result.queue_items)
     assert any(item.priority == 20 for item in result.queue_items if item.metadata["batch_queue"]["origin"] == "research_lead")
     assert any(item.priority == 45 for item in result.queue_items if item.metadata["batch_queue"]["origin"] == "source_health")
+
+
+def test_research_brief_queue_batch_routes_evidence_light_leads_to_followup(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-evidence-light-followup.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="UF angiosarcoma AACR report",
+            url="https://cancer.ufl.edu/angiosarcoma-report",
+            lead_type="institutional_article",
+            status="new",
+            priority=25,
+            source_key="x_linked_article",
+            origin_source_key="x_linked_article",
+            reason="No DOI, PMID, PMCID, NCT, or suggested durable source was found.",
+            topic_tags=["angiosarcoma", "therapy"],
+        )
+    )
+
+    result = service.queue_research_brief_batch(
+        ResearchBriefQueueBatchRequest(mode="research_leads", limit=5)
+    )
+    updated_lead = repo.get_research_lead(lead.lead_id)
+
+    assert result.queued_count == 0
+    assert result.lead_count == 0
+    assert result.research_followup_count == 1
+    assert result.skipped_count == 1
+    assert result.skipped[0]["reason"] == "lead_needs_research_followup"
+    assert result.skipped[0]["requires_manual_research"] is True
+    assert updated_lead is not None
+    assert updated_lead.status == "followup"
+    assert updated_lead.metadata["research_followup_queue"]["requires_manual_research"] is True
+    assert repo.list_source_followups(limit=10) == []
+
+
+def test_research_brief_queue_batch_routes_identifier_leads_to_source_followup(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-identifier-followup.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Angiosarcoma DOI lead",
+            lead_type="linked_article",
+            status="new",
+            priority=35,
+            source_key="x_linked_article",
+            origin_source_key="x_linked_article",
+            identifiers={"doi": "10.1234/HSA.FOLLOWUP"},
+            reason="Agent found a DOI that is not yet ingested.",
+        )
+    )
+
+    result = service.queue_research_brief_batch(
+        ResearchBriefQueueBatchRequest(mode="research_leads", limit=5)
+    )
+    updated_lead = repo.get_research_lead(lead.lead_id)
+    followups = repo.list_source_followups(source_key="crossref", limit=10)
+
+    assert result.queued_count == 0
+    assert result.research_followup_count == 1
+    assert result.skipped[0]["source_followup_source_key"] == "crossref"
+    assert result.skipped[0]["source_followup_identifier_type"] == "doi"
+    assert updated_lead is not None
+    assert updated_lead.status == "followup"
+    assert updated_lead.metadata["research_followup_queue"]["source_followup_source_key"] == "crossref"
+    assert len(followups) == 1
+    assert followups[0].identifier == "10.1234/hsa.followup"
+    assert followups[0].metadata["followup_type"] == "research_lead_evidence_enrichment"
 
 
 def test_command_center_report_summarizes_operational_state(tmp_path):
@@ -2702,6 +2771,15 @@ def test_command_center_report_summarizes_operational_state(tmp_path):
             status="new",
             priority=25,
             suggested_sources=["clinicaltrials_gov"],
+        )
+    )
+    repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Evidence-light linked article",
+            lead_type="institutional_article",
+            status="followup",
+            priority=40,
+            source_key="x_linked_article",
         )
     )
     repo.create_agent_run(
@@ -2733,11 +2811,13 @@ def test_command_center_report_summarizes_operational_state(tmp_path):
 
     assert report.summary["brief_queue_failed"] == 1
     assert report.summary["research_leads_actionable"] == 1
+    assert report.summary["research_leads_followup"] == 1
     assert report.summary["recent_agent_failures"] == 1
     assert report.summary["source_health_failed"] == 1
     assert report.summary["blocking_recommendations"] >= 2
     assert report.research_brief_queue["status_counts"]["failed"] == 1
     assert report.research_leads["status_counts"]["new"] == 1
+    assert report.research_leads["status_counts"]["followup"] == 1
     assert report.source_health == source_health_report
     assert recommendation_areas >= {"brief_queue", "research_leads", "source_health", "embeddings", "full_text", "agents"}
 

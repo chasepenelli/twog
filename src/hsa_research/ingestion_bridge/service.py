@@ -493,6 +493,7 @@ class HSAResearchService:
         skipped: list[dict[str, Any]] = []
         errors: list[str] = []
         lead_count = 0
+        research_followup_count = 0
         source_health_count = 0
 
         def remaining() -> int:
@@ -508,6 +509,11 @@ class HSAResearchService:
                 leads = [lead for lead in leads if lead.lead_type in allowed_lead_types]
             for lead in leads[: remaining()]:
                 try:
+                    followup = _route_evidence_light_research_lead(self.repository, lead)
+                    if followup is not None:
+                        research_followup_count += 1
+                        skipped.append(followup)
+                        continue
                     queue_item = self.queue_research_brief(
                         ResearchBriefQueueRequest(
                             topic=_research_brief_topic_from_lead(lead),
@@ -626,6 +632,7 @@ class HSAResearchService:
             mode=request.mode,
             queued_count=len(queue_items),
             lead_count=lead_count,
+            research_followup_count=research_followup_count,
             source_health_count=source_health_count,
             skipped_count=len(skipped),
             queue_items=queue_items,
@@ -695,6 +702,7 @@ class HSAResearchService:
             "brief_queue_failed": queue_status_counts.get("failed", 0),
             "research_leads_total": len(all_leads),
             "research_leads_actionable": lead_status_counts.get("new", 0) + lead_status_counts.get("watching", 0),
+            "research_leads_followup": lead_status_counts.get("followup", 0),
             "recent_agent_failures": agent_status_counts.get("failed", 0),
             "source_health_failed": len(source_health_report.get("failed_sources", [])) if source_health_report else None,
             "source_health_watch": len(source_health_report.get("watch_sources", [])) if source_health_report else None,
@@ -1335,6 +1343,115 @@ def _research_brief_topic_from_lead(lead: ResearchLeadRecord) -> str:
     return " | ".join(parts)[:1000]
 
 
+_NON_EVIDENCE_RESEARCH_LEAD_SOURCES = {
+    "x_linked_article",
+    "x_topic",
+    "x_topic_monitor",
+}
+_FOLLOWUP_SOURCE_BY_IDENTIFIER_TYPE = {
+    "doi": "crossref",
+    "pmid": "pubmed",
+    "pmcid": "pmc_oa",
+    "nct": "clinicaltrials_gov",
+}
+
+
+def _route_evidence_light_research_lead(
+    repository: ResearchRepository,
+    lead: ResearchLeadRecord,
+) -> dict[str, Any] | None:
+    followup_reason = _research_lead_followup_reason(repository, lead)
+    if followup_reason is None:
+        return None
+
+    source_followup = _source_followup_from_research_lead(lead)
+    persisted_followup = repository.upsert_source_followup(source_followup) if source_followup else None
+    metadata = {
+        "research_followup_queue": {
+            "reason": followup_reason,
+            "brief_source_key": _research_brief_source_key_from_lead(lead),
+            "source_followup_id": str(persisted_followup.followup_id) if persisted_followup else None,
+            "source_followup_source_key": persisted_followup.source_key if persisted_followup else None,
+            "source_followup_identifier_type": persisted_followup.identifier_type if persisted_followup else None,
+            "source_followup_identifier": persisted_followup.identifier if persisted_followup else None,
+            "requires_manual_research": persisted_followup is None,
+        }
+    }
+    repository.update_research_lead(lead.lead_id, status="followup", metadata=metadata)
+    return {
+        "origin": "research_lead",
+        "lead_id": str(lead.lead_id),
+        "source_key": lead.source_key,
+        "origin_source_key": lead.origin_source_key,
+        "reason": "lead_needs_research_followup",
+        "followup_reason": followup_reason,
+        "source_followup_id": str(persisted_followup.followup_id) if persisted_followup else None,
+        "source_followup_source_key": persisted_followup.source_key if persisted_followup else None,
+        "source_followup_identifier_type": persisted_followup.identifier_type if persisted_followup else None,
+        "requires_manual_research": persisted_followup is None,
+    }
+
+
+def _research_lead_followup_reason(
+    repository: ResearchRepository,
+    lead: ResearchLeadRecord,
+) -> str | None:
+    if lead.suggested_sources:
+        return None
+    source_key = _research_brief_source_key_from_lead(lead)
+    if _source_followup_from_research_lead(lead) is not None:
+        return "durable identifier must be ingested before synthesis"
+    if source_key in _NON_EVIDENCE_RESEARCH_LEAD_SOURCES:
+        return "social/linked-article lead has no durable source attached"
+    if not source_key:
+        return "lead has no synthesis source attached"
+    if not repository.list_document_chunks(source_key=source_key, limit=1):
+        return f"source {source_key} has no document chunks available for synthesis"
+    return None
+
+
+def _source_followup_from_research_lead(lead: ResearchLeadRecord) -> SourceFollowupQueueItem | None:
+    for identifier_type, source_key in _FOLLOWUP_SOURCE_BY_IDENTIFIER_TYPE.items():
+        identifier = lead.identifiers.get(identifier_type)
+        if not identifier:
+            continue
+        return SourceFollowupQueueItem(
+            source_key=source_key,
+            identifier_type=identifier_type,  # type: ignore[arg-type]
+            identifier=identifier,
+            url=_source_followup_url(identifier_type, identifier, fallback=lead.url),
+            title=lead.title,
+            origin_source_key=lead.origin_source_key or lead.source_key,
+            origin_review_id=lead.origin_review_id,
+            origin_artifact_id=lead.origin_artifact_id,
+            origin_agent_run_id=lead.origin_agent_run_id,
+            reason="Research lead needs durable evidence ingestion before synthesis.",
+            priority=lead.priority,
+            metadata={
+                "followup_type": "research_lead_evidence_enrichment",
+                "research_lead_id": str(lead.lead_id),
+                "research_lead_type": lead.lead_type,
+                "research_lead_status": lead.status,
+                "research_lead_reason": lead.reason,
+                "research_lead_url": lead.url,
+                "topic_tags": lead.topic_tags,
+            },
+        )
+    return None
+
+
+def _source_followup_url(identifier_type: str, identifier: str, *, fallback: str | None) -> str | None:
+    if identifier_type == "doi":
+        return f"https://doi.org/{identifier}"
+    if identifier_type == "pmid":
+        return f"https://pubmed.ncbi.nlm.nih.gov/{identifier}/"
+    if identifier_type == "pmcid":
+        return f"https://www.ncbi.nlm.nih.gov/pmc/articles/{identifier}/"
+    if identifier_type == "nct":
+        return f"https://clinicaltrials.gov/study/{identifier}"
+    return fallback
+
+
 def _research_brief_source_key_from_lead(lead: ResearchLeadRecord) -> str | None:
     if lead.suggested_sources:
         return lead.suggested_sources[0]
@@ -1445,6 +1562,18 @@ def _extend_command_center_recommendations(
                 reason=f"{actionable_leads} lead(s) are new or watching.",
                 job_name="research_brief_queue_batch_job",
                 metadata={"actionable_leads": actionable_leads, "mode": "research_leads"},
+            )
+        )
+    followup_leads = lead_status_counts.get("followup", 0)
+    if followup_leads > 0:
+        recommendations.append(
+            CommandCenterRecommendation(
+                area="research_leads",
+                severity="watch",
+                action="Resolve research follow-up leads before synthesis.",
+                reason=f"{followup_leads} lead(s) need durable evidence before briefing.",
+                job_name="research_leads_job",
+                metadata={"followup_leads": followup_leads},
             )
         )
     if source_health_report:

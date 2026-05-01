@@ -237,6 +237,7 @@ ResearchLeadType = Literal[
 ResearchLeadStatus = Literal[
     "new",
     "watching",
+    "followup",
     "queued",
     "ingested",
     "dismissed",
@@ -690,6 +691,7 @@ class ResearchBriefQueueBatchResult(StrictBaseModel):
     mode: ResearchBriefQueueBatchMode = "both"
     queued_count: int = 0
     lead_count: int = 0
+    research_followup_count: int = 0
     source_health_count: int = 0
     skipped_count: int = 0
     queue_items: list[ResearchBriefQueueItem] = Field(default_factory=list)
