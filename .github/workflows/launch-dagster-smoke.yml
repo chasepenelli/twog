@@ -509,8 +509,10 @@ jobs:
                       "overall_score": record.overall_score,
                       "passes_quality_bar": record.passes_quality_bar,
                       "readiness": record.readiness,
+                      "recommendations": list(payload.get("recommendations") or [])[:3],
                       "recommendation_count": len(payload.get("recommendations") or []),
                       "strength_count": len(payload.get("strengths") or []),
+                      "weaknesses": list(payload.get("weaknesses") or [])[:3],
                       "weakness_count": len(payload.get("weaknesses") or []),
                       "error_count": len(record.errors),
                       "created_at": record.created_at.isoformat(),
@@ -535,6 +537,10 @@ jobs:
                           f"score={row['overall_score']}, pass={row['passes_quality_bar']}, "
                           f"source={row['source_key']}, recommendations={row['recommendation_count']}\n"
                       )
+                      if row["weaknesses"]:
+                          summary.write(f"  - Weakness: {row['weaknesses'][0]}\n")
+                      if row["recommendations"]:
+                          summary.write(f"  - Recommendation: {row['recommendations'][0]}\n")
           PY
         shell: bash
 
