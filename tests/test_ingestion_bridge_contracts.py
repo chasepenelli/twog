@@ -3513,6 +3513,147 @@ def test_research_brief_evaluation_service_blocks_uncited_record(tmp_path):
     assert result.citation_coverage_score == 0.0
 
 
+def test_research_brief_evaluation_tracks_soft_evidence_limitations(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-evaluation-limitations.sqlite3", seed=False)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:evaluation-limitations",
+            content_hash="evaluation-limitations-raw",
+            source_url="https://pubmed.ncbi.nlm.nih.gov/evaluation-limitations/",
+            raw_payload={"pmid": "evaluation-limitations"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="VEGF therapy and translational validation in hemangiosarcoma",
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            canonical_url="https://pubmed.ncbi.nlm.nih.gov/evaluation-limitations/",
+            dedupe_key="pmid:evaluation-limitations",
+            identifiers={"pmid": "evaluation-limitations"},
+        ),
+        raw_record_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "Canine hemangiosarcoma and human angiosarcoma share vascular biology. "
+                "VEGF therapy, biomarker validation, species mismatch, toxicity, clinical "
+                "translation, and target selection are all discussed as research needs."
+            ),
+            content_hash="evaluation-limitations-chunk",
+        )
+    )
+    service = HSAResearchService(repo)
+    brief = service.run_research_brief(
+        ResearchBriefRequest(
+            topic="VEGF therapy in canine hemangiosarcoma",
+            review_mode="deterministic_only",
+            max_chunks_per_perspective=3,
+            max_claims=0,
+        )
+    )
+    saved = repo.get_research_brief(brief.brief_id)
+    assert saved is not None
+    payload = dict(saved.result_payload)
+    payload["errors"] = [
+        "No supplied citation directly addresses a clinical trial outcome; evidence is indirect."
+    ]
+    repo.upsert_research_brief(
+        saved.model_copy(update={"result_payload": payload, "error_count": 1})
+    )
+
+    result = service.evaluate_research_brief(ResearchBriefEvaluationRequest(brief_id=brief.brief_id))
+
+    assert result.readiness == "ready_for_hypothesis_review"
+    assert result.passes_quality_bar is True
+    assert result.errors == []
+    assert result.evidence["synthesis_limitation_count"] == 1
+    assert any("follow-up research queue" in item for item in result.recommendations)
+
+
+def test_research_brief_evaluation_keeps_system_errors_hard(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-evaluation-hard-errors.sqlite3", seed=False)
+    citation = {
+        "citation_id": "C1",
+        "chunk_id": str(uuid4()),
+        "research_object_id": str(uuid4()),
+        "quote": "VEGF therapy and validation are discussed.",
+        "relevance": "evidence_scout:direct_evidence",
+    }
+    finding = {
+        "claim": "VEGF therapy should be reviewed for validation.",
+        "stance": "supporting",
+        "citations": ["C1"],
+        "evidence_strength": "medium",
+        "reasoning": "The supplied citation discusses VEGF therapy and validation.",
+        "open_questions": ["What validation experiment should run next?"],
+    }
+    record = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            topic="VEGF therapy in canine hemangiosarcoma",
+            disease_scope="canine hemangiosarcoma",
+            source_key="pubmed",
+            review_mode="deterministic_only",
+            final_brief="VEGF therapy has evidence for validation planning [C1].",
+            result_payload={
+                "topic": "VEGF therapy in canine hemangiosarcoma",
+                "disease_scope": "canine hemangiosarcoma",
+                "brief_style": "technical",
+                "model_profile": "research_brief",
+                "final_brief": "VEGF therapy has evidence for validation planning [C1].",
+                "citations": [citation],
+                "perspective_reports": [
+                    {
+                        "perspective": "evidence_scout",
+                        "agent_name": "evidence_scout_agent",
+                        "model_profile": "research_brief",
+                        "summary": "Evidence was reviewed.",
+                        "findings": [finding],
+                        "citations": [citation],
+                        "errors": [],
+                    },
+                    {
+                        "perspective": "translational_hypothesis",
+                        "agent_name": "translational_hypothesis_agent",
+                        "model_profile": "research_brief",
+                        "summary": "Translation was reviewed.",
+                        "findings": [finding],
+                        "citations": [citation],
+                        "errors": [],
+                    },
+                    {
+                        "perspective": "skeptic_validation",
+                        "agent_name": "skeptic_validation_agent",
+                        "model_profile": "research_brief",
+                        "summary": "Risks were reviewed.",
+                        "findings": [finding],
+                        "citations": [citation],
+                        "errors": [],
+                    },
+                ],
+                "ranked_hypotheses": [finding],
+                "unresolved_questions": ["What validation experiment should run next?"],
+                "evidence": {},
+                "errors": ["chunk search failed: upstream timeout"],
+            },
+        )
+    )
+
+    result = HSAResearchService(repo).evaluate_research_brief(
+        ResearchBriefEvaluationRequest(brief_id=record.brief_id)
+    )
+
+    assert result.readiness == "needs_human_review"
+    assert result.passes_quality_bar is False
+    assert result.errors == ["chunk search failed: upstream timeout"]
+
+
 def test_validation_planning_service_persists_ready_recommend_only_plan(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "validation-planning.sqlite3", seed=False)
     raw_record_id = repo.upsert_raw_record(

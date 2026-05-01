@@ -36,6 +36,19 @@ _LIMITATION_TERMS = {
     "weak",
 }
 _ACTION_TERMS = {"next step", "next steps", "prioritize", "validation", "test", "monitor"}
+_HARD_RESULT_ERROR_TERMS = {
+    "chunk search failed",
+    "claim search failed",
+    "lookup failed",
+    "openrouter",
+    "json",
+    "parse",
+    "could not validate",
+    "exception",
+    "traceback",
+    "unknown citation",
+    "invalid citation",
+}
 
 
 def evaluate_research_brief_synthesis(
@@ -56,6 +69,11 @@ def evaluate_research_brief_synthesis(
     ranked_hypotheses = _as_list(payload.get("ranked_hypotheses"))
     unresolved_questions = _as_list(payload.get("unresolved_questions"))
     result_errors = [str(error) for error in _as_list(payload.get("errors"))]
+    hard_result_errors = _hard_result_errors(result_errors)
+    hard_result_error_set = set(hard_result_errors)
+    synthesis_limitations = [
+        error for error in result_errors if error not in hard_result_error_set
+    ]
     all_findings = [
         finding
         for report in perspective_reports
@@ -102,13 +120,13 @@ def evaluate_research_brief_synthesis(
     actionability_score = _actionability_score(
         final_brief=final_brief,
         ranked_hypotheses=ranked_hypotheses,
-        result_errors=result_errors,
+        result_errors=hard_result_errors,
     )
     weakness_transparency_score = _weakness_transparency_score(
         final_brief=final_brief,
         unresolved_questions=unresolved_questions,
         stance_counts=stance_counts,
-        result_errors=result_errors,
+        result_errors=hard_result_errors,
     )
     overall_score = _rounded(
         citation_coverage_score * 0.30
@@ -118,7 +136,7 @@ def evaluate_research_brief_synthesis(
         + actionability_score * 0.10
         + weakness_transparency_score * 0.10
     )
-    errors = parse_errors + invalid_refs_to_errors(invalid_refs) + result_errors
+    errors = parse_errors + invalid_refs_to_errors(invalid_refs) + hard_result_errors
     readiness = _readiness(
         overall_score=overall_score,
         minimum_overall_score=request.minimum_overall_score,
@@ -145,6 +163,7 @@ def evaluate_research_brief_synthesis(
         weakness_transparency_score=weakness_transparency_score,
         readiness=readiness,
         errors=errors,
+        synthesis_limitations=synthesis_limitations,
     )
     evidence = {
         "citation_count": len(citations),
@@ -159,6 +178,9 @@ def evaluate_research_brief_synthesis(
         "invalid_citation_refs": invalid_refs,
         "stance_counts": stance_counts,
         "minimum_overall_score": request.minimum_overall_score,
+        "hard_error_count": len(errors),
+        "synthesis_limitation_count": len(synthesis_limitations),
+        "synthesis_limitations": synthesis_limitations[:20],
     }
     return ResearchBriefEvaluationResult(
         brief_id=brief.brief_id,
@@ -198,6 +220,19 @@ def invalid_refs_to_errors(invalid_refs: Sequence[str]) -> list[str]:
     if not invalid_refs:
         return []
     return [f"Brief findings reference unknown citation IDs: {', '.join(invalid_refs)}"]
+
+
+def _hard_result_errors(errors: Sequence[str]) -> list[str]:
+    return [
+        error
+        for error in errors
+        if _is_hard_result_error(error)
+    ]
+
+
+def _is_hard_result_error(error: str) -> bool:
+    lowered = error.lower()
+    return any(term in lowered for term in _HARD_RESULT_ERROR_TERMS)
 
 
 def _brief_payload(brief: ResearchBriefRecord) -> tuple[dict[str, Any], list[str]]:
@@ -385,6 +420,7 @@ def _narrative(
     weakness_transparency_score: float,
     readiness: str,
     errors: Sequence[str],
+    synthesis_limitations: Sequence[str],
 ) -> tuple[list[str], list[str], list[str]]:
     strengths: list[str] = []
     weaknesses: list[str] = []
@@ -406,6 +442,9 @@ def _narrative(
     if errors:
         weaknesses.append("Stored brief payload has validation or synthesis errors.")
         recommendations.append("Resolve evaluator errors and regenerate or repair the brief record.")
+    if synthesis_limitations:
+        weaknesses.append("Brief reports evidence limitations that should be tracked.")
+        recommendations.append("Route evidence limitations into the follow-up research queue before downstream validation.")
     if readiness == "ready_for_hypothesis_review":
         recommendations.append("Promote this brief into hypothesis review and validation planning.")
     elif readiness == "blocked":
