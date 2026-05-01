@@ -720,6 +720,47 @@ class ResearchBriefQueueRunResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ResearchBriefQueueMaintenanceRequest(StrictBaseModel):
+    action: Literal["archive"] = "archive"
+    queue_item_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    statuses: list[ResearchBriefQueueStatus] = Field(default_factory=lambda: ["failed"], max_length=5)
+    source_key: str | None = None
+    topic_query: str | None = None
+    min_attempts: int = Field(default=1, ge=0, le=100)
+    max_updated_age_hours: float = Field(default=12.0, ge=0.0, le=8760.0)
+    limit: int = Field(default=50, ge=1, le=500)
+    dry_run: bool = True
+    reason: str = Field(default="stale_research_brief_queue_cleanup", max_length=300)
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_safe_maintenance_scope(self) -> "ResearchBriefQueueMaintenanceRequest":
+        self.statuses = _dedupe_strings(self.statuses)
+        unsafe_statuses = {"queued", "running"}.intersection(self.statuses)
+        if unsafe_statuses:
+            raise ValueError("research brief queue maintenance cannot target queued or running items")
+        unsupported_statuses = set(self.statuses).difference({"failed", "completed"})
+        if unsupported_statuses:
+            raise ValueError("research brief queue maintenance only supports failed or completed items")
+        if not self.statuses and not self.queue_item_ids:
+            raise ValueError("research brief queue maintenance requires statuses or queue_item_ids")
+        self.reason = self.reason.strip() or "stale_research_brief_queue_cleanup"
+        return self
+
+
+class ResearchBriefQueueMaintenanceResult(StrictBaseModel):
+    action: Literal["archive"] = "archive"
+    dry_run: bool = True
+    candidate_count: int = 0
+    archived_count: int = 0
+    skipped_count: int = 0
+    queue_items: list[ResearchBriefQueueItem] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ResearchBriefQueueBatchRequest(StrictBaseModel):
     mode: ResearchBriefQueueBatchMode = "both"
     lead_statuses: list[ResearchLeadStatus] = Field(default_factory=lambda: ["new", "watching"], max_length=10)

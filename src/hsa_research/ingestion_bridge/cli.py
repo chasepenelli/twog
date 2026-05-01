@@ -23,6 +23,7 @@ from .contracts import (
     FullTextOpsRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefQueueBatchRequest,
+    ResearchBriefQueueMaintenanceRequest,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
@@ -440,6 +441,52 @@ def main() -> None:
         help="Archive a completed research brief queue item",
     )
     archive_research_brief_queue.add_argument("--id", required=True, help="queue_item_id to archive")
+
+    maintain_research_brief_queue = subparsers.add_parser(
+        "maintain-research-brief-queue",
+        help="Dry-run or apply safe research brief queue maintenance",
+    )
+    maintain_research_brief_queue.add_argument(
+        "--id",
+        action="append",
+        default=[],
+        help="Specific queue_item_id to inspect; repeat for multiple items",
+    )
+    maintain_research_brief_queue.add_argument(
+        "--status",
+        action="append",
+        default=[],
+        help="Eligible status; defaults to failed. Only failed/completed are supported.",
+    )
+    maintain_research_brief_queue.add_argument("--source", default=None, help="Optional source key filter")
+    maintain_research_brief_queue.add_argument(
+        "--topic-query",
+        default=None,
+        help="Case-insensitive topic/scope filter",
+    )
+    maintain_research_brief_queue.add_argument(
+        "--min-attempts",
+        type=int,
+        default=1,
+        help="Minimum attempts before a queue item is eligible",
+    )
+    maintain_research_brief_queue.add_argument(
+        "--max-updated-age-hours",
+        type=float,
+        default=12.0,
+        help="Only include items whose updated_at is at least this many hours old",
+    )
+    maintain_research_brief_queue.add_argument("--limit", type=int, default=50, help="Maximum items to archive")
+    maintain_research_brief_queue.add_argument(
+        "--reason",
+        default="stale_research_brief_queue_cleanup",
+        help="Reason recorded in queue metadata",
+    )
+    maintain_research_brief_queue.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually archive matching items; without this flag the command is a dry run",
+    )
 
     run_research_brief_queue = subparsers.add_parser(
         "run-research-brief-queue",
@@ -1165,6 +1212,20 @@ def main() -> None:
     elif args.command == "archive-research-brief-queue-item":
         item = HSAResearchService(repo).archive_research_brief_queue_item(UUID(args.id))
         output = {} if item is None else item.model_dump(mode="json")
+    elif args.command == "maintain-research-brief-queue":
+        output = HSAResearchService(repo).maintain_research_brief_queue(
+            ResearchBriefQueueMaintenanceRequest(
+                queue_item_ids=[UUID(value) for value in args.id],
+                statuses=args.status or ["failed"],
+                source_key=args.source,
+                topic_query=args.topic_query,
+                min_attempts=args.min_attempts,
+                max_updated_age_hours=args.max_updated_age_hours,
+                limit=args.limit,
+                dry_run=not args.apply,
+                reason=args.reason,
+            )
+        ).model_dump(mode="json")
     elif args.command == "run-research-brief-queue":
         output = HSAResearchService(repo).run_next_research_brief_queue_item(
             ResearchBriefQueueRunRequest(

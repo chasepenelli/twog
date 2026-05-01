@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from hsa_research.ingestion_bridge import dagster_assets as dagster_asset_module
 from hsa_research.ingestion_bridge import cli as cli_module
@@ -43,6 +44,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchBriefPerspectiveReport,
     ResearchBriefQueueBatchRequest,
     ResearchBriefQueueItem,
+    ResearchBriefQueueMaintenanceRequest,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRecord,
@@ -2730,6 +2732,81 @@ def test_research_brief_queue_controls_requeue_and_archive(tmp_path):
         assert archived.metadata["queue_control"]["previous_status"] == "completed"
         assert service.archive_research_brief_queue_item(archived.queue_item_id).status == "archived"
         assert service.requeue_research_brief_queue_item(uuid4()) is None
+
+
+def test_research_brief_queue_maintenance_archives_stale_failed_items(tmp_path):
+    for repo in (
+        SQLiteResearchRepository(tmp_path / "research-brief-queue-maintenance.sqlite3", seed=False),
+        InMemoryResearchRepository(),
+    ):
+        service = HSAResearchService(repo)
+        stale_failed = service.queue_research_brief(
+            ResearchBriefQueueRequest(
+                topic="Stale linked article angiosarcoma review",
+                source_key="x_linked_article",
+                priority=80,
+            )
+        )
+        fresh_failed = service.queue_research_brief(
+            ResearchBriefQueueRequest(
+                topic="Fresh PubMed angiosarcoma review",
+                source_key="pubmed",
+                priority=80,
+            )
+        )
+        repo.update_research_brief_queue_item(
+            stale_failed.queue_item_id,
+            status="failed",
+            attempts=2,
+            last_error="old evidence-light item",
+        )
+        repo.update_research_brief_queue_item(
+            fresh_failed.queue_item_id,
+            status="failed",
+            attempts=0,
+            last_error="fresh failure",
+        )
+
+        dry_run = service.maintain_research_brief_queue(
+            ResearchBriefQueueMaintenanceRequest(
+                statuses=["failed"],
+                source_key="x_linked_article",
+                min_attempts=1,
+                max_updated_age_hours=0,
+                dry_run=True,
+            )
+        )
+        assert dry_run.dry_run is True
+        assert dry_run.candidate_count == 1
+        assert dry_run.archived_count == 0
+        assert dry_run.queue_items[0].queue_item_id == stale_failed.queue_item_id
+        assert repo.get_research_brief_queue_item(stale_failed.queue_item_id).status == "failed"
+
+        archived = service.maintain_research_brief_queue(
+            ResearchBriefQueueMaintenanceRequest(
+                statuses=["failed"],
+                source_key="x_linked_article",
+                min_attempts=1,
+                max_updated_age_hours=0,
+                dry_run=False,
+                reason="superseded_by_pubmed_backed_synthesis",
+            )
+        )
+        updated = repo.get_research_brief_queue_item(stale_failed.queue_item_id)
+        untouched = repo.get_research_brief_queue_item(fresh_failed.queue_item_id)
+
+        assert archived.archived_count == 1
+        assert archived.queue_items[0].status == "archived"
+        assert updated.status == "archived"
+        assert updated.last_error == "old evidence-light item"
+        assert updated.metadata["queue_control"]["last_action"] == "maintenance_archive"
+        assert updated.metadata["queue_control"]["reason"] == "superseded_by_pubmed_backed_synthesis"
+        assert untouched.status == "failed"
+
+
+def test_research_brief_queue_maintenance_rejects_active_statuses():
+    with pytest.raises(ValidationError, match="cannot target queued or running"):
+        ResearchBriefQueueMaintenanceRequest(statuses=["queued"])
 
 
 def test_research_brief_queue_batch_from_leads_and_source_health(tmp_path):
@@ -6863,6 +6940,19 @@ def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp
     )
     assert failed is not None
     requeued = mcp_server.requeue_research_brief_queue_item_tool(queued["queue_item_id"], priority=7)
+    failed_again = repo.update_research_brief_queue_item(
+        queued["queue_item_id"],
+        status="failed",
+        attempts=2,
+        last_error="superseded",
+    )
+    assert failed_again is not None
+    maintenance = mcp_server.maintain_research_brief_queue_tool(
+        queue_item_ids=[queued["queue_item_id"]],
+        statuses=["failed"],
+        max_updated_age_hours=0,
+        dry_run=True,
+    )
     completed = repo.update_research_brief_queue_item(queued["queue_item_id"], status="completed")
     assert completed is not None
     archived = mcp_server.archive_research_brief_queue_item_tool(queued["queue_item_id"])
@@ -6896,6 +6986,9 @@ def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp
     assert requeued["status"] == "queued"
     assert requeued["priority"] == 7
     assert requeued["last_error"] is None
+    assert maintenance["candidate_count"] == 1
+    assert maintenance["dry_run"] is True
+    assert maintenance["queue_items"][0]["queue_item_id"] == queued["queue_item_id"]
     assert archived["status"] == "archived"
     assert archived["metadata"]["queue_control"]["previous_status"] == "completed"
     assert batch["queued_count"] == 1
@@ -8392,6 +8485,7 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.research_brief_queue_batch_job is not None
     assert dagster_asset_module.research_brief_queue_seed_job is not None
     assert dagster_asset_module.research_brief_queue_runner_job is not None
+    assert dagster_asset_module.research_brief_queue_maintenance_job is not None
     assert dagster_asset_module.research_brief_playground_pack_job is not None
     assert dagster_asset_module.research_leads_job is not None
     assert dagster_asset_module.research_followup_resolver_job is not None

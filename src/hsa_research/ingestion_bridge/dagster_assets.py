@@ -20,6 +20,7 @@ from .contracts import (
     FullTextOpsRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefQueueBatchRequest,
+    ResearchBriefQueueMaintenanceRequest,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
@@ -807,6 +808,36 @@ if dg is not None:
             "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "brief_preview": dg.MetadataValue.md(str(brief.get("final_brief") or "")[:4000]),
+        }
+
+    def _research_brief_queue_maintenance_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        queue_rows = [
+            {
+                "queue_item_id": item.get("queue_item_id"),
+                "status": item.get("status"),
+                "priority": item.get("priority"),
+                "topic": str(item.get("topic") or "")[:300],
+                "source_key": item.get("source_key"),
+                "brief_style": item.get("brief_style"),
+                "model_profile": item.get("model_profile"),
+                "review_mode": item.get("review_mode"),
+                "attempts": item.get("attempts"),
+                "last_brief_id": item.get("last_brief_id"),
+                "last_error": str(item.get("last_error") or "")[:300],
+                "created_at": item.get("created_at"),
+            }
+            for item in report.get("queue_items", [])
+        ]
+        return {
+            "action": report.get("action"),
+            "dry_run": bool(report.get("dry_run", True)),
+            "candidate_count": dg.MetadataValue.int(int(report.get("candidate_count", 0))),
+            "archived_count": dg.MetadataValue.int(int(report.get("archived_count", 0))),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0))),
+            "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
+            "queue_items": _metadata_table(queue_rows, _RESEARCH_BRIEF_QUEUE_TABLE_COLUMNS),
+            "skipped": dg.MetadataValue.json(report.get("skipped", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
         }
 
     def _research_brief_playground_pack_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -2596,6 +2627,89 @@ if dg is not None:
     @dg.asset(
         group_name="ai_research",
         config_schema={
+            "queue_item_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Specific queue item ids to inspect; leave empty to use filters.",
+            ),
+            "statuses": dg.Field(
+                [str],
+                default_value=["failed"],
+                description="Eligible statuses. Only failed/completed are supported.",
+            ),
+            "source_key": dg.Field(
+                str,
+                is_required=False,
+                description="Optional source key filter.",
+            ),
+            "topic_query": dg.Field(
+                str,
+                is_required=False,
+                description="Optional case-insensitive topic/scope filter.",
+            ),
+            "min_attempts": dg.Field(
+                int,
+                default_value=1,
+                description="Minimum attempts before a queue item is eligible.",
+            ),
+            "max_updated_age_hours": dg.Field(
+                float,
+                default_value=12.0,
+                description="Only include items whose updated_at is at least this many hours old.",
+            ),
+            "limit": dg.Field(
+                int,
+                default_value=50,
+                description="Maximum eligible queue items to archive.",
+            ),
+            "dry_run": dg.Field(
+                bool,
+                default_value=True,
+                description="Preview matching items without archiving them.",
+            ),
+            "reason": dg.Field(
+                str,
+                default_value="stale_research_brief_queue_cleanup",
+                description="Reason recorded in queue metadata when archiving.",
+            ),
+        },
+    )
+    def research_brief_queue_maintenance_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Dry-run or apply safe research brief queue maintenance."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).maintain_research_brief_queue(
+            ResearchBriefQueueMaintenanceRequest(
+                queue_item_ids=[UUID(value) for value in config["queue_item_ids"]],
+                statuses=config["statuses"],
+                source_key=config.get("source_key"),
+                topic_query=config.get("topic_query"),
+                min_attempts=config["min_attempts"],
+                max_updated_age_hours=config["max_updated_age_hours"],
+                limit=config["limit"],
+                dry_run=config["dry_run"],
+                reason=config["reason"],
+                dagster_run_id=context.run_id,
+                metadata={"dagster_maintenance_run_id": context.run_id},
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_research_brief_queue_maintenance_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
             "topic": dg.Field(
                 str,
                 default_value="canine hemangiosarcoma translational therapy",
@@ -3751,6 +3865,7 @@ if dg is not None:
         research_brief_queue_batch_report,
         research_brief_queue_seed_report,
         research_brief_queue_runner_report,
+        research_brief_queue_maintenance_report,
         research_brief_playground_pack_report,
         research_leads_report,
         research_followup_resolver_report,
@@ -3884,6 +3999,10 @@ if dg is not None:
     research_brief_queue_runner_job = dg.define_asset_job(
         "research_brief_queue_runner_job",
         selection=dg.AssetSelection.assets(research_brief_queue_runner_report),
+    )
+    research_brief_queue_maintenance_job = dg.define_asset_job(
+        "research_brief_queue_maintenance_job",
+        selection=dg.AssetSelection.assets(research_brief_queue_maintenance_report),
     )
     research_brief_playground_pack_job = dg.define_asset_job(
         "research_brief_playground_pack_job",
@@ -4117,6 +4236,7 @@ if dg is not None:
             research_brief_queue_batch_job,
             research_brief_queue_seed_job,
             research_brief_queue_runner_job,
+            research_brief_queue_maintenance_job,
             research_brief_playground_pack_job,
             research_leads_job,
             research_followup_resolver_job,
@@ -4188,6 +4308,7 @@ else:
     research_brief_queue_batch_job = None
     research_brief_queue_seed_job = None
     research_brief_queue_runner_job = None
+    research_brief_queue_maintenance_job = None
     research_brief_playground_pack_job = None
     research_leads_job = None
     research_followup_resolver_job = None

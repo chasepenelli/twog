@@ -27,6 +27,7 @@ from .contracts import (
     ModelProfile,
     ResearchBriefEvaluationRequest,
     ResearchBriefQueueBatchRequest,
+    ResearchBriefQueueMaintenanceRequest,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
@@ -440,6 +441,33 @@ def archive_research_brief_queue_item_tool(queue_item_id: str) -> dict:
 
     item = get_service().archive_research_brief_queue_item(UUID(queue_item_id))
     return {} if item is None else item.model_dump(mode="json")
+
+
+def maintain_research_brief_queue_tool(
+    queue_item_ids: list[str] | None = None,
+    statuses: list[str] | None = None,
+    source_key: str | None = None,
+    topic_query: str | None = None,
+    min_attempts: int = 1,
+    max_updated_age_hours: float = 12.0,
+    limit: int = 50,
+    dry_run: bool = True,
+    reason: str = "stale_research_brief_queue_cleanup",
+) -> dict:
+    """Dry-run or apply safe research brief queue maintenance."""
+
+    request = ResearchBriefQueueMaintenanceRequest(
+        queue_item_ids=[UUID(value) for value in queue_item_ids or []],
+        statuses=statuses or ["failed"],  # type: ignore[arg-type]
+        source_key=source_key,
+        topic_query=topic_query,
+        min_attempts=min_attempts,
+        max_updated_age_hours=max_updated_age_hours,
+        limit=limit,
+        dry_run=dry_run,
+        reason=reason,
+    )
+    return get_service().maintain_research_brief_queue(request).model_dump(mode="json")
 
 
 def run_retrieval_smoke_tool(
@@ -1208,6 +1236,32 @@ if mcp is not None:
         """Archive a completed research brief queue item."""
 
         return archive_research_brief_queue_item_tool(queue_item_id)
+
+    @mcp.tool()
+    def maintain_research_brief_queue(
+        queue_item_ids: list[str] | None = None,
+        statuses: list[str] | None = None,
+        source_key: str | None = None,
+        topic_query: str | None = None,
+        min_attempts: int = 1,
+        max_updated_age_hours: float = 12.0,
+        limit: int = 50,
+        dry_run: bool = True,
+        reason: str = "stale_research_brief_queue_cleanup",
+    ) -> dict:
+        """Dry-run or apply safe research brief queue maintenance."""
+
+        return maintain_research_brief_queue_tool(
+            queue_item_ids=queue_item_ids,
+            statuses=statuses,
+            source_key=source_key,
+            topic_query=topic_query,
+            min_attempts=min_attempts,
+            max_updated_age_hours=max_updated_age_hours,
+            limit=limit,
+            dry_run=dry_run,
+            reason=reason,
+        )
 
     @mcp.tool()
     def run_retrieval_smoke(

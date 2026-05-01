@@ -8,6 +8,7 @@ decorators or Dagster assets.
 from __future__ import annotations
 
 from collections import Counter
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -42,6 +43,8 @@ from .contracts import (
     ResearchBriefQueueBatchRequest,
     ResearchBriefQueueBatchResult,
     ResearchBriefQueueItem,
+    ResearchBriefQueueMaintenanceRequest,
+    ResearchBriefQueueMaintenanceResult,
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefQueueRunResult,
@@ -494,6 +497,115 @@ class HSAResearchService:
                     "previous_attempts": item.attempts,
                 }
             },
+        )
+
+    def maintain_research_brief_queue(
+        self,
+        request: ResearchBriefQueueMaintenanceRequest,
+    ) -> ResearchBriefQueueMaintenanceResult:
+        seen: set[UUID] = set()
+        candidates: list[ResearchBriefQueueItem] = []
+        skipped: list[dict[str, Any]] = []
+        errors: list[str] = []
+        now = datetime.now(UTC)
+
+        def add_skip(item: ResearchBriefQueueItem | None, reason: str, queue_item_id: UUID | None = None) -> None:
+            skipped.append(
+                {
+                    "queue_item_id": str(item.queue_item_id if item else queue_item_id),
+                    "status": item.status if item else None,
+                    "source_key": item.source_key if item else None,
+                    "topic": item.topic[:300] if item else None,
+                    "reason": reason,
+                }
+            )
+
+        if request.queue_item_ids:
+            raw_items: list[ResearchBriefQueueItem] = []
+            for queue_item_id in request.queue_item_ids:
+                item = self.repository.get_research_brief_queue_item(queue_item_id)
+                if item is None:
+                    add_skip(None, "queue item not found", queue_item_id=queue_item_id)
+                    continue
+                raw_items.append(item)
+        else:
+            raw_items = self.repository.list_research_brief_queue_items(
+                statuses=list(request.statuses),
+                source_key=request.source_key,
+                topic_query=request.topic_query,
+                limit=None,
+            )
+
+        for item in raw_items:
+            if item.queue_item_id in seen:
+                continue
+            seen.add(item.queue_item_id)
+            if item.status not in request.statuses:
+                add_skip(item, f"status {item.status!r} is outside maintenance scope")
+                continue
+            if item.status not in {"failed", "completed"}:
+                add_skip(item, f"status {item.status!r} cannot be archived by maintenance")
+                continue
+            if request.source_key and item.source_key != request.source_key:
+                add_skip(item, "source key does not match")
+                continue
+            if request.topic_query:
+                normalized_query = request.topic_query.lower()
+                if normalized_query not in item.topic.lower() and normalized_query not in item.disease_scope.lower():
+                    add_skip(item, "topic query does not match")
+                    continue
+            if item.attempts < request.min_attempts:
+                add_skip(item, f"attempts {item.attempts} below minimum {request.min_attempts}")
+                continue
+            item_age_hours = (now - item.updated_at).total_seconds() / 3600
+            if item_age_hours < request.max_updated_age_hours:
+                add_skip(item, f"updated {item_age_hours:.2f} hours ago")
+                continue
+            candidates.append(item)
+            if len(candidates) >= request.limit:
+                break
+
+        archived_items: list[ResearchBriefQueueItem] = []
+        if not request.dry_run:
+            for item in candidates:
+                updated = self.repository.update_research_brief_queue_item(
+                    item.queue_item_id,
+                    status="archived",
+                    last_error=item.last_error,
+                    metadata={
+                        "queue_control": {
+                            "last_action": "maintenance_archive",
+                            "reason": request.reason,
+                            "previous_status": item.status,
+                            "previous_attempts": item.attempts,
+                            "previous_last_error": item.last_error,
+                            "dagster_run_id": request.dagster_run_id,
+                            "archived_at": now.isoformat(),
+                        },
+                        "queue_maintenance": {
+                            "dry_run": False,
+                            "source_key": request.source_key,
+                            "topic_query": request.topic_query,
+                            "min_attempts": request.min_attempts,
+                            "max_updated_age_hours": request.max_updated_age_hours,
+                            **request.metadata,
+                        },
+                    },
+                )
+                if updated is None:
+                    errors.append(f"queue item disappeared before archive: {item.queue_item_id}")
+                    continue
+                archived_items.append(updated)
+
+        return ResearchBriefQueueMaintenanceResult(
+            action=request.action,
+            dry_run=request.dry_run,
+            candidate_count=len(candidates),
+            archived_count=0 if request.dry_run else len(archived_items),
+            skipped_count=len(skipped),
+            queue_items=candidates if request.dry_run else archived_items,
+            skipped=skipped,
+            errors=errors,
         )
 
     def queue_research_brief_batch(self, request: ResearchBriefQueueBatchRequest) -> ResearchBriefQueueBatchResult:
