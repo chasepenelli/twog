@@ -35,6 +35,7 @@ on:
           - "research_brief_queue_batch_job"
           - "research_brief_queue_seed_job"
           - "research_brief_queue_runner_job"
+          - "research_brief_queue_maintenance_job"
           - "research_brief_playground_pack_job"
           - "research_leads_job"
           - "research_followup_resolver_job"
@@ -357,7 +358,7 @@ jobs:
         shell: bash
 
       - name: Print hosted research brief queue summary
-        if: ${{ always() && (inputs.job == 'research_brief_queue_batch_job' || inputs.job == 'research_brief_queue_runner_job' || inputs.job == 'research_brief_queue_seed_job') }}
+        if: ${{ always() && (inputs.job == 'research_brief_queue_batch_job' || inputs.job == 'research_brief_queue_runner_job' || inputs.job == 'research_brief_queue_seed_job' || inputs.job == 'research_brief_queue_maintenance_job') }}
         continue-on-error: true
         run: |
           uv run python - <<'PY'
