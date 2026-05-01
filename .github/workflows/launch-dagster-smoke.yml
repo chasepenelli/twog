@@ -493,6 +493,7 @@ jobs:
                           f"{data.get('kept_in_followup', 0)} kept in follow-up, "
                           f"{data.get('errors', 0)} errors.\n"
                       )
+          PY
         shell: bash
 
       - name: Print hosted X topic review summary
