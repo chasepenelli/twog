@@ -161,6 +161,8 @@ _RESEARCH_BRIEF_PERSPECTIVE_TABLE_COLUMNS = (
     "agent_name",
     "finding_count",
     "citation_count",
+    "hard_error_count",
+    "evidence_limitation_count",
     "error_count",
     "summary",
 )
@@ -184,6 +186,8 @@ _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS = (
     "finding_count",
     "citation_count",
     "research_lead_count",
+    "hard_error_count",
+    "evidence_limitation_count",
     "error_count",
     "created_at",
 )
@@ -212,6 +216,8 @@ _RESEARCH_BRIEF_QUALITY_TABLE_COLUMNS = (
     "citation_count",
     "finding_count",
     "hypothesis_count",
+    "hard_error_count",
+    "evidence_limitation_count",
     "error_count",
     "overall_score",
     "passes_quality_bar",
@@ -2064,6 +2070,8 @@ if dg is not None:
                 "finding_count": record.finding_count,
                 "citation_count": record.citation_count,
                 "research_lead_count": record.research_lead_count,
+                "hard_error_count": record.hard_error_count,
+                "evidence_limitation_count": record.evidence_limitation_count,
                 "error_count": record.error_count,
                 "created_at": record.created_at.isoformat(),
             }

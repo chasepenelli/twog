@@ -13,6 +13,7 @@ from .contracts import (
     ResearchBriefRecord,
     ResearchBriefResult,
 )
+from .research_brief_errors import split_research_brief_errors
 
 
 RESEARCH_BRIEF_EVALUATION_AGENT_NAME = "research_brief_synthesis_evaluator_agent"
@@ -36,21 +37,6 @@ _LIMITATION_TERMS = {
     "weak",
 }
 _ACTION_TERMS = {"next step", "next steps", "prioritize", "validation", "test", "monitor"}
-_HARD_RESULT_ERROR_TERMS = {
-    "chunk search failed",
-    "claim search failed",
-    "lookup failed",
-    "openrouter",
-    "json",
-    "parse",
-    "could not validate",
-    "exception",
-    "traceback",
-    "unknown citation",
-    "invalid citation",
-}
-
-
 def evaluate_research_brief_synthesis(
     brief: ResearchBriefRecord,
     request: ResearchBriefEvaluationRequest,
@@ -69,11 +55,7 @@ def evaluate_research_brief_synthesis(
     ranked_hypotheses = _as_list(payload.get("ranked_hypotheses"))
     unresolved_questions = _as_list(payload.get("unresolved_questions"))
     result_errors = [str(error) for error in _as_list(payload.get("errors"))]
-    hard_result_errors = _hard_result_errors(result_errors)
-    hard_result_error_set = set(hard_result_errors)
-    synthesis_limitations = [
-        error for error in result_errors if error not in hard_result_error_set
-    ]
+    hard_result_errors, synthesis_limitations = split_research_brief_errors(result_errors)
     all_findings = [
         finding
         for report in perspective_reports
@@ -220,19 +202,6 @@ def invalid_refs_to_errors(invalid_refs: Sequence[str]) -> list[str]:
     if not invalid_refs:
         return []
     return [f"Brief findings reference unknown citation IDs: {', '.join(invalid_refs)}"]
-
-
-def _hard_result_errors(errors: Sequence[str]) -> list[str]:
-    return [
-        error
-        for error in errors
-        if _is_hard_result_error(error)
-    ]
-
-
-def _is_hard_result_error(error: str) -> bool:
-    lowered = error.lower()
-    return any(term in lowered for term in _HARD_RESULT_ERROR_TERMS)
 
 
 def _brief_payload(brief: ResearchBriefRecord) -> tuple[dict[str, Any], list[str]]:

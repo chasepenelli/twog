@@ -459,7 +459,9 @@ jobs:
                           f"- `{row['quality_status']}` `{row['brief_id']}`: "
                           f"{row['topic'][:160]} "
                           f"(citations={row['citation_count']}, findings={row['finding_count']}, "
-                          f"hypotheses={row['hypothesis_count']})\n"
+                          f"hypotheses={row['hypothesis_count']}, "
+                          f"hard_errors={row.get('hard_error_count', row.get('error_count', 0))}, "
+                          f"evidence_limitations={row.get('evidence_limitation_count', 0)})\n"
                       )
           PY
         shell: bash

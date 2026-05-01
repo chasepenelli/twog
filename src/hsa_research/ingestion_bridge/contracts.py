@@ -14,6 +14,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
+from .research_brief_errors import split_research_brief_errors
+
 
 class StrictBaseModel(BaseModel):
     """Base model that keeps contracts explicit but allows future metadata."""
@@ -541,6 +543,7 @@ class ResearchBriefPerspectiveReport(StrictBaseModel):
     findings: list[ResearchBriefFinding] = Field(default_factory=list, max_length=20)
     citations: list[ResearchBriefCitation] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)
+    evidence_limitations: list[str] = Field(default_factory=list, max_length=50)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -573,6 +576,8 @@ class ResearchBriefResult(StrictBaseModel):
     unresolved_questions: list[str] = Field(default_factory=list)
     citations: list[ResearchBriefCitation] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)
+    hard_errors: list[str] = Field(default_factory=list)
+    evidence_limitations: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -616,6 +621,8 @@ class ResearchBriefRecord(StrictBaseModel):
     hypothesis_count: int = Field(default=0, ge=0)
     unresolved_question_count: int = Field(default=0, ge=0)
     research_lead_count: int = Field(default=0, ge=0)
+    hard_error_count: int = Field(default=0, ge=0)
+    evidence_limitation_count: int = Field(default=0, ge=0)
     error_count: int = Field(default=0, ge=0)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -625,6 +632,31 @@ class ResearchBriefRecord(StrictBaseModel):
     def normalize_brief_summary(self) -> "ResearchBriefRecord":
         self.topic = self.topic.strip()
         self.disease_scope = self.disease_scope.strip()
+        result_payload = self.result_payload or {}
+        has_hard_error_count = "hard_error_count" in self.model_fields_set
+        has_evidence_limitation_count = "evidence_limitation_count" in self.model_fields_set
+        if not has_hard_error_count or not has_evidence_limitation_count:
+            hard_errors = [
+                str(error)
+                for error in result_payload.get("hard_errors", [])
+                if str(error).strip()
+            ]
+            evidence_limitations = [
+                str(item)
+                for item in result_payload.get("evidence_limitations", [])
+                if str(item).strip()
+            ]
+            legacy_errors = [
+                str(error)
+                for error in result_payload.get("errors", [])
+                if str(error).strip()
+            ]
+            if not hard_errors and not evidence_limitations and legacy_errors:
+                hard_errors, evidence_limitations = split_research_brief_errors(legacy_errors)
+            if not has_hard_error_count:
+                self.hard_error_count = len(hard_errors) if hard_errors or evidence_limitations else self.error_count
+            if not has_evidence_limitation_count:
+                self.evidence_limitation_count = len(evidence_limitations)
         seen_agent_run_ids: set[UUID] = set()
         deduped_agent_run_ids: list[UUID] = []
         for agent_run_id in self.agent_run_ids:
@@ -952,6 +984,8 @@ class ResearchBriefQualityRow(StrictBaseModel):
     citation_count: int = Field(default=0, ge=0)
     finding_count: int = Field(default=0, ge=0)
     hypothesis_count: int = Field(default=0, ge=0)
+    hard_error_count: int = Field(default=0, ge=0)
+    evidence_limitation_count: int = Field(default=0, ge=0)
     error_count: int = Field(default=0, ge=0)
     passes_completion_bar: bool = False
     passes_quality_bar: bool | None = None

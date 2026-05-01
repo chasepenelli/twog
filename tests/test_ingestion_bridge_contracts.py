@@ -2476,6 +2476,8 @@ def test_research_brief_contracts_require_known_citations():
     )
     assert brief_record.status == "completed"
     assert brief_record.citation_count == 1
+    assert brief_record.hard_error_count == 0
+    assert brief_record.evidence_limitation_count == 0
     with pytest.raises(ValueError):
         ResearchBriefPerspectiveReport(
             perspective="evidence_scout",
@@ -2491,6 +2493,26 @@ def test_research_brief_contracts_require_known_citations():
             final_brief="The stored evidence supports review.",
             citations=[citation],
         )
+
+
+def test_research_brief_record_splits_legacy_errors_from_evidence_limitations():
+    record = ResearchBriefRecord(
+        topic="VEGF therapy",
+        disease_scope="canine hemangiosarcoma",
+        source_key="pubmed",
+        review_mode="openrouter_required",
+        final_brief="The stored evidence supports review [C1].",
+        result_payload={
+            "errors": [
+                "No supplied citation directly addresses survival outcome; evidence is indirect.",
+                "OpenRouter request failed: timeout",
+            ]
+        },
+        error_count=2,
+    )
+
+    assert record.hard_error_count == 1
+    assert record.evidence_limitation_count == 1
 
 
 def test_research_brief_evaluation_contract_rejects_invalid_values():
@@ -2559,6 +2581,9 @@ def test_research_brief_repository_roundtrip_sqlite_and_memory(tmp_path):
             citation_count=1,
             finding_count=1,
             research_lead_count=2,
+            hard_error_count=1,
+            evidence_limitation_count=3,
+            error_count=1,
         )
 
         saved = repo.upsert_research_brief(record)
@@ -2568,6 +2593,9 @@ def test_research_brief_repository_roundtrip_sqlite_and_memory(tmp_path):
         assert fetched is not None
         assert fetched.brief_id == saved.brief_id
         assert fetched.result_payload["final_brief"] == "Stored synthesis [C1]."
+        assert fetched.hard_error_count == 1
+        assert fetched.evidence_limitation_count == 3
+        assert fetched.error_count == 1
         assert listed[0].brief_id == saved.brief_id
         assert repo.list_research_briefs(status="archived") == []
 
@@ -2622,6 +2650,12 @@ def test_research_brief_quality_report_joins_latest_evaluations(tmp_path):
                 citation_count=3,
                 finding_count=2,
                 hypothesis_count=1,
+                result_payload={
+                    "errors": [
+                        "No supplied citation directly addresses clinical trial outcome; evidence is indirect."
+                    ]
+                },
+                error_count=1,
                 metadata={"review_models": ["anthropic/claude-sonnet-test"]},
             )
         )
@@ -2661,6 +2695,9 @@ def test_research_brief_quality_report_joins_latest_evaluations(tmp_path):
         assert report.average_overall_score == pytest.approx(0.88)
         assert rows_by_id[ready_brief.brief_id].quality_status == "ready_for_validation"
         assert rows_by_id[ready_brief.brief_id].review_models == ["anthropic/claude-sonnet-test"]
+        assert rows_by_id[ready_brief.brief_id].error_count == 0
+        assert rows_by_id[ready_brief.brief_id].hard_error_count == 0
+        assert rows_by_id[ready_brief.brief_id].evidence_limitation_count == 1
         assert rows_by_id[failed_brief.brief_id].quality_status == "brief_failed"
 
 
@@ -3415,9 +3452,66 @@ def test_research_brief_openrouter_payload_includes_contract(monkeypatch):
     user_payload = json.loads(captured["payload"]["messages"][1]["content"])
 
     assert captured["payload"]["max_tokens"] == 6000
-    assert user_payload["response_contract"]["required"] == ["summary", "findings", "errors"]
+    assert user_payload["response_contract"]["required"] == [
+        "summary",
+        "findings",
+        "evidence_limitations",
+        "errors",
+    ]
     assert user_payload["evidence_payload"]["topic"] == "VEGF therapy"
     assert review["metadata"]["request_id"] == "or-test"
+
+
+def test_research_brief_model_report_splits_limitations_from_errors():
+    citation = ResearchBriefCitation(
+        citation_id="C1",
+        chunk_id=uuid4(),
+        research_object_id=uuid4(),
+        quote="VEGF therapy evidence was reviewed.",
+        relevance="evidence_scout:direct_evidence",
+    )
+    evidence = research_brief_agent.ResearchBriefEvidenceBundle(
+        citations=[citation],
+        claims=[],
+        research_leads=[],
+        search_queries={},
+        errors=["claim search failed: timeout"],
+    )
+
+    report = research_brief_agent._perspective_report_from_model(
+        ResearchBriefRequest(topic="VEGF therapy"),
+        "evidence_scout",
+        evidence,
+        {
+            "metadata": {"model": "test-model"},
+            "text": json.dumps(
+                {
+                    "summary": "Reviewed supplied evidence.",
+                    "findings": [
+                        {
+                            "claim": "VEGF therapy has enough evidence for review.",
+                            "stance": "supporting",
+                            "citations": ["C1"],
+                            "evidence_strength": "medium",
+                            "reasoning": "The supplied citation discusses VEGF therapy.",
+                            "open_questions": [],
+                        }
+                    ],
+                    "evidence_limitations": ["No direct survival endpoint was supplied."],
+                    "errors": [
+                        "No supplied citation directly addresses dosing.",
+                        "Invalid citation C99 was ignored.",
+                    ],
+                }
+            ),
+        },
+    )
+
+    assert report.errors == ["claim search failed: timeout", "Invalid citation C99 was ignored."]
+    assert report.evidence_limitations == [
+        "No direct survival endpoint was supplied.",
+        "No supplied citation directly addresses dosing.",
+    ]
 
 
 def test_research_brief_evaluation_service_persists_ready_result(tmp_path):
@@ -4002,7 +4096,12 @@ def test_research_brief_playground_pack_exports_prompt_contracts(tmp_path):
     assert pack.evidence["mode"] == "manual_playground_prompt_pack"
     assert pack.evidence["retrieval_strategy"] == "embedding_keyword_blended_perspective_rerank"
     assert pack.evidence["research_lead_count"] == 1
-    assert pack.prompts[0].response_contract["required"] == ["summary", "findings", "errors"]
+    assert pack.prompts[0].response_contract["required"] == [
+        "summary",
+        "findings",
+        "evidence_limitations",
+        "errors",
+    ]
     assert "EVIDENCE_PAYLOAD_JSON" in pack.prompts[0].user_prompt
     assert "Return JSON only" in pack.prompts[0].user_prompt
     assert pack.prompts[0].prompt_payload["requirements"]["use_only_supplied_citation_ids"] is True

@@ -105,6 +105,7 @@ from .research_brief_evaluation import (
     evaluate_research_brief_synthesis,
     summarize_research_brief_evaluation,
 )
+from .research_brief_errors import split_research_brief_errors
 from .repository import ResearchRepository
 from .research_leads import collect_research_leads_from_agent_runs, persist_research_leads_from_agent_result
 from .research_followup_resolver import (
@@ -1410,6 +1411,8 @@ def _research_brief_record_from_result(
     request: ResearchBriefRequest,
 ) -> ResearchBriefRecord:
     finding_count = sum(len(report.findings) for report in result.perspective_reports)
+    hard_errors = _research_brief_hard_errors(result)
+    evidence_limitations = _research_brief_evidence_limitations(result)
     metadata = {
         **request.metadata,
         "dagster_run_id": request.dagster_run_id,
@@ -1434,7 +1437,9 @@ def _research_brief_record_from_result(
         hypothesis_count=len(result.ranked_hypotheses),
         unresolved_question_count=len(result.unresolved_questions),
         research_lead_count=int(result.evidence.get("research_lead_count", 0)),
-        error_count=len(result.errors),
+        hard_error_count=len(hard_errors),
+        evidence_limitation_count=len(evidence_limitations),
+        error_count=len(hard_errors),
         metadata={key: value for key, value in metadata.items() if value not in (None, [], {})},
     )
 
@@ -1450,8 +1455,23 @@ def _research_brief_completion_error(result: ResearchBriefResult) -> str | None:
         missing.append("ranked_hypotheses")
     if not missing:
         return None
-    suffix = f"; agent_error_count={len(result.errors)}" if result.errors else ""
+    hard_errors = _research_brief_hard_errors(result)
+    suffix = f"; agent_error_count={len(hard_errors)}" if hard_errors else ""
     return f"research brief did not meet completion bar; missing {', '.join(missing)}{suffix}"
+
+
+def _research_brief_hard_errors(result: ResearchBriefResult) -> list[str]:
+    if result.hard_errors:
+        return list(result.hard_errors)
+    hard_errors, _ = split_research_brief_errors(result.errors)
+    return hard_errors
+
+
+def _research_brief_evidence_limitations(result: ResearchBriefResult) -> list[str]:
+    limitations = list(result.evidence_limitations)
+    if not limitations and result.errors:
+        _, limitations = split_research_brief_errors(result.errors)
+    return limitations
 
 
 def _research_brief_evaluation_record_from_result(
@@ -1483,6 +1503,7 @@ def _research_brief_quality_row(
     brief: ResearchBriefRecord,
     evaluation: ResearchBriefEvaluationRecord | None,
 ) -> ResearchBriefQualityRow:
+    hard_error_count, evidence_limitation_count = _research_brief_record_error_counts(brief)
     passes_completion_bar = (
         brief.status == "completed"
         and brief.citation_count > 0
@@ -1512,7 +1533,9 @@ def _research_brief_quality_row(
         citation_count=brief.citation_count,
         finding_count=brief.finding_count,
         hypothesis_count=brief.hypothesis_count,
-        error_count=brief.error_count,
+        hard_error_count=hard_error_count,
+        evidence_limitation_count=evidence_limitation_count,
+        error_count=hard_error_count,
         passes_completion_bar=passes_completion_bar,
         passes_quality_bar=evaluation.passes_quality_bar if evaluation else None,
         readiness=evaluation.readiness if evaluation else None,
@@ -1520,6 +1543,25 @@ def _research_brief_quality_row(
         created_at=brief.created_at,
         updated_at=brief.updated_at,
     )
+
+
+def _research_brief_record_error_counts(brief: ResearchBriefRecord) -> tuple[int, int]:
+    result_payload = brief.result_payload or {}
+    hard_error_count = brief.hard_error_count
+    evidence_limitation_count = brief.evidence_limitation_count
+    if not result_payload:
+        return hard_error_count, evidence_limitation_count
+
+    errors = [str(error) for error in result_payload.get("errors", [])]
+    if errors and "hard_errors" not in result_payload and "evidence_limitations" not in result_payload:
+        hard_errors, evidence_limitations = split_research_brief_errors(errors)
+        return len(hard_errors), len(evidence_limitations)
+
+    if "hard_errors" in result_payload:
+        hard_error_count = len(result_payload.get("hard_errors") or [])
+    if "evidence_limitations" in result_payload:
+        evidence_limitation_count = len(result_payload.get("evidence_limitations") or [])
+    return hard_error_count, evidence_limitation_count
 
 
 def _select_brief_for_evaluation(

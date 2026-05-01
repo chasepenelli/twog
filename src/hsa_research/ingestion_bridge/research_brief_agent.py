@@ -31,6 +31,7 @@ from .contracts import (
     TextEmbeddingSearchRequest,
 )
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, LocalDeterministicEmbeddingProvider
+from .research_brief_errors import split_research_brief_errors
 from .research_leads import active_research_leads_for_brief
 from .repository import ResearchRepository
 
@@ -59,8 +60,10 @@ _RESEARCH_BRIEF_SYSTEM_PROMPT = """You are a scientific research brief agent.
 Use only the provided citation IDs. Do not invent papers, identifiers, or claims.
 Every finding must cite at least one supplied citation ID.
 Research leads are watchlist context only; they can inform open_questions but cannot support findings.
-Return strict JSON with: summary, findings, errors.
+Return strict JSON with: summary, findings, evidence_limitations, errors.
 Each finding requires: claim, stance, citations, evidence_strength, reasoning, open_questions.
+Use evidence_limitations for missing direct evidence, conference-only evidence, weak supplied context, and gaps to route into follow-up research.
+Use errors only for tool failures, malformed payloads, citation contract failures, or reasons you could not comply with the response contract.
 Allowed stances: supporting, contradicting, uncertain, opportunity, risk.
 Allowed evidence_strength values: high, medium, low, unknown."""
 
@@ -241,9 +244,13 @@ class ResearchBriefAgent:
             for finding in report.findings:
                 unresolved.extend(finding.open_questions)
         final_brief = _render_final_brief(request, perspective_reports, citations)
-        errors = [*evidence.errors]
+        hard_errors = [*evidence.errors]
+        evidence_limitations: list[str] = []
         for report in perspective_reports:
-            errors.extend(report.errors)
+            hard_errors.extend(report.errors)
+            evidence_limitations.extend(report.evidence_limitations)
+        hard_errors = _dedupe_strings(hard_errors)
+        evidence_limitations = _dedupe_strings(evidence_limitations)
         return ResearchBriefResult(
             agent_run_ids=[
                 report.agent_run_id
@@ -267,8 +274,12 @@ class ResearchBriefAgent:
                 "review_mode": request.review_mode,
                 "retrieval_strategy": "embedding_keyword_blended_perspective_rerank",
                 "search_query_count": sum(len(queries) for queries in evidence.search_queries.values()),
+                "hard_error_count": len(hard_errors),
+                "evidence_limitation_count": len(evidence_limitations),
             },
-            errors=errors,
+            hard_errors=hard_errors,
+            evidence_limitations=evidence_limitations,
+            errors=hard_errors,
         )
 
 
@@ -277,19 +288,32 @@ def summarize_perspective_report(report: ResearchBriefPerspectiveReport) -> dict
         "perspective": report.perspective,
         "finding_count": len(report.findings),
         "citation_count": len(report.citations),
+        "hard_error_count": len(report.errors),
+        "evidence_limitation_count": len(report.evidence_limitations),
         "error_count": len(report.errors),
     }
 
 
 def summarize_research_brief(report: ResearchBriefResult) -> dict[str, Any]:
+    hard_errors, evidence_limitations = _research_brief_result_errors(report)
     return {
         "topic": report.topic,
         "perspective_count": len(report.perspective_reports),
         "finding_count": sum(len(item.findings) for item in report.perspective_reports),
         "citation_count": len(report.citations),
         "hypothesis_count": len(report.ranked_hypotheses),
-        "error_count": len(report.errors),
+        "hard_error_count": len(hard_errors),
+        "evidence_limitation_count": len(evidence_limitations),
+        "error_count": len(hard_errors),
     }
+
+
+def _research_brief_result_errors(report: ResearchBriefResult) -> tuple[list[str], list[str]]:
+    hard_errors = list(report.hard_errors)
+    evidence_limitations = list(report.evidence_limitations)
+    if report.errors and not hard_errors and not evidence_limitations:
+        hard_errors, evidence_limitations = split_research_brief_errors(report.errors)
+    return hard_errors, evidence_limitations
 
 
 def _perspective_queries(request: ResearchBriefRequest) -> dict[ResearchBriefPerspectiveName, list[_PerspectiveQuery]]:
@@ -687,6 +711,7 @@ def _deterministic_perspective_report(
             citations=[],
             findings=[],
             evidence={"review_mode": request.review_mode, "deterministic_floor": True},
+            evidence_limitations=[f"No stored evidence was found for {request.topic}."],
             errors=list(evidence.errors),
         )
 
@@ -792,6 +817,14 @@ def _perspective_report_from_model(
     citations = _citations_for_perspective(evidence.citations, perspective)
     valid_ids = {citation.citation_id for citation in citations}
     payload = _load_json_object(str(review.get("text") or ""))
+    model_errors = [str(error) for error in payload.get("errors", []) if error]
+    hard_model_errors, model_limitations = split_research_brief_errors(model_errors)
+    evidence_limitations = [
+        str(item)
+        for item in payload.get("evidence_limitations", [])
+        if str(item).strip()
+    ]
+    evidence_limitations.extend(model_limitations)
     findings = [
         finding
         for raw in payload.get("findings", [])
@@ -799,7 +832,7 @@ def _perspective_report_from_model(
         if (finding := _finding_from_payload(raw, valid_ids)) is not None
     ]
     errors = list(evidence.errors)
-    errors.extend(str(error) for error in payload.get("errors", []) if error)
+    errors.extend(hard_model_errors)
     return ResearchBriefPerspectiveReport(
         perspective=perspective,
         agent_name=_PERSPECTIVE_AGENT_NAMES[perspective],
@@ -810,7 +843,9 @@ def _perspective_report_from_model(
         evidence={
             "review_mode": request.review_mode,
             "model_review": review.get("metadata", {}),
+            "evidence_limitation_count": len(_dedupe_strings(evidence_limitations)),
         },
+        evidence_limitations=_dedupe_strings(evidence_limitations),
         errors=errors,
     )
 
@@ -886,7 +921,7 @@ def _playground_prompt(
 def _research_brief_response_contract() -> dict[str, Any]:
     return {
         "type": "object",
-        "required": ["summary", "findings", "errors"],
+        "required": ["summary", "findings", "evidence_limitations", "errors"],
         "properties": {
             "summary": "One concise paragraph describing what this perspective concluded.",
             "findings": [
@@ -899,8 +934,11 @@ def _research_brief_response_contract() -> dict[str, Any]:
                     "open_questions": ["Concrete next question or validation gap."],
                 }
             ],
+            "evidence_limitations": [
+                "Use for missing direct evidence, conference-only evidence, indirect context, weak supplied context, or follow-up research gaps."
+            ],
             "errors": [
-                "Use for evidence gaps, invalid citation pressure, weak supplied context, or reasons the model could not answer."
+                "Use only for tool failures, malformed payloads, citation-contract failures, or reasons the model could not comply."
             ],
         },
         "hard_rules": [
