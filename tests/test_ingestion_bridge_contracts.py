@@ -93,6 +93,7 @@ from hsa_research.ingestion_bridge.chunker import chunk_text
 from hsa_research.ingestion_bridge.full_text_triage import FullTextTriageAgent
 from hsa_research.ingestion_bridge import full_text_ops
 from hsa_research.ingestion_bridge import research_followup_resolver
+from hsa_research.ingestion_bridge import research_brief_agent
 from hsa_research.ingestion_bridge import source_followup
 from hsa_research.ingestion_bridge.full_text_ops import FullTextOpsAgent
 from hsa_research.ingestion_bridge.dagster_assets import (
@@ -3192,6 +3193,41 @@ def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
         "skeptic_validation_agent",
         "research_synthesis_editor_agent",
     }
+
+
+def test_research_brief_model_json_loader_repairs_common_llm_commas():
+    payload = research_brief_agent._load_json_object(
+        """
+        ```json
+        {
+          "summary": "Model reviewed the cited evidence."
+          "findings": [
+            {
+              "claim": "VEGF signaling is relevant."
+              "stance": "supporting",
+              "citations": ["C1"],
+              "evidence_strength": "medium",
+              "reasoning": "The citation discusses VEGF biology.",
+              "open_questions": []
+            }
+            {
+              "claim": "Translation remains uncertain.",
+              "stance": "risk",
+              "citations": ["C2"],
+              "evidence_strength": "low",
+              "reasoning": "The citation is indirect.",
+              "open_questions": []
+            },
+          ]
+          "errors": []
+        }
+        ```
+        """
+    )
+
+    assert payload["summary"] == "Model reviewed the cited evidence."
+    assert len(payload["findings"]) == 2
+    assert payload["errors"] == []
 
 
 def test_research_brief_evaluation_service_persists_ready_result(tmp_path):

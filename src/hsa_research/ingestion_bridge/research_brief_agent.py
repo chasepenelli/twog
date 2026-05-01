@@ -1081,16 +1081,83 @@ def _dedupe_strings(values: Sequence[str]) -> list[str]:
 
 
 def _load_json_object(text: str) -> dict[str, Any]:
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, flags=re.S)
-        if not match:
-            raise
-        payload = json.loads(match.group(0))
-    if not isinstance(payload, dict):
-        raise ValueError("model response JSON must be an object")
-    return payload
+    cleaned = _strip_json_fences(text).strip()
+    candidates = [cleaned]
+    extracted = _extract_balanced_json_object(cleaned)
+    if extracted and extracted not in candidates:
+        candidates.append(extracted)
+
+    errors: list[str] = []
+    for candidate in candidates:
+        for repaired in _json_repair_candidates(candidate):
+            try:
+                payload = json.loads(repaired)
+                if not isinstance(payload, dict):
+                    raise ValueError("model response JSON must be an object")
+                return payload
+            except (json.JSONDecodeError, ValueError) as exc:
+                errors.append(str(exc))
+                continue
+    preview = _compact_text(cleaned, max_chars=500)
+    raise ValueError(f"model response JSON parse failed: {errors[-1] if errors else 'unknown error'}; preview={preview}")
+
+
+def _strip_json_fences(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.I)
+        stripped = re.sub(r"\s*```$", "", stripped)
+    return stripped
+
+
+def _extract_balanced_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text[start:], start=start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
+def _json_repair_candidates(text: str) -> list[str]:
+    candidates = [text]
+    without_trailing_commas = re.sub(r",\s*([}\]])", r"\1", text)
+    if without_trailing_commas not in candidates:
+        candidates.append(without_trailing_commas)
+
+    comma_repaired = without_trailing_commas
+    comma_repaired = re.sub(
+        r'([}\]"])\s*\n(\s*"[^"\n]+"\s*:)',
+        r"\1,\n\2",
+        comma_repaired,
+    )
+    comma_repaired = re.sub(
+        r"([}\]])\s*\n(\s*\{)",
+        r"\1,\n\2",
+        comma_repaired,
+    )
+    if comma_repaired not in candidates:
+        candidates.append(comma_repaired)
+    return candidates
 
 
 def _select_models(request: ResearchBriefRequest) -> list[str]:
