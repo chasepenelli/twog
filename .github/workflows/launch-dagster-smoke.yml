@@ -514,6 +514,7 @@ jobs:
                       "strength_count": len(payload.get("strengths") or []),
                       "weaknesses": list(payload.get("weaknesses") or [])[:3],
                       "weakness_count": len(payload.get("weaknesses") or []),
+                      "errors": list(record.errors)[:3],
                       "error_count": len(record.errors),
                       "created_at": record.created_at.isoformat(),
                   }
@@ -541,6 +542,8 @@ jobs:
                           summary.write(f"  - Weakness: {row['weaknesses'][0]}\n")
                       if row["recommendations"]:
                           summary.write(f"  - Recommendation: {row['recommendations'][0]}\n")
+                      if row["errors"]:
+                          summary.write(f"  - Error: {row['errors'][0]}\n")
           PY
         shell: bash
 
