@@ -44,6 +44,7 @@ Future Codex sessions should treat this file as the fastest orientation layer.
 - Durable research brief ledger.
 - Research brief queue, queue seed, and queue runner jobs.
 - Research brief synthesis evaluation ledger and Dagster jobs.
+- Research brief follow-up queue and resolver for evidence-light briefs.
 
 ## Validation Commands
 
@@ -65,8 +66,12 @@ Useful jobs include:
 - `research_brief_library_job`
 - `research_brief_evaluation_job`
 - `research_brief_evaluation_library_job`
+- `research_brief_quality_job`
+- `research_brief_followup_queue_job`
 - `research_brief_queue_seed_job`
 - `research_brief_queue_runner_job`
+- `research_brief_queue_batch_job`
+- `research_followup_resolver_job`
 - `research_leads_job`
 - `embedding_index_job`
 - `embedding_maintenance_job`
@@ -76,3 +81,8 @@ Useful jobs include:
 
 Read `docs/CODEX_PROJECT_CONTEXT.md` for project history, architecture, current
 state, deployed commits, hosted smoke runs, and likely next steps.
+
+For the evidence-light brief lane, read
+`docs/RESEARCH_FOLLOWUP_RESOLVER_SOP.md` before running
+`research_brief_followup_queue_job`, `research_followup_resolver_job`, or
+follow-up synthesis batches.
