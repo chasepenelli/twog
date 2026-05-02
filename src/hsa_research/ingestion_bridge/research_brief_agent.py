@@ -56,6 +56,7 @@ _PERSPECTIVE_AGENT_NAMES = {
 }
 _ALLOWED_STANCES = {"supporting", "contradicting", "uncertain", "opportunity", "risk"}
 _ALLOWED_STRENGTHS = {"high", "medium", "low", "unknown"}
+_MAX_CHUNK_SEARCH_QUERY_CHARS = 1000
 _RESEARCH_BRIEF_SYSTEM_PROMPT = """You are a scientific research brief agent.
 Use only the provided citation IDs. Do not invent papers, identifiers, or claims.
 Every finding must cite at least one supplied citation ID.
@@ -322,32 +323,65 @@ def _perspective_queries(request: ResearchBriefRequest) -> dict[ResearchBriefPer
     disease_scope = request.disease_scope.strip()
     return {
         "evidence_scout": [
-            _PerspectiveQuery("direct_evidence", f"{base} evidence trial review therapy biomarker"),
-            _PerspectiveQuery("mechanism", f"{topic} VEGF VEGFR angiogenesis mechanism expression response"),
+            _PerspectiveQuery(
+                "direct_evidence",
+                _bounded_chunk_search_query(base, "evidence trial review therapy biomarker"),
+            ),
+            _PerspectiveQuery(
+                "mechanism",
+                _bounded_chunk_search_query(topic, "VEGF VEGFR angiogenesis mechanism expression response"),
+            ),
         ],
         "translational_hypothesis": [
-            _PerspectiveQuery("cross_species", f"{base} translational human canine pathway target drug biomarker"),
-            _PerspectiveQuery("comparative_model", f"{disease_scope} comparative genomics molecular subtype therapy"),
+            _PerspectiveQuery(
+                "cross_species",
+                _bounded_chunk_search_query(base, "translational human canine pathway target drug biomarker"),
+            ),
+            _PerspectiveQuery(
+                "comparative_model",
+                _bounded_chunk_search_query(disease_scope, "comparative genomics molecular subtype therapy"),
+            ),
         ],
         "skeptic_validation": [
             _PerspectiveQuery(
                 "clinical_outcomes",
-                f"{base} clinical trial outcome response survival efficacy toxicity adverse event",
+                _bounded_chunk_search_query(base, "clinical trial outcome response survival efficacy toxicity adverse event"),
             ),
             _PerspectiveQuery(
                 "negative_evidence",
-                f"{topic} negative failed failure limitation resistance no benefit progression recurrence",
+                _bounded_chunk_search_query(topic, "negative failed failure limitation resistance no benefit progression recurrence"),
             ),
             _PerspectiveQuery(
                 "drug_specific",
-                f"{disease_scope} VEGF VEGFR inhibitor toceranib sorafenib pazopanib bevacizumab clinical",
+                _bounded_chunk_search_query(
+                    disease_scope,
+                    "VEGF VEGFR inhibitor toceranib sorafenib pazopanib bevacizumab clinical",
+                ),
             ),
             _PerspectiveQuery(
                 "translation_risks",
-                f"{base} species mismatch reproducibility pharmacokinetic toxicity limitation validation",
+                _bounded_chunk_search_query(base, "species mismatch reproducibility pharmacokinetic toxicity limitation validation"),
             ),
         ],
     }
+
+
+def _bounded_chunk_search_query(*parts: str) -> str:
+    normalized_parts = [re.sub(r"\s+", " ", part).strip() for part in parts if part and part.strip()]
+    if not normalized_parts:
+        return "canine hemangiosarcoma human angiosarcoma"
+    query = " ".join(normalized_parts)
+    if len(query) <= _MAX_CHUNK_SEARCH_QUERY_CHARS:
+        return query
+
+    suffix = normalized_parts[-1]
+    prefix = " ".join(normalized_parts[:-1])
+    remaining_prefix_chars = _MAX_CHUNK_SEARCH_QUERY_CHARS - len(suffix) - 1
+    if remaining_prefix_chars <= 0:
+        return suffix[:_MAX_CHUNK_SEARCH_QUERY_CHARS].strip()
+    if len(prefix) > remaining_prefix_chars:
+        prefix = prefix[:remaining_prefix_chars].rsplit(" ", 1)[0] or prefix[:remaining_prefix_chars]
+    return f"{prefix} {suffix}".strip()
 
 
 def _search_chunks_for_brief(

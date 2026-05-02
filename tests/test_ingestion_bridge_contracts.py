@@ -3554,6 +3554,26 @@ def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
     }
 
 
+def test_research_brief_perspective_queries_stay_within_chunk_search_contract():
+    long_topic = " ".join(["follow-up research lead with verbose evidence limitation"] * 60)
+    request = ResearchBriefRequest(
+        topic=long_topic[:1000],
+        disease_scope="canine hemangiosarcoma and human angiosarcoma",
+        review_mode="deterministic_only",
+    )
+
+    queries = research_brief_agent._perspective_queries(request)
+
+    for query_specs in queries.values():
+        for query_spec in query_specs:
+            assert 1 <= len(query_spec.query) <= 1000
+            assert any(
+                term in query_spec.query
+                for term in ("biomarker", "mechanism", "comparative", "clinical", "negative", "inhibitor", "validation")
+            )
+            ResearchChunkSearchRequest(query=query_spec.query)
+
+
 def test_research_brief_model_json_loader_repairs_common_llm_commas():
     payload = research_brief_agent._load_json_object(
         """
