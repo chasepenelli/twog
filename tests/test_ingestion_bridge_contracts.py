@@ -78,6 +78,8 @@ from hsa_research.ingestion_bridge.contracts import (
     ValidationPlanResult,
     ValidationPlanTask,
     ValidationRequest,
+    ValidationRequestQueueItem,
+    ValidationRequestQueueRequest,
     ClaimCurationRequest,
     SourceScoutRequest,
     RunStatus,
@@ -260,6 +262,46 @@ def test_validation_plan_contracts_validate():
         ValidationPlanResult(brief_id=uuid4(), topic="x", status="bad")
     with pytest.raises(ValueError):
         ValidationPlanResult(brief_id=uuid4(), topic="x", readiness="bad")
+
+
+def test_validation_request_queue_contracts_validate():
+    plan_id = uuid4()
+    task_id = uuid4()
+    item = ValidationRequestQueueItem(
+        plan_id=plan_id,
+        task_id=task_id,
+        brief_id=uuid4(),
+        topic="VEGF validation path",
+        task_type="expert_review",
+        title="Review target validation",
+        objective="Review whether this target is ready for validation.",
+        rationale="The plan is source-traceable.",
+        validation_request=ValidationRequest(
+            validation_type="expert_review",
+            objective="Review whether this target is ready for validation.",
+        ),
+    )
+    request = ValidationRequestQueueRequest(plan_id=plan_id, task_ids=[task_id])
+
+    assert item.status == "needs_approval"
+    assert item.identity_key == f"validation_request_queue:{plan_id}:{task_id}"
+    assert request.dry_run is True
+    with pytest.raises(ValueError):
+        ValidationRequestQueueItem(
+            status="bad",
+            plan_id=plan_id,
+            task_id=task_id,
+            brief_id=uuid4(),
+            topic="VEGF validation path",
+            task_type="expert_review",
+            title="Review target validation",
+            objective="Review whether this target is ready for validation.",
+            rationale="The plan is source-traceable.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                objective="Review whether this target is ready for validation.",
+            ),
+        )
 
 
 def test_x_linked_article_followup_contracts_validate():
@@ -2872,6 +2914,59 @@ def test_validation_plan_repository_roundtrip_sqlite_and_memory(tmp_path):
         assert repo.list_validation_plans(status="blocked") == []
 
 
+def test_validation_request_queue_repository_roundtrip_sqlite_and_memory(tmp_path):
+    for repo in (
+        SQLiteResearchRepository(tmp_path / "validation-request-queue.sqlite3", seed=False),
+        InMemoryResearchRepository(),
+    ):
+        plan_id = uuid4()
+        task_id = uuid4()
+        item = repo.upsert_validation_request_queue_item(
+            ValidationRequestQueueItem(
+                plan_id=plan_id,
+                task_id=task_id,
+                brief_id=uuid4(),
+                source_key="pubmed",
+                topic="VEGF validation path",
+                task_type="expert_review",
+                title="Review target validation",
+                objective="Review whether this target is ready for validation.",
+                rationale="The plan is source-traceable.",
+                priority=25,
+                validation_request=ValidationRequest(
+                    validation_type="expert_review",
+                    target_name="VEGFA",
+                    objective="Review whether this target is ready for validation.",
+                ),
+            )
+        )
+        duplicate = repo.upsert_validation_request_queue_item(
+            item.model_copy(update={"priority": 50})
+        )
+        updated = repo.update_validation_request_queue_item(
+            item.queue_item_id,
+            status="approved",
+            approved_by="unit-test",
+            approval_note="Looks actionable.",
+        )
+        listed = repo.list_validation_request_queue_items(
+            plan_id=plan_id,
+            status="approved",
+            source_key="pubmed",
+            task_type="expert_review",
+            topic_query="VEGF",
+            limit=1,
+        )
+
+        assert duplicate.queue_item_id == item.queue_item_id
+        assert updated is not None
+        assert updated.status == "approved"
+        assert updated.approved_by == "unit-test"
+        assert updated.approval_note == "Looks actionable."
+        assert listed[0].queue_item_id == item.queue_item_id
+        assert repo.get_validation_request_queue_item(item.queue_item_id).queue_item_id == item.queue_item_id
+
+
 def test_research_brief_queue_contract_and_repository_roundtrip(tmp_path):
     for repo in (
         SQLiteResearchRepository(tmp_path / "research-brief-queue.sqlite3", seed=False),
@@ -4019,6 +4114,88 @@ def test_validation_planning_service_persists_ready_recommend_only_plan(tmp_path
     assert saved.task_count == len(result.tasks)
     assert runs[0].output_payload["plan_id"] == str(result.plan_id)
     assert service.get_run_status(uuid4()) is None
+
+
+def test_validation_request_queue_promotes_ready_plan_tasks(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-request-queue-service.sqlite3", seed=False)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:validation-request-queue",
+            content_hash="validation-request-queue-raw",
+            source_url="https://pubmed.ncbi.nlm.nih.gov/validation-request-queue/",
+            raw_payload={"pmid": "validation-request-queue"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="VEGF target validation request queue evidence",
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            canonical_url="https://pubmed.ncbi.nlm.nih.gov/validation-request-queue/",
+            dedupe_key="pmid:validation-request-queue",
+            identifiers={"pmid": "validation-request-queue"},
+        ),
+        raw_record_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "Canine hemangiosarcoma target validation evidence discusses VEGF, "
+                "KDR, toxicity, docking, and translational biomarker review."
+            ),
+            content_hash="validation-request-queue-chunk",
+        )
+    )
+    service = HSAResearchService(repo)
+    brief = service.run_research_brief(
+        ResearchBriefRequest(
+            topic="VEGF target validation in canine hemangiosarcoma",
+            review_mode="deterministic_only",
+            max_chunks_per_perspective=3,
+            max_claims=0,
+        )
+    )
+    evaluation = service.evaluate_research_brief(ResearchBriefEvaluationRequest(brief_id=brief.brief_id))
+    plan = service.plan_validation(ValidationPlanRequest(evaluation_id=evaluation.evaluation_id, max_tasks=6))
+
+    preview = service.queue_validation_requests_from_plan(
+        ValidationRequestQueueRequest(plan_id=plan.plan_id, dry_run=True)
+    )
+    applied = service.queue_validation_requests_from_plan(
+        ValidationRequestQueueRequest(plan_id=plan.plan_id, dry_run=False)
+    )
+    duplicate = service.queue_validation_requests_from_plan(
+        ValidationRequestQueueRequest(plan_id=plan.plan_id, dry_run=False)
+    )
+    queued_item = applied.queue_items[0]
+    blocked_dispatch = service.dispatch_validation_request_queue_item(queued_item.queue_item_id)
+    approved = service.approve_validation_request_queue_item(
+        queued_item.queue_item_id,
+        approved_by="unit-test",
+        approval_note="Ready for controlled validation.",
+    )
+    dispatched = service.dispatch_validation_request_queue_item(queued_item.queue_item_id)
+
+    assert preview.dry_run is True
+    assert preview.queued_count == 0
+    assert preview.queue_items
+    assert applied.queued_count == len(applied.queue_items)
+    assert duplicate.queued_count == 0
+    assert duplicate.existing_count == len(applied.queue_items)
+    assert blocked_dispatch is not None
+    assert blocked_dispatch.status == "needs_approval"
+    assert "approved before dispatch" in blocked_dispatch.last_error
+    assert approved is not None
+    assert approved.status == "approved"
+    assert dispatched is not None
+    assert dispatched.status == "dispatched"
+    assert dispatched.last_run_id is not None
+    assert service.get_run_status(dispatched.last_run_id) is not None
 
 
 def test_validation_planning_blocks_when_evaluation_is_not_ready(tmp_path):
@@ -7418,11 +7595,27 @@ def test_mcp_validation_plan_tools_dump_json_safe_payloads(monkeypatch, tmp_path
     planned = mcp_server.plan_validation_tool(evaluation_id=str(evaluation.evaluation_id))
     fetched = mcp_server.get_validation_plan_tool(planned["plan_id"])
     listed = mcp_server.list_validation_plans_tool(readiness="ready_for_expert_review")
+    queued = mcp_server.queue_validation_requests_tool(planned["plan_id"], dry_run=False)
+    queue_item = queued["queue_items"][0]
+    queue_fetched = mcp_server.get_validation_request_queue_item_tool(queue_item["queue_item_id"])
+    queue_listed = mcp_server.list_validation_request_queue_tool(status="needs_approval")
+    approved = mcp_server.approve_validation_request_tool(
+        queue_item["queue_item_id"],
+        approved_by="unit-test",
+    )
+    dispatched = mcp_server.dispatch_validation_request_tool(queue_item["queue_item_id"])
 
     assert planned["agent_run_id"]
     assert planned["tasks"]
     assert fetched["plan_id"] == planned["plan_id"]
     assert listed[0]["plan_id"] == planned["plan_id"]
+    assert queued["queued_count"] == len(queued["queue_items"])
+    assert queued["queued_count"] >= 1
+    assert queue_fetched["queue_item_id"] == queue_item["queue_item_id"]
+    assert queue_listed[0]["queue_item_id"] == queue_item["queue_item_id"]
+    assert approved["status"] == "approved"
+    assert dispatched["status"] == "dispatched"
+    assert dispatched["last_run_id"]
 
 
 def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
@@ -8988,6 +9181,8 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.research_brief_followup_queue_job is not None
     assert dagster_asset_module.validation_plan_job is not None
     assert dagster_asset_module.validation_plan_library_job is not None
+    assert dagster_asset_module.validation_request_queue_job is not None
+    assert dagster_asset_module.validation_request_queue_library_job is not None
     assert dagster_asset_module.research_brief_queue_job is not None
     assert dagster_asset_module.research_brief_queue_batch_job is not None
     assert dagster_asset_module.research_brief_queue_seed_job is not None

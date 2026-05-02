@@ -45,6 +45,7 @@ from .contracts import (
     TextEmbeddingSearchResult,
     ValidationPlanRecord,
     ValidationRequest,
+    ValidationRequestQueueItem,
 )
 from .local_store import (
     build_research_object_dedupe_key,
@@ -1650,6 +1651,208 @@ class PostgresResearchRepository(ResearchRepository):
             for row in self._fetchall(sql, params)
         ]
 
+    def upsert_validation_request_queue_item(
+        self,
+        item: ValidationRequestQueueItem,
+    ) -> ValidationRequestQueueItem:
+        existing = self._fetchone(
+            "select payload from validation_request_queue where identity_key = %s",
+            (item.identity_key,),
+        )
+        if existing is not None:
+            existing_item = ValidationRequestQueueItem.model_validate(_payload(existing))
+            item = item.model_copy(
+                update={
+                    "queue_item_id": existing_item.queue_item_id,
+                    "status": existing_item.status,
+                    "attempts": existing_item.attempts,
+                    "last_run_id": existing_item.last_run_id,
+                    "last_error": existing_item.last_error,
+                    "approved_by": existing_item.approved_by,
+                    "approval_note": existing_item.approval_note,
+                    "created_at": existing_item.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing_item.metadata, **item.metadata},
+                }
+            )
+        payload = item.model_dump(mode="json")
+        validation_payload = item.validation_request.model_dump(mode="json")
+        self._execute(
+            """
+            insert into validation_request_queue (
+              queue_item_id, identity_key, status, priority, plan_id, task_id,
+              brief_id, evaluation_id, source_key, task_type, title,
+              validation_type, target_name, candidate_name, last_run_id,
+              attempts, last_error, approved_by, created_at, updated_at, payload
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict(identity_key) do update set
+              status = excluded.status,
+              priority = excluded.priority,
+              source_key = excluded.source_key,
+              task_type = excluded.task_type,
+              title = excluded.title,
+              validation_type = excluded.validation_type,
+              target_name = excluded.target_name,
+              candidate_name = excluded.candidate_name,
+              last_run_id = excluded.last_run_id,
+              attempts = excluded.attempts,
+              last_error = excluded.last_error,
+              approved_by = excluded.approved_by,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(item.queue_item_id),
+                item.identity_key,
+                item.status,
+                item.priority,
+                str(item.plan_id),
+                str(item.task_id),
+                str(item.brief_id),
+                str(item.evaluation_id) if item.evaluation_id else None,
+                item.source_key,
+                item.task_type,
+                item.title,
+                validation_payload.get("validation_type"),
+                validation_payload.get("target_name"),
+                validation_payload.get("candidate_name"),
+                str(item.last_run_id) if item.last_run_id else None,
+                item.attempts,
+                item.last_error,
+                item.approved_by,
+                item.created_at,
+                item.updated_at,
+                self._json(payload),
+            ),
+        )
+        row = self._fetchone(
+            "select payload from validation_request_queue where identity_key = %s",
+            (item.identity_key,),
+        )
+        return ValidationRequestQueueItem.model_validate(_payload(row))
+
+    def get_validation_request_queue_item(
+        self,
+        queue_item_id: UUID,
+    ) -> ValidationRequestQueueItem | None:
+        row = self._fetchone(
+            "select payload from validation_request_queue where queue_item_id = %s",
+            (str(queue_item_id),),
+        )
+        if row is None:
+            return None
+        return ValidationRequestQueueItem.model_validate(_payload(row))
+
+    def list_validation_request_queue_items(
+        self,
+        *,
+        plan_id: UUID | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        source_key: str | None = None,
+        task_type: str | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ValidationRequestQueueItem]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if plan_id:
+            clauses.append("plan_id = %s")
+            params.append(str(plan_id))
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        if statuses:
+            placeholders = ",".join("%s" for _ in statuses)
+            clauses.append(f"status in ({placeholders})")
+            params.extend(statuses)
+        if source_key:
+            clauses.append("source_key = %s")
+            params.append(source_key)
+        if task_type:
+            clauses.append("task_type = %s")
+            params.append(task_type)
+        if topic_query:
+            clauses.append("(title ilike %s or payload::text ilike %s)")
+            normalized = f"%{topic_query}%"
+            params.extend([normalized, normalized])
+        sql = "select payload from validation_request_queue"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by priority asc, created_at asc"
+        if limit is not None:
+            sql += " limit %s"
+            params.append(limit)
+        return [
+            ValidationRequestQueueItem.model_validate(_payload(row))
+            for row in self._fetchall(sql, params)
+        ]
+
+    def update_validation_request_queue_item(
+        self,
+        queue_item_id: UUID,
+        *,
+        status: str | None = None,
+        priority: int | None = None,
+        attempts: int | None = None,
+        last_run_id: UUID | None = None,
+        last_error: str | None = None,
+        approved_by: str | None = None,
+        approval_note: str | None = None,
+        metadata: dict | None = None,
+    ) -> ValidationRequestQueueItem | None:
+        item = self.get_validation_request_queue_item(queue_item_id)
+        if item is None:
+            return None
+        updated = item.model_copy(
+            update={
+                "status": item.status if status is None else status,
+                "priority": item.priority if priority is None else priority,
+                "attempts": item.attempts if attempts is None else attempts,
+                "last_run_id": item.last_run_id if last_run_id is None else last_run_id,
+                "last_error": last_error,
+                "approved_by": item.approved_by if approved_by is None else approved_by,
+                "approval_note": item.approval_note if approval_note is None else approval_note,
+                "updated_at": datetime.now(UTC),
+                "metadata": {**item.metadata, **(metadata or {})},
+            }
+        )
+        validation_payload = updated.validation_request.model_dump(mode="json")
+        payload = updated.model_dump(mode="json")
+        self._execute(
+            """
+            update validation_request_queue
+            set status = %s,
+                priority = %s,
+                last_run_id = %s,
+                attempts = %s,
+                last_error = %s,
+                approved_by = %s,
+                validation_type = %s,
+                target_name = %s,
+                candidate_name = %s,
+                updated_at = %s,
+                payload = %s
+            where queue_item_id = %s
+            """,
+            (
+                updated.status,
+                updated.priority,
+                str(updated.last_run_id) if updated.last_run_id else None,
+                updated.attempts,
+                updated.last_error,
+                updated.approved_by,
+                validation_payload.get("validation_type"),
+                validation_payload.get("target_name"),
+                validation_payload.get("candidate_name"),
+                updated.updated_at,
+                self._json(payload),
+                str(queue_item_id),
+            ),
+        )
+        return updated
+
     def upsert_research_brief_queue_item(self, item: ResearchBriefQueueItem) -> ResearchBriefQueueItem:
         existing = self._fetchone(
             "select payload from research_brief_queue where identity_key = %s",
@@ -2735,6 +2938,39 @@ class PostgresResearchRepository(ResearchRepository):
               on validation_plans(evaluation_id, created_at desc);
             create index if not exists validation_plans_status_idx
               on validation_plans(status, readiness, created_at desc);
+
+            create table if not exists validation_request_queue (
+              queue_item_id text primary key,
+              identity_key text not null unique,
+              status text not null default 'needs_approval',
+              priority integer not null default 100,
+              plan_id text not null,
+              task_id text not null,
+              brief_id text not null,
+              evaluation_id text,
+              source_key text,
+              task_type text not null,
+              title text not null,
+              validation_type text not null,
+              target_name text,
+              candidate_name text,
+              last_run_id text,
+              attempts integer not null default 0,
+              last_error text,
+              approved_by text,
+              payload jsonb not null,
+              created_at timestamptz not null default now(),
+              updated_at timestamptz not null default now()
+            );
+
+            create index if not exists validation_request_queue_plan_idx
+              on validation_request_queue(plan_id, priority, created_at);
+            create index if not exists validation_request_queue_status_idx
+              on validation_request_queue(status, priority, created_at);
+            create index if not exists validation_request_queue_source_idx
+              on validation_request_queue(source_key, status, priority, created_at);
+            create index if not exists validation_request_queue_type_idx
+              on validation_request_queue(task_type, validation_type, status);
 
             create table if not exists research_brief_queue (
               queue_item_id text primary key,

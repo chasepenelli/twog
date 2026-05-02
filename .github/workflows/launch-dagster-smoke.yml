@@ -33,6 +33,8 @@ on:
           - "research_brief_followup_queue_job"
           - "validation_plan_job"
           - "validation_plan_library_job"
+          - "validation_request_queue_job"
+          - "validation_request_queue_library_job"
           - "research_brief_queue_job"
           - "research_brief_queue_batch_job"
           - "research_brief_queue_seed_job"
@@ -641,6 +643,17 @@ jobs:
           )
           rows = []
           for record in plans:
+              tasks = list((record.result_payload or {}).get("tasks") or [])[:5]
+              task_titles = [
+                  str(task.get("title") or "")[:160]
+                  for task in tasks
+                  if task.get("title")
+              ]
+              validation_types = [
+                  str((task.get("validation_request") or {}).get("validation_type") or "")
+                  for task in tasks
+                  if (task.get("validation_request") or {}).get("validation_type")
+              ]
               rows.append(
                   {
                       "plan_id": str(record.plan_id),
@@ -653,6 +666,8 @@ jobs:
                       "readiness": record.readiness,
                       "task_count": record.task_count,
                       "hypothesis_count": record.hypothesis_count,
+                      "task_titles": task_titles,
+                      "validation_types": list(dict.fromkeys(validation_types)),
                       "errors": list(record.errors)[:3],
                       "error_count": len(record.errors),
                       "created_at": record.created_at.isoformat(),
@@ -681,8 +696,102 @@ jobs:
                           f"tasks={row['task_count']}, hypotheses={row['hypothesis_count']}, "
                           f"source={row['source_key']}, errors={row['error_count']}\n"
                       )
+                      for title in row["task_titles"][:3]:
+                          summary.write(f"  - Task: {title}\n")
                       if row["errors"]:
                           summary.write(f"  - Error: {row['errors'][0]}\n")
+          PY
+        shell: bash
+
+      - name: Print hosted validation request queue summary
+        if: ${{ always() && (inputs.job == 'validation_request_queue_job' || inputs.job == 'validation_request_queue_library_job') }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          from uuid import UUID
+
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          def _parse_uuid(value: str | None) -> UUID | None:
+              return UUID(value) if value else None
+
+          raw_config = os.getenv("DAGSTER_CLOUD_CONFIG_JSON") or "{}"
+          try:
+              config = json.loads(raw_config)
+          except json.JSONDecodeError:
+              config = {}
+          ops = config.get("ops") or {}
+          report_config = (
+              (ops.get("validation_request_queue_report") or {}).get("config")
+              or (ops.get("validation_request_queue_library_report") or {}).get("config")
+              or {}
+          )
+          plan_id = _parse_uuid(report_config.get("plan_id"))
+          status = report_config.get("status")
+          statuses = report_config.get("statuses") or None
+          source_key = report_config.get("source_key")
+          task_type = report_config.get("task_type")
+          topic_query = report_config.get("topic_query")
+          limit = int(report_config.get("limit") or 25)
+
+          service = HSAResearchService(build_research_repository())
+          items = service.list_validation_request_queue_items(
+              plan_id=plan_id,
+              status=status,
+              statuses=statuses,
+              source_key=source_key,
+              task_type=task_type,
+              topic_query=topic_query,
+              limit=limit,
+          )
+          rows = []
+          for item in items:
+              request = item.validation_request.model_dump(mode="json")
+              rows.append(
+                  {
+                      "queue_item_id": str(item.queue_item_id),
+                      "status": item.status,
+                      "priority": item.priority,
+                      "plan_id": str(item.plan_id),
+                      "task_id": str(item.task_id),
+                      "task_type": item.task_type,
+                      "title": item.title[:300],
+                      "validation_type": request.get("validation_type"),
+                      "target_name": request.get("target_name"),
+                      "candidate_name": request.get("candidate_name"),
+                      "source_key": item.source_key,
+                      "attempts": item.attempts,
+                      "last_run_id": str(item.last_run_id) if item.last_run_id else None,
+                      "last_error": item.last_error,
+                      "created_at": item.created_at.isoformat(),
+                  }
+              )
+          report = {
+              "plan_id": str(plan_id) if plan_id else None,
+              "status": status,
+              "statuses": statuses or [],
+              "source_key": source_key,
+              "task_type": task_type,
+              "queue_item_count": len(rows),
+              "queue_items": rows,
+          }
+          print(json.dumps(report, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Validation request queue summary\n")
+                  summary.write(f"- Plan filter: `{report['plan_id'] or 'none'}`\n")
+                  summary.write(f"- Queue items sampled: `{report['queue_item_count']}`\n")
+                  for row in rows[:10]:
+                      summary.write(
+                          f"- `{row['status']}` `{row['queue_item_id']}`: "
+                          f"{row['validation_type']} {row['target_name'] or row['candidate_name'] or ''} "
+                          f"(priority={row['priority']}, task={row['task_type']})\n"
+                      )
           PY
         shell: bash
 

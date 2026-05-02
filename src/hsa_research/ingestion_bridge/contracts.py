@@ -299,6 +299,17 @@ ValidationPlanTaskType = Literal[
     "partner_review",
 ]
 
+ValidationRequestQueueStatus = Literal[
+    "needs_approval",
+    "queued",
+    "approved",
+    "dispatched",
+    "completed",
+    "failed",
+    "rejected",
+    "archived",
+]
+
 
 class AgentRunRecord(StrictBaseModel):
     agent_run_id: UUID = Field(default_factory=uuid4)
@@ -2058,6 +2069,65 @@ class ValidationPlanRecord(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ValidationRequestQueueItem(StrictBaseModel):
+    queue_item_id: UUID = Field(default_factory=uuid4)
+    identity_key: str | None = None
+    status: ValidationRequestQueueStatus = "needs_approval"
+    plan_id: UUID
+    task_id: UUID
+    brief_id: UUID
+    evaluation_id: UUID | None = None
+    source_key: str | None = None
+    topic: str = Field(min_length=1, max_length=1000)
+    task_type: ValidationPlanTaskType
+    title: str = Field(min_length=1, max_length=500)
+    objective: str = Field(min_length=1, max_length=2000)
+    rationale: str = Field(min_length=1, max_length=3000)
+    validation_request: ValidationRequest
+    priority: int = Field(default=100, ge=1, le=1000)
+    requires_human_approval: bool = True
+    last_run_id: UUID | None = None
+    attempts: int = Field(default=0, ge=0)
+    last_error: str | None = None
+    approved_by: str | None = Field(default=None, max_length=200)
+    approval_note: str | None = Field(default=None, max_length=1000)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_queue_item(self) -> "ValidationRequestQueueItem":
+        self.topic = self.topic.strip()
+        self.title = self.title.strip()
+        self.objective = self.objective.strip()
+        self.rationale = self.rationale.strip()
+        if not self.identity_key:
+            self.identity_key = f"validation_request_queue:{self.plan_id}:{self.task_id}"
+        else:
+            self.identity_key = self.identity_key.strip()
+        return self
+
+
+class ValidationRequestQueueRequest(StrictBaseModel):
+    plan_id: UUID
+    task_ids: list[UUID] = Field(default_factory=list, max_length=25)
+    dry_run: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ValidationRequestQueueResult(StrictBaseModel):
+    plan_id: UUID
+    candidate_task_count: int = 0
+    queued_count: int = 0
+    existing_count: int = 0
+    skipped_count: int = 0
+    dry_run: bool = True
+    queue_items: list[ValidationRequestQueueItem] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class MCPToolCallLog(StrictBaseModel):

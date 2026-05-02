@@ -41,6 +41,7 @@ from .contracts import (
     SourceFollowupQueueRequest,
     ValidationPlanRequest,
     ValidationRequest,
+    ValidationRequestQueueRequest,
     XLinkedArticleReviewRequest,
     XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
@@ -307,6 +308,75 @@ def list_validation_plans_tool(
             limit=limit,
         )
     ]
+
+
+def queue_validation_requests_tool(
+    plan_id: str,
+    task_ids: list[str] | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Queue validation requests from a ready validation plan."""
+
+    request = ValidationRequestQueueRequest(
+        plan_id=UUID(plan_id),
+        task_ids=[UUID(value) for value in task_ids or []],
+        dry_run=dry_run,
+    )
+    return get_service().queue_validation_requests_from_plan(request).model_dump(mode="json")
+
+
+def get_validation_request_queue_item_tool(queue_item_id: str) -> dict:
+    """Return one queued validation request."""
+
+    item = get_service().get_validation_request_queue_item(UUID(queue_item_id))
+    return {} if item is None else item.model_dump(mode="json")
+
+
+def list_validation_request_queue_tool(
+    plan_id: str | None = None,
+    status: str | None = None,
+    statuses: list[str] | None = None,
+    source_key: str | None = None,
+    task_type: str | None = None,
+    topic_query: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Return queued validation requests."""
+
+    return [
+        item.model_dump(mode="json")
+        for item in get_service().list_validation_request_queue_items(
+            plan_id=UUID(plan_id) if plan_id else None,
+            status=status,
+            statuses=statuses,
+            source_key=source_key,
+            task_type=task_type,
+            topic_query=topic_query,
+            limit=limit,
+        )
+    ]
+
+
+def approve_validation_request_tool(
+    queue_item_id: str,
+    approved_by: str,
+    approval_note: str | None = None,
+) -> dict:
+    """Approve a queued validation request for explicit dispatch."""
+
+    item = get_service().approve_validation_request_queue_item(
+        UUID(queue_item_id),
+        approved_by=approved_by,
+        approval_note=approval_note,
+    )
+    return {} if item is None else item.model_dump(mode="json")
+
+
+def dispatch_validation_request_tool(queue_item_id: str) -> dict:
+    """Dispatch an approved queued validation request."""
+
+    item = get_service().dispatch_validation_request_queue_item(UUID(queue_item_id))
+    return {} if item is None else item.model_dump(mode="json")
 
 
 def queue_research_brief_tool(
@@ -1113,6 +1183,68 @@ if mcp is not None:
         )
 
     @mcp.tool()
+    def queue_validation_requests(
+        plan_id: str,
+        task_ids: list[str] | None = None,
+        dry_run: bool = True,
+    ) -> dict:
+        """Queue validation requests from a ready validation plan."""
+
+        return queue_validation_requests_tool(
+            plan_id=plan_id,
+            task_ids=task_ids,
+            dry_run=dry_run,
+        )
+
+    @mcp.tool()
+    def get_validation_request_queue_item(queue_item_id: str) -> dict:
+        """Return one queued validation request."""
+
+        return get_validation_request_queue_item_tool(queue_item_id)
+
+    @mcp.tool()
+    def list_validation_request_queue(
+        plan_id: str | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        source_key: str | None = None,
+        task_type: str | None = None,
+        topic_query: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """List queued validation requests."""
+
+        return list_validation_request_queue_tool(
+            plan_id=plan_id,
+            status=status,
+            statuses=statuses,
+            source_key=source_key,
+            task_type=task_type,
+            topic_query=topic_query,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def approve_validation_request(
+        queue_item_id: str,
+        approved_by: str,
+        approval_note: str | None = None,
+    ) -> dict:
+        """Approve a queued validation request for explicit dispatch."""
+
+        return approve_validation_request_tool(
+            queue_item_id=queue_item_id,
+            approved_by=approved_by,
+            approval_note=approval_note,
+        )
+
+    @mcp.tool()
+    def dispatch_validation_request(queue_item_id: str) -> dict:
+        """Dispatch an approved queued validation request."""
+
+        return dispatch_validation_request_tool(queue_item_id)
+
+    @mcp.tool()
     def queue_research_brief(
         topic: str,
         disease_scope: str = "canine hemangiosarcoma and human angiosarcoma",
@@ -1880,6 +2012,12 @@ if mcp is not None:
         """Fetch a persisted recommend-only validation plan as an MCP resource."""
 
         return get_validation_plan_tool(plan_id)
+
+    @mcp.resource("validation-request-queue://{queue_item_id}")
+    def validation_request_queue_resource(queue_item_id: str) -> dict:
+        """Fetch a queued validation request as an MCP resource."""
+
+        return get_validation_request_queue_item_tool(queue_item_id)
 
     @mcp.resource("research-brief-queue://{queue_item_id}")
     def research_brief_queue_resource(queue_item_id: str) -> dict:

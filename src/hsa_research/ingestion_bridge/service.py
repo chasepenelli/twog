@@ -81,7 +81,11 @@ from .contracts import (
     ValidationPlanRecord,
     ValidationPlanRequest,
     ValidationPlanResult,
+    ValidationPlanTask,
     ValidationRequest,
+    ValidationRequestQueueItem,
+    ValidationRequestQueueRequest,
+    ValidationRequestQueueResult,
     XLinkedArticleReviewRequest,
     XLinkedArticleReviewResult,
     XTopicReviewRequest,
@@ -547,6 +551,186 @@ class HSAResearchService:
             status=status,
             readiness=readiness,
             limit=limit,
+        )
+
+    def queue_validation_requests_from_plan(
+        self,
+        request: ValidationRequestQueueRequest,
+    ) -> ValidationRequestQueueResult:
+        plan = self.repository.get_validation_plan(request.plan_id)
+        if plan is None:
+            return ValidationRequestQueueResult(
+                plan_id=request.plan_id,
+                dry_run=request.dry_run,
+                errors=[f"Validation plan not found: {request.plan_id}"],
+            )
+        if plan.status != "ready_for_review" or plan.readiness != "ready_for_expert_review":
+            return ValidationRequestQueueResult(
+                plan_id=request.plan_id,
+                dry_run=request.dry_run,
+                errors=[
+                    "Validation plan is not ready for request queueing: "
+                    f"status={plan.status}, readiness={plan.readiness}"
+                ],
+            )
+
+        selected_task_ids = set(request.task_ids)
+        existing_items = self.repository.list_validation_request_queue_items(
+            plan_id=plan.plan_id,
+            limit=None,
+        )
+        existing_identity_keys = {item.identity_key for item in existing_items}
+        candidate_task_count = 0
+        queued_count = 0
+        existing_count = 0
+        skipped: list[dict[str, Any]] = []
+        errors: list[str] = []
+        queue_items: list[ValidationRequestQueueItem] = []
+
+        for raw_task in plan.result_payload.get("tasks", []):
+            try:
+                task = ValidationPlanTask.model_validate(raw_task)
+            except Exception as exc:
+                errors.append(f"Invalid validation plan task payload: {exc}")
+                continue
+            if selected_task_ids and task.task_id not in selected_task_ids:
+                continue
+            candidate_task_count += 1
+            if task.validation_request is None:
+                skipped.append(
+                    {
+                        "task_id": str(task.task_id),
+                        "title": task.title,
+                        "reason": "Task does not include a validation_request.",
+                    }
+                )
+                continue
+            queue_item = ValidationRequestQueueItem(
+                plan_id=plan.plan_id,
+                task_id=task.task_id,
+                brief_id=plan.brief_id,
+                evaluation_id=plan.evaluation_id,
+                source_key=plan.source_key,
+                topic=plan.topic,
+                task_type=task.task_type,
+                title=task.title,
+                objective=task.objective,
+                rationale=task.rationale,
+                validation_request=task.validation_request,
+                priority=task.priority,
+                requires_human_approval=task.requires_human_approval,
+                metadata={
+                    **request.metadata,
+                    "queued_from": "validation_plan",
+                    "plan_id": str(plan.plan_id),
+                    "task_id": str(task.task_id),
+                    "evidence_refs": task.evidence_refs,
+                    "required_inputs": task.required_inputs,
+                    "expected_outputs": task.expected_outputs,
+                    "tool_hint": task.tool_hint,
+                    "recommend_only": True,
+                },
+            )
+            if queue_item.identity_key in existing_identity_keys:
+                existing_count += 1
+                queue_items.append(
+                    next(
+                        item
+                        for item in existing_items
+                        if item.identity_key == queue_item.identity_key
+                    )
+                )
+                continue
+            if request.dry_run:
+                queue_items.append(queue_item)
+                continue
+            persisted = self.repository.upsert_validation_request_queue_item(queue_item)
+            queued_count += 1
+            queue_items.append(persisted)
+
+        return ValidationRequestQueueResult(
+            plan_id=plan.plan_id,
+            candidate_task_count=candidate_task_count,
+            queued_count=queued_count,
+            existing_count=existing_count,
+            skipped_count=len(skipped),
+            dry_run=request.dry_run,
+            queue_items=queue_items,
+            skipped=skipped,
+            errors=errors,
+        )
+
+    def get_validation_request_queue_item(
+        self,
+        queue_item_id: UUID,
+    ) -> ValidationRequestQueueItem | None:
+        return self.repository.get_validation_request_queue_item(queue_item_id)
+
+    def list_validation_request_queue_items(
+        self,
+        *,
+        plan_id: UUID | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        source_key: str | None = None,
+        task_type: str | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ValidationRequestQueueItem]:
+        return self.repository.list_validation_request_queue_items(
+            plan_id=plan_id,
+            status=status,
+            statuses=statuses,
+            source_key=source_key,
+            task_type=task_type,
+            topic_query=topic_query,
+            limit=limit,
+        )
+
+    def approve_validation_request_queue_item(
+        self,
+        queue_item_id: UUID,
+        *,
+        approved_by: str,
+        approval_note: str | None = None,
+    ) -> ValidationRequestQueueItem | None:
+        return self.repository.update_validation_request_queue_item(
+            queue_item_id,
+            status="approved",
+            approved_by=approved_by,
+            approval_note=approval_note,
+            metadata={
+                "approved_at": datetime.now(UTC).isoformat(),
+                "approval_note": approval_note,
+            },
+        )
+
+    def dispatch_validation_request_queue_item(
+        self,
+        queue_item_id: UUID,
+    ) -> ValidationRequestQueueItem | None:
+        item = self.repository.get_validation_request_queue_item(queue_item_id)
+        if item is None:
+            return None
+        if item.status != "approved":
+            return self.repository.update_validation_request_queue_item(
+                queue_item_id,
+                attempts=item.attempts + 1,
+                last_error="Validation request queue item must be approved before dispatch.",
+            )
+        request = item.validation_request.model_copy(update={"require_approval": False})
+        handle = self.request_validation(request)
+        return self.repository.update_validation_request_queue_item(
+            queue_item_id,
+            status="dispatched",
+            attempts=item.attempts + 1,
+            last_run_id=handle.run_id,
+            last_error=None,
+            metadata={
+                "dispatched_at": datetime.now(UTC).isoformat(),
+                "run_kind": handle.run_kind,
+                "run_name": handle.run_name,
+            },
         )
 
     def queue_research_brief(self, request: ResearchBriefQueueRequest) -> ResearchBriefQueueItem:

@@ -35,6 +35,7 @@ from .contracts import (
     ResearchLeadRecord,
     ResearchObject,
     ValidationPlanRecord,
+    ValidationRequestQueueItem,
     ResolvedEntity,
     RunStatus,
     SourceFollowupQueueItem,
@@ -257,6 +258,46 @@ class ResearchRepository(Protocol):
     ) -> list[ValidationPlanRecord]:
         """Return persisted validation plans by durable filters."""
 
+    def upsert_validation_request_queue_item(
+        self,
+        item: ValidationRequestQueueItem,
+    ) -> ValidationRequestQueueItem:
+        """Persist a queued validation request derived from a plan task."""
+
+    def get_validation_request_queue_item(
+        self,
+        queue_item_id: UUID,
+    ) -> ValidationRequestQueueItem | None:
+        """Return one queued validation request."""
+
+    def list_validation_request_queue_items(
+        self,
+        *,
+        plan_id: UUID | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        source_key: str | None = None,
+        task_type: str | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ValidationRequestQueueItem]:
+        """Return queued validation requests by durable filters."""
+
+    def update_validation_request_queue_item(
+        self,
+        queue_item_id: UUID,
+        *,
+        status: str | None = None,
+        priority: int | None = None,
+        attempts: int | None = None,
+        last_run_id: UUID | None = None,
+        last_error: str | None = None,
+        approved_by: str | None = None,
+        approval_note: str | None = None,
+        metadata: dict | None = None,
+    ) -> ValidationRequestQueueItem | None:
+        """Update queued validation request lifecycle fields."""
+
     def upsert_research_brief_queue_item(self, item: ResearchBriefQueueItem) -> ResearchBriefQueueItem:
         """Persist a queued research brief request."""
 
@@ -405,6 +446,7 @@ class InMemoryResearchRepository:
         self.research_briefs: dict[UUID, ResearchBriefRecord] = {}
         self.research_brief_evaluations: dict[UUID, ResearchBriefEvaluationRecord] = {}
         self.validation_plans: dict[UUID, ValidationPlanRecord] = {}
+        self.validation_request_queue: dict[UUID, ValidationRequestQueueItem] = {}
         self.research_brief_queue: dict[UUID, ResearchBriefQueueItem] = {}
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
         self.agent_runs: dict[UUID, AgentRunRecord] = {}
@@ -979,6 +1021,109 @@ class InMemoryResearchRepository:
             records = [record for record in records if record.readiness == readiness]
         records.sort(key=lambda record: record.created_at, reverse=True)
         return records[:limit] if limit is not None else records
+
+    def upsert_validation_request_queue_item(
+        self,
+        item: ValidationRequestQueueItem,
+    ) -> ValidationRequestQueueItem:
+        existing = next(
+            (
+                candidate
+                for candidate in self.validation_request_queue.values()
+                if candidate.identity_key == item.identity_key
+            ),
+            None,
+        )
+        if existing:
+            item = item.model_copy(
+                update={
+                    "queue_item_id": existing.queue_item_id,
+                    "status": existing.status,
+                    "attempts": existing.attempts,
+                    "last_run_id": existing.last_run_id,
+                    "last_error": existing.last_error,
+                    "approved_by": existing.approved_by,
+                    "approval_note": existing.approval_note,
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **item.metadata},
+                }
+            )
+        self.validation_request_queue[item.queue_item_id] = item
+        return item
+
+    def get_validation_request_queue_item(
+        self,
+        queue_item_id: UUID,
+    ) -> ValidationRequestQueueItem | None:
+        return self.validation_request_queue.get(queue_item_id)
+
+    def list_validation_request_queue_items(
+        self,
+        *,
+        plan_id: UUID | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        source_key: str | None = None,
+        task_type: str | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ValidationRequestQueueItem]:
+        items = list(self.validation_request_queue.values())
+        if plan_id:
+            items = [item for item in items if item.plan_id == plan_id]
+        if status:
+            items = [item for item in items if item.status == status]
+        if statuses:
+            allowed = set(statuses)
+            items = [item for item in items if item.status in allowed]
+        if source_key:
+            items = [item for item in items if item.source_key == source_key]
+        if task_type:
+            items = [item for item in items if item.task_type == task_type]
+        if topic_query:
+            normalized = topic_query.lower()
+            items = [
+                item
+                for item in items
+                if normalized in item.topic.lower()
+                or normalized in item.title.lower()
+                or normalized in item.objective.lower()
+            ]
+        items.sort(key=lambda item: (item.priority, item.created_at))
+        return items[:limit] if limit is not None else items
+
+    def update_validation_request_queue_item(
+        self,
+        queue_item_id: UUID,
+        *,
+        status: str | None = None,
+        priority: int | None = None,
+        attempts: int | None = None,
+        last_run_id: UUID | None = None,
+        last_error: str | None = None,
+        approved_by: str | None = None,
+        approval_note: str | None = None,
+        metadata: dict | None = None,
+    ) -> ValidationRequestQueueItem | None:
+        item = self.validation_request_queue.get(queue_item_id)
+        if item is None:
+            return None
+        updated = item.model_copy(
+            update={
+                "status": item.status if status is None else status,
+                "priority": item.priority if priority is None else priority,
+                "attempts": item.attempts if attempts is None else attempts,
+                "last_run_id": item.last_run_id if last_run_id is None else last_run_id,
+                "last_error": last_error,
+                "approved_by": item.approved_by if approved_by is None else approved_by,
+                "approval_note": item.approval_note if approval_note is None else approval_note,
+                "updated_at": datetime.now(UTC),
+                "metadata": {**item.metadata, **(metadata or {})},
+            }
+        )
+        self.validation_request_queue[queue_item_id] = updated
+        return updated
 
     def upsert_research_brief_queue_item(self, item: ResearchBriefQueueItem) -> ResearchBriefQueueItem:
         existing = next(

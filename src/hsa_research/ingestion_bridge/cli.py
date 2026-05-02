@@ -41,6 +41,7 @@ from .contracts import (
     SourceQuery,
     SourceScoutRequest,
     ValidationPlanRequest,
+    ValidationRequestQueueRequest,
     XLinkedArticleReviewRequest,
     XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
@@ -838,6 +839,55 @@ def main() -> None:
     validation_plans.add_argument("--readiness", default=None, help="Optional readiness filter")
     validation_plans.add_argument("--limit", type=int, default=50, help="Maximum plans to return")
 
+    queue_validation_requests = subparsers.add_parser(
+        "queue-validation-requests",
+        help="Queue validation requests from a ready validation plan",
+    )
+    queue_validation_requests.add_argument("--plan-id", required=True, help="Validation plan to queue from")
+    queue_validation_requests.add_argument(
+        "--task-id",
+        action="append",
+        default=[],
+        help="Optional task_id to queue; repeat for multiple tasks",
+    )
+    queue_validation_requests.add_argument(
+        "--apply",
+        action="store_true",
+        help="Persist queue items. Without this flag the command is a dry run.",
+    )
+
+    validation_request_queue = subparsers.add_parser(
+        "validation-request-queue",
+        help="List or fetch queued validation requests",
+    )
+    validation_request_queue.add_argument("--id", default=None, help="Optional queue_item_id to fetch")
+    validation_request_queue.add_argument("--plan-id", default=None, help="Optional validation plan filter")
+    validation_request_queue.add_argument("--status", default=None, help="Optional queue status filter")
+    validation_request_queue.add_argument(
+        "--status-any",
+        action="append",
+        default=[],
+        help="Eligible queue status; repeat for multiple statuses",
+    )
+    validation_request_queue.add_argument("--source", default=None, help="Optional source key filter")
+    validation_request_queue.add_argument("--task-type", default=None, help="Optional validation plan task type filter")
+    validation_request_queue.add_argument("--topic-query", default=None, help="Case-insensitive topic/task filter")
+    validation_request_queue.add_argument("--limit", type=int, default=50, help="Maximum queue items to return")
+
+    approve_validation_request = subparsers.add_parser(
+        "approve-validation-request",
+        help="Approve a queued validation request for explicit dispatch",
+    )
+    approve_validation_request.add_argument("--id", required=True, help="queue_item_id to approve")
+    approve_validation_request.add_argument("--approved-by", required=True, help="Person or system approving dispatch")
+    approve_validation_request.add_argument("--approval-note", default=None, help="Optional approval note")
+
+    dispatch_validation_request = subparsers.add_parser(
+        "dispatch-validation-request",
+        help="Dispatch an approved validation request through the existing async validation hook",
+    )
+    dispatch_validation_request.add_argument("--id", required=True, help="queue_item_id to dispatch")
+
     model_review_summary = subparsers.add_parser(
         "model-review-summary",
         help="Print compact model-review summaries from persisted agent runs",
@@ -1517,6 +1567,42 @@ def main() -> None:
                     limit=args.limit,
                 )
             ]
+    elif args.command == "queue-validation-requests":
+        output = HSAResearchService(repo).queue_validation_requests_from_plan(
+            ValidationRequestQueueRequest(
+                plan_id=UUID(args.plan_id),
+                task_ids=[UUID(value) for value in args.task_id],
+                dry_run=not args.apply,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "validation-request-queue":
+        service = HSAResearchService(repo)
+        if args.id:
+            item = service.get_validation_request_queue_item(UUID(args.id))
+            output = {} if item is None else item.model_dump(mode="json")
+        else:
+            output = [
+                item.model_dump(mode="json")
+                for item in service.list_validation_request_queue_items(
+                    plan_id=UUID(args.plan_id) if args.plan_id else None,
+                    status=args.status,
+                    statuses=args.status_any or None,
+                    source_key=args.source,
+                    task_type=args.task_type,
+                    topic_query=args.topic_query,
+                    limit=args.limit,
+                )
+            ]
+    elif args.command == "approve-validation-request":
+        item = HSAResearchService(repo).approve_validation_request_queue_item(
+            UUID(args.id),
+            approved_by=args.approved_by,
+            approval_note=args.approval_note,
+        )
+        output = {} if item is None else item.model_dump(mode="json")
+    elif args.command == "dispatch-validation-request":
+        item = HSAResearchService(repo).dispatch_validation_request_queue_item(UUID(args.id))
+        output = {} if item is None else item.model_dump(mode="json")
     elif args.command == "model-review-summary":
         service = HSAResearchService(repo)
         if args.id:
