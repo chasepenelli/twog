@@ -712,6 +712,7 @@ jobs:
           import os
           from uuid import UUID
 
+          from hsa_research.ingestion_bridge.contracts import ValidationRequestQueueRequest
           from hsa_research.ingestion_bridge.service import HSAResearchService
           from hsa_research.ingestion_bridge.storage import build_research_repository
 
@@ -738,15 +739,31 @@ jobs:
           limit = int(report_config.get("limit") or 25)
 
           service = HSAResearchService(build_research_repository())
-          items = service.list_validation_request_queue_items(
-              plan_id=plan_id,
-              status=status,
-              statuses=statuses,
-              source_key=source_key,
-              task_type=task_type,
-              topic_query=topic_query,
-              limit=limit,
-          )
+          dry_run = bool(report_config.get("dry_run", False))
+          task_ids = [
+              UUID(value)
+              for value in report_config.get("task_ids", [])
+          ]
+          preview = None
+          if os.getenv("DAGSTER_CLOUD_JOB") == "validation_request_queue_job" and dry_run and plan_id:
+              preview = service.queue_validation_requests_from_plan(
+                  ValidationRequestQueueRequest(
+                      plan_id=plan_id,
+                      task_ids=task_ids,
+                      dry_run=True,
+                  )
+              )
+              items = preview.queue_items
+          else:
+              items = service.list_validation_request_queue_items(
+                  plan_id=plan_id,
+                  status=status,
+                  statuses=statuses,
+                  source_key=source_key,
+                  task_type=task_type,
+                  topic_query=topic_query,
+                  limit=limit,
+              )
           rows = []
           for item in items:
               request = item.validation_request.model_dump(mode="json")
@@ -775,6 +792,12 @@ jobs:
               "statuses": statuses or [],
               "source_key": source_key,
               "task_type": task_type,
+              "dry_run": dry_run,
+              "candidate_task_count": preview.candidate_task_count if preview else None,
+              "queued_count": preview.queued_count if preview else None,
+              "existing_count": preview.existing_count if preview else None,
+              "skipped_count": preview.skipped_count if preview else None,
+              "errors": preview.errors if preview else [],
               "queue_item_count": len(rows),
               "queue_items": rows,
           }
@@ -785,6 +808,11 @@ jobs:
               with open(summary_path, "a", encoding="utf-8") as summary:
                   summary.write("### Validation request queue summary\n")
                   summary.write(f"- Plan filter: `{report['plan_id'] or 'none'}`\n")
+                  summary.write(f"- Dry run: `{report['dry_run']}`\n")
+                  if report["candidate_task_count"] is not None:
+                      summary.write(f"- Candidate tasks: `{report['candidate_task_count']}`\n")
+                      summary.write(f"- Existing items: `{report['existing_count']}`\n")
+                      summary.write(f"- Skipped: `{report['skipped_count']}`\n")
                   summary.write(f"- Queue items sampled: `{report['queue_item_count']}`\n")
                   for row in rows[:10]:
                       summary.write(
