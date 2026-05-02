@@ -13,6 +13,7 @@ from .contracts import (
     ResearchBriefFinding,
     ResearchBriefRecord,
     ResearchBriefResult,
+    ValidationAssayContext,
     ValidationPlanReadiness,
     ValidationPlanRecord,
     ValidationPlanRequest,
@@ -489,6 +490,18 @@ def _task(
     required_inputs: list[str] | None = None,
     expected_outputs: list[str] | None = None,
 ) -> ValidationPlanTask:
+    evidence_refs = _evidence_refs(brief, evaluation, finding)
+    assay_context = _validation_assay_context(
+        brief=brief,
+        finding=finding,
+        task_type=task_type,
+        validation_type=validation_type,
+        evidence_refs=evidence_refs,
+    )
+    quality_gates = _validation_quality_gates_for_task(
+        task_type=task_type,
+        validation_type=validation_type,
+    )
     validation_request = None
     if validation_type:
         validation_request = ValidationRequest(
@@ -498,6 +511,8 @@ def _task(
             objective=objective,
             priority=priority,
             require_approval=True,
+            assay_context=assay_context,
+            quality_gates=quality_gates,
             metadata={
                 "brief_id": str(brief.brief_id),
                 "evaluation_id": str(evaluation.evaluation_id) if evaluation else None,
@@ -513,7 +528,7 @@ def _task(
         validation_request=validation_request,
         required_inputs=required_inputs or [],
         expected_outputs=expected_outputs or [],
-        evidence_refs=_evidence_refs(brief, evaluation, finding),
+        evidence_refs=evidence_refs,
         priority=priority,
         requires_human_approval=True,
         tool_hint=tool_hint,
@@ -580,6 +595,140 @@ def _evidence_refs(
         refs.append(f"evaluation:{evaluation.evaluation_id}")
     refs.extend(finding.citations)
     return refs
+
+
+def _validation_assay_context(
+    *,
+    brief: ResearchBriefRecord,
+    finding: ResearchBriefFinding,
+    task_type: ValidationPlanTaskType,
+    validation_type: str | None,
+    evidence_refs: list[str],
+) -> ValidationAssayContext:
+    combined_text = " ".join(
+        [
+            brief.topic,
+            brief.disease_scope,
+            brief.final_brief,
+            finding.claim,
+            finding.reasoning,
+            " ".join(finding.open_questions),
+        ]
+    ).lower()
+    species: list[str] = []
+    if any(term in combined_text for term in ("canine", "dog", "dogs")):
+        species.append("canine")
+    if any(term in combined_text for term in ("human", "angiosarcoma")):
+        species.append("human")
+    if not species:
+        species = ["canine", "human"]
+
+    assay_type = _assay_type_for_task(task_type, validation_type)
+    model_system = _model_system_for_task(task_type, validation_type)
+    safety_context = None
+    if validation_type in {"admet", "safety"} or task_type in {"admet", "safety", "wet_lab"}:
+        safety_context = "Canine translational safety, adverse-event, dose-context, and ADMET relevance."
+
+    return ValidationAssayContext(
+        disease_context=brief.disease_scope,
+        species=species,
+        model_system=model_system,
+        assay_type=assay_type,
+        readout=_readout_for_task(task_type, validation_type),
+        endpoint=_endpoint_for_task(task_type, validation_type),
+        comparator_or_control="Require explicit comparator, negative control, or baseline literature comparator before execution.",
+        sample_context="Source-traceable literature context until a partner supplies assay samples or datasets.",
+        dose_or_exposure_context="Record dose, exposure, and timepoint before wet-lab, ADMET, or safety execution.",
+        safety_context=safety_context,
+        evidence_refs=evidence_refs,
+        negative_evidence_needs=[
+            "Search for negative, null, or contradictory findings before execution.",
+            "Check species mismatch and translational relevance before claiming validation.",
+        ],
+        provenance_requirements=[
+            "Preserve source citations and brief/evaluation identifiers.",
+            "Attach assay protocol, model version, and parameter provenance before execution.",
+        ],
+    )
+
+
+def _validation_quality_gates_for_task(
+    *,
+    task_type: ValidationPlanTaskType,
+    validation_type: str | None,
+) -> list[str]:
+    gates = ["approval_required", "source_traceability_required", "negative_evidence_check_required"]
+    if validation_type and validation_type != "expert_review":
+        gates.extend(["assay_context_required", "species_context_required", "disease_context_required"])
+    if task_type in {"docking", "boltz", "md", "protein_structure"}:
+        gates.extend(["target_identity_required", "structure_or_sequence_context_required"])
+    if task_type in {"compound_screen", "docking", "admet", "safety"}:
+        gates.append("candidate_identity_required")
+    if task_type in {"admet", "safety", "wet_lab"}:
+        gates.append("safety_context_required")
+    return _dedupe_labels(gates)
+
+
+def _assay_type_for_task(task_type: ValidationPlanTaskType, validation_type: str | None) -> str:
+    if validation_type == "expert_review" or task_type in {"expert_review", "partner_review", "literature_review"}:
+        return "structured expert evidence review"
+    if task_type in {"docking", "boltz", "md", "protein_structure"}:
+        return "in silico structural validation"
+    if task_type in {"compound_screen", "admet", "safety"}:
+        return "candidate bioactivity or safety triage"
+    if task_type == "omics":
+        return "omics evidence review"
+    if task_type == "wet_lab":
+        return "wet-lab assay design review"
+    return "target validation review"
+
+
+def _model_system_for_task(task_type: ValidationPlanTaskType, validation_type: str | None) -> str:
+    if validation_type == "expert_review" or task_type in {"expert_review", "partner_review", "literature_review"}:
+        return "Human-reviewed literature and translational evidence packet."
+    if task_type in {"docking", "boltz", "md", "protein_structure"}:
+        return "Computational target or structure model with explicit source provenance."
+    if task_type in {"compound_screen", "admet", "safety"}:
+        return "Candidate-centered translational safety or activity screen."
+    if task_type == "omics":
+        return "Comparative canine and human molecular dataset review."
+    return "Source-traceable validation planning context."
+
+
+def _readout_for_task(task_type: ValidationPlanTaskType, validation_type: str | None) -> str:
+    if validation_type == "expert_review" or task_type in {"expert_review", "partner_review", "literature_review"}:
+        return "ready/not-ready decision with cited gaps and next validation lane."
+    if task_type in {"docking", "boltz", "md", "protein_structure"}:
+        return "model confidence, binding or structural rationale, and failure modes."
+    if task_type in {"compound_screen", "admet", "safety"}:
+        return "activity, toxicity, exposure, and translational risk flags."
+    if task_type == "omics":
+        return "species-conserved signal, expression context, and dataset caveats."
+    return "go/no-go validation recommendation."
+
+
+def _endpoint_for_task(task_type: ValidationPlanTaskType, validation_type: str | None) -> str:
+    if validation_type == "expert_review" or task_type in {"expert_review", "partner_review", "literature_review"}:
+        return "expert validation readiness."
+    if task_type in {"docking", "boltz", "md", "protein_structure"}:
+        return "computational plausibility and structural prioritization."
+    if task_type in {"compound_screen", "admet", "safety"}:
+        return "candidate prioritization and safety gating."
+    if task_type == "omics":
+        return "translational molecular support."
+    return "validation path selection."
+
+
+def _dedupe_labels(labels: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for label in labels:
+        normalized = str(label).strip()
+        key = normalized.casefold()
+        if normalized and key not in seen:
+            deduped.append(normalized)
+            seen.add(key)
+    return deduped
 
 
 def _extract_known_term(text: str, terms: Mapping[str, str]) -> str | None:

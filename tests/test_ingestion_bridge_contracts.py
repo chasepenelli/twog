@@ -77,6 +77,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ValidationPlanRequest,
     ValidationPlanResult,
     ValidationPlanTask,
+    ValidationAssayContext,
     ValidationRequest,
     ValidationRequestQueueItem,
     ValidationRequestQueueRequest,
@@ -224,10 +225,20 @@ def test_agent_run_and_full_text_ops_contracts_validate():
 
 
 def test_validation_plan_contracts_validate():
+    assay_context = ValidationAssayContext(
+        disease_context="canine hemangiosarcoma and human angiosarcoma",
+        species=["canine", "human", "canine"],
+        model_system="Human-reviewed literature packet.",
+        assay_type="structured expert evidence review",
+        readout="ready/not-ready decision",
+        evidence_refs=["brief:1", "C1"],
+    )
     validation_request = ValidationRequest(
         validation_type="expert_review",
         objective="Review the hypothesis before validation.",
         require_approval=True,
+        assay_context=assay_context,
+        quality_gates=["approval_required", "approval_required"],
     )
     task = ValidationPlanTask(
         task_type="expert_review",
@@ -256,6 +267,8 @@ def test_validation_plan_contracts_validate():
 
     assert record.status == "ready_for_review"
     assert result.tasks[0].validation_request.validation_type == "expert_review"
+    assert result.tasks[0].validation_request.assay_context.species == ["canine", "human"]
+    assert result.tasks[0].validation_request.quality_gates == ["approval_required"]
     with pytest.raises(ValueError):
         ValidationPlanTask(task_type="bad", title="x", objective="x", rationale="x")
     with pytest.raises(ValueError):
@@ -2948,6 +2961,8 @@ def test_validation_request_queue_repository_roundtrip_sqlite_and_memory(tmp_pat
             status="approved",
             approved_by="unit-test",
             approval_note="Looks actionable.",
+            quality_gates=["approval_required"],
+            dispatch_blockers=["assay_context_required"],
         )
         listed = repo.list_validation_request_queue_items(
             plan_id=plan_id,
@@ -2963,6 +2978,8 @@ def test_validation_request_queue_repository_roundtrip_sqlite_and_memory(tmp_pat
         assert updated.status == "approved"
         assert updated.approved_by == "unit-test"
         assert updated.approval_note == "Looks actionable."
+        assert updated.quality_gates == ["approval_required"]
+        assert updated.dispatch_blockers == ["assay_context_required"]
         assert listed[0].queue_item_id == item.queue_item_id
         assert repo.get_validation_request_queue_item(item.queue_item_id).queue_item_id == item.queue_item_id
 
@@ -4108,6 +4125,11 @@ def test_validation_planning_service_persists_ready_recommend_only_plan(tmp_path
     assert result.tasks
     assert all(task.requires_human_approval for task in result.tasks)
     assert all(task.validation_request is None or task.validation_request.require_approval for task in result.tasks)
+    validation_requests = [task.validation_request for task in result.tasks if task.validation_request is not None]
+    assert validation_requests
+    assert all(request.assay_context is not None for request in validation_requests)
+    assert any("canine" in request.assay_context.species for request in validation_requests if request.assay_context)
+    assert all("source_traceability_required" in request.quality_gates for request in validation_requests)
     assert saved is not None
     assert saved.brief_id == brief.brief_id
     assert saved.evaluation_id == evaluation.evaluation_id
@@ -4196,6 +4218,44 @@ def test_validation_request_queue_promotes_ready_plan_tasks(tmp_path):
     assert dispatched.status == "dispatched"
     assert dispatched.last_run_id is not None
     assert service.get_run_status(dispatched.last_run_id) is not None
+
+
+def test_validation_request_queue_blocks_dispatch_without_assay_context(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-request-queue-blocked.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="Docking queue guardrail",
+            task_type="docking",
+            title="Dock KDR candidate",
+            objective="Run docking only after target, candidate, and assay context are present.",
+            rationale="Execution lanes need enough context to be reproducible.",
+            validation_request=ValidationRequest(
+                validation_type="docking",
+                target_name="KDR",
+                candidate_name="candidate A",
+                objective="Dock candidate A against KDR.",
+                require_approval=True,
+            ),
+        )
+    )
+    approved = service.approve_validation_request_queue_item(
+        item.queue_item_id,
+        approved_by="unit-test",
+        approval_note="Approval alone should not bypass execution context.",
+    )
+    blocked = service.dispatch_validation_request_queue_item(item.queue_item_id)
+
+    assert approved is not None
+    assert approved.status == "approved"
+    assert blocked is not None
+    assert blocked.status == "blocked"
+    assert "assay_context_required" in blocked.dispatch_blockers
+    assert "dispatch blocked" in blocked.last_error.lower()
+    assert blocked.last_run_id is None
 
 
 def test_validation_planning_blocks_when_evaluation_is_not_ready(tmp_path):

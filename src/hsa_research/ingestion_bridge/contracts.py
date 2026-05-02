@@ -52,6 +52,19 @@ def _dedupe_strings(values: list[str]) -> list[str]:
     return deduped
 
 
+def _normalized_unique_strings(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value).strip()
+        key = normalized.casefold()
+        if not normalized or key in seen:
+            continue
+        deduped.append(normalized)
+        seen.add(key)
+    return deduped
+
+
 def _dedupe_lower_tokens(values: list[str]) -> list[str]:
     deduped: list[str] = []
     seen: set[str] = set()
@@ -303,6 +316,7 @@ ValidationRequestQueueStatus = Literal[
     "needs_approval",
     "queued",
     "approved",
+    "blocked",
     "dispatched",
     "completed",
     "failed",
@@ -1980,6 +1994,45 @@ class BoltzRunRequest(StrictBaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ValidationAssayContext(StrictBaseModel):
+    disease_context: str | None = Field(default=None, max_length=500)
+    species: list[str] = Field(default_factory=list, max_length=10)
+    model_system: str | None = Field(default=None, max_length=500)
+    assay_type: str | None = Field(default=None, max_length=200)
+    readout: str | None = Field(default=None, max_length=500)
+    endpoint: str | None = Field(default=None, max_length=500)
+    comparator_or_control: str | None = Field(default=None, max_length=500)
+    sample_context: str | None = Field(default=None, max_length=500)
+    dose_or_exposure_context: str | None = Field(default=None, max_length=500)
+    safety_context: str | None = Field(default=None, max_length=500)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=25)
+    negative_evidence_needs: list[str] = Field(default_factory=list, max_length=25)
+    provenance_requirements: list[str] = Field(default_factory=list, max_length=25)
+
+    @model_validator(mode="after")
+    def normalize_assay_context(self) -> "ValidationAssayContext":
+        for field_name in (
+            "disease_context",
+            "model_system",
+            "assay_type",
+            "readout",
+            "endpoint",
+            "comparator_or_control",
+            "sample_context",
+            "dose_or_exposure_context",
+            "safety_context",
+        ):
+            value = getattr(self, field_name)
+            if isinstance(value, str):
+                normalized = value.strip()
+                setattr(self, field_name, normalized or None)
+        self.species = _normalized_unique_strings(self.species)
+        self.evidence_refs = _normalized_unique_strings(self.evidence_refs)
+        self.negative_evidence_needs = _normalized_unique_strings(self.negative_evidence_needs)
+        self.provenance_requirements = _normalized_unique_strings(self.provenance_requirements)
+        return self
+
+
 class ValidationRequest(StrictBaseModel):
     validation_type: Literal["boltz", "docking", "md", "admet", "homology", "safety", "expert_review"]
     candidate_id: UUID | None = None
@@ -1988,7 +2041,19 @@ class ValidationRequest(StrictBaseModel):
     objective: str
     priority: int = Field(default=100, ge=1, le=1000)
     require_approval: bool = True
+    assay_context: ValidationAssayContext | None = None
+    quality_gates: list[str] = Field(default_factory=list, max_length=25)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_validation_request(self) -> "ValidationRequest":
+        self.objective = self.objective.strip()
+        if self.candidate_name:
+            self.candidate_name = self.candidate_name.strip() or None
+        if self.target_name:
+            self.target_name = self.target_name.strip() or None
+        self.quality_gates = _normalized_unique_strings(self.quality_gates)
+        return self
 
 
 class AsyncRunHandle(StrictBaseModel):
@@ -2088,6 +2153,8 @@ class ValidationRequestQueueItem(StrictBaseModel):
     validation_request: ValidationRequest
     priority: int = Field(default=100, ge=1, le=1000)
     requires_human_approval: bool = True
+    quality_gates: list[str] = Field(default_factory=list, max_length=25)
+    dispatch_blockers: list[str] = Field(default_factory=list, max_length=25)
     last_run_id: UUID | None = None
     attempts: int = Field(default=0, ge=0)
     last_error: str | None = None
@@ -2103,6 +2170,8 @@ class ValidationRequestQueueItem(StrictBaseModel):
         self.title = self.title.strip()
         self.objective = self.objective.strip()
         self.rationale = self.rationale.strip()
+        self.quality_gates = _normalized_unique_strings(self.quality_gates)
+        self.dispatch_blockers = _normalized_unique_strings(self.dispatch_blockers)
         if not self.identity_key:
             self.identity_key = f"validation_request_queue:{self.plan_id}:{self.task_id}"
         else:

@@ -178,6 +178,61 @@ DEFAULT_MODEL_PROFILES: dict[str, ModelProfile] = {
 }
 
 
+def _validation_request_quality_gates(request: ValidationRequest) -> list[str]:
+    gates = ["human_approval_required" if request.require_approval else "operator_dispatch_recorded"]
+    if request.assay_context is not None:
+        gates.append("assay_context_present")
+    if request.validation_type in {"boltz", "docking", "md", "homology"}:
+        gates.append("target_identity_required")
+    if request.validation_type in {"docking", "admet", "safety"}:
+        gates.append("candidate_identity_required")
+    if request.validation_type in {"admet", "safety"}:
+        gates.append("safety_context_required")
+    if request.validation_type != "expert_review":
+        gates.append("species_and_disease_context_required")
+    return _dedupe_quality_labels([*request.quality_gates, *gates])
+
+
+def _validation_request_dispatch_blockers(request: ValidationRequest) -> list[str]:
+    if request.validation_type == "expert_review":
+        return []
+
+    blockers: list[str] = []
+    if request.validation_type in {"boltz", "docking", "md", "homology"} and not request.target_name:
+        blockers.append("target_name_required")
+    if request.validation_type in {"docking", "admet", "safety"} and not (
+        request.candidate_id or request.candidate_name
+    ):
+        blockers.append("candidate_identity_required")
+
+    context = request.assay_context
+    if context is None:
+        blockers.append("assay_context_required")
+        return blockers
+
+    if not context.disease_context:
+        blockers.append("disease_context_required")
+    if not context.species:
+        blockers.append("species_context_required")
+    if request.validation_type in {"admet", "safety"} and not context.safety_context:
+        blockers.append("safety_context_required")
+    if request.validation_type in {"docking", "boltz", "md", "homology"} and not context.model_system:
+        blockers.append("model_system_required")
+    return _dedupe_quality_labels(blockers)
+
+
+def _dedupe_quality_labels(labels: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for label in labels:
+        normalized = str(label).strip()
+        key = normalized.casefold()
+        if normalized and key not in seen:
+            deduped.append(normalized)
+            seen.add(key)
+    return deduped
+
+
 class HSAResearchService:
     """Typed use-case service for research actions."""
 
@@ -619,6 +674,7 @@ class HSAResearchService:
                 validation_request=task.validation_request,
                 priority=task.priority,
                 requires_human_approval=task.requires_human_approval,
+                quality_gates=_validation_request_quality_gates(task.validation_request),
                 metadata={
                     **request.metadata,
                     "queued_from": "validation_plan",
@@ -717,8 +773,26 @@ class HSAResearchService:
                 queue_item_id,
                 attempts=item.attempts + 1,
                 last_error="Validation request queue item must be approved before dispatch.",
+                dispatch_blockers=["approval_required"],
             )
         request = item.validation_request.model_copy(update={"require_approval": False})
+        dispatch_blockers = _validation_request_dispatch_blockers(request)
+        if dispatch_blockers:
+            return self.repository.update_validation_request_queue_item(
+                queue_item_id,
+                status="blocked",
+                attempts=item.attempts + 1,
+                last_error=(
+                    "Validation request dispatch blocked by missing execution context: "
+                    + ", ".join(dispatch_blockers)
+                ),
+                quality_gates=_validation_request_quality_gates(request),
+                dispatch_blockers=dispatch_blockers,
+                metadata={
+                    "dispatch_blocked_at": datetime.now(UTC).isoformat(),
+                    "dispatch_blockers": dispatch_blockers,
+                },
+            )
         handle = self.request_validation(request)
         return self.repository.update_validation_request_queue_item(
             queue_item_id,
@@ -726,6 +800,8 @@ class HSAResearchService:
             attempts=item.attempts + 1,
             last_run_id=handle.run_id,
             last_error=None,
+            quality_gates=_validation_request_quality_gates(request),
+            dispatch_blockers=[],
             metadata={
                 "dispatched_at": datetime.now(UTC).isoformat(),
                 "run_kind": handle.run_kind,

@@ -40,6 +40,7 @@ from .contracts import (
     SourceFollowupIngestRequest,
     SourceFollowupQueueRequest,
     ValidationPlanRequest,
+    ValidationAssayContext,
     ValidationRequest,
     ValidationRequestQueueRequest,
     XLinkedArticleReviewRequest,
@@ -1899,6 +1900,8 @@ if mcp is not None:
         target_name: str | None = None,
         priority: int = 100,
         require_approval: bool = True,
+        assay_context: dict | None = None,
+        quality_gates: list[str] | None = None,
         metadata: dict | None = None,
     ) -> dict:
         """Queue validation such as docking, MD, ADMET, homology, safety, or expert review."""
@@ -1911,6 +1914,8 @@ if mcp is not None:
             target_name=target_name,
             priority=priority,
             require_approval=require_approval,
+            assay_context=ValidationAssayContext.model_validate(assay_context) if assay_context else None,
+            quality_gates=quality_gates or [],
             metadata=metadata or {},
         )
         return get_service().request_validation(request).model_dump(mode="json")

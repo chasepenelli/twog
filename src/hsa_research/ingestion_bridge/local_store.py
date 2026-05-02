@@ -1902,6 +1902,8 @@ class SQLiteResearchRepository(ResearchRepository):
         last_error: str | None = None,
         approved_by: str | None = None,
         approval_note: str | None = None,
+        quality_gates: list[str] | None = None,
+        dispatch_blockers: list[str] | None = None,
         metadata: dict | None = None,
     ) -> ValidationRequestQueueItem | None:
         item = self.get_validation_request_queue_item(queue_item_id)
@@ -1916,6 +1918,8 @@ class SQLiteResearchRepository(ResearchRepository):
                 "last_error": last_error,
                 "approved_by": item.approved_by if approved_by is None else approved_by,
                 "approval_note": item.approval_note if approval_note is None else approval_note,
+                "quality_gates": item.quality_gates if quality_gates is None else quality_gates,
+                "dispatch_blockers": item.dispatch_blockers if dispatch_blockers is None else dispatch_blockers,
                 "updated_at": datetime.now(UTC),
                 "metadata": {**item.metadata, **(metadata or {})},
             }

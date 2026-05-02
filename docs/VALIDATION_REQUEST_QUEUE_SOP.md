@@ -115,9 +115,27 @@ Approve only if the task is specific enough to execute:
 - Evidence refs point back to the brief, evaluation, and cited sources.
 - The task does not imply clinical action or treatment advice.
 
+## Assay Context Standard
+
+Every queued request can carry `assay_context` and `quality_gates`.
+
+For expert-review tasks, assay context is used as reviewer framing. It should describe disease scope, species, evidence refs, negative-evidence needs, and provenance requirements.
+
+For execution-style tasks such as docking, Boltz, MD, ADMET, safety, omics, or wet-lab planning, assay context is a dispatch gate. Before dispatch, the request must include:
+
+- disease context
+- species context
+- target identity when the lane is target/structure based
+- candidate identity when the lane is candidate/safety based
+- model system or assay type
+- safety context for ADMET and safety work
+- provenance requirements for source citations, model version, parameters, protocol, and run artifacts
+
+If required context is missing, dispatch records `status: blocked`, increments `attempts`, stores `dispatch_blockers`, and does not launch work.
+
 ## Failure Handling
 
 - Dispatching an unapproved item does not launch work. It records a `last_error` and leaves the item in its current status.
+- Dispatching an approved execution-style item without required assay context does not launch work. It records a blocked status and explicit dispatch blockers.
 - Duplicate queueing is deduped by `plan_id + task_id`.
 - Failed or obsolete queue items should be archived or superseded in a later maintenance pass.
-
