@@ -599,6 +599,93 @@ jobs:
           PY
         shell: bash
 
+      - name: Print hosted validation plan summary
+        if: ${{ always() && (inputs.job == 'validation_plan_job' || inputs.job == 'validation_plan_library_job') }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          from uuid import UUID
+
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          def _parse_uuid(value: str | None) -> UUID | None:
+              return UUID(value) if value else None
+
+          raw_config = os.getenv("DAGSTER_CLOUD_CONFIG_JSON") or "{}"
+          try:
+              config = json.loads(raw_config)
+          except json.JSONDecodeError:
+              config = {}
+          ops = config.get("ops") or {}
+          report_config = (
+              (ops.get("validation_plan_report") or {}).get("config")
+              or (ops.get("validation_plan_library_report") or {}).get("config")
+              or {}
+          )
+          brief_id = _parse_uuid(report_config.get("brief_id"))
+          evaluation_id = _parse_uuid(report_config.get("evaluation_id"))
+          status = report_config.get("status")
+          readiness = report_config.get("readiness")
+          limit = int(report_config.get("limit") or 10)
+
+          service = HSAResearchService(build_research_repository())
+          plans = service.list_validation_plans(
+              brief_id=brief_id,
+              evaluation_id=evaluation_id,
+              status=status,
+              readiness=readiness,
+              limit=limit,
+          )
+          rows = []
+          for record in plans:
+              rows.append(
+                  {
+                      "plan_id": str(record.plan_id),
+                      "brief_id": str(record.brief_id),
+                      "evaluation_id": str(record.evaluation_id) if record.evaluation_id else None,
+                      "agent_run_id": str(record.agent_run_id) if record.agent_run_id else None,
+                      "source_key": record.source_key,
+                      "topic": record.topic[:300],
+                      "status": record.status,
+                      "readiness": record.readiness,
+                      "task_count": record.task_count,
+                      "hypothesis_count": record.hypothesis_count,
+                      "errors": list(record.errors)[:3],
+                      "error_count": len(record.errors),
+                      "created_at": record.created_at.isoformat(),
+                  }
+              )
+          report = {
+              "brief_id": str(brief_id) if brief_id else None,
+              "evaluation_id": str(evaluation_id) if evaluation_id else None,
+              "status": status,
+              "readiness": readiness,
+              "plan_count": len(rows),
+              "plans": rows,
+          }
+          print(json.dumps(report, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Validation plan summary\n")
+                  summary.write(f"- Brief filter: `{report['brief_id'] or 'none'}`\n")
+                  summary.write(f"- Evaluation filter: `{report['evaluation_id'] or 'none'}`\n")
+                  summary.write(f"- Plans sampled: `{report['plan_count']}`\n")
+                  for row in rows[:5]:
+                      summary.write(
+                          f"- `{row['status']}` `{row['readiness']}` `{row['plan_id']}`: "
+                          f"tasks={row['task_count']}, hypotheses={row['hypothesis_count']}, "
+                          f"source={row['source_key']}, errors={row['error_count']}\n"
+                      )
+                      if row["errors"]:
+                          summary.write(f"  - Error: {row['errors'][0]}\n")
+          PY
+        shell: bash
+
       - name: Print hosted embedding maintenance report
         if: ${{ inputs.job == 'embedding_maintenance_job' }}
         run: |
