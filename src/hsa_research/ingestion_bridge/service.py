@@ -756,10 +756,19 @@ class HSAResearchService:
             return request.limit - len(queue_items)
 
         if request.mode in ("research_leads", "both") and remaining() > 0:
+            source_key_filter = request.source_keys[0] if len(request.source_keys) == 1 else None
             leads = self.repository.list_research_leads(
                 statuses=list(request.lead_statuses),
-                limit=request.limit,
+                source_key=source_key_filter,
+                limit=None if request.source_keys and source_key_filter is None else request.limit,
             )
+            if request.source_keys:
+                allowed_source_keys = set(request.source_keys)
+                leads = [
+                    lead
+                    for lead in leads
+                    if lead.source_key in allowed_source_keys or lead.origin_source_key in allowed_source_keys
+                ]
             if request.lead_types:
                 allowed_lead_types = set(request.lead_types)
                 leads = [lead for lead in leads if lead.lead_type in allowed_lead_types]

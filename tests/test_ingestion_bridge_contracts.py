@@ -3140,6 +3140,57 @@ def test_research_brief_queue_batch_routes_evidence_light_leads_to_followup(tmp_
     assert repo.list_source_followups(limit=10) == []
 
 
+def test_research_brief_queue_batch_filters_research_leads_by_source_key(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-source-filter.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    _seed_minimal_source_claim(repo, "pubmed")
+    selected = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Resolved research brief quality follow-up",
+            lead_type="unknown",
+            status="watching",
+            priority=25,
+            source_key="pubmed",
+            origin_source_key="research_brief_quality",
+            suggested_sources=["pubmed"],
+            reason="Durable chunks satisfy the prior evidence limitation.",
+            evidence_refs=["chunk:pubmed:1"],
+        )
+    )
+    ignored = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Unrelated watchlist lead",
+            lead_type="unknown",
+            status="watching",
+            priority=10,
+            source_key="x_linked_article",
+            origin_source_key="x_linked_article",
+            reason="Not part of the research brief quality follow-up lane.",
+            evidence_refs=["chunk:pubmed:2"],
+        )
+    )
+
+    result = service.queue_research_brief_batch(
+        ResearchBriefQueueBatchRequest(
+            mode="research_leads",
+            lead_statuses=["watching"],
+            source_keys=["research_brief_quality"],
+            limit=10,
+        )
+    )
+
+    updated_selected = repo.get_research_lead(selected.lead_id)
+    updated_ignored = repo.get_research_lead(ignored.lead_id)
+
+    assert result.queued_count == 1
+    assert result.lead_count == 1
+    assert result.queue_items[0].metadata["batch_queue"]["lead_id"] == str(selected.lead_id)
+    assert updated_selected is not None
+    assert updated_selected.status == "queued"
+    assert updated_ignored is not None
+    assert updated_ignored.status == "watching"
+
+
 def test_research_brief_queue_batch_routes_identifier_leads_to_source_followup(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "research-brief-identifier-followup.sqlite3", seed=False)
     service = HSAResearchService(repo)

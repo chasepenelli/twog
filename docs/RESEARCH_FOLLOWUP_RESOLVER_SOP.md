@@ -127,9 +127,9 @@ For each promoted lead, verify that the lead result includes at least one
 
 After promotion, run `research_brief_queue_batch_job` conservatively. Prefer
 small batches until the quality report confirms the resolver improved evidence
-coverage. The current batch queue can filter research leads by status and lead
-type, but it does not yet filter by `origin_source_key`, so keep limits low and
-inspect queued item metadata before launching synthesis.
+coverage. Use `source_keys=["research_brief_quality"]` to target leads created
+by the evidence-limitation follow-up queue; the research-lead batch path matches
+against both `source_key` and `origin_source_key`.
 
 ## Hosted Config Examples
 
@@ -226,7 +226,7 @@ inspect queued item metadata before launching synthesis.
         "mode": "research_leads",
         "lead_statuses": ["watching"],
         "lead_types": [],
-        "source_keys": [],
+        "source_keys": ["research_brief_quality"],
         "source_health_statuses": [],
         "include_empty_sources": false,
         "limit": 5,
