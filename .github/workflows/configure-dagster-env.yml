@@ -26,6 +26,7 @@ jobs:
       HSA_FULL_TEXT_REQUEST_ATTEMPTS: "1"
       HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS: "120"
       HSA_PMC_OA_MAX_CANDIDATE_RECORDS: "20"
+      HSA_EMBEDDING_MODEL: "openrouter:openai/text-embedding-3-large"
 
     steps:
       - name: Checkout
@@ -83,6 +84,7 @@ jobs:
             create_env "$scope" HSA_FULL_TEXT_REQUEST_ATTEMPTS "$HSA_FULL_TEXT_REQUEST_ATTEMPTS"
             create_env "$scope" HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS "$HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS"
             create_env "$scope" HSA_PMC_OA_MAX_CANDIDATE_RECORDS "$HSA_PMC_OA_MAX_CANDIDATE_RECORDS"
+            create_env "$scope" HSA_EMBEDDING_MODEL "$HSA_EMBEDDING_MODEL"
 
             if [ -n "$OPENROUTER_API_KEY" ]; then
               create_env "$scope" OPENROUTER_API_KEY --from-local-env

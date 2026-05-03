@@ -99,6 +99,7 @@ jobs:
       HSA_STORAGE_BACKEND: "postgres"
       HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
+      HSA_EMBEDDING_MODEL: "openrouter:openai/text-embedding-3-large"
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
       HSA_X_LINKED_ARTICLE_APPROVED_BY: "github-actions"
