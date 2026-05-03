@@ -9,6 +9,7 @@ from .harvesters_v2 import get_harvester
 from .local_store import SQLiteResearchRepository, research_object_has_full_text
 from .storage import build_sql_repository
 from .source_registry import get_initial_sources
+from .source_query_params import with_source_safe_query_params
 
 LEGACY_STARTER_QUERY_KEYS = (
     ("pubmed", "canine_hsa_core"),
@@ -64,6 +65,7 @@ class LocalIngestionPipeline:
         if persist_query:
             self.repository.upsert_source_query(query)
         fetch_run_id = self.repository.create_fetch_run(query.source_key, query.query_name)
+        fetch_query = with_source_safe_query_params(query)
         raw_count = 0
         object_count = 0
         chunk_count = 0
@@ -72,8 +74,8 @@ class LocalIngestionPipeline:
         errors: list[str] = []
 
         try:
-            harvester = get_harvester(query.source_key)
-            records = harvester.fetch(query.query_text, limit=limit, **query.query_params)
+            harvester = get_harvester(fetch_query.source_key)
+            records = harvester.fetch(fetch_query.query_text, limit=limit, **fetch_query.query_params)
             for record in records:
                 raw_id = self.repository.upsert_raw_record(record.raw_record, fetch_run_id)
                 object_id = self.repository.upsert_research_object(record.research_object, raw_id)

@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 from uuid import uuid4
@@ -8,6 +9,7 @@ from pydantic import ValidationError
 
 from hsa_research.ingestion_bridge import dagster_assets as dagster_asset_module
 from hsa_research.ingestion_bridge import cli as cli_module
+from hsa_research.ingestion_bridge import command_center_web
 from hsa_research.ingestion_bridge import entity_resolution
 from hsa_research.ingestion_bridge import storage, structured_orchestration
 from hsa_research.ingestion_bridge.contracts import (
@@ -23,6 +25,8 @@ from hsa_research.ingestion_bridge.contracts import (
     CommitHypothesisRequest,
     DoiOpenAccessFollowupQueueRequest,
     DocumentChunk,
+    EvidenceGapResolverRequest,
+    EvidenceGapResolverResult,
     EmbeddingCoverageSummary,
     EntityMention,
     EvidenceLevel,
@@ -31,6 +35,7 @@ from hsa_research.ingestion_bridge.contracts import (
     FullTextOpsRequest,
     FullTextOpsResult,
     HypothesisProposalRequest,
+    IngestionResult,
     RawSourceRecord,
     ResearchChunkSearchRequest,
     ResearchObject,
@@ -73,11 +78,22 @@ from hsa_research.ingestion_bridge.contracts import (
     SourceQuery,
     TextEmbedding,
     TextEmbeddingSearchRequest,
+    TherapyCommitteeRequest,
+    TherapyCommitteeResult,
+    TherapyCommitteeValidationQueueRequest,
+    TherapyCommitteeValidationQueueResult,
+    TherapyIdea,
+    ValidationAgentResult,
     ValidationPlanRecord,
     ValidationPlanRequest,
     ValidationPlanResult,
     ValidationPlanTask,
     ValidationAssayContext,
+    ValidationAutopilotRequest,
+    ValidationGapSourceIngestRequest,
+    ValidationGapSourcePackRequest,
+    ValidationGapSourcePackResult,
+    ValidationGapSourceQuery,
     ValidationRequest,
     ValidationRequestQueueItem,
     ValidationRequestQueueRequest,
@@ -115,13 +131,18 @@ from hsa_research.ingestion_bridge.dagster_assets import (
 )
 from hsa_research.ingestion_bridge.dagster_resources import ResearchRepositoryResource
 from hsa_research.ingestion_bridge.entity_resolution import normalize_entity_key, resolve_entities_for_repository
+from hsa_research.ingestion_bridge.embedding_bakeoff import EmbeddingBenchmark, run_embedding_bakeoff
 from hsa_research.ingestion_bridge.embeddings import (
     EmbeddingIndexResult,
     EmbeddingMaintenanceResult,
     LocalDeterministicEmbeddingProvider,
+    OpenRouterEmbeddingProvider,
     build_chunk_embedding_text,
+    build_embedding_provider,
+    default_embedding_model_for_environment,
     index_embeddings_for_repository,
     maintain_embedding_index,
+    select_embedding_model_from_coverage,
 )
 from hsa_research.ingestion_bridge import harvesters_v2
 from hsa_research.ingestion_bridge.harvesters_v2 import (
@@ -144,6 +165,7 @@ from hsa_research.ingestion_bridge.harvesters_v2 import (
     UnpaywallHarvesterV2,
 )
 from hsa_research.ingestion_bridge.local_ingest import LocalIngestionPipeline
+from hsa_research.ingestion_bridge import local_ingest as local_ingest_module
 from hsa_research.ingestion_bridge.local_store import SQLiteResearchRepository
 from hsa_research.ingestion_bridge import mcp_server
 from hsa_research.ingestion_bridge.query_policy import build_scholarly_source_queries, infer_comparative_scope
@@ -153,6 +175,7 @@ from hsa_research.ingestion_bridge import x_topic_monitor
 from hsa_research.ingestion_bridge import x_topic_review
 from hsa_research.ingestion_bridge.scraper_bridge import ScrapeBridge, list_scrape_profiles
 from hsa_research.ingestion_bridge import service as service_module
+from hsa_research.ingestion_bridge import validation_gap_ingest
 from hsa_research.ingestion_bridge.service import HSAResearchService
 from hsa_research.ingestion_bridge.source_scout import SourceScoutAgent
 from hsa_research.ingestion_bridge.source_health import build_source_health_report
@@ -299,6 +322,56 @@ def test_validation_request_queue_contracts_validate():
     assert item.status == "needs_approval"
     assert item.identity_key == f"validation_request_queue:{plan_id}:{task_id}"
     assert request.dry_run is True
+    autopilot_request = ValidationAutopilotRequest(
+        allowed_task_types=["expert_review", "expert_review"],
+        allowed_validation_types=["expert_review", "Expert Review"],
+        source_keys=["PubMed", "pubmed"],
+    )
+    assert autopilot_request.dry_run is True
+    assert autopilot_request.max_per_run == 2
+    assert autopilot_request.allowed_task_types == ["expert_review"]
+    assert autopilot_request.allowed_validation_types == ["expert_review"]
+    assert autopilot_request.source_keys == ["pubmed"]
+    with pytest.raises(ValueError):
+        ValidationAutopilotRequest(allowed_task_types=["wet_magic"])
+    source_pack_request = ValidationGapSourcePackRequest(
+        source_keys=["PubMed", "pubmed"],
+        lanes=["safety_signal"],
+    )
+    assert source_pack_request.source_keys == ["pubmed"]
+    assert source_pack_request.lanes == ["safety_signal"]
+    source_query = ValidationGapSourceQuery(
+        lane="safety_signal",
+        source_key="pubmed",
+        query_name="validation_gap_safety_pubmed",
+        query_text="sorafenib AND canine AND safety",
+        reason="Need direct canine tolerability evidence.",
+        required_terms=["sorafenib", "sorafenib"],
+    )
+    assert source_query.required_terms == ["sorafenib"]
+    assert source_query.as_source_query().track == "validation_gap"
+    with pytest.raises(ValueError):
+        ValidationGapSourcePackRequest(lanes=["bad_lane"])
+    ingest_request = ValidationGapSourceIngestRequest(
+        source_keys=["PubMed", "pubmed"],
+        query_names=["gap_a", "gap_a"],
+    )
+    assert ingest_request.source_keys == ["pubmed"]
+    assert ingest_request.query_names == ["gap_a"]
+    agent_result = ValidationAgentResult(
+        queue_item_id=item.queue_item_id,
+        plan_id=plan_id,
+        task_id=task_id,
+        task_type="expert_review",
+        validation_type="expert_review",
+        agent_name="evidence_review_validation_agent",
+        model_profile="deterministic_only",
+        decision="hold",
+        confidence=0.51,
+        summary="Evidence needs expert review before promotion.",
+        evidence_used=["C1", "C1"],
+    )
+    assert agent_result.evidence_used == ["C1"]
     with pytest.raises(ValueError):
         ValidationRequestQueueItem(
             status="bad",
@@ -314,6 +387,18 @@ def test_validation_request_queue_contracts_validate():
                 validation_type="expert_review",
                 objective="Review whether this target is ready for validation.",
             ),
+        )
+    with pytest.raises(ValueError):
+        ValidationAgentResult(
+            queue_item_id=item.queue_item_id,
+            plan_id=plan_id,
+            task_id=task_id,
+            task_type="expert_review",
+            validation_type="expert_review",
+            agent_name="evidence_review_validation_agent",
+            model_profile="deterministic_only",
+            decision="bad",
+            summary="bad",
         )
 
 
@@ -382,7 +467,7 @@ def test_source_followup_and_linked_article_review_contracts_validate():
     assert tracked_item.identifier == "10.3389/fvets.2026.1778366"
     assert SourceFollowupQueueRequest().source_key == "x_linked_article"
     assert SourceFollowupIngestRequest().statuses == ["queued", "approved"]
-    assert XLinkedArticleReviewRequest().review_mode == "deterministic_only"
+    assert XLinkedArticleReviewRequest().review_mode == "openrouter_required"
     assert result.actions[0].action == "queue_primary_source_followup"
     with pytest.raises(ValueError):
         SourceFollowupQueueItem(source_key="crossref", identifier_type="bad", identifier="x")
@@ -1335,7 +1420,7 @@ def test_dagster_embedding_index_asset_uses_injected_repository(monkeypatch):
 
     def fake_index_embeddings_for_repository(repository, **kwargs):
         assert repository is sentinel_repository
-        assert kwargs == {}
+        assert kwargs == {"embedding_model": "local-hash-v1"}
         calls.append(("index_embeddings_for_repository",))
         return EmbeddingIndexResult(
             embedding_model="local-hash-v1",
@@ -1383,7 +1468,7 @@ def test_dagster_embedding_maintenance_asset_uses_injected_repository(monkeypatc
 
     def fake_maintain_embedding_index(repository, **kwargs):
         assert repository is sentinel_repository
-        assert kwargs == {}
+        assert kwargs == {"embedding_model": "local-hash-v1"}
         calls.append(("maintain_embedding_index",))
         return EmbeddingMaintenanceResult(
             embedding_model="local-hash-v1",
@@ -1741,6 +1826,7 @@ def test_full_text_ops_external_review_packet_includes_deterministic_guardrail(t
             source_keys=["europe_pmc"],
             partition_date="2026-04-27",
             full_text_report=partition_report,
+            review_mode="external_required",
         )
     )
 
@@ -3586,6 +3672,434 @@ def test_command_center_report_summarizes_operational_state(tmp_path):
     assert recommendation_areas >= {"brief_queue", "research_leads", "source_health", "embeddings", "full_text", "agents"}
 
 
+def test_command_center_web_validation_queue_actions(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "command-center-web.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    queue_item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            source_key="pubmed",
+            topic="VEGF validation plan",
+            task_type="expert_review",
+            title="Expert review: VEGF translational signal",
+            objective="Review whether the hypothesis has enough evidence for validation.",
+            rationale="Human approval is required before dispatch.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                objective="Review whether the hypothesis has enough evidence for validation.",
+            ),
+            quality_gates=["human_approval_required"],
+            priority=25,
+        )
+    )
+
+    listed = command_center_web.list_validation_queue_payload(service, {"status": ["needs_approval"]})
+    approved = command_center_web.approve_validation_request_payload(
+        service,
+        str(queue_item.queue_item_id),
+        {"approved_by": "operator"},
+    )
+    dispatched = command_center_web.dispatch_validation_request_payload(
+        service,
+        str(queue_item.queue_item_id),
+        {"model_profile": "deterministic_only"},
+    )
+
+    assert listed["visible"] == 1
+    assert listed["items"][0]["queue_item_id"] == str(queue_item.queue_item_id)
+    assert approved["item"]["status"] == "approved"
+    assert approved["item"]["approved_by"] == "operator"
+    assert dispatched["item"]["status"] == "completed"
+    assert dispatched["item"]["dispatch_blockers"] == []
+    assert dispatched["item"]["last_run_id"]
+    assert dispatched["item"]["metadata"]["validation_agent_result"]["decision"] in {"promote", "hold", "demote"}
+
+
+def test_command_center_web_dispatch_reports_blockers(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "command-center-web-blocked.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    queue_item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            source_key="pubmed",
+            topic="Structure validation plan",
+            task_type="protein_structure",
+            title="Run structure validation",
+            objective="Run structure validation when target context is complete.",
+            rationale="The generated plan lacks a target identity.",
+            validation_request=ValidationRequest(
+                validation_type="boltz",
+                objective="Run structure validation when target context is complete.",
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma and human angiosarcoma",
+                    species=["canine", "human"],
+                ),
+            ),
+            quality_gates=["target_identity_required"],
+            priority=30,
+        )
+    )
+    command_center_web.approve_validation_request_payload(
+        service,
+        str(queue_item.queue_item_id),
+        {"approved_by": "operator"},
+    )
+
+    dispatched = command_center_web.dispatch_validation_request_payload(
+        service,
+        str(queue_item.queue_item_id),
+        {"model_profile": "deterministic_only"},
+    )
+
+    assert dispatched["item"]["status"] == "blocked"
+    assert "target_name_required" in dispatched["item"]["dispatch_blockers"]
+    assert "model_system_required" in dispatched["item"]["dispatch_blockers"]
+
+
+def test_command_center_web_dispatch_preflight_requires_openrouter_key(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    repo = SQLiteResearchRepository(tmp_path / "command-center-web-openrouter-preflight.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    queue_item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            source_key="pubmed",
+            topic="VEGF validation plan",
+            task_type="expert_review",
+            title="Expert review: VEGF translational signal",
+            objective="Review whether the hypothesis has enough evidence for validation.",
+            rationale="Human approval is required before dispatch.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                objective="Review whether the hypothesis has enough evidence for validation.",
+            ),
+            priority=25,
+        )
+    )
+    command_center_web.approve_validation_request_payload(
+        service,
+        str(queue_item.queue_item_id),
+        {"approved_by": "operator"},
+    )
+
+    readiness = command_center_web.runtime_payload()["validation_dispatch"]
+    with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY"):
+        command_center_web.dispatch_validation_request_payload(service, str(queue_item.queue_item_id))
+    stored = service.get_validation_request_queue_item(queue_item.queue_item_id)
+
+    assert readiness["dispatch_ready"] is False
+    assert stored is not None
+    assert stored.status == "approved"
+    assert stored.attempts == 0
+    assert stored.last_error is None
+
+
+def test_command_center_web_validation_autopilot_payloads(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "command-center-web-autopilot.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            source_key="pubmed",
+            topic="Autopilot command center preview",
+            task_type="expert_review",
+            title="Expert review: command center autopilot",
+            objective="Review the evidence packet.",
+            rationale="The command center should preview conservative selection.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                objective="Review the evidence packet.",
+            ),
+            created_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+    )
+
+    preview = command_center_web.validation_autopilot_preview_payload(
+        service,
+        {
+            "model_profile": ["deterministic_only"],
+            "minimum_queue_age_hours": ["0"],
+            "max_per_run": ["2"],
+        },
+    )
+    dry_run = command_center_web.run_validation_autopilot_payload(
+        service,
+        {
+            "dry_run": True,
+            "model_profile": "deterministic_only",
+            "minimum_queue_age_hours": 0,
+        },
+    )
+    stored = service.get_validation_request_queue_item(item.queue_item_id)
+
+    assert preview["selected_count"] == 1
+    assert preview["selected"][0]["queue_item_id"] == str(item.queue_item_id)
+    assert dry_run["dry_run"] is True
+    assert dry_run["agent_run_id"]
+    assert stored is not None
+    assert stored.status == "needs_approval"
+
+
+def test_command_center_web_lists_idea_records(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "command-center-web-ideas.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    idea = TherapyIdea(
+        title="KDR mutation-gated VEGFR inhibition",
+        hypothesis="KDR-altered canine HSA may reveal a translational VEGFR inhibition lane.",
+        rationale="Comparative oncology evidence supports testing the conserved angiogenic pathway.",
+        candidate_therapies=["pazopanib"],
+        targets=["KDR"],
+        biomarkers=["VEGFR2"],
+        evidence_refs=["C1", "C2"],
+        evidence_strength="medium",
+        risks=["PK bridge is incomplete."],
+        next_experiments=["Run canine/human KDR sequence conservation review."],
+        priority_score=0.82,
+    )
+    committee_result = TherapyCommitteeResult(
+        agent_run_id=uuid4(),
+        topic="KDR therapy ideas",
+        disease_scope="canine hemangiosarcoma and human angiosarcoma",
+        ranked_ideas=[idea],
+        decision_summary="Prioritize KDR validation.",
+    )
+    repo.create_agent_run(
+        AgentRunRecord(
+            agent_run_id=committee_result.agent_run_id,
+            agent_name="therapy_committee_chair_agent",
+            model_profile="therapy_committee",
+            status=RunStatus.COMPLETED,
+            output_payload=committee_result.model_dump(mode="json"),
+        )
+    )
+    repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            source_key="pubmed",
+            topic="KDR validation",
+            task_type="expert_review",
+            title="Expert review: KDR mutation-gated VEGFR inhibition",
+            objective="Review the therapy idea.",
+            rationale="Human review required.",
+            validation_request=ValidationRequest(validation_type="expert_review", objective="Review the therapy idea."),
+            metadata={"idea_id": str(idea.idea_id), "idea_title": idea.title},
+        )
+    )
+    plan = repo.upsert_validation_plan(
+        ValidationPlanRecord(
+            brief_id=uuid4(),
+            topic="VEGFR PK bridge",
+            source_key="pubmed",
+            result_payload={
+                "hypothesis_drafts": [
+                    {
+                        "hypothesis_id": str(uuid4()),
+                        "title": "PK bridge hypothesis",
+                        "hypothesis": "Canine and human PK gaps should gate pazopanib translation.",
+                        "rationale": "Validation agents need explicit exposure context.",
+                        "status": "draft",
+                        "confidence": 0.64,
+                    }
+                ]
+            },
+        )
+    )
+
+    payload = command_center_web.list_ideas_payload(service)
+    therapy_payload = command_center_web.list_ideas_payload(service, {"kind": ["therapy_idea"]})
+    query_payload = command_center_web.list_ideas_payload(service, {"query": ["pazopanib"]})
+
+    assert payload["total"] == 2
+    assert payload["kind_counts"] == {"therapy_idea": 1, "validation_hypothesis": 1}
+    assert payload["status_counts"] == {"draft": 1, "needs_approval": 1}
+    assert therapy_payload["visible"] == 1
+    assert therapy_payload["items"][0]["idea_id"] == str(idea.idea_id)
+    assert therapy_payload["items"][0]["validation_status_counts"] == {"needs_approval": 1}
+    assert query_payload["visible"] == 2
+    assert any(item.get("plan_id") == str(plan.plan_id) for item in payload["items"])
+
+
+def test_command_center_web_action_items_and_research_lead_status_updates(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "command-center-web-actions.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Potential VEGF follow-up article",
+            lead_type="linked_article",
+            status="new",
+            priority=20,
+            source_key="x_linked_article",
+            reason="Agent flagged a durable article link for follow-up.",
+            topic_tags=["vegf", "therapy"],
+            suggested_sources=["pubmed"],
+        )
+    )
+
+    action_items = command_center_web.build_action_items_payload(service, {"limit": ["10"]})
+    listed = command_center_web.list_research_leads_payload(service, {"status": ["new,watching,followup"]})
+    promoted = command_center_web.update_research_lead_status_payload(
+        service,
+        str(lead.lead_id),
+        {"status": "watching", "operator": "operator"},
+    )
+    demoted = command_center_web.update_research_lead_status_payload(
+        service,
+        str(lead.lead_id),
+        {"status": "dismissed", "operator": "operator"},
+    )
+
+    assert any(item["kind"] == "research_lead" for item in action_items["items"])
+    assert listed["visible"] == 1
+    assert listed["items"][0]["lead_id"] == str(lead.lead_id)
+    assert promoted["item"]["status"] == "watching"
+    assert promoted["item"]["metadata"]["command_center"]["operator"] == "operator"
+    assert demoted["item"]["status"] == "dismissed"
+
+
+def test_therapy_committee_contract_rejects_invalid_priority_score():
+    with pytest.raises(ValidationError):
+        TherapyIdea(
+            title="Invalid idea",
+            hypothesis="Priority score is outside the allowed range.",
+            rationale="The contract should reject malformed committee output.",
+            evidence_refs=["C1"],
+            priority_score=1.5,
+        )
+
+
+def test_therapy_committee_runs_cited_idea_layer(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "therapy-committee.sqlite3", seed=False)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:therapy",
+            content_hash="therapy-raw",
+            source_url="https://pubmed.ncbi.nlm.nih.gov/therapy/",
+            raw_payload={"pmid": "therapy"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="KDR VEGFA and mTOR therapy in canine hemangiosarcoma",
+            abstract=(
+                "Canine hemangiosarcoma and human angiosarcoma share vascular biology. "
+                "KDR, VEGFA, MTOR, CD31, propranolol, sirolimus, and paclitaxel are discussed."
+            ),
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            canonical_url="https://pubmed.ncbi.nlm.nih.gov/therapy/",
+            dedupe_key="pmid:therapy",
+            identifiers={"pmid": "therapy"},
+        ),
+        raw_record_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "Canine hemangiosarcoma translational therapy evidence discusses KDR, VEGFA, "
+                "MTOR, CD31, propranolol, sirolimus, paclitaxel, toxicity, target selection, "
+                "biomarker readouts, and human angiosarcoma analog evidence."
+            ),
+            content_hash="therapy-chunk",
+        )
+    )
+
+    result = HSAResearchService(repo).run_therapy_committee(
+        TherapyCommitteeRequest(
+            topic="KDR VEGFA mTOR therapy ideas for canine hemangiosarcoma",
+            max_chunks_per_perspective=3,
+            max_claims=0,
+            review_mode="deterministic_only",
+        )
+    )
+
+    assert isinstance(result, TherapyCommitteeResult)
+    assert len(result.reports) == 4
+    assert result.ranked_ideas
+    assert result.ranked_ideas[0].evidence_refs
+    assert result.evidence["citation_count"] >= 1
+    agent_runs = repo.list_agent_runs(agent_name="therapy_committee_chair_agent", limit=10)
+    assert agent_runs
+    assert agent_runs[0].status == RunStatus.COMPLETED
+
+
+def test_therapy_committee_validation_queue_promotes_ranked_ideas(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "therapy-committee-validation.sqlite3", seed=False)
+    idea = TherapyIdea(
+        title="KDR/VEGFR2 mutation-gated TKI validation",
+        hypothesis="KDR/FLT4 altered HSA may respond to VEGFR-targeting TKIs.",
+        rationale="The committee connected cross-species vascular tumor biology with KDR/FLT4 evidence.",
+        candidate_therapies=["toceranib", "sorafenib"],
+        targets=["KDR", "FLT4"],
+        biomarkers=["KDR mutation", "phospho-VEGFR2"],
+        mechanism="VEGFR blockade should suppress downstream angiogenic signaling.",
+        evidence_refs=["C1", "C2"],
+        evidence_strength="medium",
+        translational_path="Use canine HSA as a comparative model for human angiosarcoma.",
+        risks=["coagulation risk", "species PK/PD uncertainty"],
+        next_experiments=["TKI dose-response assay", "coagulation safety review"],
+        priority_score=0.82,
+    )
+    committee = TherapyCommitteeResult(
+        topic="KDR VEGFA mTOR therapy ideas for canine hemangiosarcoma",
+        disease_scope="canine hemangiosarcoma and human angiosarcoma",
+        review_mode="openrouter_required",
+        ranked_ideas=[idea],
+        decision_summary="Top idea is KDR/VEGFR2 mutation-gated TKI validation.",
+        evidence={"citation_count": 2, "recommend_only": True},
+    )
+    agent_run = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="therapy_committee_chair_agent",
+            model_profile="therapy_committee",
+            status=RunStatus.COMPLETED,
+            output_payload=committee.model_dump(mode="json"),
+            summary={"idea_count": 1},
+        )
+    )
+    service = HSAResearchService(repo)
+
+    preview = service.queue_therapy_committee_validation_requests(
+        TherapyCommitteeValidationQueueRequest(agent_run_id=agent_run.agent_run_id)
+    )
+    applied = service.queue_therapy_committee_validation_requests(
+        TherapyCommitteeValidationQueueRequest(agent_run_id=agent_run.agent_run_id, dry_run=False)
+    )
+    duplicate = service.queue_therapy_committee_validation_requests(
+        TherapyCommitteeValidationQueueRequest(agent_run_id=agent_run.agent_run_id, dry_run=False)
+    )
+    persisted = service.list_validation_request_queue_items(status="needs_approval", limit=10)
+
+    assert isinstance(preview, TherapyCommitteeValidationQueueResult)
+    assert preview.dry_run is True
+    assert preview.candidate_idea_count == 1
+    assert preview.candidate_task_count == 3
+    assert preview.queued_count == 0
+    assert applied.queued_count == 3
+    assert duplicate.existing_count == 3
+    assert len(persisted) == 3
+    assert {item.task_type for item in persisted} == {"expert_review", "wet_lab", "safety"}
+    assert {item.validation_request.validation_type for item in persisted} == {"expert_review", "wet_lab", "safety"}
+    assert all(item.metadata["queued_from"] == "therapy_committee" for item in persisted)
+    assert all(item.validation_request.assay_context is not None for item in persisted)
+    assert all("source_traceability_required" in item.quality_gates for item in persisted)
+    assert repo.get_validation_plan(applied.plan_id) is not None
+
+
 def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "research-brief.sqlite3", seed=False)
     raw_record_id = repo.upsert_raw_record(
@@ -4104,7 +4618,7 @@ def test_validation_planning_service_persists_ready_recommend_only_plan(tmp_path
     service = HSAResearchService(repo)
     brief = service.run_research_brief(
         ResearchBriefRequest(
-            topic="VEGF target validation in canine hemangiosarcoma",
+            topic="VEGF omics biomarker expression target validation in canine hemangiosarcoma",
             review_mode="deterministic_only",
             max_chunks_per_perspective=3,
             max_claims=0,
@@ -4123,6 +4637,10 @@ def test_validation_planning_service_persists_ready_recommend_only_plan(tmp_path
     assert result.agent_run_id is not None
     assert result.hypothesis_drafts
     assert result.tasks
+    omics_tasks = [task for task in result.tasks if task.task_type == "omics"]
+    assert omics_tasks
+    assert all(task.validation_request is not None for task in omics_tasks)
+    assert {task.validation_request.validation_type for task in omics_tasks if task.validation_request} == {"omics"}
     assert all(task.requires_human_approval for task in result.tasks)
     assert all(task.validation_request is None or task.validation_request.require_approval for task in result.tasks)
     validation_requests = [task.validation_request for task in result.tasks if task.validation_request is not None]
@@ -4130,6 +4648,8 @@ def test_validation_planning_service_persists_ready_recommend_only_plan(tmp_path
     assert all(request.assay_context is not None for request in validation_requests)
     assert any("canine" in request.assay_context.species for request in validation_requests if request.assay_context)
     assert all("source_traceability_required" in request.quality_gates for request in validation_requests)
+    omics_requests = [request for request in validation_requests if request.validation_type == "omics"]
+    assert all("omics_dataset_context_required" in request.quality_gates for request in omics_requests)
     assert saved is not None
     assert saved.brief_id == brief.brief_id
     assert saved.evaluation_id == evaluation.evaluation_id
@@ -4176,7 +4696,7 @@ def test_validation_request_queue_promotes_ready_plan_tasks(tmp_path):
     service = HSAResearchService(repo)
     brief = service.run_research_brief(
         ResearchBriefRequest(
-            topic="VEGF target validation in canine hemangiosarcoma",
+            topic="VEGF omics biomarker expression target validation in canine hemangiosarcoma",
             review_mode="deterministic_only",
             max_chunks_per_perspective=3,
             max_claims=0,
@@ -4201,12 +4721,16 @@ def test_validation_request_queue_promotes_ready_plan_tasks(tmp_path):
         approved_by="unit-test",
         approval_note="Ready for controlled validation.",
     )
-    dispatched = service.dispatch_validation_request_queue_item(queued_item.queue_item_id)
+    dispatched = service.dispatch_validation_request_queue_item(
+        queued_item.queue_item_id,
+        model_profile="deterministic_only",
+    )
 
     assert preview.dry_run is True
     assert preview.queued_count == 0
     assert preview.queue_items
     assert applied.queued_count == len(applied.queue_items)
+    assert any(item.validation_request.validation_type == "omics" for item in applied.queue_items)
     assert duplicate.queued_count == 0
     assert duplicate.existing_count == len(applied.queue_items)
     assert blocked_dispatch is not None
@@ -4215,9 +4739,10 @@ def test_validation_request_queue_promotes_ready_plan_tasks(tmp_path):
     assert approved is not None
     assert approved.status == "approved"
     assert dispatched is not None
-    assert dispatched.status == "dispatched"
+    assert dispatched.status == "completed"
     assert dispatched.last_run_id is not None
-    assert service.get_run_status(dispatched.last_run_id) is not None
+    assert service.get_agent_run(dispatched.last_run_id) is not None
+    assert dispatched.metadata["validation_agent_result"]["decision"] in {"promote", "hold", "demote"}
 
 
 def test_validation_request_queue_blocks_dispatch_without_assay_context(tmp_path):
@@ -4256,6 +4781,661 @@ def test_validation_request_queue_blocks_dispatch_without_assay_context(tmp_path
     assert "assay_context_required" in blocked.dispatch_blockers
     assert "dispatch blocked" in blocked.last_error.lower()
     assert blocked.last_run_id is None
+
+
+def test_omics_validation_request_dispatches_after_approval(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "omics-validation-request.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    context = ValidationAssayContext(
+        disease_context="canine hemangiosarcoma and human angiosarcoma",
+        species=["canine", "human"],
+        model_system="Comparative canine and human molecular dataset review.",
+        assay_type="omics evidence review",
+        readout="species-conserved signal, expression context, and dataset caveats",
+        endpoint="translational molecular support",
+        evidence_refs=["brief:1", "evaluation:1", "C1"],
+        negative_evidence_needs=["Check whether negative or null expression datasets exist."],
+    )
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="Omics support queue guardrail",
+            task_type="omics",
+            title="Omics support check",
+            objective="Check expression and biomarker evidence across canine and human datasets.",
+            rationale="The synthesis identified a molecular support question.",
+            validation_request=ValidationRequest(
+                validation_type="omics",
+                objective="Review comparative omics support.",
+                require_approval=True,
+                assay_context=context,
+                quality_gates=["omics_dataset_context_required"],
+            ),
+            quality_gates=["omics_dataset_context_required"],
+            metadata={
+                "evidence_refs": ["brief:1", "evaluation:1", "C1"],
+                "expected_outputs": ["dataset support", "species translation notes"],
+            },
+        )
+    )
+
+    approved = service.approve_validation_request_queue_item(
+        item.queue_item_id,
+        approved_by="unit-test",
+        approval_note="Omics context is present.",
+    )
+    dispatched = service.dispatch_validation_request_queue_item(
+        item.queue_item_id,
+        model_profile="deterministic_only",
+    )
+
+    assert approved is not None
+    assert approved.status == "approved"
+    assert dispatched is not None
+    assert dispatched.status == "completed"
+    assert "omics_dataset_context_required" in dispatched.quality_gates
+    assert dispatched.metadata["validation_agent_result"]["agent_name"] == "omics_validation_agent"
+    assert dispatched.metadata["validation_agent_result"]["validation_type"] == "omics"
+
+
+def test_validation_autopilot_dry_run_selects_allowlisted_items(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-autopilot-preview.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    eligible = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="Autopilot eligible review",
+            task_type="expert_review",
+            title="Expert review: VEGF evidence packet",
+            objective="Review the evidence packet.",
+            rationale="This is a low-risk recommend-only review.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                objective="Review the evidence packet.",
+            ),
+            created_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+    )
+    repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="Autopilot excluded wet lab",
+            task_type="wet_lab",
+            title="Wet lab protocol",
+            objective="Design an experiment.",
+            rationale="Wet lab work stays manual.",
+            validation_request=ValidationRequest(
+                validation_type="wet_lab",
+                objective="Design an experiment.",
+            ),
+            created_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+    )
+
+    result = service.preview_validation_autopilot(
+        ValidationAutopilotRequest(
+            model_profile="deterministic_only",
+            minimum_queue_age_hours=1.0,
+        )
+    )
+    stored = service.get_validation_request_queue_item(eligible.queue_item_id)
+
+    assert result.dry_run is True
+    assert result.selected_count == 1
+    assert result.selected[0].queue_item_id == eligible.queue_item_id
+    assert any(record.reason == "task_type_not_allowlisted:wet_lab" for record in result.skipped)
+    assert stored is not None
+    assert stored.status == "needs_approval"
+    assert stored.approved_by is None
+
+
+def test_validation_autopilot_apply_dispatches_deterministic_item(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-autopilot-apply.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="Autopilot apply review",
+            task_type="expert_review",
+            title="Expert review: KDR mutation signal",
+            objective="Review KDR mutation support.",
+            rationale="This is a low-risk recommend-only review.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                objective="Review KDR mutation support.",
+            ),
+            metadata={"expected_outputs": ["go/no-go validation readiness"], "evidence_refs": ["C1", "C2"]},
+        )
+    )
+
+    result = service.run_validation_autopilot(
+        ValidationAutopilotRequest(
+            dry_run=False,
+            force=True,
+            model_profile="deterministic_only",
+            minimum_queue_age_hours=0.0,
+        )
+    )
+    stored = service.get_validation_request_queue_item(item.queue_item_id)
+
+    assert result.agent_run_id is not None
+    assert result.dispatched_count == 1
+    assert result.actual_cost_usd == 0.0
+    assert stored is not None
+    assert stored.status == "completed"
+    assert stored.approved_by == "validation_autopilot"
+    assert stored.metadata["validation_autopilot"]["result_status"] == "completed"
+    assert stored.metadata["validation_agent_result"]["decision"] in {"promote", "hold", "demote"}
+    assert service.get_agent_run(result.agent_run_id) is not None
+
+
+def test_validation_autopilot_blocks_recent_manual_activity(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-autopilot-grace.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="Autopilot grace candidate",
+            task_type="expert_review",
+            title="Expert review candidate",
+            objective="Review the evidence packet.",
+            rationale="This should wait because an operator was active.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                objective="Review the evidence packet.",
+            ),
+            created_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+    )
+    manual = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            status="approved",
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="Recent manual activity",
+            task_type="expert_review",
+            title="Manually approved review",
+            objective="Review manually.",
+            rationale="This records recent operator activity.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                objective="Review manually.",
+            ),
+            approved_by="operator",
+            metadata={"approved_at": datetime.now(UTC).isoformat()},
+        )
+    )
+
+    result = service.run_validation_autopilot(
+        ValidationAutopilotRequest(
+            dry_run=False,
+            model_profile="deterministic_only",
+            minimum_queue_age_hours=0.0,
+            manual_grace_period_hours=6.0,
+        )
+    )
+    stored = service.get_validation_request_queue_item(candidate.queue_item_id)
+
+    assert manual.approved_by == "operator"
+    assert "manual_grace_period_active" in result.blockers
+    assert result.selected_count == 1
+    assert result.dispatched_count == 0
+    assert stored is not None
+    assert stored.status == "needs_approval"
+    assert stored.approved_by is None
+
+
+def test_validation_autopilot_blocks_openrouter_missing_before_mutation(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    repo = SQLiteResearchRepository(tmp_path / "validation-autopilot-openrouter.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="Autopilot live model candidate",
+            task_type="expert_review",
+            title="Expert review live model candidate",
+            objective="Review the evidence packet.",
+            rationale="OpenRouter must be ready before mutation.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                objective="Review the evidence packet.",
+            ),
+            created_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+    )
+
+    result = service.run_validation_autopilot(
+        ValidationAutopilotRequest(
+            dry_run=False,
+            model_profile="openrouter_required",
+            minimum_queue_age_hours=0.0,
+        )
+    )
+    stored = service.get_validation_request_queue_item(item.queue_item_id)
+
+    assert "openrouter_api_key_missing" in result.blockers
+    assert result.dispatched_count == 0
+    assert stored is not None
+    assert stored.status == "needs_approval"
+    assert stored.approved_by is None
+    assert stored.attempts == 0
+
+
+def test_validation_request_queue_records_failed_live_agent_dispatch_without_key(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    repo = SQLiteResearchRepository(tmp_path / "validation-agent-failure.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="VEGF validation agent dispatch",
+            task_type="expert_review",
+            title="Expert review: VEGF translational signal",
+            objective="Review whether the hypothesis has enough evidence for validation.",
+            rationale="Human approval is required before dispatch.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                objective="Review whether the hypothesis has enough evidence for validation.",
+                require_approval=True,
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma and human angiosarcoma",
+                    species=["canine", "human"],
+                    model_system="human-reviewed evidence packet",
+                    assay_type="expert evidence review",
+                    readout="go/no-go validation readiness",
+                ),
+            ),
+            quality_gates=["human_approval_required", "assay_context_present"],
+        )
+    )
+    service.approve_validation_request_queue_item(item.queue_item_id, approved_by="unit-test")
+
+    failed = service.dispatch_validation_request_queue_item(
+        item.queue_item_id,
+        model_profile="openrouter_required",
+    )
+
+    assert failed is not None
+    assert failed.status == "failed"
+    assert "OPENROUTER_API_KEY" in failed.last_error
+    assert failed.metadata["validation_agent_model_profile"] == "openrouter_required"
+
+
+def test_evidence_gap_resolver_creates_research_leads_and_brief_queue_items(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "evidence-gap-resolver.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    queue_item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="KDR VEGFR2 validation",
+            task_type="expert_review",
+            title="Expert review: KDR mutation-gated TKI validation",
+            objective="Review KDR mutation function and TKI response evidence.",
+            rationale="The validation agent held the idea pending stronger evidence.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                target_name="KDR",
+                candidate_name="sorafenib",
+                objective="Review KDR mutation function and TKI response evidence.",
+                require_approval=False,
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma and human angiosarcoma",
+                    species=["canine", "human"],
+                    model_system="evidence packet",
+                    assay_type="expert evidence review",
+                    readout="go/no-go validation readiness",
+                ),
+            ),
+            status="completed",
+            last_run_id=uuid4(),
+            metadata={
+                "idea_id": str(uuid4()),
+                "idea_title": "KDR mutation-gated TKI validation",
+                "validation_agent_result": ValidationAgentResult(
+                    agent_run_id=uuid4(),
+                    queue_item_id=uuid4(),
+                    plan_id=uuid4(),
+                    task_id=uuid4(),
+                    task_type="expert_review",
+                    validation_type="expert_review",
+                    agent_name="evidence_review_validation_agent",
+                    model_profile="openrouter_required",
+                    decision="hold",
+                    confidence=0.67,
+                    summary="Hold pending mutation function and clinical response evidence.",
+                    evidence_used=["C1", "C2"],
+                    missing_evidence=[
+                        "Functional classification of KDR/FLT4 mutations as activating versus passenger.",
+                        "Clinical response correlation between KDR mutation status and TKI response.",
+                    ],
+                    risks=["Sorafenib coagulopathy and hemorrhage safety risk."],
+                    next_actions=["Validate phospho-VEGFR2 IHC assay as a pharmacodynamic readout."],
+                ).model_dump(mode="json"),
+            },
+        )
+    )
+
+    preview = service.resolve_evidence_gaps(
+        EvidenceGapResolverRequest(queue_item_ids=[queue_item.queue_item_id])
+    )
+    applied = service.resolve_evidence_gaps(
+        EvidenceGapResolverRequest(
+            queue_item_ids=[queue_item.queue_item_id],
+            dry_run=False,
+            queue_research_briefs=True,
+        )
+    )
+    duplicate = service.resolve_evidence_gaps(
+        EvidenceGapResolverRequest(queue_item_ids=[queue_item.queue_item_id], dry_run=False)
+    )
+    leads = repo.list_research_leads(status="new", limit=20)
+    queued_briefs = repo.list_research_brief_queue_items(status="queued", limit=20)
+
+    assert isinstance(preview, EvidenceGapResolverResult)
+    assert preview.dry_run is True
+    assert preview.gap_count == 4
+    assert preview.leads_created == 0
+    assert applied.queue_items_seen == 1
+    assert applied.gap_count == 4
+    assert applied.leads_created == 4
+    assert applied.brief_queue_count == 4
+    assert duplicate.existing_leads == 4
+    assert len(leads) == 4
+    assert len(queued_briefs) == 4
+    assert {"mutation_function", "clinical_response", "safety_signal", "assay_protocol"}.issubset(
+        {lead.metadata["evidence_gap_resolver"]["lane"] for lead in leads}
+    )
+    assert all("validation_gap" in lead.topic_tags for lead in leads)
+    assert repo.list_agent_runs(agent_name="evidence_gap_resolver_agent", status="completed", limit=1)
+
+
+def test_validation_gap_source_pack_builds_and_persists_targeted_queries(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-gap-source-pack.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    plan_id = uuid4()
+    task_id = uuid4()
+    queue_item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=plan_id,
+            task_id=task_id,
+            brief_id=uuid4(),
+            topic="Sorafenib VEGFR safety validation",
+            task_type="expert_review",
+            title="Review sorafenib safety in canine HSA",
+            objective="Find direct canine sorafenib safety and PK/PD evidence before promotion.",
+            rationale="Validation held because direct canine dosing evidence is missing.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                candidate_name="sorafenib",
+                target_name="KDR",
+                objective="Find direct canine sorafenib safety and PK/PD evidence before promotion.",
+                require_approval=False,
+            ),
+            status="completed",
+            metadata={
+                "validation_agent_result": ValidationAgentResult(
+                    queue_item_id=uuid4(),
+                    plan_id=plan_id,
+                    task_id=task_id,
+                    task_type="expert_review",
+                    validation_type="expert_review",
+                    agent_name="evidence_review_validation_agent",
+                    model_profile="openrouter_required",
+                    decision="hold",
+                    confidence=0.62,
+                    summary="Hold pending direct canine dosing evidence.",
+                    evidence_used=["C1"],
+                    missing_evidence=["Direct canine sorafenib safety and dose-limiting toxicity evidence."],
+                ).model_dump(mode="json"),
+            },
+        )
+    )
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            identity_key=f"research_lead:validation_gap:{queue_item.queue_item_id}:safety",
+            title="Safety signal: direct canine sorafenib DLT evidence",
+            status="new",
+            priority=10,
+            source_key="pubmed",
+            origin_source_key="validation_agent",
+            origin_record_id=str(queue_item.queue_item_id),
+            origin_review_id=queue_item.queue_item_id,
+            reason="Direct canine sorafenib safety and dose-limiting toxicity evidence.",
+            evidence_refs=[f"validation_queue:{queue_item.queue_item_id}"],
+            topic_tags=["validation_gap", "safety_signal", "missing_evidence"],
+            suggested_sources=["pubmed", "chembl", "openfda_animal_events"],
+            metadata={
+                "evidence_gap_resolver": {
+                    "origin": "validation_agent_result",
+                    "gap_type": "missing_evidence",
+                    "lane": "safety_signal",
+                    "gap_text": "Direct canine sorafenib safety and dose-limiting toxicity evidence.",
+                    "queue_item_id": str(queue_item.queue_item_id),
+                    "plan_id": str(plan_id),
+                    "task_id": str(task_id),
+                    "task_type": "expert_review",
+                    "validation_type": "expert_review",
+                    "decision": "hold",
+                }
+            },
+        )
+    )
+
+    preview = service.build_validation_gap_source_pack(
+        ValidationGapSourcePackRequest(
+            lead_ids=[lead.lead_id],
+            source_keys=["pubmed", "chembl", "openfda_animal_events"],
+            max_queries_per_lane=5,
+        )
+    )
+    applied = service.build_validation_gap_source_pack(
+        ValidationGapSourcePackRequest(
+            lead_ids=[lead.lead_id],
+            source_keys=["pubmed", "chembl", "openfda_animal_events"],
+            max_queries_per_lane=5,
+            persist_queries=True,
+            dry_run=False,
+        )
+    )
+    stored_queries = repo.list_source_queries(active_only=True)
+
+    assert isinstance(preview, ValidationGapSourcePackResult)
+    assert preview.query_count == 3
+    assert preview.persisted_query_count == 0
+    assert {query.source_key for query in preview.queries} == {"pubmed", "chembl", "openfda_animal_events"}
+    assert any("sorafenib" in query.query_text.lower() and "safety" in query.query_text.lower() for query in preview.queries)
+    assert applied.persisted_query_count == 3
+    assert len(stored_queries) == 3
+    assert all(query.track == "validation_gap" for query in stored_queries)
+    assert repo.list_agent_runs(agent_name="validation_gap_source_pack_agent", status="completed", limit=2)
+
+
+def test_validation_gap_ingest_runs_only_validation_gap_queries(monkeypatch):
+    repo = InMemoryResearchRepository()
+    repo.upsert_source_query(
+        SourceQuery(
+            source_key="pubmed",
+            query_name="validation_gap_safety",
+            query_text="sorafenib canine safety",
+            query_params={
+                "lane": "safety_signal",
+                "validation_gap": True,
+                "source_pack_request": {"dry_run": False},
+                "require_policy_match": False,
+                "mindate": "2026/01/01",
+            },
+            track="validation_gap",
+        )
+    )
+    repo.upsert_source_query(
+        SourceQuery(
+            source_key="pubmed",
+            query_name="starter_query",
+            query_text="hemangiosarcoma",
+            track="comparative_oncology",
+        )
+    )
+    calls = []
+
+    class FakePipeline:
+        def __init__(self, repository):
+            self.repository = repository
+
+        def ingest_query(self, query, limit, persist_query=True):
+            calls.append((query.source_key, query.query_name, limit, persist_query, query.query_params))
+            return IngestionResult(
+                source_key=query.source_key,
+                query_name=query.query_name,
+                query_text=query.query_text,
+                fetch_run_id=uuid4(),
+                raw_records=2,
+                research_objects=2,
+                document_chunks=2,
+                status=RunStatus.COMPLETED,
+            )
+
+    monkeypatch.setattr(validation_gap_ingest, "LocalIngestionPipeline", FakePipeline)
+
+    preview = HSAResearchService(repo).ingest_validation_gap_source_queries(
+        ValidationGapSourceIngestRequest(source_keys=["pubmed"])
+    )
+    applied = HSAResearchService(repo).ingest_validation_gap_source_queries(
+        ValidationGapSourceIngestRequest(source_keys=["pubmed"], dry_run=False, limit_per_query=3)
+    )
+
+    assert preview.dry_run is True
+    assert preview.query_count == 1
+    assert preview.attempted_query_count == 0
+    assert applied.query_count == 1
+    assert applied.completed_query_count == 1
+    assert applied.raw_records == 2
+    assert calls == [
+        (
+            "pubmed",
+            "validation_gap_safety",
+            3,
+            False,
+            {"require_policy_match": False, "mindate": "2026/01/01"},
+        )
+    ]
+
+
+def test_validation_gap_ingest_strips_internal_params_before_api_calls(monkeypatch):
+    repo = InMemoryResearchRepository()
+    repo.upsert_source_query(
+        SourceQuery(
+            source_key="openalex",
+            query_name="validation_gap_openalex",
+            query_text="sorafenib angiosarcoma",
+            query_params={
+                "lane": "clinical_response",
+                "lead_id": "lead-1",
+                "queue_item_id": "queue-1",
+                "required_terms": ["sorafenib"],
+                "source_pack_request": {"persist_queries": True},
+                "validation_gap": True,
+                "filter": "from_publication_date:2020-01-01",
+                "sort": "cited_by_count:desc",
+            },
+            track="validation_gap",
+        )
+    )
+    repo.upsert_source_query(
+        SourceQuery(
+            source_key="clinicaltrials_gov",
+            query_name="validation_gap_trials",
+            query_text="angiosarcoma sorafenib",
+            query_params={
+                "lane": "clinical_response",
+                "search_area": "term",
+                "validation_gap": True,
+            },
+            track="validation_gap",
+        )
+    )
+    calls = []
+
+    class FakePipeline:
+        def __init__(self, repository):
+            self.repository = repository
+
+        def ingest_query(self, query, limit, persist_query=True):
+            calls.append((query.source_key, query.query_params))
+            return IngestionResult(
+                source_key=query.source_key,
+                query_name=query.query_name,
+                query_text=query.query_text,
+                fetch_run_id=uuid4(),
+                status=RunStatus.COMPLETED,
+            )
+
+    monkeypatch.setattr(validation_gap_ingest, "LocalIngestionPipeline", FakePipeline)
+
+    result = HSAResearchService(repo).ingest_validation_gap_source_queries(
+        ValidationGapSourceIngestRequest(
+            source_keys=["openalex", "clinicaltrials_gov"],
+            dry_run=False,
+        )
+    )
+
+    assert result.completed_query_count == 2
+    assert calls == [
+        ("clinicaltrials_gov", {"search_area": "term"}),
+        ("openalex", {"filter": "from_publication_date:2020-01-01", "sort": "cited_by_count:desc"}),
+    ]
+
+
+def test_local_ingestion_sanitizes_validation_gap_query_params(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-gap-local-ingest.sqlite3", seed=False)
+    calls = []
+
+    class FakeHarvester:
+        def fetch(self, query_text, limit=25, **params):
+            calls.append((query_text, limit, params))
+            return []
+
+    monkeypatch.setattr(local_ingest_module, "get_harvester", lambda source_key: FakeHarvester())
+
+    result = LocalIngestionPipeline(repo).ingest_query(
+        SourceQuery(
+            source_key="openalex",
+            query_name="validation_gap_openalex",
+            query_text="sorafenib angiosarcoma",
+            query_params={
+                "lane": "clinical_response",
+                "lead_id": "lead-1",
+                "validation_gap": True,
+                "filter": "from_publication_date:2020-01-01",
+            },
+            track="validation_gap",
+        ),
+        limit=1,
+        persist_query=True,
+    )
+    stored = repo.list_source_queries(source_key="openalex", active_only=True)[0]
+
+    assert result.status == RunStatus.COMPLETED
+    assert calls == [("sorafenib angiosarcoma", 1, {"filter": "from_publication_date:2020-01-01"})]
+    assert stored.query_params["lane"] == "clinical_response"
+    assert stored.query_params["validation_gap"] is True
 
 
 def test_validation_planning_blocks_when_evaluation_is_not_ready(tmp_path):
@@ -6705,6 +7885,92 @@ def test_local_deterministic_embedding_provider_is_repeatable():
     assert sum(value * value for value in vector) == pytest.approx(1.0)
 
 
+def test_openrouter_embedding_provider_calls_embeddings_api(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "data": [
+                        {"index": 0, "embedding": [0.1, 0.2, 0.3]},
+                        {"index": 1, "embedding": [0.4, 0.5, 0.6]},
+                    ]
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        calls.append(
+            {
+                "url": request.full_url,
+                "payload": json.loads(request.data.decode("utf-8")),
+                "authorization": request.headers.get("Authorization"),
+                "timeout": timeout,
+            }
+        )
+        return FakeResponse()
+
+    monkeypatch.setattr("hsa_research.ingestion_bridge.embeddings.urllib_request.urlopen", fake_urlopen)
+
+    provider = OpenRouterEmbeddingProvider(
+        embedding_model="openai/text-embedding-3-small",
+        api_key="unit-test-key",
+        timeout_seconds=12,
+    )
+    vectors = provider.embed_texts(["alpha", "beta"])
+
+    assert provider.embedding_model == "openrouter:openai/text-embedding-3-small"
+    assert provider.provider_name == "openrouter"
+    assert provider.provider_model == "openai/text-embedding-3-small"
+    assert provider.embedding_dimensions == 3
+    assert vectors == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+    assert calls[0]["url"] == "https://openrouter.ai/api/v1/embeddings"
+    assert calls[0]["payload"]["model"] == "openai/text-embedding-3-small"
+    assert calls[0]["payload"]["input"] == ["alpha", "beta"]
+    assert calls[0]["authorization"] == "Bearer unit-test-key"
+    assert calls[0]["timeout"] == 12
+
+
+def test_build_embedding_provider_selects_openrouter_and_local(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "unit-test-key")
+
+    local_provider = build_embedding_provider("local-hash-test", dimensions=16)
+    openrouter_provider = build_embedding_provider("openrouter:openai/text-embedding-3-small", dimensions=3)
+
+    assert isinstance(local_provider, LocalDeterministicEmbeddingProvider)
+    assert local_provider.embedding_dimensions == 16
+    assert isinstance(openrouter_provider, OpenRouterEmbeddingProvider)
+    assert openrouter_provider.embedding_model == "openrouter:openai/text-embedding-3-small"
+    assert openrouter_provider.embedding_dimensions == 3
+
+
+def test_embedding_model_selection_prefers_configured_then_openrouter(monkeypatch):
+    models = {
+        "local-hash-v1": 10,
+        "openrouter:openai/text-embedding-3-small": 10,
+        "openrouter:openai/text-embedding-3-large": 10,
+    }
+
+    monkeypatch.delenv("HSA_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    assert default_embedding_model_for_environment() == "local-hash-v1"
+    assert select_embedding_model_from_coverage(models) == "local-hash-v1"
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "unit-test-key")
+    assert default_embedding_model_for_environment() == "openrouter:openai/text-embedding-3-large"
+    assert select_embedding_model_from_coverage(models) == "openrouter:openai/text-embedding-3-large"
+
+    monkeypatch.setenv("HSA_EMBEDDING_MODEL", "openrouter:openai/text-embedding-3-small")
+    assert default_embedding_model_for_environment() == "openrouter:openai/text-embedding-3-small"
+    assert select_embedding_model_from_coverage(models) == "openrouter:openai/text-embedding-3-small"
+
+
 def test_build_chunk_embedding_text_includes_canonical_entity_context():
     object_id = uuid4()
     chunk_id = uuid4()
@@ -6956,6 +8222,61 @@ def test_index_embeddings_for_repository_is_idempotent_and_includes_entities(tmp
     assert second_embedding.metadata["canonical_entity_count"] == 1
 
 
+def test_index_embeddings_for_repository_uses_configured_provider(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="OpenRouter embedding index example",
+            source_key="pubmed",
+            dedupe_key="pubmed:openrouter-embedding-index",
+        )
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="Sorafenib safety in dogs.",
+            content_hash="openrouter-embedding-index-chunk",
+        )
+    )
+
+    class FakeProvider:
+        embedding_model = "openrouter:unit-embedding"
+        provider_name = "openrouter"
+        provider_model = "unit-embedding"
+
+        @property
+        def embedding_dimensions(self):
+            return 3
+
+        def embed_text(self, text):
+            return [1.0, 0.0, 0.0]
+
+        def embed_texts(self, texts):
+            return [[1.0, 0.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(
+        "hsa_research.ingestion_bridge.embeddings.build_embedding_provider",
+        lambda embedding_model, dimensions=None: FakeProvider(),
+    )
+
+    result = index_embeddings_for_repository(
+        repo,
+        source_key="pubmed",
+        embedding_model="openrouter:unit-embedding",
+        batch_size=8,
+    )
+    embedding = repo.list_text_embeddings(embedding_model="openrouter:unit-embedding")[0]
+
+    assert result.errors == ()
+    assert result.embeddings_created == 1
+    assert embedding.embedding == [1.0, 0.0, 0.0]
+    assert embedding.metadata["provider"] == "openrouter"
+    assert embedding.metadata["provider_model"] == "unit-embedding"
+
+
 def test_index_embeddings_rebuilds_on_content_hash_change_and_force(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
     object_id = repo.upsert_research_object(
@@ -7145,6 +8466,126 @@ def test_service_search_research_chunks_uses_embeddings_without_returning_vector
     assert not _contains_key(payload, "embedding")
 
 
+def test_service_search_research_chunks_hybrid_reranks_keyword_specific_hits(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    provider = LocalDeterministicEmbeddingProvider(embedding_model="local-hash-test")
+    query = "sorafenib canine hemangiosarcoma safety dose limiting toxicity"
+    generic_object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="dataset",
+            title="canine hemangiosarcoma cell lines",
+            source_key="geo",
+            dedupe_key="geo:retrieval-hybrid-generic",
+        )
+    )
+    generic_chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=generic_object_id,
+            chunk_index=0,
+            section_label="dataset",
+            text_content="canine hemangiosarcoma cell lines and tissues",
+            content_hash="retrieval-hybrid-generic",
+        )
+    )
+    specific_object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Sorafenib safety and dose limiting toxicity in canine hemangiosarcoma",
+            source_key="pubmed",
+            dedupe_key="pubmed:retrieval-hybrid-specific",
+        )
+    )
+    specific_chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=specific_object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="Sorafenib canine hemangiosarcoma safety dose limiting toxicity evidence.",
+            content_hash="retrieval-hybrid-specific",
+        )
+    )
+    repo.upsert_text_embedding(
+        TextEmbedding(
+            chunk_id=generic_chunk.id,
+            research_object_id=generic_object_id,
+            chunk_index=0,
+            source_key="geo",
+            object_type="dataset",
+            content_hash="retrieval-hybrid-generic-embedding",
+            embedding_model="local-hash-test",
+            embedding_dimensions=provider.embedding_dimensions,
+            embedding=provider.embed_text(query),
+        )
+    )
+    repo.upsert_text_embedding(
+        TextEmbedding(
+            chunk_id=specific_chunk.id,
+            research_object_id=specific_object_id,
+            chunk_index=0,
+            source_key="pubmed",
+            object_type="publication",
+            content_hash="retrieval-hybrid-specific-embedding",
+            embedding_model="local-hash-test",
+            embedding_dimensions=provider.embedding_dimensions,
+            embedding=provider.embed_text("unrelated assay protocol"),
+        )
+    )
+
+    results = service.search_research_chunks(
+        ResearchChunkSearchRequest(
+            query=query,
+            embedding_model="local-hash-test",
+            limit=2,
+        )
+    )
+
+    assert results.search_mode == "embedding"
+    assert results.results[0].chunk.id == specific_chunk.id
+    assert results.results[1].chunk.id == generic_chunk.id
+
+
+def test_embedding_bakeoff_scores_configured_models(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Sorafenib safety and coagulopathy in a dog",
+            abstract="Sorafenib toxicity and dose monitoring in dogs.",
+            source_key="pmc_oa",
+            dedupe_key="pmc_oa:embedding-bakeoff",
+        )
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="Sorafenib dog safety toxicity coagulopathy evidence.",
+            content_hash="embedding-bakeoff-chunk",
+        )
+    )
+    index_embeddings_for_repository(repo, embedding_model="local-hash-test")
+
+    report = run_embedding_bakeoff(
+        repo,
+        embedding_models=("local-hash-test",),
+        benchmarks=(
+            EmbeddingBenchmark(
+                name="unit_sorafenib_dog_safety",
+                query="sorafenib dog safety toxicity",
+                expected_terms=("sorafenib", "dog", "safety", "toxicity"),
+                preferred_source_keys=("pmc_oa",),
+                expected_title_terms=("sorafenib", "dog"),
+            ),
+        ),
+    )
+
+    assert report["best_model"] == "local-hash-test"
+    assert report["models"][0]["average_score"] > 0.8
+    assert report["models"][0]["benchmarks"][0]["top_source_key"] == "pmc_oa"
+
+
 def test_service_search_research_chunks_overfetches_stale_embedding_hits(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -7240,6 +8681,56 @@ def test_service_search_research_chunks_falls_back_to_keyword_and_bounds_text(tm
     assert results.results[0].chunk.id == chunk.id
     assert len(results.results[0].chunk.text_content) == 220
     assert results.results[0].text_truncated is True
+
+
+def test_service_keyword_retrieval_scores_before_final_limit(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    generic_object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="dataset",
+            title="canine hemangiosarcoma generic dataset",
+            source_key="geo",
+            dedupe_key="geo:retrieval-keyword-limit-generic",
+        )
+    )
+    for index in range(150):
+        repo.upsert_document_chunk(
+            DocumentChunk(
+                research_object_id=generic_object_id,
+                chunk_index=index,
+                section_label="dataset",
+                text_content="canine hemangiosarcoma cell line metadata",
+                content_hash=f"retrieval-keyword-limit-generic-{index}",
+            )
+        )
+    specific_object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Sorafenib safety dose limiting toxicity in a dog",
+            source_key="pmc_oa",
+            dedupe_key="pmc_oa:retrieval-keyword-limit-specific",
+        )
+    )
+    specific_chunk = repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=specific_object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="Sorafenib safety dose limiting toxicity in a dog with sarcoma.",
+            content_hash="retrieval-keyword-limit-specific",
+        )
+    )
+
+    results = service.search_research_chunks(
+        ResearchChunkSearchRequest(
+            query="canine hemangiosarcoma sorafenib safety dose limiting toxicity",
+            limit=1,
+        )
+    )
+
+    assert results.search_mode == "keyword"
+    assert results.results[0].chunk.id == specific_chunk.id
 
 
 def test_service_get_chunk_context_and_research_object_are_bounded(tmp_path):
@@ -7539,6 +9030,41 @@ def test_mcp_research_lead_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
     assert listed[0]["identity_key"] == lead.identity_key
 
 
+def test_mcp_validation_gap_source_pack_tool_dumps_json_safe_payload(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "mcp-validation-gap-source-pack.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    monkeypatch.setattr(mcp_server, "get_service", lambda: service)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="PK/PD evidence: canine sorafenib exposure",
+            status="new",
+            priority=25,
+            reason="Need canine sorafenib pharmacokinetic exposure and dose evidence.",
+            topic_tags=["validation_gap", "pkpd"],
+            suggested_sources=["pubmed", "chembl"],
+            metadata={
+                "evidence_gap_resolver": {
+                    "lane": "pkpd",
+                    "gap_text": "Need canine sorafenib pharmacokinetic exposure and dose evidence.",
+                    "task_type": "expert_review",
+                    "validation_type": "expert_review",
+                }
+            },
+        )
+    )
+
+    payload = mcp_server.build_validation_gap_source_pack_tool(
+        lead_ids=[str(lead.lead_id)],
+        source_keys=["pubmed", "chembl"],
+        max_queries_per_lane=5,
+        dry_run=True,
+    )
+
+    assert payload["agent_run_id"]
+    assert payload["query_count"] == 2
+    assert {query["source_key"] for query in payload["queries"]} == {"pubmed", "chembl"}
+
+
 def test_mcp_research_brief_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "mcp-research-briefs.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -7663,7 +9189,10 @@ def test_mcp_validation_plan_tools_dump_json_safe_payloads(monkeypatch, tmp_path
         queue_item["queue_item_id"],
         approved_by="unit-test",
     )
-    dispatched = mcp_server.dispatch_validation_request_tool(queue_item["queue_item_id"])
+    dispatched = mcp_server.dispatch_validation_request_tool(
+        queue_item["queue_item_id"],
+        model_profile="deterministic_only",
+    )
 
     assert planned["agent_run_id"]
     assert planned["tasks"]
@@ -7674,8 +9203,9 @@ def test_mcp_validation_plan_tools_dump_json_safe_payloads(monkeypatch, tmp_path
     assert queue_fetched["queue_item_id"] == queue_item["queue_item_id"]
     assert queue_listed[0]["queue_item_id"] == queue_item["queue_item_id"]
     assert approved["status"] == "approved"
-    assert dispatched["status"] == "dispatched"
+    assert dispatched["status"] == "completed"
     assert dispatched["last_run_id"]
+    assert dispatched["metadata"]["validation_agent_result"]["decision"] in {"promote", "hold", "demote"}
 
 
 def test_mcp_research_brief_queue_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
@@ -9012,7 +10542,7 @@ def test_x_linked_article_review_agent_recommends_queue_and_ledgers(tmp_path):
     )
 
     result = HSAResearchService(repo).run_x_linked_article_review(
-        XLinkedArticleReviewRequest(review_ids=[review.review_id])
+        XLinkedArticleReviewRequest(review_ids=[review.review_id], review_mode="deterministic_only")
     )
 
     assert result.agent_run_id is not None
@@ -9057,7 +10587,7 @@ def test_x_linked_article_review_agent_uses_context_without_queueing_it(tmp_path
     )
 
     result = HSAResearchService(repo).run_x_linked_article_review(
-        XLinkedArticleReviewRequest(review_ids=[review.review_id])
+        XLinkedArticleReviewRequest(review_ids=[review.review_id], review_mode="deterministic_only")
     )
 
     action = result.actions[0]
@@ -9243,14 +10773,21 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.validation_plan_library_job is not None
     assert dagster_asset_module.validation_request_queue_job is not None
     assert dagster_asset_module.validation_request_queue_library_job is not None
+    assert dagster_asset_module.validation_autopilot_job is not None
     assert dagster_asset_module.research_brief_queue_job is not None
     assert dagster_asset_module.research_brief_queue_batch_job is not None
     assert dagster_asset_module.research_brief_queue_seed_job is not None
     assert dagster_asset_module.research_brief_queue_runner_job is not None
     assert dagster_asset_module.research_brief_queue_maintenance_job is not None
     assert dagster_asset_module.research_brief_playground_pack_job is not None
+    assert dagster_asset_module.therapy_committee_validation_queue_job is not None
     assert dagster_asset_module.research_leads_job is not None
+    assert dagster_asset_module.evidence_gap_resolver_job is not None
+    assert dagster_asset_module.validation_gap_source_pack_job is not None
+    assert dagster_asset_module.validation_gap_source_ingest_job is not None
     assert dagster_asset_module.research_followup_resolver_job is not None
+    assert dagster_asset_module.validation_autopilot_hourly_schedule is not None
+    assert dagster_asset_module.validation_autopilot_hourly_schedule.cron_schedule == "0 * * * *"
 
 
 def test_dagster_schedules_source_followup_lanes():

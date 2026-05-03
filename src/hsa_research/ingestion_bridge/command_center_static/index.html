@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TWOG Command Center</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">TWOG v2 operations</p>
+        <h1>Command Center</h1>
+      </div>
+      <div class="toolbar">
+        <div id="runtimeStatus" class="runtime-status">Checking runtime...</div>
+        <label class="operator-field">
+          <span>Operator</span>
+          <input id="operatorName" type="text" value="command_center_operator" autocomplete="off">
+        </label>
+        <button id="refreshButton" class="primary-button" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="status-grid" aria-label="Operational summary">
+        <article class="metric">
+          <span class="metric-label">Brief Queue</span>
+          <strong id="metricBriefQueue">0</strong>
+          <span id="metricBriefQueueMeta">0 ready, 0 failed</span>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Research Leads</span>
+          <strong id="metricResearchLeads">0</strong>
+          <span id="metricResearchLeadsMeta">0 actionable, 0 follow-up</span>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Source Health</span>
+          <strong id="metricSourceHealth">0</strong>
+          <span id="metricSourceHealthMeta">0 triage, 0 watch</span>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Recommendations</span>
+          <strong id="metricRecommendations">0</strong>
+          <span id="metricRecommendationsMeta">0 blocking</span>
+        </article>
+      </section>
+
+      <nav class="page-tabs" aria-label="Command center pages">
+        <button class="tab-button active" type="button" data-page="operationsPage">Operations</button>
+        <button class="tab-button" type="button" data-page="ideasPage">Ideas</button>
+      </nav>
+
+      <section id="operationsPage" class="page-view active">
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Action Items</h2>
+            <p>Readable operating queue across recommendations, validation requests, and research leads.</p>
+          </div>
+          <div class="filters">
+            <label>
+              <span>Lead status</span>
+              <select id="leadStatus">
+                <option value="new,watching,followup">Active</option>
+                <option value="new">New</option>
+                <option value="watching">Watching</option>
+                <option value="followup">Follow-up</option>
+                <option value="dismissed">Dismissed</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div id="actionSummary" class="summary-line">Loading action items...</div>
+        <div id="actionItemsList" class="action-list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Validation Autopilot</h2>
+            <p>Conservative hourly lane for approving and dispatching a few low-risk validation reviews when the queue has gone quiet.</p>
+          </div>
+          <div class="filters">
+            <label>
+              <span>Max/run</span>
+              <input id="autopilotMaxPerRun" type="number" min="1" max="10" value="2">
+            </label>
+            <label>
+              <span>Manual grace hours</span>
+              <input id="autopilotGraceHours" type="number" min="0" max="168" step="0.5" value="6">
+            </label>
+            <label class="checkbox-field">
+              <input id="autopilotForce" type="checkbox">
+              <span>Force</span>
+            </label>
+            <button id="autopilotPreviewButton" type="button">Preview</button>
+            <button id="autopilotDryRunButton" type="button">Dry Run</button>
+            <button id="autopilotRunButton" class="primary-button" type="button">Run Once</button>
+          </div>
+        </div>
+        <div id="autopilotSummary" class="summary-line">Loading autopilot preview...</div>
+        <div id="autopilotList" class="stacked-list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Validation Queue</h2>
+            <p>Approve and dispatch validation work from generated research plans.</p>
+          </div>
+          <div class="filters">
+            <label>
+              <span>Status</span>
+              <select id="validationStatus">
+                <option value="">All</option>
+                <option value="needs_approval">Needs approval</option>
+                <option value="approved">Approved</option>
+                <option value="blocked">Blocked</option>
+                <option value="dispatched">Dispatched</option>
+                <option value="completed">Completed</option>
+                <option value="failed">Failed</option>
+              </select>
+            </label>
+            <label>
+              <span>Source</span>
+              <input id="validationSource" type="text" placeholder="pubmed">
+            </label>
+          </div>
+        </div>
+        <div id="validationSummary" class="summary-line">Loading validation queue...</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Priority</th>
+                <th>Validation</th>
+                <th>Context</th>
+                <th>Blockers</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="validationRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Research Leads</h2>
+            <p>Promote useful leads into the synthesis path or demote low-signal items.</p>
+          </div>
+        </div>
+        <div id="researchLeadSummary" class="summary-line">Loading research leads...</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Priority</th>
+                <th>Lead</th>
+                <th>Why It Matters</th>
+                <th>Tags</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="researchLeadRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="two-column">
+        <article class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Recommendations</h2>
+              <p>System-generated next actions from queue, source, embedding, full-text, and agent state.</p>
+            </div>
+          </div>
+          <div id="recommendationsList" class="stacked-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Recent Agent Runs</h2>
+              <p>Latest agent ledger rows by status and source.</p>
+            </div>
+          </div>
+          <div id="agentRunsList" class="stacked-list"></div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Research Brief Queue</h2>
+            <p>Current synthesis backlog, failures, and completed work.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Priority</th>
+                <th>Topic</th>
+                <th>Source</th>
+                <th>Attempts</th>
+                <th>Last Error</th>
+              </tr>
+            </thead>
+            <tbody id="briefQueueRows"></tbody>
+          </table>
+        </div>
+      </section>
+      </section>
+
+      <section id="ideasPage" class="page-view">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Idea Library</h2>
+              <p>Persistent idea records generated by committees and validation planning agents.</p>
+            </div>
+            <div class="filters">
+              <label>
+                <span>Type</span>
+                <select id="ideaKind">
+                  <option value="">All</option>
+                  <option value="therapy_idea">Therapy ideas</option>
+                  <option value="validation_hypothesis">Validation hypotheses</option>
+                </select>
+              </label>
+              <label>
+                <span>Source</span>
+                <input id="ideaSource" type="text" placeholder="pubmed">
+              </label>
+              <label>
+                <span>Search</span>
+                <input id="ideaQuery" type="search" placeholder="KDR, pazopanib, omics">
+              </label>
+            </div>
+          </div>
+          <div id="ideaSummary" class="summary-line">Loading idea records...</div>
+          <div id="ideaList" class="idea-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

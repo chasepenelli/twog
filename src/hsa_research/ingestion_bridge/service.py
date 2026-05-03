@@ -8,10 +8,11 @@ decorators or Dagster assets.
 from __future__ import annotations
 
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import hashlib
+import os
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from .contracts import (
     AgentRunRecord,
@@ -31,6 +32,8 @@ from .contracts import (
     CommitHypothesisRequest,
     DoiOpenAccessFollowupQueueRequest,
     DocumentChunk,
+    EvidenceGapResolverRequest,
+    EvidenceGapResolverResult,
     FullTextTriageRequest,
     FullTextTriageResult,
     FullTextOpsRequest,
@@ -78,6 +81,20 @@ from .contracts import (
     SourceFollowupQueueResult,
     SourceFollowupQueueItem,
     TextEmbeddingSearchRequest,
+    TherapyCommitteeRequest,
+    TherapyCommitteeResult,
+    TherapyCommitteeValidationQueueRequest,
+    TherapyCommitteeValidationQueueResult,
+    TherapyIdea,
+    ValidationAgentResult,
+    ValidationAssayContext,
+    ValidationAutopilotQueueRecord,
+    ValidationAutopilotRequest,
+    ValidationAutopilotResult,
+    ValidationGapSourceIngestRequest,
+    ValidationGapSourceIngestResult,
+    ValidationGapSourcePackRequest,
+    ValidationGapSourcePackResult,
     ValidationPlanRecord,
     ValidationPlanRequest,
     ValidationPlanResult,
@@ -95,7 +112,13 @@ from .contracts import (
 )
 from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
-from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, LocalDeterministicEmbeddingProvider
+from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, build_embedding_provider, select_embedding_model_from_coverage
+from .evidence_gap_resolver import (
+    EVIDENCE_GAP_RESOLVER_AGENT_NAME,
+    EVIDENCE_GAP_RESOLVER_AGENT_VERSION,
+    resolve_evidence_gaps,
+    summarize_evidence_gap_resolver,
+)
 from .full_text_ops import FULL_TEXT_OPS_AGENT_NAME, FULL_TEXT_OPS_AGENT_VERSION, FullTextOpsAgent
 from .full_text_triage import FullTextTriageAgent
 from .research_brief_agent import (
@@ -121,12 +144,32 @@ from .research_followup_resolver import (
     resolve_research_followup_leads,
     summarize_research_followup_resolver,
 )
+from .validation_gap_source_pack import (
+    VALIDATION_GAP_SOURCE_PACK_AGENT_NAME,
+    VALIDATION_GAP_SOURCE_PACK_AGENT_VERSION,
+    build_validation_gap_source_pack,
+    summarize_validation_gap_source_pack,
+)
+from .validation_gap_ingest import ingest_validation_gap_source_queries
+from .therapy_committee import (
+    THERAPY_COMMITTEE_AGENT_NAME,
+    THERAPY_COMMITTEE_AGENT_VERSION,
+    run_therapy_committee,
+    summarize_therapy_committee,
+)
 from .validation_planning import (
     VALIDATION_PLANNING_AGENT_NAME,
     VALIDATION_PLANNING_AGENT_VERSION,
     plan_validation_from_research_brief,
     summarize_validation_plan,
     validation_plan_record_from_result,
+)
+from .validation_agents import (
+    VALIDATION_AGENT_MODEL_PROFILE,
+    VALIDATION_AGENT_VERSION,
+    run_validation_agent,
+    summarize_validation_agent_result,
+    validation_agent_name,
 )
 from .source_scout import SourceScoutAgent
 from .source_followup import (
@@ -175,7 +218,18 @@ DEFAULT_MODEL_PROFILES: dict[str, ModelProfile] = {
         provider="local",
         purpose="Recommend-only hypothesis and validation planning from evaluated briefs",
     ),
+    "therapy_committee": ModelProfile(
+        profile_key="therapy_committee",
+        provider="other",
+        model_name="openrouter:~anthropic/claude-sonnet-latest",
+        purpose="Multi-perspective therapy ideation committee over cited evidence",
+    ),
 }
+
+VALIDATION_AUTOPILOT_AGENT_NAME = "validation_autopilot_agent"
+VALIDATION_AUTOPILOT_AGENT_VERSION = "v1"
+VALIDATION_AUTOPILOT_APPROVED_BY = "validation_autopilot"
+VALIDATION_AUTOPILOT_POLICY_VERSION = "v1"
 
 
 def _validation_request_quality_gates(request: ValidationRequest) -> list[str]:
@@ -188,6 +242,8 @@ def _validation_request_quality_gates(request: ValidationRequest) -> list[str]:
         gates.append("candidate_identity_required")
     if request.validation_type in {"admet", "safety"}:
         gates.append("safety_context_required")
+    if request.validation_type == "omics":
+        gates.append("omics_dataset_context_required")
     if request.validation_type != "expert_review":
         gates.append("species_and_disease_context_required")
     return _dedupe_quality_labels([*request.quality_gates, *gates])
@@ -216,7 +272,7 @@ def _validation_request_dispatch_blockers(request: ValidationRequest) -> list[st
         blockers.append("species_context_required")
     if request.validation_type in {"admet", "safety"} and not context.safety_context:
         blockers.append("safety_context_required")
-    if request.validation_type in {"docking", "boltz", "md", "homology"} and not context.model_system:
+    if request.validation_type in {"docking", "boltz", "md", "homology", "omics"} and not context.model_system:
         blockers.append("model_system_required")
     return _dedupe_quality_labels(blockers)
 
@@ -231,6 +287,131 @@ def _dedupe_quality_labels(labels: list[str]) -> list[str]:
             deduped.append(normalized)
             seen.add(key)
     return deduped
+
+
+def summarize_validation_autopilot_result(result: ValidationAutopilotResult) -> dict[str, Any]:
+    return {
+        "dry_run": result.dry_run,
+        "selected_count": result.selected_count,
+        "dispatched_count": result.dispatched_count,
+        "skipped_count": result.skipped_count,
+        "blocker_count": len(result.blockers),
+        "estimated_cost_usd": result.estimated_cost_usd,
+        "actual_cost_usd": result.actual_cost_usd,
+    }
+
+
+def _requires_openrouter_for_model_profile(model_profile: str) -> bool:
+    normalized = model_profile.strip()
+    return normalized not in {"deterministic_only", "external_required"}
+
+
+def _validation_autopilot_record(
+    item: ValidationRequestQueueItem,
+    *,
+    reason: str,
+    cost_usd: float | None = None,
+) -> ValidationAutopilotQueueRecord:
+    result_payload = (item.metadata or {}).get("validation_agent_result") or {}
+    return ValidationAutopilotQueueRecord(
+        queue_item_id=item.queue_item_id,
+        plan_id=item.plan_id,
+        task_id=item.task_id,
+        status=item.status,
+        priority=item.priority,
+        task_type=item.task_type,
+        validation_type=item.validation_request.validation_type,
+        title=item.title,
+        source_key=item.source_key,
+        reason=reason,
+        decision=result_payload.get("decision"),
+        agent_run_id=item.last_run_id,
+        cost_usd=cost_usd,
+        last_error=item.last_error,
+    )
+
+
+def _validation_manual_activity_at(items: list[ValidationRequestQueueItem]) -> datetime | None:
+    activity_times: list[datetime] = []
+    for item in items:
+        if not item.approved_by or item.approved_by == VALIDATION_AUTOPILOT_APPROVED_BY:
+            continue
+        metadata = item.metadata or {}
+        for key in ("approved_at", "dispatched_at", "completed_at", "dispatch_failed_at", "dispatch_blocked_at"):
+            value = _parse_datetime(metadata.get(key))
+            if value is not None:
+                activity_times.append(value)
+        activity_times.append(_coerce_utc(item.updated_at))
+    return max(activity_times) if activity_times else None
+
+
+def _validation_autopilot_spend_since(items: list[ValidationRequestQueueItem], since: datetime) -> float:
+    total = 0.0
+    for item in items:
+        metadata = item.metadata or {}
+        autopilot = metadata.get("validation_autopilot") or {}
+        if not isinstance(autopilot, dict):
+            continue
+        dispatched_at = _parse_datetime(autopilot.get("dispatched_at")) or _parse_datetime(metadata.get("dispatched_at"))
+        if dispatched_at is None or dispatched_at < since:
+            continue
+        total += _queue_item_cost_usd(item) or _float_or_zero(autopilot.get("actual_cost_usd"))
+    return round(total, 6)
+
+
+def _queue_item_cost_usd(item: ValidationRequestQueueItem) -> float | None:
+    result_payload = (item.metadata or {}).get("validation_agent_result") or {}
+    if not isinstance(result_payload, dict):
+        return None
+    raw_response = result_payload.get("raw_response") or {}
+    provider_metadata = raw_response.get("provider_metadata") if isinstance(raw_response, dict) else {}
+    if not isinstance(provider_metadata, dict):
+        provider_metadata = {}
+    usage = provider_metadata.get("usage") if isinstance(provider_metadata.get("usage"), dict) else {}
+    for value in (
+        usage.get("cost"),
+        usage.get("total_cost"),
+        usage.get("cost_usd"),
+        provider_metadata.get("cost"),
+        provider_metadata.get("total_cost"),
+        provider_metadata.get("cost_usd"),
+    ):
+        parsed = _float_or_none(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _coerce_utc(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _coerce_utc(parsed)
+
+
+def _coerce_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def _float_or_zero(value: Any) -> float:
+    return _float_or_none(value) or 0.0
 
 
 class HSAResearchService:
@@ -255,6 +436,18 @@ class HSAResearchService:
         embedding_model = self._select_embedding_model(request)
         embedding_results = self._search_chunks_with_embeddings(request, embedding_model)
         if embedding_results:
+            keyword_results: list[ResearchChunkSearchResult] = []
+            if request.include_keyword_fallback:
+                keyword_results = [
+                    self._truncate_search_result(result, request.max_chunk_chars)
+                    for result in self.repository.search_research_chunks(request)
+                ]
+            if keyword_results:
+                embedding_results = self._merge_embedding_and_keyword_results(
+                    embedding_results,
+                    keyword_results,
+                    request.limit,
+                )
             return ResearchChunkSearchResults(
                 results=embedding_results,
                 total=len(embedding_results),
@@ -381,6 +574,205 @@ class HSAResearchService:
         request: ResearchBriefRequest,
     ) -> ResearchBriefPlaygroundPack:
         return ResearchBriefAgent(self.repository).build_playground_pack(request)
+
+    def run_therapy_committee(self, request: TherapyCommitteeRequest) -> TherapyCommitteeResult:
+        return AgentRunner(self.repository).run(
+            agent_name=THERAPY_COMMITTEE_AGENT_NAME,
+            agent_version=THERAPY_COMMITTEE_AGENT_VERSION,
+            model_profile=request.model_profile,
+            input_payload=request.model_dump(mode="json"),
+            source_key=request.source_key,
+            dagster_run_id=request.dagster_run_id,
+            metadata=request.metadata,
+            execute=lambda: run_therapy_committee(self.repository, request),
+            summarize=summarize_therapy_committee,
+        )
+
+    def queue_therapy_committee_validation_requests(
+        self,
+        request: TherapyCommitteeValidationQueueRequest,
+    ) -> TherapyCommitteeValidationQueueResult:
+        agent_run = _select_therapy_committee_agent_run(self.repository, request.agent_run_id)
+        if agent_run is None:
+            return TherapyCommitteeValidationQueueResult(
+                origin_agent_run_id=request.agent_run_id,
+                dry_run=request.dry_run,
+                errors=["No completed therapy committee agent run matched the request."],
+            )
+
+        try:
+            committee_result = TherapyCommitteeResult.model_validate(agent_run.output_payload)
+        except Exception as exc:
+            return TherapyCommitteeValidationQueueResult(
+                origin_agent_run_id=agent_run.agent_run_id,
+                dry_run=request.dry_run,
+                errors=[f"Invalid therapy committee output payload: {exc}"],
+            )
+
+        selected_idea_ids = set(request.idea_ids)
+        candidate_ideas = [
+            idea
+            for idea in committee_result.ranked_ideas
+            if not selected_idea_ids or idea.idea_id in selected_idea_ids
+        ][: request.max_ideas]
+        plan_id = uuid5(
+            NAMESPACE_URL,
+            "therapy_committee_validation_plan:"
+            f"{agent_run.agent_run_id}:"
+            + ",".join(str(idea.idea_id) for idea in candidate_ideas),
+        )
+        synthetic_brief_id = committee_result.committee_run_id
+        existing_items = self.repository.list_validation_request_queue_items(limit=None)
+        existing_identity_keys = {item.identity_key for item in existing_items}
+
+        tasks: list[ValidationPlanTask] = []
+        queue_items: list[ValidationRequestQueueItem] = []
+        skipped: list[dict[str, Any]] = []
+        queued_count = 0
+        existing_count = 0
+
+        for idea_index, idea in enumerate(candidate_ideas):
+            idea_tasks = _validation_tasks_from_therapy_idea(
+                idea,
+                committee_result=committee_result,
+                origin_agent_run_id=agent_run.agent_run_id,
+                priority=min(1000, request.priority + idea_index * 10),
+            )
+            if not idea_tasks:
+                skipped.append(
+                    {
+                        "idea_id": str(idea.idea_id),
+                        "title": idea.title,
+                        "reason": "No validation tasks could be generated from the therapy idea.",
+                    }
+                )
+                continue
+            tasks.extend(idea_tasks)
+            for task in idea_tasks:
+                if task.validation_request is None:
+                    skipped.append(
+                        {
+                            "idea_id": str(idea.idea_id),
+                            "task_id": str(task.task_id),
+                            "title": task.title,
+                            "reason": "Task has no validation request.",
+                        }
+                    )
+                    continue
+                queue_item = ValidationRequestQueueItem(
+                    identity_key=(
+                        "therapy_committee_validation_queue:"
+                        f"{agent_run.agent_run_id}:"
+                        f"{idea.idea_id}:"
+                        f"{task.task_type}:"
+                        f"{task.validation_request.validation_type}"
+                    ),
+                    plan_id=plan_id,
+                    task_id=task.task_id,
+                    brief_id=synthetic_brief_id,
+                    source_key=committee_result.reports[0].evidence.get("source_key")
+                    if committee_result.reports and committee_result.reports[0].evidence
+                    else None,
+                    topic=committee_result.topic,
+                    task_type=task.task_type,
+                    title=task.title,
+                    objective=task.objective,
+                    rationale=task.rationale,
+                    validation_request=task.validation_request,
+                    priority=task.priority,
+                    requires_human_approval=task.requires_human_approval,
+                    quality_gates=_validation_request_quality_gates(task.validation_request),
+                    dispatch_blockers=_validation_request_dispatch_blockers(
+                        task.validation_request.model_copy(update={"require_approval": False})
+                    ),
+                    metadata={
+                        **request.metadata,
+                        "queued_from": "therapy_committee",
+                        "origin_agent_run_id": str(agent_run.agent_run_id),
+                        "committee_run_id": str(committee_result.committee_run_id),
+                        "idea_id": str(idea.idea_id),
+                        "idea_title": idea.title,
+                        "idea_priority_score": idea.priority_score,
+                        "evidence_refs": task.evidence_refs,
+                        "required_inputs": task.required_inputs,
+                        "expected_outputs": task.expected_outputs,
+                        "tool_hint": task.tool_hint,
+                        "recommend_only": True,
+                        "brief_id_semantics": "committee_run_id",
+                    },
+                )
+                if queue_item.identity_key in existing_identity_keys:
+                    existing_count += 1
+                    queue_items.append(
+                        next(
+                            item
+                            for item in existing_items
+                            if item.identity_key == queue_item.identity_key
+                        )
+                    )
+                    continue
+                queue_items.append(queue_item if request.dry_run else self.repository.upsert_validation_request_queue_item(queue_item))
+                if not request.dry_run:
+                    queued_count += 1
+                    existing_identity_keys.add(queue_item.identity_key)
+
+        if not request.dry_run and tasks:
+            self.repository.upsert_validation_plan(
+                ValidationPlanRecord(
+                    plan_id=plan_id,
+                    agent_run_id=agent_run.agent_run_id,
+                    brief_id=synthetic_brief_id,
+                    topic=committee_result.topic,
+                    model_profile="validation_planner",
+                    status="ready_for_review",
+                    readiness="ready_for_expert_review",
+                    task_count=len(tasks),
+                    hypothesis_count=len(candidate_ideas),
+                    summary={
+                        "origin": "therapy_committee",
+                        "committee_run_id": str(committee_result.committee_run_id),
+                        "idea_count": len(candidate_ideas),
+                        "task_count": len(tasks),
+                    },
+                    result_payload={
+                        "plan_id": str(plan_id),
+                        "agent_run_id": str(agent_run.agent_run_id),
+                        "brief_id": str(synthetic_brief_id),
+                        "topic": committee_result.topic,
+                        "status": "ready_for_review",
+                        "readiness": "ready_for_expert_review",
+                        "tasks": [task.model_dump(mode="json") for task in tasks],
+                        "evidence": {
+                            "origin": "therapy_committee",
+                            "committee_run_id": str(committee_result.committee_run_id),
+                            "origin_agent_run_id": str(agent_run.agent_run_id),
+                            "citation_count": committee_result.evidence.get("citation_count", 0),
+                        },
+                        "errors": [],
+                    },
+                    metadata={
+                        **request.metadata,
+                        "queued_from": "therapy_committee",
+                        "origin_agent_run_id": str(agent_run.agent_run_id),
+                        "committee_run_id": str(committee_result.committee_run_id),
+                        "brief_id_semantics": "committee_run_id",
+                    },
+                )
+            )
+
+        return TherapyCommitteeValidationQueueResult(
+            origin_agent_run_id=agent_run.agent_run_id,
+            committee_run_id=committee_result.committee_run_id,
+            plan_id=plan_id,
+            candidate_idea_count=len(candidate_ideas),
+            candidate_task_count=len(tasks),
+            queued_count=queued_count,
+            existing_count=existing_count,
+            skipped_count=len(skipped),
+            dry_run=request.dry_run,
+            queue_items=queue_items,
+            skipped=skipped,
+        )
 
     def get_research_brief(self, brief_id: UUID) -> ResearchBriefRecord | None:
         return self.repository.get_research_brief(brief_id)
@@ -764,6 +1156,8 @@ class HSAResearchService:
     def dispatch_validation_request_queue_item(
         self,
         queue_item_id: UUID,
+        *,
+        model_profile: str = "deterministic_only",
     ) -> ValidationRequestQueueItem | None:
         item = self.repository.get_validation_request_queue_item(queue_item_id)
         if item is None:
@@ -793,20 +1187,303 @@ class HSAResearchService:
                     "dispatch_blockers": dispatch_blockers,
                 },
             )
-        handle = self.request_validation(request)
+        model_profile = model_profile.strip() or VALIDATION_AGENT_MODEL_PROFILE
+        try:
+            result = self.run_validation_queue_item_agent(
+                item.model_copy(update={"validation_request": request}),
+                model_profile=model_profile,
+            )
+        except Exception as exc:
+            return self.repository.update_validation_request_queue_item(
+                queue_item_id,
+                status="failed",
+                attempts=item.attempts + 1,
+                last_error=str(exc),
+                quality_gates=_validation_request_quality_gates(request),
+                dispatch_blockers=[],
+                metadata={
+                    "dispatch_failed_at": datetime.now(UTC).isoformat(),
+                    "validation_agent_model_profile": model_profile,
+                    "error_type": type(exc).__name__,
+                },
+            )
         return self.repository.update_validation_request_queue_item(
             queue_item_id,
-            status="dispatched",
+            status="completed",
             attempts=item.attempts + 1,
-            last_run_id=handle.run_id,
+            last_run_id=result.agent_run_id,
             last_error=None,
             quality_gates=_validation_request_quality_gates(request),
             dispatch_blockers=[],
             metadata={
                 "dispatched_at": datetime.now(UTC).isoformat(),
-                "run_kind": handle.run_kind,
-                "run_name": handle.run_name,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "run_kind": "agent_run",
+                "run_name": result.agent_name,
+                "validation_agent_model_profile": model_profile,
+                "validation_agent_result": result.model_dump(mode="json"),
             },
+        )
+
+    def run_validation_queue_item_agent(
+        self,
+        item: ValidationRequestQueueItem,
+        *,
+        model_profile: str = VALIDATION_AGENT_MODEL_PROFILE,
+    ) -> ValidationAgentResult:
+        return AgentRunner(self.repository).run(
+            agent_name=validation_agent_name(item),
+            agent_version=VALIDATION_AGENT_VERSION,
+            model_profile=model_profile,
+            input_payload=item.model_dump(mode="json"),
+            source_key=item.source_key,
+            execute=lambda: run_validation_agent(item, model_profile=model_profile),
+            metadata={
+                "queue_item_id": str(item.queue_item_id),
+                "plan_id": str(item.plan_id),
+                "task_id": str(item.task_id),
+                "task_type": item.task_type,
+                "validation_type": item.validation_request.validation_type,
+            },
+            summarize=summarize_validation_agent_result,
+        )
+
+    def run_validation_autopilot(
+        self,
+        request: ValidationAutopilotRequest,
+    ) -> ValidationAutopilotResult:
+        return AgentRunner(self.repository).run(
+            agent_name=VALIDATION_AUTOPILOT_AGENT_NAME,
+            agent_version=VALIDATION_AUTOPILOT_AGENT_VERSION,
+            model_profile=request.model_profile,
+            input_payload=request.model_dump(mode="json"),
+            dagster_run_id=request.dagster_run_id,
+            metadata=request.metadata,
+            execute=lambda: self._run_validation_autopilot_policy(request),
+            summarize=summarize_validation_autopilot_result,
+        )
+
+    def preview_validation_autopilot(
+        self,
+        request: ValidationAutopilotRequest,
+    ) -> ValidationAutopilotResult:
+        return self._run_validation_autopilot_policy(request.model_copy(update={"dry_run": True}))
+
+    def _run_validation_autopilot_policy(
+        self,
+        request: ValidationAutopilotRequest,
+    ) -> ValidationAutopilotResult:
+        now = datetime.now(UTC)
+        all_items = self.repository.list_validation_request_queue_items(limit=None)
+        candidate_items = [
+            item
+            for item in all_items
+            if item.status == "needs_approval"
+            and (not request.source_keys or (item.source_key or "").casefold() in request.source_keys)
+        ]
+        candidate_items.sort(key=lambda item: (item.priority, _coerce_utc(item.created_at)))
+
+        last_manual_activity_at = _validation_manual_activity_at(all_items)
+        manual_grace_period_ends_at = (
+            last_manual_activity_at + timedelta(hours=request.manual_grace_period_hours)
+            if last_manual_activity_at is not None
+            else None
+        )
+        hourly_spend = _validation_autopilot_spend_since(all_items, now - timedelta(hours=1))
+        daily_spend = _validation_autopilot_spend_since(all_items, now - timedelta(hours=24))
+        blockers: list[str] = []
+        errors: list[str] = []
+        selected: list[ValidationAutopilotQueueRecord] = []
+        skipped: list[ValidationAutopilotQueueRecord] = []
+        eligible_count = 0
+
+        if not request.enabled and not request.dry_run:
+            blockers.append("autopilot_disabled")
+        if (
+            not request.force
+            and manual_grace_period_ends_at is not None
+            and now < manual_grace_period_ends_at
+        ):
+            blockers.append("manual_grace_period_active")
+        if _requires_openrouter_for_model_profile(request.model_profile) and not os.getenv("OPENROUTER_API_KEY"):
+            blockers.append("openrouter_api_key_missing")
+        if daily_spend >= request.daily_budget_usd:
+            blockers.append("daily_budget_exhausted")
+        if hourly_spend >= request.hourly_budget_usd:
+            blockers.append("hourly_budget_exhausted")
+
+        allowed_task_types = set(request.allowed_task_types)
+        allowed_validation_types = set(request.allowed_validation_types)
+        projected_hourly_spend = hourly_spend
+        projected_daily_spend = daily_spend
+        for item in candidate_items:
+            skip_reason = self._validation_autopilot_skip_reason(
+                item,
+                request=request,
+                now=now,
+                allowed_task_types=allowed_task_types,
+                allowed_validation_types=allowed_validation_types,
+            )
+            if skip_reason is not None:
+                skipped.append(_validation_autopilot_record(item, reason=skip_reason))
+                continue
+            eligible_count += 1
+            projected_hourly_spend += request.estimated_cost_per_item_usd
+            projected_daily_spend += request.estimated_cost_per_item_usd
+            if projected_hourly_spend > request.hourly_budget_usd:
+                skipped.append(_validation_autopilot_record(item, reason="hourly_budget_would_be_exceeded"))
+                projected_hourly_spend -= request.estimated_cost_per_item_usd
+                projected_daily_spend -= request.estimated_cost_per_item_usd
+                continue
+            if projected_daily_spend > request.daily_budget_usd:
+                skipped.append(_validation_autopilot_record(item, reason="daily_budget_would_be_exceeded"))
+                projected_hourly_spend -= request.estimated_cost_per_item_usd
+                projected_daily_spend -= request.estimated_cost_per_item_usd
+                continue
+            selected.append(_validation_autopilot_record(item, reason="eligible_for_autopilot_dispatch"))
+            if len(selected) >= request.max_per_run:
+                break
+
+        should_dispatch = bool(selected) and not request.dry_run and not blockers
+        dispatched: list[ValidationAutopilotQueueRecord] = []
+        actual_cost = 0.0
+        if should_dispatch:
+            for record in selected:
+                item = self.repository.get_validation_request_queue_item(record.queue_item_id)
+                if item is None:
+                    errors.append(f"{record.queue_item_id}: queue item disappeared before dispatch")
+                    continue
+                approval_note = request.approval_note or (
+                    f"{VALIDATION_AUTOPILOT_AGENT_NAME} {VALIDATION_AUTOPILOT_POLICY_VERSION}: "
+                    f"selected after {request.manual_grace_period_hours:g}h manual inactivity window; "
+                    f"max_per_run={request.max_per_run}."
+                )
+                approved = self.approve_validation_request_queue_item(
+                    item.queue_item_id,
+                    approved_by=request.approved_by,
+                    approval_note=approval_note,
+                )
+                if approved is None:
+                    errors.append(f"{record.queue_item_id}: approval failed")
+                    continue
+                autopilot_metadata = {
+                    "policy_version": VALIDATION_AUTOPILOT_POLICY_VERSION,
+                    "selected_at": now.isoformat(),
+                    "estimated_cost_usd": request.estimated_cost_per_item_usd,
+                    "model_profile": request.model_profile,
+                    "reason": record.reason,
+                    "manual_grace_period_hours": request.manual_grace_period_hours,
+                    "minimum_queue_age_hours": request.minimum_queue_age_hours,
+                    "dry_run": False,
+                }
+                self.repository.update_validation_request_queue_item(
+                    approved.queue_item_id,
+                    metadata={"validation_autopilot": autopilot_metadata},
+                )
+                dispatched_item = self.dispatch_validation_request_queue_item(
+                    approved.queue_item_id,
+                    model_profile=request.model_profile,
+                )
+                if dispatched_item is None:
+                    errors.append(f"{record.queue_item_id}: dispatch returned no queue item")
+                    continue
+                cost = _queue_item_cost_usd(dispatched_item)
+                if cost is not None:
+                    actual_cost += cost
+                final_metadata = {
+                    **autopilot_metadata,
+                    "dispatched_at": datetime.now(UTC).isoformat(),
+                    "actual_cost_usd": cost or 0.0,
+                    "result_status": dispatched_item.status,
+                }
+                final_item = self.repository.update_validation_request_queue_item(
+                    dispatched_item.queue_item_id,
+                    metadata={"validation_autopilot": final_metadata},
+                ) or dispatched_item
+                dispatched.append(
+                    _validation_autopilot_record(
+                        final_item,
+                        reason=f"autopilot_dispatched:{final_item.status}",
+                        cost_usd=cost,
+                    )
+                )
+                if final_item.status in {"blocked", "failed"}:
+                    break
+
+        return ValidationAutopilotResult(
+            agent_name=VALIDATION_AUTOPILOT_AGENT_NAME,
+            policy_version=VALIDATION_AUTOPILOT_POLICY_VERSION,
+            enabled=request.enabled,
+            dry_run=request.dry_run,
+            force=request.force,
+            model_profile=request.model_profile,
+            scanned_count=len(candidate_items),
+            eligible_count=eligible_count,
+            selected_count=len(selected),
+            dispatched_count=len(dispatched),
+            skipped_count=len(skipped),
+            should_dispatch=should_dispatch,
+            blockers=blockers,
+            errors=errors,
+            last_manual_activity_at=last_manual_activity_at,
+            manual_grace_period_ends_at=manual_grace_period_ends_at,
+            hourly_budget_usd=request.hourly_budget_usd,
+            daily_budget_usd=request.daily_budget_usd,
+            hourly_spend_usd=hourly_spend,
+            daily_spend_usd=daily_spend,
+            estimated_cost_usd=round(len(selected) * request.estimated_cost_per_item_usd, 6),
+            actual_cost_usd=round(actual_cost, 6),
+            selected=selected,
+            dispatched=dispatched,
+            skipped=skipped,
+            created_at=now,
+        )
+
+    def _validation_autopilot_skip_reason(
+        self,
+        item: ValidationRequestQueueItem,
+        *,
+        request: ValidationAutopilotRequest,
+        now: datetime,
+        allowed_task_types: set[str],
+        allowed_validation_types: set[str],
+    ) -> str | None:
+        if item.task_type not in allowed_task_types:
+            return f"task_type_not_allowlisted:{item.task_type}"
+        validation_type = item.validation_request.validation_type
+        if validation_type not in allowed_validation_types:
+            return f"validation_type_not_allowlisted:{validation_type}"
+        if validation_type in {"wet_lab", "safety", "admet", "docking", "boltz", "md"}:
+            return f"validation_type_requires_manual_review:{validation_type}"
+        if item.attempts:
+            return "prior_attempts_present"
+        if not request.force:
+            minimum_age_at = _coerce_utc(item.created_at) + timedelta(hours=request.minimum_queue_age_hours)
+            if now < minimum_age_at:
+                return "minimum_queue_age_active"
+        dispatch_request = item.validation_request.model_copy(update={"require_approval": False})
+        dispatch_blockers = _validation_request_dispatch_blockers(dispatch_request)
+        if dispatch_blockers:
+            return "dispatch_blockers:" + ",".join(dispatch_blockers)
+        return None
+
+    def resolve_evidence_gaps(
+        self,
+        request: EvidenceGapResolverRequest,
+    ) -> EvidenceGapResolverResult:
+        return AgentRunner(self.repository).run(
+            agent_name=EVIDENCE_GAP_RESOLVER_AGENT_NAME,
+            agent_version=EVIDENCE_GAP_RESOLVER_AGENT_VERSION,
+            model_profile="deterministic_resolver",
+            input_payload=request.model_dump(mode="json"),
+            dagster_run_id=request.dagster_run_id,
+            metadata=request.metadata,
+            execute=lambda: resolve_evidence_gaps(
+                self.repository,
+                request,
+                queue_research_brief=self.queue_research_brief,
+            ),
+            summarize=summarize_evidence_gap_resolver,
         )
 
     def queue_research_brief(self, request: ResearchBriefQueueRequest) -> ResearchBriefQueueItem:
@@ -1524,6 +2201,27 @@ class HSAResearchService:
             summarize=summarize_research_followup_resolver,
         )
 
+    def build_validation_gap_source_pack(
+        self,
+        request: ValidationGapSourcePackRequest,
+    ) -> ValidationGapSourcePackResult:
+        return AgentRunner(self.repository).run(
+            agent_name=VALIDATION_GAP_SOURCE_PACK_AGENT_NAME,
+            agent_version=VALIDATION_GAP_SOURCE_PACK_AGENT_VERSION,
+            model_profile="deterministic_query_builder",
+            input_payload=request.model_dump(mode="json"),
+            dagster_run_id=request.dagster_run_id,
+            metadata=request.metadata,
+            execute=lambda: build_validation_gap_source_pack(self.repository, request),
+            summarize=summarize_validation_gap_source_pack,
+        )
+
+    def ingest_validation_gap_source_queries(
+        self,
+        request: ValidationGapSourceIngestRequest,
+    ) -> ValidationGapSourceIngestResult:
+        return ingest_validation_gap_source_queries(self.repository, request)
+
     def get_research_lead(self, lead_id: UUID) -> ResearchLeadRecord | None:
         return self.repository.get_research_lead(lead_id)
 
@@ -1671,7 +2369,7 @@ class HSAResearchService:
             object_type=str(request.object_type) if request.object_type else None,
         )
         if coverage.embedding_models:
-            return max(coverage.embedding_models.items(), key=lambda item: item[1])[0]
+            return select_embedding_model_from_coverage(coverage.embedding_models)
         return LOCAL_HASH_EMBEDDING_MODEL
 
     def _search_chunks_with_embeddings(
@@ -1728,11 +2426,60 @@ class HSAResearchService:
         )
         if existing:
             dimensions = existing[0].embedding_dimensions
-        provider = LocalDeterministicEmbeddingProvider(
-            embedding_model=embedding_model,
-            dimensions=dimensions or LocalDeterministicEmbeddingProvider().embedding_dimensions,
-        )
+        provider = build_embedding_provider(embedding_model, dimensions=dimensions)
         return provider.embed_text(request.query)
+
+    @staticmethod
+    def _merge_embedding_and_keyword_results(
+        embedding_results: list[ResearchChunkSearchResult],
+        keyword_results: list[ResearchChunkSearchResult],
+        limit: int,
+    ) -> list[ResearchChunkSearchResult]:
+        by_chunk: dict[UUID, dict[str, Any]] = {}
+        for result in embedding_results:
+            by_chunk[result.chunk.id] = {
+                "embedding": result,
+                "embedding_score": result.score,
+                "keyword": None,
+                "keyword_score": None,
+            }
+        for result in keyword_results:
+            entry = by_chunk.setdefault(
+                result.chunk.id,
+                {
+                    "embedding": None,
+                    "embedding_score": None,
+                    "keyword": result,
+                    "keyword_score": result.score,
+                },
+            )
+            entry["keyword"] = result
+            entry["keyword_score"] = result.score
+
+        ranked = sorted(
+            by_chunk.values(),
+            key=lambda entry: (
+                -_hybrid_chunk_score(entry["embedding_score"], entry["keyword_score"]),
+                -float(entry["keyword_score"] or 0.0),
+                -float(entry["embedding_score"] or -1.0),
+                str((entry["embedding"] or entry["keyword"]).chunk.research_object_id),
+                (entry["embedding"] or entry["keyword"]).chunk.chunk_index,
+            ),
+        )
+        results: list[ResearchChunkSearchResult] = []
+        for entry in ranked[:limit]:
+            result = entry["embedding"] or entry["keyword"]
+            score = _hybrid_chunk_score(entry["embedding_score"], entry["keyword_score"])
+            results.append(
+                result.model_copy(
+                    update={
+                        "rank": len(results) + 1,
+                        "score": score,
+                        "match_type": "embedding" if entry["embedding"] else "keyword",
+                    }
+                )
+            )
+        return results
 
     @staticmethod
     def _truncate_search_result(
@@ -2044,6 +2791,314 @@ def _source_key_for_validation_plan(
     return candidates[0].source_key if candidates else None
 
 
+def _select_therapy_committee_agent_run(
+    repository: ResearchRepository,
+    agent_run_id: UUID | None,
+) -> AgentRunRecord | None:
+    if agent_run_id is not None:
+        record = repository.get_agent_run(agent_run_id)
+        return record if record and record.agent_name == THERAPY_COMMITTEE_AGENT_NAME else None
+    runs = repository.list_agent_runs(
+        agent_name=THERAPY_COMMITTEE_AGENT_NAME,
+        status="completed",
+        limit=1,
+    )
+    return runs[0] if runs else None
+
+
+def _validation_tasks_from_therapy_idea(
+    idea: TherapyIdea,
+    *,
+    committee_result: TherapyCommitteeResult,
+    origin_agent_run_id: UUID,
+    priority: int,
+) -> list[ValidationPlanTask]:
+    tasks = [
+        _expert_review_task_from_therapy_idea(
+            idea,
+            committee_result=committee_result,
+            origin_agent_run_id=origin_agent_run_id,
+            priority=priority,
+        )
+    ]
+    if idea.targets or idea.biomarkers:
+        tasks.append(
+            _assay_design_task_from_therapy_idea(
+                idea,
+                committee_result=committee_result,
+                origin_agent_run_id=origin_agent_run_id,
+                priority=min(1000, priority + 5),
+            )
+        )
+    if idea.candidate_therapies or idea.risks:
+        tasks.append(
+            _safety_review_task_from_therapy_idea(
+                idea,
+                committee_result=committee_result,
+                origin_agent_run_id=origin_agent_run_id,
+                priority=min(1000, priority + 10),
+            )
+        )
+    return tasks
+
+
+def _expert_review_task_from_therapy_idea(
+    idea: TherapyIdea,
+    *,
+    committee_result: TherapyCommitteeResult,
+    origin_agent_run_id: UUID,
+    priority: int,
+) -> ValidationPlanTask:
+    task_id = uuid5(NAMESPACE_URL, f"therapy_committee_task:{origin_agent_run_id}:{idea.idea_id}:expert_review")
+    request = ValidationRequest(
+        validation_type="expert_review",
+        candidate_name=_candidate_name(idea),
+        target_name=_target_name(idea),
+        objective=_truncate(
+            "Review the therapy committee idea, evidence refs, negative evidence needs, and "
+            f"promotion criteria for: {idea.hypothesis}",
+            2000,
+        ),
+        priority=priority,
+        require_approval=True,
+        assay_context=_assay_context_from_therapy_idea(
+            idea,
+            committee_result,
+            assay_type="expert evidence review",
+            readout="go/no-go validation readiness, missing evidence, and contradiction map",
+            endpoint="approved validation plan or demotion/follow-up decision",
+        ),
+        quality_gates=[
+            "human_approval_required",
+            "source_traceability_required",
+            "committee_evidence_refs_required",
+            "negative_evidence_review_required",
+        ],
+        metadata=_therapy_validation_metadata(idea, committee_result, origin_agent_run_id),
+    )
+    return ValidationPlanTask(
+        task_id=task_id,
+        task_type="expert_review",
+        title=_truncate(f"Expert review: {idea.title}", 500),
+        objective=request.objective,
+        rationale=_truncate(idea.rationale, 3000),
+        validation_request=request,
+        required_inputs=[
+            "committee-ranked therapy idea",
+            "cited evidence refs",
+            "evidence limitations",
+            "candidate therapy and target list",
+        ],
+        expected_outputs=[
+            "approved validation route",
+            "follow-up evidence needs",
+            "demotion criteria if evidence remains weak",
+        ],
+        evidence_refs=idea.evidence_refs,
+        priority=priority,
+        requires_human_approval=True,
+        tool_hint="expert_review",
+        metadata=_therapy_validation_metadata(idea, committee_result, origin_agent_run_id),
+    )
+
+
+def _assay_design_task_from_therapy_idea(
+    idea: TherapyIdea,
+    *,
+    committee_result: TherapyCommitteeResult,
+    origin_agent_run_id: UUID,
+    priority: int,
+) -> ValidationPlanTask:
+    task_id = uuid5(NAMESPACE_URL, f"therapy_committee_task:{origin_agent_run_id}:{idea.idea_id}:wet_lab")
+    target_name = _target_name(idea)
+    request = ValidationRequest(
+        validation_type="wet_lab",
+        candidate_name=_candidate_name(idea),
+        target_name=target_name,
+        objective=_truncate(
+            "Design a conservative assay plan to validate mechanism, biomarker selection, "
+            f"and pathway readouts for {target_name or idea.title}.",
+            2000,
+        ),
+        priority=priority,
+        require_approval=True,
+        assay_context=_assay_context_from_therapy_idea(
+            idea,
+            committee_result,
+            assay_type="in vitro or ex vivo validation design",
+            readout="target expression, pathway suppression, viability, and biomarker-response correlation",
+            endpoint="assay-ready protocol with controls and stop criteria",
+        ),
+        quality_gates=[
+            "human_approval_required",
+            "assay_context_present",
+            "source_traceability_required",
+            "controls_required",
+            "stop_criteria_required",
+        ],
+        metadata=_therapy_validation_metadata(idea, committee_result, origin_agent_run_id),
+    )
+    return ValidationPlanTask(
+        task_id=task_id,
+        task_type="wet_lab",
+        title=_truncate(f"Assay design: {idea.title}", 500),
+        objective=request.objective,
+        rationale=_truncate(idea.mechanism or idea.rationale, 3000),
+        validation_request=request,
+        required_inputs=[
+            "target and biomarker list",
+            "candidate therapy list",
+            "model system availability",
+            "positive and negative controls",
+        ],
+        expected_outputs=[
+            "assay design",
+            "readout panel",
+            "control strategy",
+            "failure criteria",
+        ],
+        evidence_refs=idea.evidence_refs,
+        priority=priority,
+        requires_human_approval=True,
+        tool_hint="wet_lab_protocol_review",
+        metadata=_therapy_validation_metadata(idea, committee_result, origin_agent_run_id),
+    )
+
+
+def _safety_review_task_from_therapy_idea(
+    idea: TherapyIdea,
+    *,
+    committee_result: TherapyCommitteeResult,
+    origin_agent_run_id: UUID,
+    priority: int,
+) -> ValidationPlanTask:
+    task_id = uuid5(NAMESPACE_URL, f"therapy_committee_task:{origin_agent_run_id}:{idea.idea_id}:safety")
+    request = ValidationRequest(
+        validation_type="safety",
+        candidate_name=_candidate_name(idea),
+        target_name=_target_name(idea),
+        objective=_truncate(
+            "Review safety, toxicity, PK/PD, hemorrhage/coagulation, and species-translation risks "
+            f"before promoting: {idea.title}",
+            2000,
+        ),
+        priority=priority,
+        require_approval=True,
+        assay_context=_assay_context_from_therapy_idea(
+            idea,
+            committee_result,
+            assay_type="safety and translational risk review",
+            readout="toxicity flags, coagulation risk, species PK/PD gaps, and contraindications",
+            endpoint="safety gate decision before any animal-facing validation",
+        ),
+        quality_gates=[
+            "human_approval_required",
+            "source_traceability_required",
+            "safety_context_required",
+            "species_translation_review_required",
+            "stop_criteria_required",
+        ],
+        metadata=_therapy_validation_metadata(idea, committee_result, origin_agent_run_id),
+    )
+    return ValidationPlanTask(
+        task_id=task_id,
+        task_type="safety",
+        title=_truncate(f"Safety gate: {idea.title}", 500),
+        objective=request.objective,
+        rationale=_truncate(" | ".join(idea.risks) or idea.rationale, 3000),
+        validation_request=request,
+        required_inputs=[
+            "candidate therapy list",
+            "known safety risks",
+            "species-specific PK/PD evidence",
+            "coagulation or toxicity monitoring requirements",
+        ],
+        expected_outputs=[
+            "safety gate decision",
+            "required monitoring plan",
+            "contraindications and stop criteria",
+        ],
+        evidence_refs=idea.evidence_refs,
+        priority=priority,
+        requires_human_approval=True,
+        tool_hint="safety_review",
+        metadata=_therapy_validation_metadata(idea, committee_result, origin_agent_run_id),
+    )
+
+
+def _assay_context_from_therapy_idea(
+    idea: TherapyIdea,
+    committee_result: TherapyCommitteeResult,
+    *,
+    assay_type: str,
+    readout: str,
+    endpoint: str,
+) -> ValidationAssayContext:
+    return ValidationAssayContext(
+        species=["canine", "human"],
+        disease_context=committee_result.disease_scope,
+        model_system="canine HSA models with human angiosarcoma translational comparator",
+        assay_type=assay_type,
+        readout=readout,
+        endpoint=endpoint,
+        comparator_or_control=_truncate(
+            "biomarker-negative or untreated controls; standard-of-care comparator when available",
+            500,
+        ),
+        sample_context=_truncate(
+            "canine HSA tissue, cell model, organoid, or retrospective genomic cohort matched to idea biomarkers",
+            500,
+        ),
+        dose_or_exposure_context="to be specified after candidate identity, PK/PD, and safety review",
+        safety_context=_truncate("; ".join(idea.risks) or "No explicit safety risks supplied by committee.", 500),
+        evidence_refs=idea.evidence_refs,
+        negative_evidence_needs=idea.risks,
+        provenance_requirements=[
+            "therapy_committee_agent_run_id",
+            "committee_run_id",
+            "citation_id_traceability",
+            "human_approval_before_dispatch",
+        ],
+    )
+
+
+def _therapy_validation_metadata(
+    idea: TherapyIdea,
+    committee_result: TherapyCommitteeResult,
+    origin_agent_run_id: UUID,
+) -> dict[str, Any]:
+    return {
+        "origin": "therapy_committee",
+        "origin_agent_run_id": str(origin_agent_run_id),
+        "committee_run_id": str(committee_result.committee_run_id),
+        "idea_id": str(idea.idea_id),
+        "idea_title": idea.title,
+        "priority_score": idea.priority_score,
+        "evidence_refs": idea.evidence_refs,
+        "candidate_therapies": idea.candidate_therapies,
+        "targets": idea.targets,
+        "biomarkers": idea.biomarkers,
+        "recommend_only": True,
+    }
+
+
+def _candidate_name(idea: TherapyIdea) -> str | None:
+    if not idea.candidate_therapies:
+        return None
+    return _truncate(" / ".join(idea.candidate_therapies[:3]), 500)
+
+
+def _target_name(idea: TherapyIdea) -> str | None:
+    if not idea.targets:
+        return None
+    return _truncate(" / ".join(idea.targets[:3]), 500)
+
+
+def _truncate(value: str, limit: int) -> str:
+    normalized = " ".join(str(value).split())
+    return normalized[:limit]
+
+
 def _research_brief_topic_from_lead(lead: ResearchLeadRecord) -> str:
     title = lead.title or lead.summary or lead.reason or "Untitled research lead"
     parts = [f"Review research lead: {title}"]
@@ -2350,6 +3405,18 @@ def _extend_command_center_recommendations(
                 metadata={"failed_agent_runs": agent_status_counts["failed"]},
             )
         )
+
+
+def _hybrid_chunk_score(embedding_score: float | None, keyword_score: float | None) -> float:
+    normalized_embedding = 0.0
+    if embedding_score is not None:
+        normalized_embedding = max(0.0, min(1.0, (float(embedding_score) + 1.0) / 2.0))
+    normalized_keyword = max(0.0, min(1.0, float(keyword_score or 0.0)))
+    if keyword_score is None:
+        return round(normalized_embedding, 6)
+    if embedding_score is None:
+        return round(normalized_keyword, 6)
+    return round(min(1.0, normalized_embedding * 0.45 + normalized_keyword * 0.55), 6)
 
 
 def _brief_request_from_queue_item(

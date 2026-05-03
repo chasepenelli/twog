@@ -20,6 +20,7 @@ from .contracts import (
     CommandCenterRequest,
     CommitHypothesisRequest,
     DoiOpenAccessFollowupQueueRequest,
+    EvidenceGapResolverRequest,
     FullTextTriageRequest,
     FullTextOpsRequest,
     HypothesisDraft,
@@ -39,6 +40,11 @@ from .contracts import (
     SourceScoutRequest,
     SourceFollowupIngestRequest,
     SourceFollowupQueueRequest,
+    TherapyCommitteeRequest,
+    TherapyCommitteeValidationQueueRequest,
+    ValidationAutopilotRequest,
+    ValidationGapSourceIngestRequest,
+    ValidationGapSourcePackRequest,
     ValidationPlanRequest,
     ValidationAssayContext,
     ValidationRequest,
@@ -187,6 +193,35 @@ def build_research_brief_playground_pack_tool(
     return get_service().build_research_brief_playground_pack(request).model_dump(mode="json")
 
 
+def run_therapy_committee_tool(
+    topic: str = "curative or disease-modifying therapy ideas for canine hemangiosarcoma",
+    disease_scope: str = "canine hemangiosarcoma and human angiosarcoma",
+    source_key: str | None = None,
+    max_chunks_per_perspective: int = 10,
+    max_claims: int = 20,
+    max_chunk_chars: int = 2200,
+    max_ideas_per_perspective: int = 4,
+    model_profile: str = "therapy_committee",
+    review_mode: str = "openrouter_required",
+    review_models: list[str] | None = None,
+) -> dict:
+    """Run the cited therapy ideation committee."""
+
+    request = TherapyCommitteeRequest(
+        topic=topic,
+        disease_scope=disease_scope,
+        source_key=source_key,
+        max_chunks_per_perspective=max_chunks_per_perspective,
+        max_claims=max_claims,
+        max_chunk_chars=max_chunk_chars,
+        max_ideas_per_perspective=max_ideas_per_perspective,
+        model_profile=model_profile,
+        review_mode=review_mode,  # type: ignore[arg-type]
+        review_models=review_models or [],
+    )
+    return get_service().run_therapy_committee(request).model_dump(mode="json")
+
+
 def get_research_brief_tool(brief_id: str) -> dict:
     """Return a persisted research brief by ID."""
 
@@ -326,6 +361,25 @@ def queue_validation_requests_tool(
     return get_service().queue_validation_requests_from_plan(request).model_dump(mode="json")
 
 
+def queue_therapy_committee_validation_requests_tool(
+    agent_run_id: str | None = None,
+    idea_ids: list[str] | None = None,
+    max_ideas: int = 1,
+    priority: int = 40,
+    dry_run: bool = True,
+) -> dict:
+    """Queue validation requests from a completed therapy committee agent run."""
+
+    request = TherapyCommitteeValidationQueueRequest(
+        agent_run_id=UUID(agent_run_id) if agent_run_id else None,
+        idea_ids=[UUID(value) for value in idea_ids or []],
+        max_ideas=max_ideas,
+        priority=priority,
+        dry_run=dry_run,
+    )
+    return get_service().queue_therapy_committee_validation_requests(request).model_dump(mode="json")
+
+
 def get_validation_request_queue_item_tool(queue_item_id: str) -> dict:
     """Return one queued validation request."""
 
@@ -373,11 +427,127 @@ def approve_validation_request_tool(
     return {} if item is None else item.model_dump(mode="json")
 
 
-def dispatch_validation_request_tool(queue_item_id: str) -> dict:
+def dispatch_validation_request_tool(queue_item_id: str, model_profile: str = "openrouter_required") -> dict:
     """Dispatch an approved queued validation request."""
 
-    item = get_service().dispatch_validation_request_queue_item(UUID(queue_item_id))
+    item = get_service().dispatch_validation_request_queue_item(
+        UUID(queue_item_id),
+        model_profile=model_profile,
+    )
     return {} if item is None else item.model_dump(mode="json")
+
+
+def run_validation_autopilot_tool(
+    dry_run: bool = True,
+    force: bool = False,
+    max_per_run: int = 2,
+    manual_grace_period_hours: float = 6.0,
+    minimum_queue_age_hours: float = 1.0,
+    hourly_budget_usd: float = 0.25,
+    daily_budget_usd: float = 1.50,
+    allowed_task_types: list[str] | None = None,
+    allowed_validation_types: list[str] | None = None,
+    source_keys: list[str] | None = None,
+    model_profile: str = "openrouter_required",
+) -> dict:
+    """Preview or run the conservative validation autopilot."""
+
+    request = ValidationAutopilotRequest(
+        dry_run=dry_run,
+        force=force,
+        max_per_run=max_per_run,
+        manual_grace_period_hours=manual_grace_period_hours,
+        minimum_queue_age_hours=minimum_queue_age_hours,
+        hourly_budget_usd=hourly_budget_usd,
+        daily_budget_usd=daily_budget_usd,
+        allowed_task_types=allowed_task_types or ["expert_review", "target_validation", "omics"],
+        allowed_validation_types=allowed_validation_types or ["expert_review", "homology", "omics"],
+        source_keys=source_keys or [],
+        model_profile=model_profile,
+    )
+    service = get_service()
+    if dry_run:
+        return service.preview_validation_autopilot(request).model_dump(mode="json")
+    return service.run_validation_autopilot(request).model_dump(mode="json")
+
+
+def resolve_evidence_gaps_tool(
+    queue_item_ids: list[str] | None = None,
+    plan_id: str | None = None,
+    statuses: list[str] | None = None,
+    decisions: list[str] | None = None,
+    task_types: list[str] | None = None,
+    gap_types: list[str] | None = None,
+    limit: int = 25,
+    max_gaps_per_item: int = 8,
+    priority: int = 30,
+    dry_run: bool = True,
+    queue_research_briefs: bool = False,
+) -> dict:
+    """Convert validation-agent evidence gaps into research leads and optional brief queue items."""
+
+    request = EvidenceGapResolverRequest(
+        queue_item_ids=[UUID(value) for value in queue_item_ids or []],
+        plan_id=UUID(plan_id) if plan_id else None,
+        statuses=statuses or ["completed"],  # type: ignore[arg-type]
+        decisions=decisions or ["hold", "demote"],  # type: ignore[arg-type]
+        task_types=task_types or [],  # type: ignore[arg-type]
+        gap_types=gap_types or ["missing_evidence", "risk", "next_action"],  # type: ignore[arg-type]
+        limit=limit,
+        max_gaps_per_item=max_gaps_per_item,
+        priority=priority,
+        dry_run=dry_run,
+        queue_research_briefs=queue_research_briefs,
+    )
+    return get_service().resolve_evidence_gaps(request).model_dump(mode="json")
+
+
+def build_validation_gap_source_pack_tool(
+    queue_item_ids: list[str] | None = None,
+    lead_ids: list[str] | None = None,
+    lead_statuses: list[str] | None = None,
+    source_keys: list[str] | None = None,
+    lanes: list[str] | None = None,
+    limit: int = 25,
+    max_queries_per_lane: int = 3,
+    persist_queries: bool = False,
+    active: bool = True,
+    dry_run: bool = True,
+) -> dict:
+    """Build targeted SourceQuery rows for validation evidence gaps."""
+
+    request = ValidationGapSourcePackRequest(
+        queue_item_ids=[UUID(value) for value in queue_item_ids or []],
+        lead_ids=[UUID(value) for value in lead_ids or []],
+        lead_statuses=lead_statuses or ["new", "followup"],  # type: ignore[arg-type]
+        source_keys=source_keys or [],
+        lanes=lanes or [],  # type: ignore[arg-type]
+        limit=limit,
+        max_queries_per_lane=max_queries_per_lane,
+        persist_queries=persist_queries,
+        active=active,
+        dry_run=dry_run,
+    )
+    return get_service().build_validation_gap_source_pack(request).model_dump(mode="json")
+
+
+def ingest_validation_gap_source_queries_tool(
+    source_keys: list[str] | None = None,
+    query_names: list[str] | None = None,
+    limit_per_query: int = 5,
+    max_queries: int = 50,
+    dry_run: bool = True,
+) -> dict:
+    """Ingest only active validation-gap SourceQuery rows."""
+
+    request = ValidationGapSourceIngestRequest(
+        source_keys=source_keys or [],
+        query_names=query_names or [],
+        limit_per_query=limit_per_query,
+        max_queries=max_queries,
+        dry_run=dry_run,
+    )
+    return get_service().ingest_validation_gap_source_queries(request).model_dump(mode="json")
 
 
 def queue_research_brief_tool(
@@ -390,7 +560,7 @@ def queue_research_brief_tool(
     max_chunk_chars: int = 1800,
     brief_style: str = "technical",
     model_profile: str = "research_brief",
-    review_mode: str = "deterministic_only",
+    review_mode: str = "openrouter_required",
     review_models: list[str] | None = None,
 ) -> dict:
     """Queue a research brief request for later execution."""
@@ -427,7 +597,7 @@ def queue_research_brief_batch_tool(
     max_chunk_chars: int = 1800,
     brief_style: str = "technical",
     model_profile: str = "research_brief",
-    review_mode: str = "deterministic_only",
+    review_mode: str = "openrouter_required",
     review_models: list[str] | None = None,
 ) -> dict:
     """Queue research brief requests from watchlist leads and source-health gaps."""
@@ -622,7 +792,7 @@ def run_full_text_ops_tool(
     full_text_report: dict | None = None,
     recent_run_limit: int = 10,
     model_profile: str = "reviewer",
-    review_mode: str = "external_required",
+    review_mode: str = "openrouter_required",
     review_models: list[str] | None = None,
     dagster_run_id: str | None = None,
     metadata: dict | None = None,
@@ -703,7 +873,7 @@ def run_x_linked_article_review_tool(
     review_status: str | None = "needs_review",
     limit: int = 50,
     model_profile: str = "reviewer",
-    review_mode: str = "deterministic_only",
+    review_mode: str = "openrouter_required",
     review_models: list[str] | None = None,
     dagster_run_id: str | None = None,
     metadata: dict | None = None,
@@ -1074,6 +1244,34 @@ if mcp is not None:
         )
 
     @mcp.tool()
+    def run_therapy_committee(
+        topic: str = "curative or disease-modifying therapy ideas for canine hemangiosarcoma",
+        disease_scope: str = "canine hemangiosarcoma and human angiosarcoma",
+        source_key: str | None = None,
+        max_chunks_per_perspective: int = 10,
+        max_claims: int = 20,
+        max_chunk_chars: int = 2200,
+        max_ideas_per_perspective: int = 4,
+        model_profile: str = "therapy_committee",
+        review_mode: str = "openrouter_required",
+        review_models: list[str] | None = None,
+    ) -> dict:
+        """Run the cited therapy ideation committee."""
+
+        return run_therapy_committee_tool(
+            topic=topic,
+            disease_scope=disease_scope,
+            source_key=source_key,
+            max_chunks_per_perspective=max_chunks_per_perspective,
+            max_claims=max_claims,
+            max_chunk_chars=max_chunk_chars,
+            max_ideas_per_perspective=max_ideas_per_perspective,
+            model_profile=model_profile,
+            review_mode=review_mode,
+            review_models=review_models,
+        )
+
+    @mcp.tool()
     def get_research_brief(brief_id: str) -> dict:
         """Return one persisted research brief ledger record."""
 
@@ -1198,6 +1396,24 @@ if mcp is not None:
         )
 
     @mcp.tool()
+    def queue_therapy_committee_validation_requests(
+        agent_run_id: str | None = None,
+        idea_ids: list[str] | None = None,
+        max_ideas: int = 1,
+        priority: int = 40,
+        dry_run: bool = True,
+    ) -> dict:
+        """Queue validation requests from a completed therapy committee agent run."""
+
+        return queue_therapy_committee_validation_requests_tool(
+            agent_run_id=agent_run_id,
+            idea_ids=idea_ids,
+            max_ideas=max_ideas,
+            priority=priority,
+            dry_run=dry_run,
+        )
+
+    @mcp.tool()
     def get_validation_request_queue_item(queue_item_id: str) -> dict:
         """Return one queued validation request."""
 
@@ -1240,10 +1456,116 @@ if mcp is not None:
         )
 
     @mcp.tool()
-    def dispatch_validation_request(queue_item_id: str) -> dict:
+    def dispatch_validation_request(queue_item_id: str, model_profile: str = "openrouter_required") -> dict:
         """Dispatch an approved queued validation request."""
 
-        return dispatch_validation_request_tool(queue_item_id)
+        return dispatch_validation_request_tool(queue_item_id, model_profile=model_profile)
+
+    @mcp.tool()
+    def run_validation_autopilot(
+        dry_run: bool = True,
+        force: bool = False,
+        max_per_run: int = 2,
+        manual_grace_period_hours: float = 6.0,
+        minimum_queue_age_hours: float = 1.0,
+        hourly_budget_usd: float = 0.25,
+        daily_budget_usd: float = 1.50,
+        allowed_task_types: list[str] | None = None,
+        allowed_validation_types: list[str] | None = None,
+        source_keys: list[str] | None = None,
+        model_profile: str = "openrouter_required",
+    ) -> dict:
+        """Preview or run conservative automatic validation approval and dispatch."""
+
+        return run_validation_autopilot_tool(
+            dry_run=dry_run,
+            force=force,
+            max_per_run=max_per_run,
+            manual_grace_period_hours=manual_grace_period_hours,
+            minimum_queue_age_hours=minimum_queue_age_hours,
+            hourly_budget_usd=hourly_budget_usd,
+            daily_budget_usd=daily_budget_usd,
+            allowed_task_types=allowed_task_types,
+            allowed_validation_types=allowed_validation_types,
+            source_keys=source_keys,
+            model_profile=model_profile,
+        )
+
+    @mcp.tool()
+    def resolve_evidence_gaps(
+        queue_item_ids: list[str] | None = None,
+        plan_id: str | None = None,
+        statuses: list[str] | None = None,
+        decisions: list[str] | None = None,
+        task_types: list[str] | None = None,
+        gap_types: list[str] | None = None,
+        limit: int = 25,
+        max_gaps_per_item: int = 8,
+        priority: int = 30,
+        dry_run: bool = True,
+        queue_research_briefs: bool = False,
+    ) -> dict:
+        """Convert validation-agent evidence gaps into research leads and optional brief queue items."""
+
+        return resolve_evidence_gaps_tool(
+            queue_item_ids=queue_item_ids,
+            plan_id=plan_id,
+            statuses=statuses,
+            decisions=decisions,
+            task_types=task_types,
+            gap_types=gap_types,
+            limit=limit,
+            max_gaps_per_item=max_gaps_per_item,
+            priority=priority,
+            dry_run=dry_run,
+            queue_research_briefs=queue_research_briefs,
+        )
+
+    @mcp.tool()
+    def build_validation_gap_source_pack(
+        queue_item_ids: list[str] | None = None,
+        lead_ids: list[str] | None = None,
+        lead_statuses: list[str] | None = None,
+        source_keys: list[str] | None = None,
+        lanes: list[str] | None = None,
+        limit: int = 25,
+        max_queries_per_lane: int = 3,
+        persist_queries: bool = False,
+        active: bool = True,
+        dry_run: bool = True,
+    ) -> dict:
+        """Build targeted source-query packs for validation evidence gaps."""
+
+        return build_validation_gap_source_pack_tool(
+            queue_item_ids=queue_item_ids,
+            lead_ids=lead_ids,
+            lead_statuses=lead_statuses,
+            source_keys=source_keys,
+            lanes=lanes,
+            limit=limit,
+            max_queries_per_lane=max_queries_per_lane,
+            persist_queries=persist_queries,
+            active=active,
+            dry_run=dry_run,
+        )
+
+    @mcp.tool()
+    def ingest_validation_gap_source_queries(
+        source_keys: list[str] | None = None,
+        query_names: list[str] | None = None,
+        limit_per_query: int = 5,
+        max_queries: int = 50,
+        dry_run: bool = True,
+    ) -> dict:
+        """Ingest only active validation-gap source queries."""
+
+        return ingest_validation_gap_source_queries_tool(
+            source_keys=source_keys,
+            query_names=query_names,
+            limit_per_query=limit_per_query,
+            max_queries=max_queries,
+            dry_run=dry_run,
+        )
 
     @mcp.tool()
     def queue_research_brief(
@@ -1256,7 +1578,7 @@ if mcp is not None:
         max_chunk_chars: int = 1800,
         brief_style: str = "technical",
         model_profile: str = "research_brief",
-        review_mode: str = "deterministic_only",
+        review_mode: str = "openrouter_required",
         review_models: list[str] | None = None,
     ) -> dict:
         """Queue a citation-first research brief request."""
@@ -1292,7 +1614,7 @@ if mcp is not None:
         max_chunk_chars: int = 1800,
         brief_style: str = "technical",
         model_profile: str = "research_brief",
-        review_mode: str = "deterministic_only",
+        review_mode: str = "openrouter_required",
         review_models: list[str] | None = None,
     ) -> dict:
         """Queue research brief requests from watchlist leads and source-health gaps."""
@@ -1476,7 +1798,7 @@ if mcp is not None:
         full_text_report: dict | None = None,
         recent_run_limit: int = 10,
         model_profile: str = "reviewer",
-        review_mode: str = "external_required",
+        review_mode: str = "openrouter_required",
         review_models: list[str] | None = None,
         dagster_run_id: str | None = None,
         metadata: dict | None = None,
@@ -1554,7 +1876,7 @@ if mcp is not None:
         review_status: str | None = "needs_review",
         limit: int = 50,
         model_profile: str = "reviewer",
-        review_mode: str = "deterministic_only",
+        review_mode: str = "openrouter_required",
         review_models: list[str] | None = None,
         dagster_run_id: str | None = None,
         metadata: dict | None = None,

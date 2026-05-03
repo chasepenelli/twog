@@ -739,7 +739,7 @@ class SQLiteResearchRepository(ResearchRepository):
             params.extend([like_term, like_term, like_term, like_term])
         clauses.append("(" + " or ".join(term_clauses) + ")")
 
-        fetch_limit = min(max(request.limit * 20, request.limit), 500)
+        fetch_limit = min(max(request.limit * 200, 1000), 5000)
         sql = f"""
             select
               dc.chunk_id as chunk_id,

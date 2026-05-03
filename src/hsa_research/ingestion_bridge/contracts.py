@@ -206,6 +206,13 @@ ResearchBriefStance = Literal[
 
 ResearchBriefEvidenceStrength = Literal["high", "medium", "low", "unknown"]
 
+TherapyCommitteePerspectiveName = Literal[
+    "target_biology",
+    "drug_repurposing",
+    "translational_clinical",
+    "skeptic_risk",
+]
+
 CommandCenterArea = Literal[
     "brief_queue",
     "research_leads",
@@ -275,6 +282,30 @@ ResearchBriefQueueStatus = Literal[
 
 ResearchBriefQueueBatchMode = Literal["research_leads", "source_health", "both"]
 SourceHealthStatus = Literal["healthy", "watch", "triage", "failing"]
+EvidenceGapType = Literal["missing_evidence", "risk", "next_action"]
+EvidenceGapResolverLane = Literal[
+    "mutation_function",
+    "clinical_response",
+    "pkpd",
+    "safety_signal",
+    "assay_protocol",
+    "trial_design",
+    "omics_context",
+    "general_evidence",
+]
+
+ValidationGapEvidenceLane = Literal[
+    "mutation_function",
+    "clinical_response",
+    "pkpd",
+    "safety_signal",
+    "assay_protocol",
+    "trial_design",
+    "omics_context",
+    "species_translation",
+    "chemistry",
+    "general_evidence",
+]
 
 ResearchBriefEvaluationReadiness = Literal[
     "ready_for_hypothesis_review",
@@ -482,7 +513,7 @@ class FullTextOpsRequest(StrictBaseModel):
         "openrouter_required",
         "openrouter_compare",
         "deterministic_only",
-    ] = "external_required"
+    ] = "openrouter_required"
     review_models: list[str] = Field(default_factory=list, max_length=10)
     dagster_run_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -711,7 +742,7 @@ class ResearchBriefQueueItem(StrictBaseModel):
         "openrouter_required",
         "openrouter_compare",
         "deterministic_only",
-    ] = "deterministic_only"
+    ] = "openrouter_required"
     review_models: list[str] = Field(default_factory=list, max_length=10)
     last_brief_id: UUID | None = None
     last_agent_run_id: UUID | None = None
@@ -756,7 +787,7 @@ class ResearchBriefQueueRequest(StrictBaseModel):
         "openrouter_required",
         "openrouter_compare",
         "deterministic_only",
-    ] = "deterministic_only"
+    ] = "openrouter_required"
     review_models: list[str] = Field(default_factory=list, max_length=10)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -842,7 +873,7 @@ class ResearchBriefQueueBatchRequest(StrictBaseModel):
         "openrouter_required",
         "openrouter_compare",
         "deterministic_only",
-    ] = "deterministic_only"
+    ] = "openrouter_required"
     review_models: list[str] = Field(default_factory=list, max_length=10)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -914,6 +945,105 @@ class ResearchBriefPlaygroundPack(StrictBaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class TherapyCommitteeRequest(StrictBaseModel):
+    topic: str = Field(
+        default="curative or disease-modifying therapy ideas for canine hemangiosarcoma",
+        min_length=3,
+        max_length=1000,
+    )
+    disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
+    source_key: str | None = None
+    max_chunks_per_perspective: int = Field(default=10, ge=1, le=30)
+    max_claims: int = Field(default=20, ge=0, le=75)
+    max_chunk_chars: int = Field(default=2200, ge=500, le=12000)
+    max_ideas_per_perspective: int = Field(default=4, ge=1, le=10)
+    model_profile: str = "therapy_committee"
+    review_mode: Literal[
+        "external_required",
+        "openrouter_required",
+        "openrouter_compare",
+        "deterministic_only",
+    ] = "openrouter_required"
+    review_models: list[str] = Field(default_factory=list, max_length=10)
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TherapyIdea(StrictBaseModel):
+    idea_id: UUID = Field(default_factory=uuid4)
+    title: str = Field(min_length=1, max_length=500)
+    hypothesis: str = Field(min_length=1, max_length=2000)
+    rationale: str = Field(min_length=1, max_length=3000)
+    candidate_therapies: list[str] = Field(default_factory=list, max_length=20)
+    targets: list[str] = Field(default_factory=list, max_length=20)
+    biomarkers: list[str] = Field(default_factory=list, max_length=20)
+    mechanism: str | None = Field(default=None, max_length=1500)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=25)
+    evidence_strength: ResearchBriefEvidenceStrength = "unknown"
+    translational_path: str | None = Field(default=None, max_length=2000)
+    risks: list[str] = Field(default_factory=list, max_length=25)
+    next_experiments: list[str] = Field(default_factory=list, max_length=25)
+    priority_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_therapy_idea(self) -> "TherapyIdea":
+        self.title = self.title.strip()
+        self.hypothesis = self.hypothesis.strip()
+        self.rationale = self.rationale.strip()
+        self.candidate_therapies = _dedupe_strings(self.candidate_therapies)
+        self.targets = _dedupe_strings(self.targets)
+        self.biomarkers = _dedupe_strings(self.biomarkers)
+        self.evidence_refs = _dedupe_strings(self.evidence_refs)
+        self.risks = _dedupe_strings(self.risks)
+        self.next_experiments = _dedupe_strings(self.next_experiments)
+        return self
+
+
+class TherapyCommitteeReport(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    perspective: TherapyCommitteePerspectiveName
+    agent_name: str
+    model_profile: str = "therapy_committee"
+    summary: str = Field(min_length=1, max_length=3000)
+    ideas: list[TherapyIdea] = Field(default_factory=list, max_length=20)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    evidence_limitations: list[str] = Field(default_factory=list, max_length=50)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class TherapyCommitteeResult(StrictBaseModel):
+    committee_run_id: UUID = Field(default_factory=uuid4)
+    agent_run_id: UUID | None = None
+    agent_run_ids: list[UUID] = Field(default_factory=list)
+    agent_name: str = "therapy_committee_chair_agent"
+    topic: str
+    disease_scope: str
+    model_profile: str = "therapy_committee"
+    review_mode: Literal[
+        "external_required",
+        "openrouter_required",
+        "openrouter_compare",
+        "deterministic_only",
+    ] = "openrouter_required"
+    reports: list[TherapyCommitteeReport] = Field(default_factory=list, max_length=10)
+    ranked_ideas: list[TherapyIdea] = Field(default_factory=list, max_length=25)
+    decision_summary: str = ""
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class TherapyCommitteeValidationQueueRequest(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    idea_ids: list[UUID] = Field(default_factory=list, max_length=10)
+    max_ideas: int = Field(default=1, ge=1, le=10)
+    priority: int = Field(default=40, ge=1, le=1000)
+    dry_run: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ResearchBriefEvaluationRequest(StrictBaseModel):
@@ -1161,7 +1291,7 @@ class XLinkedArticleReviewRequest(StrictBaseModel):
         "openrouter_required",
         "openrouter_compare",
         "deterministic_only",
-    ] = "deterministic_only"
+    ] = "openrouter_required"
     review_models: list[str] = Field(default_factory=list, max_length=10)
     dagster_run_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -1309,6 +1439,131 @@ class SourceQuery(StrictBaseModel):
     track: str | None = None
     object_type: ResearchObjectType | None = None
     active: bool = True
+
+
+class ValidationGapSourceQuery(StrictBaseModel):
+    query_id: UUID = Field(default_factory=uuid4)
+    lane: ValidationGapEvidenceLane
+    source_key: str
+    query_name: str
+    query_text: str
+    query_params: dict[str, Any] = Field(default_factory=dict)
+    track: str = "validation_gap"
+    object_type: ResearchObjectType | None = None
+    active: bool = True
+    priority: int = Field(default=100, ge=0, le=1000)
+    reason: str
+    required_terms: list[str] = Field(default_factory=list, max_length=25)
+    excluded_terms: list[str] = Field(default_factory=list, max_length=25)
+    lead_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    queue_item_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=50)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_validation_gap_source_query(self) -> "ValidationGapSourceQuery":
+        self.source_key = self.source_key.strip().lower()
+        self.query_name = self.query_name.strip()
+        self.query_text = re.sub(r"\s+", " ", self.query_text).strip()
+        self.required_terms = _normalized_unique_strings(self.required_terms)
+        self.excluded_terms = _normalized_unique_strings(self.excluded_terms)
+        self.evidence_refs = _normalized_unique_strings(self.evidence_refs)
+        self.track = self.track.strip() or "validation_gap"
+        self.reason = self.reason.strip()
+        if not self.query_name:
+            raise ValueError("query_name is required")
+        if not self.query_text:
+            raise ValueError("query_text is required")
+        if not self.reason:
+            raise ValueError("reason is required")
+        return self
+
+    def as_source_query(self) -> SourceQuery:
+        return SourceQuery(
+            source_key=self.source_key,
+            query_name=self.query_name,
+            query_text=self.query_text,
+            query_params=self.query_params,
+            track=self.track,
+            object_type=self.object_type,
+            active=self.active,
+        )
+
+
+class ValidationGapSourcePackRequest(StrictBaseModel):
+    queue_item_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    lead_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    lead_statuses: list[ResearchLeadStatus] = Field(default_factory=lambda: ["new", "followup"], max_length=10)
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    lanes: list[ValidationGapEvidenceLane] = Field(default_factory=list, max_length=20)
+    limit: int = Field(default=25, ge=1, le=200)
+    max_queries_per_lane: int = Field(default=3, ge=1, le=20)
+    persist_queries: bool = False
+    active: bool = True
+    dry_run: bool = True
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_validation_gap_source_pack_request(self) -> "ValidationGapSourcePackRequest":
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        self.lead_statuses = _dedupe_strings(self.lead_statuses)
+        self.lanes = _dedupe_strings(self.lanes)
+        return self
+
+
+class ValidationGapSourcePackResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    agent_name: str = "validation_gap_source_pack_agent"
+    model_profile: str = "deterministic_query_builder"
+    source_pack_id: UUID = Field(default_factory=uuid4)
+    lead_count: int = 0
+    queue_item_count: int = 0
+    query_count: int = 0
+    persisted_query_count: int = 0
+    skipped_count: int = 0
+    dry_run: bool = True
+    persist_queries: bool = False
+    queries: list[ValidationGapSourceQuery] = Field(default_factory=list)
+    source_queries: list[SourceQuery] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ValidationGapSourceIngestRequest(StrictBaseModel):
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    query_names: list[str] = Field(default_factory=list, max_length=100)
+    limit_per_query: int = Field(default=5, ge=1, le=100)
+    max_queries: int = Field(default=50, ge=1, le=500)
+    dry_run: bool = True
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_validation_gap_source_ingest_request(self) -> "ValidationGapSourceIngestRequest":
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        self.query_names = _normalized_unique_strings(self.query_names)
+        return self
+
+
+class ValidationGapSourceIngestResult(StrictBaseModel):
+    dry_run: bool = True
+    source_keys: list[str] = Field(default_factory=list)
+    query_count: int = 0
+    attempted_query_count: int = 0
+    completed_query_count: int = 0
+    failed_query_count: int = 0
+    skipped_count: int = 0
+    raw_records: int = 0
+    research_objects: int = 0
+    document_chunks: int = 0
+    full_text_research_objects: int = 0
+    source_queries: list[SourceQuery] = Field(default_factory=list)
+    results: list[IngestionResult] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class SourceScoutRequest(StrictBaseModel):
@@ -2034,7 +2289,17 @@ class ValidationAssayContext(StrictBaseModel):
 
 
 class ValidationRequest(StrictBaseModel):
-    validation_type: Literal["boltz", "docking", "md", "admet", "homology", "safety", "expert_review"]
+    validation_type: Literal[
+        "boltz",
+        "docking",
+        "md",
+        "admet",
+        "homology",
+        "safety",
+        "expert_review",
+        "wet_lab",
+        "omics",
+    ]
     candidate_id: UUID | None = None
     candidate_name: str | None = None
     target_name: str | None = None
@@ -2188,6 +2453,185 @@ class ValidationRequestQueueRequest(StrictBaseModel):
 
 class ValidationRequestQueueResult(StrictBaseModel):
     plan_id: UUID
+    candidate_task_count: int = 0
+    queued_count: int = 0
+    existing_count: int = 0
+    skipped_count: int = 0
+    dry_run: bool = True
+    queue_items: list[ValidationRequestQueueItem] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ValidationAutopilotRequest(StrictBaseModel):
+    enabled: bool = True
+    dry_run: bool = True
+    force: bool = False
+    manual_grace_period_hours: float = Field(default=6.0, ge=0.0, le=168.0)
+    minimum_queue_age_hours: float = Field(default=1.0, ge=0.0, le=168.0)
+    max_per_run: int = Field(default=2, ge=1, le=10)
+    hourly_budget_usd: float = Field(default=0.25, ge=0.0, le=100.0)
+    daily_budget_usd: float = Field(default=1.50, ge=0.0, le=1000.0)
+    estimated_cost_per_item_usd: float = Field(default=0.03, ge=0.0, le=10.0)
+    allowed_task_types: list[ValidationPlanTaskType] = Field(
+        default_factory=lambda: ["expert_review", "target_validation", "omics"],
+        max_length=20,
+    )
+    allowed_validation_types: list[str] = Field(
+        default_factory=lambda: ["expert_review", "homology", "omics"],
+        max_length=20,
+    )
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    model_profile: str = "openrouter_required"
+    approved_by: str = Field(default="validation_autopilot", max_length=200)
+    approval_note: str | None = Field(default=None, max_length=1000)
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_validation_autopilot_request(self) -> "ValidationAutopilotRequest":
+        self.allowed_task_types = _dedupe_strings(self.allowed_task_types)
+        self.allowed_validation_types = _dedupe_lower_tokens(self.allowed_validation_types)
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        self.model_profile = self.model_profile.strip() or "openrouter_required"
+        self.approved_by = self.approved_by.strip() or "validation_autopilot"
+        if self.approval_note:
+            self.approval_note = self.approval_note.strip() or None
+        return self
+
+
+class ValidationAutopilotQueueRecord(StrictBaseModel):
+    queue_item_id: UUID
+    plan_id: UUID
+    task_id: UUID
+    status: ValidationRequestQueueStatus
+    priority: int = Field(ge=1, le=1000)
+    task_type: ValidationPlanTaskType
+    validation_type: str
+    title: str
+    source_key: str | None = None
+    reason: str
+    decision: str | None = None
+    agent_run_id: UUID | None = None
+    cost_usd: float | None = Field(default=None, ge=0.0)
+    last_error: str | None = None
+
+
+class ValidationAutopilotResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    agent_name: str = "validation_autopilot_agent"
+    policy_version: str = "v1"
+    enabled: bool = True
+    dry_run: bool = True
+    force: bool = False
+    model_profile: str = "openrouter_required"
+    scanned_count: int = 0
+    eligible_count: int = 0
+    selected_count: int = 0
+    dispatched_count: int = 0
+    skipped_count: int = 0
+    should_dispatch: bool = False
+    blockers: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    last_manual_activity_at: datetime | None = None
+    manual_grace_period_ends_at: datetime | None = None
+    hourly_budget_usd: float = Field(default=0.25, ge=0.0)
+    daily_budget_usd: float = Field(default=1.50, ge=0.0)
+    hourly_spend_usd: float = Field(default=0.0, ge=0.0)
+    daily_spend_usd: float = Field(default=0.0, ge=0.0)
+    estimated_cost_usd: float = Field(default=0.0, ge=0.0)
+    actual_cost_usd: float = Field(default=0.0, ge=0.0)
+    selected: list[ValidationAutopilotQueueRecord] = Field(default_factory=list)
+    dispatched: list[ValidationAutopilotQueueRecord] = Field(default_factory=list)
+    skipped: list[ValidationAutopilotQueueRecord] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+ValidationAgentDecision = Literal["promote", "hold", "demote"]
+
+
+class ValidationAgentResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    queue_item_id: UUID
+    plan_id: UUID
+    task_id: UUID
+    task_type: ValidationPlanTaskType
+    validation_type: str
+    agent_name: str
+    model_profile: str
+    decision: ValidationAgentDecision = "hold"
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    summary: str = Field(min_length=1, max_length=3000)
+    evidence_used: list[str] = Field(default_factory=list, max_length=50)
+    missing_evidence: list[str] = Field(default_factory=list, max_length=50)
+    risks: list[str] = Field(default_factory=list, max_length=50)
+    next_actions: list[str] = Field(default_factory=list, max_length=50)
+    errors: list[str] = Field(default_factory=list)
+    raw_response: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def normalize_validation_agent_result(self) -> "ValidationAgentResult":
+        self.summary = self.summary.strip()
+        self.evidence_used = _normalized_unique_strings(self.evidence_used)
+        self.missing_evidence = _normalized_unique_strings(self.missing_evidence)
+        self.risks = _normalized_unique_strings(self.risks)
+        self.next_actions = _normalized_unique_strings(self.next_actions)
+        self.errors = _normalized_unique_strings(self.errors)
+        return self
+
+
+class EvidenceGapResolverRequest(StrictBaseModel):
+    queue_item_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    plan_id: UUID | None = None
+    statuses: list[ValidationRequestQueueStatus] = Field(default_factory=lambda: ["completed"], max_length=10)
+    decisions: list[ValidationAgentDecision] = Field(default_factory=lambda: ["hold", "demote"], max_length=3)
+    task_types: list[ValidationPlanTaskType] = Field(default_factory=list, max_length=20)
+    gap_types: list[EvidenceGapType] = Field(
+        default_factory=lambda: ["missing_evidence", "risk", "next_action"],
+        max_length=3,
+    )
+    limit: int = Field(default=25, ge=1, le=200)
+    max_gaps_per_item: int = Field(default=8, ge=1, le=50)
+    priority: int = Field(default=30, ge=0, le=1000)
+    dry_run: bool = True
+    queue_research_briefs: bool = False
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_evidence_gap_resolver_request(self) -> "EvidenceGapResolverRequest":
+        self.statuses = _dedupe_strings(self.statuses)
+        self.decisions = _dedupe_strings(self.decisions)
+        self.task_types = _dedupe_strings(self.task_types)
+        self.gap_types = _dedupe_strings(self.gap_types)
+        return self
+
+
+class EvidenceGapResolverResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    agent_name: str = "evidence_gap_resolver_agent"
+    model_profile: str = "deterministic_resolver"
+    queue_items_seen: int = 0
+    gap_count: int = 0
+    leads_created: int = 0
+    existing_leads: int = 0
+    brief_queue_count: int = 0
+    skipped_count: int = 0
+    dry_run: bool = True
+    research_leads: list[ResearchLeadRecord] = Field(default_factory=list)
+    brief_queue_items: list[ResearchBriefQueueItem] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class TherapyCommitteeValidationQueueResult(StrictBaseModel):
+    origin_agent_run_id: UUID | None = None
+    committee_run_id: UUID | None = None
+    plan_id: UUID = Field(default_factory=uuid4)
+    candidate_idea_count: int = 0
     candidate_task_count: int = 0
     queued_count: int = 0
     existing_count: int = 0

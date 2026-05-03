@@ -39,6 +39,7 @@ from .contracts import (
     ResolvedEntity,
     RunStatus,
     SourceFollowupQueueItem,
+    SourceQuery,
     ScrapeSourceProfileReview,
     ScrapeReviewRecord,
     TextEmbedding,
@@ -401,6 +402,12 @@ class ResearchRepository(Protocol):
     ) -> SourceFollowupQueueItem | None:
         """Update source follow-up queue lifecycle fields."""
 
+    def upsert_source_query(self, query: SourceQuery) -> SourceQuery:
+        """Persist a durable source query."""
+
+    def list_source_queries(self, source_key: str | None = None, active_only: bool = True) -> list[SourceQuery]:
+        """Return durable source queries."""
+
     def upsert_research_lead(self, lead: ResearchLeadRecord) -> ResearchLeadRecord:
         """Persist a watchlist lead for evidence not yet cleanly ingestible."""
 
@@ -444,6 +451,7 @@ class InMemoryResearchRepository:
         self.scrape_reviews: dict[UUID, ScrapeReviewRecord] = {}
         self.scrape_profile_reviews: dict[str, ScrapeSourceProfileReview] = {}
         self.source_followups: dict[UUID, SourceFollowupQueueItem] = {}
+        self.source_queries: dict[tuple[str, str], SourceQuery] = {}
         self.research_leads: dict[UUID, ResearchLeadRecord] = {}
         self.research_briefs: dict[UUID, ResearchBriefRecord] = {}
         self.research_brief_evaluations: dict[UUID, ResearchBriefEvaluationRecord] = {}
@@ -1382,6 +1390,18 @@ class InMemoryResearchRepository:
         self.source_followups[followup_id] = updated
         return updated
 
+    def upsert_source_query(self, query: SourceQuery) -> SourceQuery:
+        self.source_queries[(query.source_key, query.query_name)] = query
+        return query
+
+    def list_source_queries(self, source_key: str | None = None, active_only: bool = True) -> list[SourceQuery]:
+        queries = list(self.source_queries.values())
+        if source_key is not None:
+            queries = [query for query in queries if query.source_key == source_key]
+        if active_only:
+            queries = [query for query in queries if query.active]
+        return sorted(queries, key=lambda query: (query.source_key, query.query_name))
+
     def upsert_research_lead(self, lead: ResearchLeadRecord) -> ResearchLeadRecord:
         existing = next(
             (
@@ -1517,6 +1537,59 @@ def keyword_terms(query: str) -> list[str]:
     return terms
 
 
+_LOW_SIGNAL_RETRIEVAL_TERMS = {
+    "angiosarcoma",
+    "canine",
+    "cell",
+    "cells",
+    "dog",
+    "dogs",
+    "hemangiosarcoma",
+    "human",
+    "humans",
+    "line",
+    "lines",
+    "sarcoma",
+    "tissue",
+    "tissues",
+}
+
+_HIGH_SIGNAL_RETRIEVAL_TERMS = {
+    "cd31",
+    "doxorubicin",
+    "flt4",
+    "kit",
+    "kdr",
+    "paclitaxel",
+    "pazopanib",
+    "pdgfr",
+    "pik3ca",
+    "propranolol",
+    "sirolimus",
+    "sorafenib",
+    "toceranib",
+    "vegf",
+    "vegfa",
+    "vegfr",
+    "vegfr2",
+}
+
+_EVIDENCE_SIGNAL_RETRIEVAL_TERMS = {
+    "auc",
+    "bioavailability",
+    "cmax",
+    "dose",
+    "limiting",
+    "pharmacodynamic",
+    "pharmacokinetic",
+    "response",
+    "safety",
+    "survival",
+    "toxicity",
+    "tolerability",
+}
+
+
 def keyword_chunk_score(
     query: str,
     terms: list[str],
@@ -1530,12 +1603,27 @@ def keyword_chunk_score(
     title = research_object.title if research_object and research_object.title else ""
     abstract = research_object.abstract if research_object and research_object.abstract else ""
     haystack = f"{title}\n{abstract}\n{chunk.section_label or ''}\n{chunk.text_content}".lower()
-    matches = sum(1 for term in terms if term in haystack)
-    if matches == 0:
+    weights = {term: _retrieval_term_weight(term) for term in terms}
+    matched_weight = sum(weight for term, weight in weights.items() if term in haystack)
+    if matched_weight <= 0.0:
         return 0.0
+    total_weight = sum(weights.values()) or float(len(terms))
 
     query_text = " ".join(query.lower().split())
     phrase_bonus = 0.2 if query_text and query_text in haystack else 0.0
-    title_bonus = 0.1 * sum(1 for term in terms if term in title.lower())
-    score = (matches / len(terms)) * 0.7 + phrase_bonus + min(title_bonus, 0.1)
+    title_weight = sum(weight for term, weight in weights.items() if term in title.lower())
+    title_bonus = min((title_weight / total_weight) * 0.2, 0.2)
+    score = (matched_weight / total_weight) * 0.72 + phrase_bonus + title_bonus
     return min(score, 1.0)
+
+
+def _retrieval_term_weight(term: str) -> float:
+    if term in _HIGH_SIGNAL_RETRIEVAL_TERMS:
+        return 1.9
+    if term in _EVIDENCE_SIGNAL_RETRIEVAL_TERMS:
+        return 1.2
+    if term in _LOW_SIGNAL_RETRIEVAL_TERMS:
+        return 0.55
+    if len(term) >= 8:
+        return 1.25
+    return 1.0

@@ -17,6 +17,7 @@ from .contracts import (
     ClaimCurationRequest,
     ClaimSearchRequest,
     CommandCenterRequest,
+    EvidenceGapResolverRequest,
     FullTextOpsRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
@@ -33,6 +34,11 @@ from .contracts import (
     SourceFollowupQueueRequest,
     SourceQuery,
     SourceScoutRequest,
+    TherapyCommitteeRequest,
+    TherapyCommitteeValidationQueueRequest,
+    ValidationAutopilotRequest,
+    ValidationGapSourceIngestRequest,
+    ValidationGapSourcePackRequest,
     ValidationPlanRequest,
     ValidationRequestQueueRequest,
     XLinkedArticleReviewRequest,
@@ -177,6 +183,23 @@ _RESEARCH_BRIEF_CITATION_TABLE_COLUMNS = (
     "score",
     "relevance",
 )
+_THERAPY_IDEA_TABLE_COLUMNS = (
+    "title",
+    "priority_score",
+    "evidence_strength",
+    "candidate_therapies",
+    "targets",
+    "biomarkers",
+    "evidence_refs",
+)
+_THERAPY_COMMITTEE_REPORT_TABLE_COLUMNS = (
+    "perspective",
+    "agent_name",
+    "idea_count",
+    "evidence_limitation_count",
+    "error_count",
+    "summary",
+)
 _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS = (
     "brief_id",
     "agent_run_id",
@@ -283,6 +306,20 @@ _VALIDATION_REQUEST_QUEUE_TABLE_COLUMNS = (
     "last_error",
     "created_at",
 )
+_VALIDATION_AUTOPILOT_TABLE_COLUMNS = (
+    "queue_item_id",
+    "status",
+    "priority",
+    "task_type",
+    "validation_type",
+    "title",
+    "source_key",
+    "reason",
+    "decision",
+    "agent_run_id",
+    "cost_usd",
+    "last_error",
+)
 _RESEARCH_BRIEF_QUEUE_TABLE_COLUMNS = (
     "queue_item_id",
     "status",
@@ -319,6 +356,27 @@ _RESEARCH_FOLLOWUP_RESOLVER_TABLE_COLUMNS = (
     "evidence_refs",
     "manual_research_required",
     "promoted",
+    "errors",
+)
+_VALIDATION_GAP_SOURCE_PACK_TABLE_COLUMNS = (
+    "source_key",
+    "lane",
+    "query_name",
+    "query_text",
+    "priority",
+    "active",
+    "lead_ids",
+    "queue_item_ids",
+    "required_terms",
+)
+_VALIDATION_GAP_SOURCE_INGEST_TABLE_COLUMNS = (
+    "source_key",
+    "query_name",
+    "status",
+    "raw_records",
+    "research_objects",
+    "document_chunks",
+    "full_text_research_objects",
     "errors",
 )
 _RESEARCH_BRIEF_PLAYGROUND_PROMPT_TABLE_COLUMNS = (
@@ -723,6 +781,47 @@ if dg is not None:
             "brief_preview": dg.MetadataValue.md(str(report.get("final_brief") or "")[:4000]),
         }
 
+    def _therapy_committee_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        reports = report.get("reports", [])
+        ideas = report.get("ranked_ideas", [])
+        report_rows = [
+            {
+                "perspective": item.get("perspective"),
+                "agent_name": item.get("agent_name"),
+                "idea_count": len(item.get("ideas", [])),
+                "evidence_limitation_count": len(item.get("evidence_limitations", [])),
+                "error_count": len(item.get("errors", [])),
+                "summary": str(item.get("summary") or "")[:500],
+            }
+            for item in reports
+        ]
+        idea_rows = [
+            {
+                "title": str(idea.get("title") or "")[:300],
+                "priority_score": idea.get("priority_score"),
+                "evidence_strength": idea.get("evidence_strength"),
+                "candidate_therapies": ", ".join(idea.get("candidate_therapies", [])[:6]),
+                "targets": ", ".join(idea.get("targets", [])[:6]),
+                "biomarkers": ", ".join(idea.get("biomarkers", [])[:6]),
+                "evidence_refs": ", ".join(idea.get("evidence_refs", [])[:8]),
+            }
+            for idea in ideas
+        ]
+        return {
+            "committee_run_id": report.get("committee_run_id"),
+            "agent_run_id": report.get("agent_run_id"),
+            "topic": report.get("topic"),
+            "review_mode": report.get("review_mode"),
+            "perspective_count": len(reports),
+            "idea_count": dg.MetadataValue.int(len(ideas)),
+            "error_count": len(report.get("errors", [])),
+            "evidence": dg.MetadataValue.json(report.get("evidence", {})),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "committee_reports": _metadata_table(report_rows, _THERAPY_COMMITTEE_REPORT_TABLE_COLUMNS),
+            "ranked_ideas": _metadata_table(idea_rows, _THERAPY_IDEA_TABLE_COLUMNS),
+            "decision_summary": dg.MetadataValue.md(str(report.get("decision_summary") or "")[:4000]),
+        }
+
     def _research_brief_library_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
         rows = report.get("briefs", [])
         return {
@@ -917,6 +1016,32 @@ if dg is not None:
             "created_at": item.get("created_at"),
         }
 
+    def _validation_autopilot_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        selected_rows = report.get("selected", [])
+        dispatched_rows = report.get("dispatched", [])
+        skipped_rows = report.get("skipped", [])
+        return {
+            "agent_run_id": report.get("agent_run_id"),
+            "dry_run": bool(report.get("dry_run", False)),
+            "enabled": bool(report.get("enabled", False)),
+            "force": bool(report.get("force", False)),
+            "model_profile": report.get("model_profile"),
+            "scanned_count": dg.MetadataValue.int(int(report.get("scanned_count", 0))),
+            "eligible_count": dg.MetadataValue.int(int(report.get("eligible_count", 0))),
+            "selected_count": dg.MetadataValue.int(int(report.get("selected_count", 0))),
+            "dispatched_count": dg.MetadataValue.int(int(report.get("dispatched_count", 0))),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0))),
+            "estimated_cost_usd": dg.MetadataValue.float(float(report.get("estimated_cost_usd", 0.0))),
+            "actual_cost_usd": dg.MetadataValue.float(float(report.get("actual_cost_usd", 0.0))),
+            "hourly_spend_usd": dg.MetadataValue.float(float(report.get("hourly_spend_usd", 0.0))),
+            "daily_spend_usd": dg.MetadataValue.float(float(report.get("daily_spend_usd", 0.0))),
+            "blockers": dg.MetadataValue.json(report.get("blockers", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "selected": _metadata_table(selected_rows, _VALIDATION_AUTOPILOT_TABLE_COLUMNS),
+            "dispatched": _metadata_table(dispatched_rows, _VALIDATION_AUTOPILOT_TABLE_COLUMNS),
+            "skipped": _metadata_table(skipped_rows[:25], _VALIDATION_AUTOPILOT_TABLE_COLUMNS),
+        }
+
     def _research_brief_queue_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
         rows = report.get("queue_items", [])
         return {
@@ -1065,6 +1190,37 @@ if dg is not None:
             "research_leads": _metadata_table(rows, _RESEARCH_LEAD_TABLE_COLUMNS),
         }
 
+    def _evidence_gap_resolver_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        leads = report.get("research_leads", [])
+        rows = [
+            {
+                "lead_id": lead.get("lead_id"),
+                "lead_type": lead.get("lead_type"),
+                "status": lead.get("status"),
+                "priority": lead.get("priority"),
+                "source_key": lead.get("source_key"),
+                "title": str(lead.get("title") or "")[:300],
+                "url": lead.get("url"),
+                "topic_tags": lead.get("topic_tags", []),
+                "suggested_sources": lead.get("suggested_sources", []),
+                "reason": str(lead.get("reason") or "")[:500],
+            }
+            for lead in leads[:100]
+        ]
+        return {
+            "queue_items_seen": dg.MetadataValue.int(int(report.get("queue_items_seen", 0))),
+            "gap_count": dg.MetadataValue.int(int(report.get("gap_count", 0))),
+            "leads_created": dg.MetadataValue.int(int(report.get("leads_created", 0))),
+            "existing_leads": dg.MetadataValue.int(int(report.get("existing_leads", 0))),
+            "brief_queue_count": dg.MetadataValue.int(int(report.get("brief_queue_count", 0))),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0))),
+            "dry_run": bool(report.get("dry_run", True)),
+            "error_count": len(report.get("errors", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "research_leads": _metadata_table(rows, _RESEARCH_LEAD_TABLE_COLUMNS),
+            "skipped": dg.MetadataValue.json(report.get("skipped", [])[:100]),
+        }
+
     def _research_followup_resolver_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
         rows = [
             {
@@ -1094,6 +1250,79 @@ if dg is not None:
             "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "lead_results": _metadata_table(rows, _RESEARCH_FOLLOWUP_RESOLVER_TABLE_COLUMNS),
+        }
+
+    def _validation_gap_source_pack_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = [
+            {
+                "source_key": query.get("source_key"),
+                "lane": query.get("lane"),
+                "query_name": query.get("query_name"),
+                "query_text": str(query.get("query_text") or "")[:500],
+                "priority": query.get("priority"),
+                "active": query.get("active"),
+                "lead_ids": query.get("lead_ids", []),
+                "queue_item_ids": query.get("queue_item_ids", []),
+                "required_terms": query.get("required_terms", []),
+            }
+            for query in report.get("queries", [])
+        ]
+        return {
+            "agent_run_id": report.get("agent_run_id"),
+            "source_pack_id": report.get("source_pack_id"),
+            "lead_count": dg.MetadataValue.int(int(report.get("lead_count", 0))),
+            "queue_item_count": dg.MetadataValue.int(int(report.get("queue_item_count", 0))),
+            "query_count": dg.MetadataValue.int(int(report.get("query_count", 0))),
+            "persisted_query_count": dg.MetadataValue.int(int(report.get("persisted_query_count", 0))),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0))),
+            "dry_run": bool(report.get("dry_run", True)),
+            "persist_queries": bool(report.get("persist_queries", False)),
+            "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "skipped": dg.MetadataValue.json(report.get("skipped", [])[:100]),
+            "queries": _metadata_table(rows, _VALIDATION_GAP_SOURCE_PACK_TABLE_COLUMNS),
+        }
+
+    def _validation_gap_source_ingest_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = [
+            {
+                "source_key": item.get("source_key"),
+                "query_name": item.get("query_name"),
+                "status": item.get("status"),
+                "raw_records": item.get("raw_records", 0),
+                "research_objects": item.get("research_objects", 0),
+                "document_chunks": item.get("document_chunks", 0),
+                "full_text_research_objects": item.get("full_text_research_objects", 0),
+                "errors": item.get("errors", []),
+            }
+            for item in report.get("results", [])
+        ]
+        dry_run_rows = [
+            {
+                "source_key": query.get("source_key"),
+                "query_name": query.get("query_name"),
+                "status": "dry_run",
+                "raw_records": 0,
+                "research_objects": 0,
+                "document_chunks": 0,
+                "full_text_research_objects": 0,
+                "errors": [],
+            }
+            for query in report.get("source_queries", [])
+        ]
+        return {
+            "dry_run": bool(report.get("dry_run", True)),
+            "source_keys": dg.MetadataValue.json(report.get("source_keys", [])),
+            "query_count": dg.MetadataValue.int(int(report.get("query_count", 0))),
+            "attempted_query_count": dg.MetadataValue.int(int(report.get("attempted_query_count", 0))),
+            "completed_query_count": dg.MetadataValue.int(int(report.get("completed_query_count", 0))),
+            "failed_query_count": dg.MetadataValue.int(int(report.get("failed_query_count", 0))),
+            "raw_records": dg.MetadataValue.int(int(report.get("raw_records", 0))),
+            "research_objects": dg.MetadataValue.int(int(report.get("research_objects", 0))),
+            "document_chunks": dg.MetadataValue.int(int(report.get("document_chunks", 0))),
+            "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "results": _metadata_table(rows or dry_run_rows, _VALIDATION_GAP_SOURCE_INGEST_TABLE_COLUMNS),
         }
 
     def _x_topic_monitor_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -2136,6 +2365,163 @@ if dg is not None:
     @dg.asset(
         group_name="ai_research",
         config_schema={
+            "topic": dg.Field(
+                str,
+                default_value="curative or disease-modifying therapy ideas for canine hemangiosarcoma",
+                description="Therapy committee topic.",
+            ),
+            "disease_scope": dg.Field(
+                str,
+                default_value="canine hemangiosarcoma and human angiosarcoma",
+                description="Disease/scope guardrail for retrieval and synthesis.",
+            ),
+            "source_key": dg.Field(
+                str,
+                is_required=False,
+                description="Optional source key filter for chunk retrieval.",
+            ),
+            "max_chunks_per_perspective": dg.Field(int, default_value=10),
+            "max_claims": dg.Field(int, default_value=20),
+            "max_chunk_chars": dg.Field(int, default_value=2200),
+            "max_ideas_per_perspective": dg.Field(int, default_value=4),
+            "review_mode": dg.Field(
+                str,
+                default_value="openrouter_required",
+                description="Committee review mode: openrouter_required, openrouter_compare, external_required, or deterministic_only.",
+            ),
+            "review_models": dg.Field([str], default_value=[]),
+        },
+    )
+    def therapy_committee_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual cited therapy ideation committee over stored evidence."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).run_therapy_committee(
+            TherapyCommitteeRequest(
+                topic=config["topic"],
+                disease_scope=config["disease_scope"],
+                source_key=config.get("source_key"),
+                max_chunks_per_perspective=config["max_chunks_per_perspective"],
+                max_claims=config["max_claims"],
+                max_chunk_chars=config["max_chunk_chars"],
+                max_ideas_per_perspective=config["max_ideas_per_perspective"],
+                review_mode=config["review_mode"],
+                review_models=config["review_models"],
+                dagster_run_id=context.run_id,
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_therapy_committee_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "agent_run_id": dg.Field(
+                str,
+                is_required=False,
+                description="Therapy committee agent_run_id. Defaults to latest completed committee run.",
+            ),
+            "idea_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Specific therapy idea IDs to queue. Empty selects top-ranked ideas.",
+            ),
+            "max_ideas": dg.Field(int, default_value=1),
+            "priority": dg.Field(int, default_value=40),
+            "dry_run": dg.Field(
+                bool,
+                default_value=True,
+                description="When true, preview queue items without persisting.",
+            ),
+        },
+    )
+    def therapy_committee_validation_queue_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Queue validation requests from a completed therapy committee run."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).queue_therapy_committee_validation_requests(
+            TherapyCommitteeValidationQueueRequest(
+                agent_run_id=config.get("agent_run_id"),
+                idea_ids=config["idea_ids"],
+                max_ideas=config["max_ideas"],
+                priority=config["priority"],
+                dry_run=config["dry_run"],
+                metadata={"dagster_queue_run_id": context.run_id},
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_validation_request_queue_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "enabled": dg.Field(bool, default_value=True, description="Allow live dispatch when dry_run is false."),
+            "dry_run": dg.Field(bool, default_value=True, description="Preview selected items without mutating queue state."),
+            "force": dg.Field(bool, default_value=False, description="Bypass manual-grace and item-age windows."),
+            "manual_grace_period_hours": dg.Field(float, default_value=6.0),
+            "minimum_queue_age_hours": dg.Field(float, default_value=1.0),
+            "max_per_run": dg.Field(int, default_value=2),
+            "hourly_budget_usd": dg.Field(float, default_value=0.25),
+            "daily_budget_usd": dg.Field(float, default_value=1.50),
+            "estimated_cost_per_item_usd": dg.Field(float, default_value=0.03),
+            "allowed_task_types": dg.Field([str], default_value=["expert_review", "target_validation", "omics"]),
+            "allowed_validation_types": dg.Field([str], default_value=["expert_review", "homology", "omics"]),
+            "source_keys": dg.Field([str], default_value=[]),
+            "model_profile": dg.Field(str, default_value="openrouter_required"),
+        },
+    )
+    def validation_autopilot_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual or scheduled validation autopilot run with explicit caps and blockers."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        service = HSAResearchService(repository)
+        request = ValidationAutopilotRequest(
+            enabled=bool(config.get("enabled", True)),
+            dry_run=bool(config.get("dry_run", True)),
+            force=bool(config.get("force", False)),
+            manual_grace_period_hours=float(config.get("manual_grace_period_hours", 6.0)),
+            minimum_queue_age_hours=float(config.get("minimum_queue_age_hours", 1.0)),
+            max_per_run=int(config.get("max_per_run", 2)),
+            hourly_budget_usd=float(config.get("hourly_budget_usd", 0.25)),
+            daily_budget_usd=float(config.get("daily_budget_usd", 1.50)),
+            estimated_cost_per_item_usd=float(config.get("estimated_cost_per_item_usd", 0.03)),
+            allowed_task_types=config.get("allowed_task_types") or ["expert_review", "target_validation", "omics"],
+            allowed_validation_types=config.get("allowed_validation_types") or ["expert_review", "homology", "omics"],
+            source_keys=config.get("source_keys") or [],
+            model_profile=config.get("model_profile") or "openrouter_required",
+            dagster_run_id=context.run_id,
+        )
+        result = service.run_validation_autopilot(request)
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_validation_autopilot_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
             "status": dg.Field(
                 str,
                 is_required=False,
@@ -2809,7 +3195,7 @@ if dg is not None:
             ),
             "brief_style": dg.Field(str, default_value="technical", description="Research brief style."),
             "model_profile": dg.Field(str, default_value="research_brief", description="Logical model profile."),
-            "review_mode": dg.Field(str, default_value="deterministic_only", description="Review mode."),
+            "review_mode": dg.Field(str, default_value="openrouter_required", description="Review mode."),
             "review_models": dg.Field(
                 [str],
                 default_value=[],
@@ -2899,7 +3285,7 @@ if dg is not None:
             ),
             "review_mode": dg.Field(
                 str,
-                default_value="deterministic_only",
+                default_value="openrouter_required",
                 description="Research brief review mode.",
             ),
             "review_models": dg.Field(
@@ -3219,6 +3605,162 @@ if dg is not None:
     @dg.asset(
         group_name="ai_research",
         config_schema={
+            "queue_item_ids": dg.Field([str], default_value=[], description="Specific validation queue item IDs."),
+            "plan_id": dg.Field(str, default_value="", description="Optional validation plan ID."),
+            "statuses": dg.Field([str], default_value=["completed"], description="Validation queue statuses to inspect."),
+            "decisions": dg.Field([str], default_value=["hold", "demote"], description="Validation decisions to resolve."),
+            "task_types": dg.Field([str], default_value=[], description="Optional validation task-type filters."),
+            "gap_types": dg.Field(
+                [str],
+                default_value=["missing_evidence", "risk", "next_action"],
+                description="Gap types to convert into research leads.",
+            ),
+            "limit": dg.Field(int, default_value=25, description="Maximum validation queue items to scan."),
+            "max_gaps_per_item": dg.Field(int, default_value=8, description="Maximum gaps to convert per item."),
+            "priority": dg.Field(int, default_value=30, description="Default priority cap for generated leads."),
+            "dry_run": dg.Field(bool, default_value=True, description="Preview leads without persisting them."),
+            "queue_research_briefs": dg.Field(
+                bool,
+                default_value=False,
+                description="Also queue research briefs for generated leads when dry_run is false.",
+            ),
+        },
+    )
+    def evidence_gap_resolver_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Convert validation-agent evidence gaps into durable research leads."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config or {}
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).resolve_evidence_gaps(
+            EvidenceGapResolverRequest(
+                queue_item_ids=[UUID(value) for value in config["queue_item_ids"]],
+                plan_id=UUID(config["plan_id"]) if config.get("plan_id") else None,
+                statuses=config.get("statuses") or ["completed"],
+                decisions=config.get("decisions") or ["hold", "demote"],
+                task_types=config.get("task_types") or [],
+                gap_types=config.get("gap_types") or ["missing_evidence", "risk", "next_action"],
+                limit=int(config.get("limit") or 25),
+                max_gaps_per_item=int(config.get("max_gaps_per_item") or 8),
+                priority=int(config.get("priority") or 30),
+                dry_run=bool(config.get("dry_run", True)),
+                queue_research_briefs=bool(config.get("queue_research_briefs", False)),
+                dagster_run_id=context.run_id,
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_evidence_gap_resolver_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "queue_item_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Specific validation queue item IDs to convert into source queries.",
+            ),
+            "lead_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Specific validation-gap research lead IDs to convert into source queries.",
+            ),
+            "lead_statuses": dg.Field(
+                [str],
+                default_value=["new", "followup"],
+                description="Lead statuses to scan when no lead IDs are supplied.",
+            ),
+            "source_keys": dg.Field([str], default_value=[], description="Optional source keys to target."),
+            "lanes": dg.Field([str], default_value=[], description="Optional evidence lanes to include."),
+            "limit": dg.Field(int, default_value=25, description="Maximum validation-gap leads/items to inspect."),
+            "max_queries_per_lane": dg.Field(int, default_value=3, description="Maximum generated queries per lane."),
+            "persist_queries": dg.Field(bool, default_value=False, description="Persist generated SourceQuery rows."),
+            "active": dg.Field(bool, default_value=True, description="Persist generated SourceQuery rows as active."),
+            "dry_run": dg.Field(bool, default_value=True, description="Preview source queries without persistence."),
+        },
+    )
+    def validation_gap_source_pack_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Build targeted source-query packs for validation evidence gaps."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config or {}
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).build_validation_gap_source_pack(
+            ValidationGapSourcePackRequest(
+                queue_item_ids=[UUID(value) for value in config["queue_item_ids"]],
+                lead_ids=[UUID(value) for value in config["lead_ids"]],
+                lead_statuses=config["lead_statuses"],
+                source_keys=config["source_keys"],
+                lanes=config["lanes"],
+                limit=int(config["limit"]),
+                max_queries_per_lane=int(config["max_queries_per_lane"]),
+                persist_queries=bool(config["persist_queries"]),
+                active=bool(config["active"]),
+                dry_run=bool(config["dry_run"]),
+                dagster_run_id=context.run_id,
+                metadata={"dagster_asset": "validation_gap_source_pack_report"},
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_validation_gap_source_pack_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "source_keys": dg.Field([str], default_value=[], description="Optional validation-gap source keys."),
+            "query_names": dg.Field([str], default_value=[], description="Optional validation-gap query names."),
+            "limit_per_query": dg.Field(int, default_value=5, description="Maximum records per query."),
+            "max_queries": dg.Field(int, default_value=50, description="Maximum validation-gap queries to run."),
+            "dry_run": dg.Field(bool, default_value=True, description="Preview selected queries without API calls."),
+        },
+    )
+    def validation_gap_source_ingest_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Ingest only active validation-gap source queries."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config or {}
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).ingest_validation_gap_source_queries(
+            ValidationGapSourceIngestRequest(
+                source_keys=config["source_keys"],
+                query_names=config["query_names"],
+                limit_per_query=int(config["limit_per_query"]),
+                max_queries=int(config["max_queries"]),
+                dry_run=bool(config["dry_run"]),
+                dagster_run_id=context.run_id,
+                metadata={"dagster_asset": "validation_gap_source_ingest_report"},
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_validation_gap_source_ingest_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
             "lead_ids": dg.Field([str], default_value=[], description="Specific follow-up lead IDs."),
             "statuses": dg.Field([str], default_value=["followup"], description="Lead statuses to inspect."),
             "source_keys": dg.Field([str], default_value=[], description="Optional lead source filters."),
@@ -3524,7 +4066,7 @@ if dg is not None:
                     config,
                     "review_mode",
                     "HSA_X_LINKED_ARTICLE_REVIEW_MODE",
-                    "deterministic_only",
+                    "openrouter_required",
                 ),
                 review_models=config.get("review_models") or _parse_delimited_string_list(
                     os.getenv("HSA_X_LINKED_ARTICLE_REVIEW_MODELS")
@@ -3714,7 +4256,7 @@ if dg is not None:
             ),
             "review_mode": dg.Field(
                 str,
-                default_value="external_required",
+                default_value="openrouter_required",
                 description="FullTextOps review mode: external_required, openrouter_required, openrouter_compare, or deterministic_only.",
             ),
             "review_models": dg.Field(
@@ -3825,10 +4367,11 @@ if dg is not None:
     def embedding_index_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
         """Deterministic local embedding index over persisted document chunks."""
 
-        from .embeddings import index_embeddings_for_repository
+        from .embeddings import default_embedding_model_for_environment, index_embeddings_for_repository
 
         repository = research_repository.build_repository()
-        result = index_embeddings_for_repository(repository)
+        embedding_model = default_embedding_model_for_environment()
+        result = index_embeddings_for_repository(repository, embedding_model=embedding_model)
         embedding_coverage = repository.embedding_coverage(embedding_model=result.embedding_model)
         coverage = embedding_coverage.model_dump(mode="json")
         totals = {
@@ -3860,10 +4403,11 @@ if dg is not None:
     def embedding_maintenance_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
         """Prune orphan embedding rows and verify active-model coverage."""
 
-        from .embeddings import maintain_embedding_index
+        from .embeddings import default_embedding_model_for_environment, maintain_embedding_index
 
         repository = research_repository.build_repository()
-        report = maintain_embedding_index(repository).to_report()
+        embedding_model = default_embedding_model_for_environment()
+        report = maintain_embedding_index(repository, embedding_model=embedding_model).to_report()
         return dg.MaterializeResult(value=report, metadata=_embedding_maintenance_report_metadata(report))
 
     @dg.asset_check(asset=source_registry)
@@ -4247,6 +4791,8 @@ if dg is not None:
         command_center_report,
         full_text_ops_agent_report,
         research_brief_agent_report,
+        therapy_committee_report,
+        therapy_committee_validation_queue_report,
         research_brief_library_report,
         research_brief_evaluation_report,
         research_brief_evaluation_library_report,
@@ -4256,6 +4802,7 @@ if dg is not None:
         validation_plan_library_report,
         validation_request_queue_report,
         validation_request_queue_library_report,
+        validation_autopilot_report,
         research_brief_queue_report,
         research_brief_queue_batch_report,
         research_brief_queue_seed_report,
@@ -4263,6 +4810,9 @@ if dg is not None:
         research_brief_queue_maintenance_report,
         research_brief_playground_pack_report,
         research_leads_report,
+        evidence_gap_resolver_report,
+        validation_gap_source_pack_report,
+        validation_gap_source_ingest_report,
         research_followup_resolver_report,
         x_topic_monitor_review_report,
         x_linked_article_followup_report,
@@ -4359,6 +4909,14 @@ if dg is not None:
         "research_brief_agent_job",
         selection=dg.AssetSelection.assets(research_brief_agent_report),
     )
+    therapy_committee_job = dg.define_asset_job(
+        "therapy_committee_job",
+        selection=dg.AssetSelection.assets(therapy_committee_report),
+    )
+    therapy_committee_validation_queue_job = dg.define_asset_job(
+        "therapy_committee_validation_queue_job",
+        selection=dg.AssetSelection.assets(therapy_committee_validation_queue_report),
+    )
     research_brief_library_job = dg.define_asset_job(
         "research_brief_library_job",
         selection=dg.AssetSelection.assets(research_brief_library_report),
@@ -4395,6 +4953,10 @@ if dg is not None:
         "validation_request_queue_library_job",
         selection=dg.AssetSelection.assets(validation_request_queue_library_report),
     )
+    validation_autopilot_job = dg.define_asset_job(
+        "validation_autopilot_job",
+        selection=dg.AssetSelection.assets(validation_autopilot_report),
+    )
     research_brief_queue_job = dg.define_asset_job(
         "research_brief_queue_job",
         selection=dg.AssetSelection.assets(research_brief_queue_report),
@@ -4422,6 +4984,18 @@ if dg is not None:
     research_leads_job = dg.define_asset_job(
         "research_leads_job",
         selection=dg.AssetSelection.assets(research_leads_report),
+    )
+    evidence_gap_resolver_job = dg.define_asset_job(
+        "evidence_gap_resolver_job",
+        selection=dg.AssetSelection.assets(evidence_gap_resolver_report),
+    )
+    validation_gap_source_pack_job = dg.define_asset_job(
+        "validation_gap_source_pack_job",
+        selection=dg.AssetSelection.assets(validation_gap_source_pack_report),
+    )
+    validation_gap_source_ingest_job = dg.define_asset_job(
+        "validation_gap_source_ingest_job",
+        selection=dg.AssetSelection.assets(validation_gap_source_ingest_report),
     )
     research_followup_resolver_job = dg.define_asset_job(
         "research_followup_resolver_job",
@@ -4584,6 +5158,34 @@ if dg is not None:
         execution_timezone=SCHEDULE_TIMEZONE,
         default_status=dg.DefaultScheduleStatus.RUNNING,
     )
+    validation_autopilot_hourly_schedule = dg.ScheduleDefinition(
+        name="validation_autopilot_hourly_schedule",
+        job=validation_autopilot_job,
+        cron_schedule="0 * * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.STOPPED,
+        run_config={
+            "ops": {
+                "validation_autopilot_report": {
+                    "config": {
+                        "enabled": True,
+                        "dry_run": False,
+                        "force": False,
+                        "manual_grace_period_hours": 6.0,
+                        "minimum_queue_age_hours": 1.0,
+                        "max_per_run": 2,
+                        "hourly_budget_usd": 0.25,
+                        "daily_budget_usd": 1.50,
+                        "estimated_cost_per_item_usd": 0.03,
+                        "allowed_task_types": ["expert_review", "target_validation", "omics"],
+                        "allowed_validation_types": ["expert_review", "homology", "omics"],
+                        "source_keys": [],
+                        "model_profile": "openrouter_required",
+                    }
+                }
+            }
+        },
+    )
     literature_full_text_source_date_daily_schedule = dg.ScheduleDefinition(
         name="literature_full_text_source_date_daily_schedule",
         job=literature_full_text_source_date_job,
@@ -4638,6 +5240,8 @@ if dg is not None:
             command_center_job,
             full_text_ops_agent_job,
             research_brief_agent_job,
+            therapy_committee_job,
+            therapy_committee_validation_queue_job,
             research_brief_library_job,
             research_brief_evaluation_job,
             research_brief_evaluation_library_job,
@@ -4647,6 +5251,7 @@ if dg is not None:
             validation_plan_library_job,
             validation_request_queue_job,
             validation_request_queue_library_job,
+            validation_autopilot_job,
             research_brief_queue_job,
             research_brief_queue_batch_job,
             research_brief_queue_seed_job,
@@ -4654,6 +5259,9 @@ if dg is not None:
             research_brief_queue_maintenance_job,
             research_brief_playground_pack_job,
             research_leads_job,
+            evidence_gap_resolver_job,
+            validation_gap_source_pack_job,
+            validation_gap_source_ingest_job,
             research_followup_resolver_job,
             x_topic_monitor_review_job,
             x_linked_article_followup_job,
@@ -4685,6 +5293,7 @@ if dg is not None:
             embedding_index_daily_schedule,
             embedding_maintenance_daily_schedule,
             source_health_daily_schedule,
+            validation_autopilot_hourly_schedule,
             literature_full_text_source_date_daily_schedule,
         ],
         resources={
@@ -4714,6 +5323,8 @@ else:
     command_center_job = None
     full_text_ops_agent_job = None
     research_brief_agent_job = None
+    therapy_committee_job = None
+    therapy_committee_validation_queue_job = None
     research_brief_library_job = None
     research_brief_evaluation_job = None
     research_brief_evaluation_library_job = None
@@ -4723,6 +5334,7 @@ else:
     validation_plan_library_job = None
     validation_request_queue_job = None
     validation_request_queue_library_job = None
+    validation_autopilot_job = None
     research_brief_queue_job = None
     research_brief_queue_batch_job = None
     research_brief_queue_seed_job = None
@@ -4730,6 +5342,9 @@ else:
     research_brief_queue_maintenance_job = None
     research_brief_playground_pack_job = None
     research_leads_job = None
+    evidence_gap_resolver_job = None
+    validation_gap_source_pack_job = None
+    validation_gap_source_ingest_job = None
     research_followup_resolver_job = None
     x_topic_monitor_review_job = None
     x_linked_article_followup_job = None
@@ -4760,6 +5375,7 @@ else:
     embedding_index_daily_schedule = None
     embedding_maintenance_daily_schedule = None
     source_health_daily_schedule = None
+    validation_autopilot_hourly_schedule = None
     defs = None
 
 

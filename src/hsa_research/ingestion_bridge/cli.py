@@ -18,6 +18,7 @@ from .contracts import (
     ClaimCurationRequest,
     CommandCenterRequest,
     DoiOpenAccessFollowupQueueRequest,
+    EvidenceGapResolverRequest,
     EntityResolutionRequest,
     FullTextTriageRequest,
     FullTextOpsRequest,
@@ -40,12 +41,18 @@ from .contracts import (
     SourceFollowupQueueRequest,
     SourceQuery,
     SourceScoutRequest,
+    TherapyCommitteeRequest,
+    TherapyCommitteeValidationQueueRequest,
+    ValidationAutopilotRequest,
+    ValidationGapSourceIngestRequest,
+    ValidationGapSourcePackRequest,
     ValidationPlanRequest,
     ValidationRequestQueueRequest,
     XLinkedArticleReviewRequest,
     XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
 )
+from .embedding_bakeoff import DEFAULT_EMBEDDING_BAKEOFF_MODELS, run_embedding_bakeoff
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, index_embeddings_for_repository, maintain_embedding_index
 from .entity_resolution import resolve_entities_for_repository
 from .local_ingest import LocalIngestionPipeline
@@ -203,6 +210,13 @@ def main() -> None:
         help="Do not require claims for source-health scoring",
     )
 
+    command_center_web = subparsers.add_parser(
+        "command-center-web",
+        help="Run the local TWOG command-center web UI",
+    )
+    command_center_web.add_argument("--host", default="127.0.0.1", help="Bind host")
+    command_center_web.add_argument("--port", type=int, default=8787, help="Bind port")
+
     triage_full_text = subparsers.add_parser(
         "triage-full-text",
         help="Classify a full-text ingestion edge case into a bounded operational action",
@@ -257,7 +271,7 @@ def main() -> None:
     full_text_ops.add_argument(
         "--review-mode",
         choices=("external_required", "openrouter_required", "openrouter_compare", "deterministic_only"),
-        default="external_required",
+        default="openrouter_required",
         help="Whether review is external, OpenRouter-backed, comparative, or deterministic only",
     )
     full_text_ops.add_argument(
@@ -334,7 +348,7 @@ def main() -> None:
     queue_research_brief.add_argument(
         "--review-mode",
         choices=("external_required", "openrouter_required", "openrouter_compare", "deterministic_only"),
-        default="deterministic_only",
+        default="openrouter_required",
     )
     queue_research_brief.add_argument(
         "--review-model",
@@ -406,7 +420,7 @@ def main() -> None:
     queue_research_brief_batch.add_argument(
         "--review-mode",
         choices=("external_required", "openrouter_required", "openrouter_compare", "deterministic_only"),
-        default="deterministic_only",
+        default="openrouter_required",
     )
     queue_research_brief_batch.add_argument(
         "--review-model",
@@ -524,6 +538,38 @@ def main() -> None:
     )
     research_brief_playground.add_argument("--model-profile", default="research_brief", help="Logical model profile")
 
+    therapy_committee = subparsers.add_parser(
+        "therapy-committee",
+        help="Run the cited therapy ideation committee",
+    )
+    therapy_committee.add_argument(
+        "--topic",
+        default="curative or disease-modifying therapy ideas for canine hemangiosarcoma",
+        help="Therapy question or ideation topic",
+    )
+    therapy_committee.add_argument(
+        "--disease-scope",
+        default="canine hemangiosarcoma and human angiosarcoma",
+        help="Disease/scope guardrail for retrieval and synthesis",
+    )
+    therapy_committee.add_argument("--source", default=None, help="Optional source key filter")
+    therapy_committee.add_argument("--max-chunks", type=int, default=10, help="Chunks per perspective search")
+    therapy_committee.add_argument("--max-claims", type=int, default=20, help="Claims to include")
+    therapy_committee.add_argument("--max-chunk-chars", type=int, default=2200, help="Maximum chars per cited chunk")
+    therapy_committee.add_argument("--max-ideas", type=int, default=4, help="Ideas per committee perspective")
+    therapy_committee.add_argument("--model-profile", default="therapy_committee", help="Logical model profile")
+    therapy_committee.add_argument(
+        "--review-mode",
+        choices=("external_required", "openrouter_required", "openrouter_compare", "deterministic_only"),
+        default="openrouter_required",
+    )
+    therapy_committee.add_argument(
+        "--review-model",
+        action="append",
+        default=[],
+        help="OpenRouter model id; repeat to compare multiple models",
+    )
+
     x_topic_monitor = subparsers.add_parser(
         "x-topic-monitor",
         help="Run TwitterAPI.io topic monitoring and the X topic review agent",
@@ -616,7 +662,7 @@ def main() -> None:
     x_linked_article_review.add_argument(
         "--review-mode",
         choices=("external_required", "openrouter_required", "openrouter_compare", "deterministic_only"),
-        default="deterministic_only",
+        default="openrouter_required",
         help="Review mode for the linked-article agent",
     )
     x_linked_article_review.add_argument("--review-model", action="append", default=[], help="Review model id")
@@ -856,6 +902,29 @@ def main() -> None:
         help="Persist queue items. Without this flag the command is a dry run.",
     )
 
+    queue_therapy_committee_validation_requests = subparsers.add_parser(
+        "queue-therapy-committee-validation-requests",
+        help="Queue validation requests from a completed therapy committee agent run",
+    )
+    queue_therapy_committee_validation_requests.add_argument(
+        "--agent-run-id",
+        default=None,
+        help="Therapy committee agent_run_id. Defaults to the latest completed committee run.",
+    )
+    queue_therapy_committee_validation_requests.add_argument(
+        "--idea-id",
+        action="append",
+        default=[],
+        help="Specific therapy idea_id to queue; repeat for multiple ideas.",
+    )
+    queue_therapy_committee_validation_requests.add_argument("--max-ideas", type=int, default=1)
+    queue_therapy_committee_validation_requests.add_argument("--priority", type=int, default=40)
+    queue_therapy_committee_validation_requests.add_argument(
+        "--apply",
+        action="store_true",
+        help="Persist queue items. Without this flag the command is a dry run.",
+    )
+
     validation_request_queue = subparsers.add_parser(
         "validation-request-queue",
         help="List or fetch queued validation requests",
@@ -884,9 +953,97 @@ def main() -> None:
 
     dispatch_validation_request = subparsers.add_parser(
         "dispatch-validation-request",
-        help="Dispatch an approved validation request through the existing async validation hook",
+        help="Dispatch an approved validation request through the validation agent layer",
     )
     dispatch_validation_request.add_argument("--id", required=True, help="queue_item_id to dispatch")
+    dispatch_validation_request.add_argument(
+        "--model-profile",
+        default="openrouter_required",
+        help="Validation agent model profile or OpenRouter model. Use deterministic_only for local tests.",
+    )
+
+    validation_autopilot = subparsers.add_parser(
+        "validation-autopilot",
+        help="Preview or run conservative automatic validation approval and dispatch",
+    )
+    validation_autopilot.add_argument("--apply", action="store_true", help="Approve and dispatch selected items")
+    validation_autopilot.add_argument("--force", action="store_true", help="Bypass manual-grace and item-age windows")
+    validation_autopilot.add_argument("--disabled", action="store_true", help="Return a disabled policy result")
+    validation_autopilot.add_argument("--max-per-run", type=int, default=2)
+    validation_autopilot.add_argument("--manual-grace-hours", type=float, default=6.0)
+    validation_autopilot.add_argument("--minimum-queue-age-hours", type=float, default=1.0)
+    validation_autopilot.add_argument("--hourly-budget-usd", type=float, default=0.25)
+    validation_autopilot.add_argument("--daily-budget-usd", type=float, default=1.50)
+    validation_autopilot.add_argument("--estimated-cost-per-item-usd", type=float, default=0.03)
+    validation_autopilot.add_argument(
+        "--allowed-task-type",
+        action="append",
+        default=[],
+        help="Allowlisted task type; repeat for multiple.",
+    )
+    validation_autopilot.add_argument(
+        "--allowed-validation-type",
+        action="append",
+        default=[],
+        help="Allowlisted validation type; repeat for multiple.",
+    )
+    validation_autopilot.add_argument("--source", action="append", default=[], help="Optional source key filter")
+    validation_autopilot.add_argument(
+        "--model-profile",
+        default="openrouter_required",
+        help="Validation model profile to dispatch with.",
+    )
+
+    evidence_gap_resolver = subparsers.add_parser(
+        "resolve-evidence-gaps",
+        help="Convert validation-agent missing evidence, risks, and next actions into research leads",
+    )
+    evidence_gap_resolver.add_argument("--queue-item-id", action="append", default=[], help="Validation queue item id; repeat for multiple")
+    evidence_gap_resolver.add_argument("--plan-id", default=None, help="Optional validation plan id filter")
+    evidence_gap_resolver.add_argument("--status", action="append", default=[], help="Validation queue status; repeat for multiple")
+    evidence_gap_resolver.add_argument("--decision", action="append", default=[], help="Validation decision to resolve; repeat for multiple")
+    evidence_gap_resolver.add_argument("--task-type", action="append", default=[], help="Validation task type; repeat for multiple")
+    evidence_gap_resolver.add_argument("--gap-type", action="append", default=[], help="missing_evidence, risk, or next_action")
+    evidence_gap_resolver.add_argument("--limit", type=int, default=25)
+    evidence_gap_resolver.add_argument("--max-gaps-per-item", type=int, default=8)
+    evidence_gap_resolver.add_argument("--priority", type=int, default=30)
+    evidence_gap_resolver.add_argument("--queue-briefs", action="store_true", help="Also queue research briefs for created leads")
+    evidence_gap_resolver.add_argument("--apply", action="store_true", help="Persist leads. Without this flag the command is a dry run.")
+
+    validation_gap_source_pack = subparsers.add_parser(
+        "validation-gap-source-pack",
+        help="Build targeted source queries for validation evidence gaps",
+    )
+    validation_gap_source_pack.add_argument(
+        "--queue-item-id",
+        action="append",
+        default=[],
+        help="Validation queue item id; repeat for multiple.",
+    )
+    validation_gap_source_pack.add_argument("--lead-id", action="append", default=[], help="Research lead id; repeat for multiple.")
+    validation_gap_source_pack.add_argument(
+        "--lead-status",
+        action="append",
+        default=[],
+        help="Lead status to scan when no lead id is supplied. Defaults to new and followup.",
+    )
+    validation_gap_source_pack.add_argument("--source", action="append", default=[], help="Source key to target; repeat for multiple.")
+    validation_gap_source_pack.add_argument("--lane", action="append", default=[], help="Evidence lane to include; repeat for multiple.")
+    validation_gap_source_pack.add_argument("--limit", type=int, default=25)
+    validation_gap_source_pack.add_argument("--max-queries-per-lane", type=int, default=3)
+    validation_gap_source_pack.add_argument("--persist-queries", action="store_true", help="Persist generated SourceQuery rows.")
+    validation_gap_source_pack.add_argument("--inactive", action="store_true", help="Persist generated SourceQuery rows as inactive.")
+    validation_gap_source_pack.add_argument("--apply", action="store_true", help="Persist generated queries. Without this flag the command is a dry run.")
+
+    validation_gap_ingest = subparsers.add_parser(
+        "validation-gap-ingest",
+        help="Ingest active validation-gap SourceQuery rows only",
+    )
+    validation_gap_ingest.add_argument("--source", action="append", default=[], help="Source key to ingest; repeat for multiple.")
+    validation_gap_ingest.add_argument("--query-name", action="append", default=[], help="Specific query name; repeat for multiple.")
+    validation_gap_ingest.add_argument("--limit-per-query", type=int, default=5)
+    validation_gap_ingest.add_argument("--max-queries", type=int, default=50)
+    validation_gap_ingest.add_argument("--apply", action="store_true", help="Run ingestion. Without this flag the command is a dry run.")
 
     model_review_summary = subparsers.add_parser(
         "model-review-summary",
@@ -930,6 +1087,7 @@ def main() -> None:
     )
     embedding_index.add_argument("--limit", type=int, default=None, help="Optional maximum chunks to inspect")
     embedding_index.add_argument("--force", action="store_true", help="Rebuild existing embeddings")
+    embedding_index.add_argument("--batch-size", type=int, default=32, help="Embedding request batch size")
 
     embedding_maintenance = subparsers.add_parser(
         "embedding-maintenance",
@@ -949,6 +1107,23 @@ def main() -> None:
     )
     embedding_maintenance.add_argument("--dry-run", action="store_true", help="Count orphan rows without deleting them")
     embedding_maintenance.add_argument("--fail-on-error", action="store_true", help="Exit non-zero if maintenance fails")
+
+    embedding_bakeoff = subparsers.add_parser(
+        "embedding-bakeoff",
+        help="Compare embedding models against retrieval benchmarks",
+    )
+    embedding_bakeoff.add_argument(
+        "--embedding-model",
+        action="append",
+        default=[],
+        help="Embedding model to compare; repeat for multiple. Defaults to local hash plus OpenRouter small/large.",
+    )
+    embedding_bakeoff.add_argument("--source", default=None, help="Optional source key filter")
+    embedding_bakeoff.add_argument("--limit", type=int, default=5, help="Search hits per benchmark")
+    embedding_bakeoff.add_argument("--index-missing", action="store_true", help="Index missing embeddings before scoring")
+    embedding_bakeoff.add_argument("--index-limit", type=int, default=None, help="Optional max chunks to index per model")
+    embedding_bakeoff.add_argument("--force", action="store_true", help="Force reindex before scoring")
+    embedding_bakeoff.add_argument("--batch-size", type=int, default=32, help="Embedding request batch size")
 
     resolve_entities = subparsers.add_parser(
         "resolve-entities",
@@ -1138,6 +1313,11 @@ def main() -> None:
                 require_claims=not args.no_require_claims,
             )
         ).model_dump(mode="json")
+    elif args.command == "command-center-web":
+        from .command_center_web import run_server
+
+        run_server(host=args.host, port=args.port, service_factory=lambda: HSAResearchService(repo))
+        return
     elif args.command == "triage-full-text":
         output = HSAResearchService(repo).triage_full_text_issue(
             FullTextTriageRequest(
@@ -1297,6 +1477,21 @@ def main() -> None:
                 brief_style=args.brief_style,
                 model_profile=args.model_profile,
                 review_mode="external_required",
+            )
+        ).model_dump(mode="json")
+    elif args.command == "therapy-committee":
+        output = HSAResearchService(repo).run_therapy_committee(
+            TherapyCommitteeRequest(
+                topic=args.topic,
+                disease_scope=args.disease_scope,
+                source_key=args.source,
+                max_chunks_per_perspective=args.max_chunks,
+                max_claims=args.max_claims,
+                max_chunk_chars=args.max_chunk_chars,
+                max_ideas_per_perspective=args.max_ideas,
+                model_profile=args.model_profile,
+                review_mode=args.review_mode,
+                review_models=args.review_model,
             )
         ).model_dump(mode="json")
     elif args.command == "x-topic-monitor":
@@ -1575,6 +1770,16 @@ def main() -> None:
                 dry_run=not args.apply,
             )
         ).model_dump(mode="json")
+    elif args.command == "queue-therapy-committee-validation-requests":
+        output = HSAResearchService(repo).queue_therapy_committee_validation_requests(
+            TherapyCommitteeValidationQueueRequest(
+                agent_run_id=UUID(args.agent_run_id) if args.agent_run_id else None,
+                idea_ids=[UUID(value) for value in args.idea_id],
+                max_ideas=args.max_ideas,
+                priority=args.priority,
+                dry_run=not args.apply,
+            )
+        ).model_dump(mode="json")
     elif args.command == "validation-request-queue":
         service = HSAResearchService(repo)
         if args.id:
@@ -1601,8 +1806,73 @@ def main() -> None:
         )
         output = {} if item is None else item.model_dump(mode="json")
     elif args.command == "dispatch-validation-request":
-        item = HSAResearchService(repo).dispatch_validation_request_queue_item(UUID(args.id))
+        item = HSAResearchService(repo).dispatch_validation_request_queue_item(
+            UUID(args.id),
+            model_profile=args.model_profile,
+        )
         output = {} if item is None else item.model_dump(mode="json")
+    elif args.command == "validation-autopilot":
+        service = HSAResearchService(repo)
+        request = ValidationAutopilotRequest(
+            enabled=not args.disabled,
+            dry_run=not args.apply,
+            force=args.force,
+            manual_grace_period_hours=args.manual_grace_hours,
+            minimum_queue_age_hours=args.minimum_queue_age_hours,
+            max_per_run=args.max_per_run,
+            hourly_budget_usd=args.hourly_budget_usd,
+            daily_budget_usd=args.daily_budget_usd,
+            estimated_cost_per_item_usd=args.estimated_cost_per_item_usd,
+            allowed_task_types=args.allowed_task_type or ["expert_review", "target_validation", "omics"],
+            allowed_validation_types=args.allowed_validation_type or ["expert_review", "homology", "omics"],
+            source_keys=args.source,
+            model_profile=args.model_profile,
+        )
+        if args.apply:
+            output = service.run_validation_autopilot(request).model_dump(mode="json")
+        else:
+            output = service.preview_validation_autopilot(request).model_dump(mode="json")
+    elif args.command == "resolve-evidence-gaps":
+        output = HSAResearchService(repo).resolve_evidence_gaps(
+            EvidenceGapResolverRequest(
+                queue_item_ids=[UUID(value) for value in args.queue_item_id],
+                plan_id=UUID(args.plan_id) if args.plan_id else None,
+                statuses=args.status or ["completed"],
+                decisions=args.decision or ["hold", "demote"],
+                task_types=args.task_type,
+                gap_types=args.gap_type or ["missing_evidence", "risk", "next_action"],
+                limit=args.limit,
+                max_gaps_per_item=args.max_gaps_per_item,
+                priority=args.priority,
+                dry_run=not args.apply,
+                queue_research_briefs=args.queue_briefs,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "validation-gap-source-pack":
+        output = HSAResearchService(repo).build_validation_gap_source_pack(
+            ValidationGapSourcePackRequest(
+                queue_item_ids=[UUID(value) for value in args.queue_item_id],
+                lead_ids=[UUID(value) for value in args.lead_id],
+                lead_statuses=args.lead_status or ["new", "followup"],
+                source_keys=args.source,
+                lanes=args.lane,
+                limit=args.limit,
+                max_queries_per_lane=args.max_queries_per_lane,
+                persist_queries=args.persist_queries or args.apply,
+                active=not args.inactive,
+                dry_run=not args.apply,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "validation-gap-ingest":
+        output = HSAResearchService(repo).ingest_validation_gap_source_queries(
+            ValidationGapSourceIngestRequest(
+                source_keys=args.source,
+                query_names=args.query_name,
+                limit_per_query=args.limit_per_query,
+                max_queries=args.max_queries,
+                dry_run=not args.apply,
+            )
+        ).model_dump(mode="json")
     elif args.command == "model-review-summary":
         service = HSAResearchService(repo)
         if args.id:
@@ -1641,6 +1911,7 @@ def main() -> None:
                 source_key=args.source,
                 limit=args.limit,
                 force=args.force,
+                batch_size=args.batch_size,
             )
         )
     elif args.command == "embedding-maintenance":
@@ -1652,6 +1923,17 @@ def main() -> None:
             object_type=args.object_type,
             prune_orphans=not args.dry_run,
         ).to_report()
+    elif args.command == "embedding-bakeoff":
+        output = run_embedding_bakeoff(
+            repo,
+            embedding_models=tuple(args.embedding_model) or DEFAULT_EMBEDDING_BAKEOFF_MODELS,
+            source_key=args.source,
+            limit=args.limit,
+            index_missing=args.index_missing,
+            index_limit=args.index_limit,
+            force=args.force,
+            batch_size=args.batch_size,
+        )
     elif args.command == "resolve-entities":
         request = EntityResolutionRequest(
             source_key=args.source,

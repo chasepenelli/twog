@@ -118,19 +118,28 @@ query-friendly columns plus the typed payload and JSON vector. There is no
 `pgvector` dependency yet; search computes cosine similarity in Python over the
 stored JSON vectors.
 
-The first indexer is local and deterministic:
+The indexer supports both local deterministic embeddings and production
+OpenRouter embeddings:
 
 - `LocalDeterministicEmbeddingProvider` creates dependency-free
-  `local-hash-v1` vectors with stable SHA-256 token hashing.
+  `local-hash-v1` vectors with stable SHA-256 token hashing. This is retained
+  for offline tests and fallback behavior.
+- `OpenRouterEmbeddingProvider` writes real semantic vectors through
+  OpenRouter. Current supported production model IDs are
+  `openrouter:openai/text-embedding-3-small` and
+  `openrouter:openai/text-embedding-3-large`.
 - `build_chunk_embedding_text` combines `DocumentChunk` text with
   `ResearchObject` title/source/identifier context and canonical
   `EntityMention` labels.
 - `index_embeddings_for_repository(repository, source_key=None, limit=None,
-  embedding_model="local-hash-v1", force=False)` writes `TextEmbedding`
-  records through the existing repository methods. It skips rows whose current
-  embedding input hash is already stored, rebuilds when the chunk/context text
-  changes, and `force=True` refreshes matching rows while preserving the
-  `(chunk_id, embedding_model)` upsert identity.
+  embedding_model="local-hash-v1", force=False, batch_size=32)` writes
+  `TextEmbedding` records through the existing repository methods. It skips rows
+  whose current embedding input hash is already stored, rebuilds when the
+  chunk/context text changes, and `force=True` refreshes matching rows while
+  preserving the `(chunk_id, embedding_model)` upsert identity.
+- `embedding-bakeoff` compares stored embedding models against fixed retrieval
+  benchmarks with keyword fallback disabled. The first full-corpus bakeoff chose
+  `openrouter:openai/text-embedding-3-large`.
 
 Repository adapters expose:
 
@@ -147,10 +156,17 @@ Repository adapters expose:
 lets the ingestion layer measure retrieval readiness for CLI, Dagster, and MCP
 read tools.
 
-`maintain_embedding_index(repository, embedding_model="local-hash-v1")`
-deletes orphan embedding rows whose `chunk_id` no longer exists in
+`maintain_embedding_index(repository, embedding_model=...)` deletes orphan
+embedding rows whose `chunk_id` no longer exists in
 `document_chunks`, then reports active-model coverage. This keeps retrieval
 search from carrying stale vectors after chunk ID or chunking logic changes.
+
+Active-model selection is environment-aware:
+
+- `HSA_EMBEDDING_MODEL` explicitly selects the active model.
+- If `HSA_EMBEDDING_MODEL` is unset and `OPENROUTER_API_KEY` is present, the
+  active model defaults to `openrouter:openai/text-embedding-3-large`.
+- If no OpenRouter key is available, the system falls back to `local-hash-v1`.
 
 Retrieval read contracts expose chunks and object context without exposing raw
 vectors:
@@ -168,19 +184,19 @@ vectors:
 All retrieval tools cap result counts and returned chunk text length. Raw
 embedding vectors remain an internal storage/search detail.
 
-Dagster now exposes this local retrieval foundation through
+Dagster now exposes this retrieval foundation through
 `embedding_index_report`, which builds the configured repository resource and
-runs `index_embeddings_for_repository` over stored chunks using the
-deterministic `local-hash-v1` model. `embedding_index_job` materializes only
-that report. Its asset check passes for an empty local store, but once chunks
-exist it requires at least one readable embedding and a clean error list.
+runs `index_embeddings_for_repository` over stored chunks using the active
+embedding model. `embedding_index_job` materializes only that report. Its asset
+check passes for an empty local store, but once chunks exist it requires at
+least one readable embedding and a clean error list.
 
 `embedding_maintenance_report` and `embedding_maintenance_job` prune orphan
-embedding rows for all models, then require the active `local-hash-v1` model to
-cover every live `document_chunk`. Its metadata surfaces orphan rows seen,
-deleted rows, active coverage, missing chunks, and the repository coverage
-snapshot. Run this after `embedding_index_job` before using scheduled retrieval
-or RAG workflows.
+embedding rows for all models, then require the active embedding model to cover
+every live `document_chunk`. Its metadata surfaces orphan rows seen, deleted
+rows, active coverage, missing chunks, and the repository coverage snapshot. Run
+this after `embedding_index_job` before using scheduled retrieval or RAG
+workflows.
 
 Dagster schedules use `America/Denver` and intentionally stay staggered rather
 than chained. The initial production cadence is:

@@ -30,7 +30,7 @@ from .contracts import (
     ResearchChunkSearchResult,
     TextEmbeddingSearchRequest,
 )
-from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, LocalDeterministicEmbeddingProvider
+from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, build_embedding_provider, select_embedding_model_from_coverage
 from .research_brief_errors import split_research_brief_errors
 from .research_leads import active_research_leads_for_brief
 from .repository import ResearchRepository
@@ -440,7 +440,7 @@ def _search_chunks_with_embeddings(
     embedding_model = request.embedding_model
     if embedding_model is None:
         embedding_model = (
-            max(coverage.embedding_models.items(), key=lambda item: item[1])[0]
+            select_embedding_model_from_coverage(coverage.embedding_models)
             if coverage.embedding_models
             else LOCAL_HASH_EMBEDDING_MODEL
         )
@@ -451,9 +451,9 @@ def _search_chunks_with_embeddings(
         object_type=str(request.object_type) if request.object_type else None,
         limit=1,
     )
-    provider = LocalDeterministicEmbeddingProvider(
-        embedding_model=embedding_model,
-        dimensions=existing[0].embedding_dimensions if existing else LocalDeterministicEmbeddingProvider().dimensions,
+    provider = build_embedding_provider(
+        embedding_model,
+        dimensions=existing[0].embedding_dimensions if existing else None,
     )
     query_vector = provider.embed_text(request.query)
     if not any(query_vector):

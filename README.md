@@ -76,6 +76,14 @@ Structured source SOPs live in `docs/STRUCTURED_SOURCE_SOPS.md`. Each source has
 an explicit evidence boundary so the system does not overstate what an API
 record can prove.
 
+## Homepage Direction
+
+The future-state homepage strategy lives in
+`docs/HOMEPAGE_CREATIVE_BRIEF.md`. It defines the platform narrative, section
+plan, motion direction, asset checklist, CTAs, and language guardrails for
+positioning TWOG Autoresearch as agent-assisted research infrastructure without
+overclaiming clinical outcomes.
+
 ## Codex Project Context
 
 Future Codex sessions should start with `AGENTS.md` and

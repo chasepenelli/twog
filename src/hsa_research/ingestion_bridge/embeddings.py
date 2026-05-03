@@ -6,15 +6,49 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 import json
 import math
+import os
 import re
+import time
 from typing import Any, Protocol
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from uuid import UUID
 
 from .contracts import DocumentChunk, EmbeddingCoverageSummary, EntityMention, ResearchObject, TextEmbedding
 
 LOCAL_HASH_EMBEDDING_MODEL = "local-hash-v1"
 LOCAL_HASH_EMBEDDING_DIMENSIONS = 384
+OPENROUTER_EMBEDDING_MODEL_SMALL = "openrouter:openai/text-embedding-3-small"
+OPENROUTER_EMBEDDING_MODEL_LARGE = "openrouter:openai/text-embedding-3-large"
+OPENROUTER_EMBEDDING_MODELS = {
+    OPENROUTER_EMBEDDING_MODEL_SMALL,
+    OPENROUTER_EMBEDDING_MODEL_LARGE,
+}
+OPENROUTER_MODEL_PREFIX = "openrouter:"
+OPENROUTER_EMBEDDINGS_URL = "https://openrouter.ai/api/v1/embeddings"
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+(?:[._/-][a-z0-9]+)*")
+
+
+class EmbeddingProvider(Protocol):
+    embedding_model: str
+
+    @property
+    def embedding_dimensions(self) -> int:
+        ...
+
+    @property
+    def provider_name(self) -> str:
+        ...
+
+    @property
+    def provider_model(self) -> str:
+        ...
+
+    def embed_text(self, text: str) -> list[float]:
+        ...
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        ...
 
 
 class LocalDeterministicEmbeddingProvider:
@@ -34,6 +68,14 @@ class LocalDeterministicEmbeddingProvider:
     @property
     def embedding_dimensions(self) -> int:
         return self.dimensions
+
+    @property
+    def provider_name(self) -> str:
+        return "local_deterministic_hash"
+
+    @property
+    def provider_model(self) -> str:
+        return self.embedding_model
 
     def embed(self, text: str) -> list[float]:
         return self.embed_text(text)
@@ -57,6 +99,101 @@ class LocalDeterministicEmbeddingProvider:
         """Return stable vectors for multiple texts."""
 
         return [self.embed_text(text) for text in texts]
+
+
+class OpenRouterEmbeddingProvider:
+    """OpenRouter-backed embedding provider for production retrieval."""
+
+    def __init__(
+        self,
+        *,
+        embedding_model: str = OPENROUTER_EMBEDDING_MODEL_SMALL,
+        api_key: str | None = None,
+        base_url: str = OPENROUTER_EMBEDDINGS_URL,
+        dimensions: int | None = None,
+        timeout_seconds: float = 60.0,
+        max_retries: int = 3,
+    ) -> None:
+        self.embedding_model = _normalize_openrouter_embedding_model(embedding_model)
+        self.api_model = self.embedding_model.removeprefix(OPENROUTER_MODEL_PREFIX)
+        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
+        self.base_url = base_url
+        self.dimensions = dimensions
+        self.timeout_seconds = timeout_seconds
+        self.max_retries = max_retries
+        if not self.api_key:
+            raise RuntimeError("OPENROUTER_API_KEY is required for OpenRouter embeddings")
+
+    @property
+    def embedding_dimensions(self) -> int:
+        if self.dimensions is None:
+            raise RuntimeError("embedding dimensions are unknown until the first OpenRouter response")
+        return self.dimensions
+
+    @property
+    def provider_name(self) -> str:
+        return "openrouter"
+
+    @property
+    def provider_model(self) -> str:
+        return self.api_model
+
+    def embed_text(self, text: str) -> list[float]:
+        return self.embed_texts([text])[0]
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        payload: dict[str, Any] = {
+            "model": self.api_model,
+            "input": texts,
+            "encoding_format": "float",
+        }
+        if self.dimensions is not None:
+            payload["dimensions"] = self.dimensions
+        response = self._post_json(payload)
+        data = response.get("data")
+        if not isinstance(data, list):
+            raise RuntimeError("OpenRouter embeddings response did not include data")
+        ordered = sorted(data, key=lambda item: int(item.get("index", 0)))
+        vectors: list[list[float]] = []
+        for item in ordered:
+            raw_vector = item.get("embedding") if isinstance(item, dict) else None
+            if not isinstance(raw_vector, list) or not raw_vector:
+                raise RuntimeError("OpenRouter embeddings response contained an empty vector")
+            vector = [float(value) for value in raw_vector]
+            if self.dimensions is None:
+                self.dimensions = len(vector)
+            if len(vector) != self.dimensions:
+                raise RuntimeError(
+                    f"OpenRouter embedding dimension mismatch: expected {self.dimensions}, got {len(vector)}"
+                )
+            vectors.append(vector)
+        if len(vectors) != len(texts):
+            raise RuntimeError(f"OpenRouter returned {len(vectors)} embeddings for {len(texts)} inputs")
+        return vectors
+
+    def _post_json(self, payload: dict[str, Any]) -> dict[str, Any]:
+        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://twog.bio",
+            "X-Title": "TWOG HSA Research Engine",
+        }
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_retries + 1):
+            req = urllib_request.Request(self.base_url, data=encoded, headers=headers, method="POST")
+            try:
+                with urllib_request.urlopen(req, timeout=self.timeout_seconds) as response:
+                    body = response.read().decode("utf-8")
+                return json.loads(body)
+            except (urllib_error.HTTPError, urllib_error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    break
+                time.sleep(min(2.0, 0.25 * attempt))
+        raise RuntimeError(f"OpenRouter embedding request failed: {last_error}") from last_error
 
 
 @dataclass(frozen=True)
@@ -109,6 +246,52 @@ class EmbeddingMaintenanceResult:
             "passes_minimum_bar": self.passes_minimum_bar,
             "passed": self.passes_minimum_bar,
         }
+
+
+def build_embedding_provider(
+    embedding_model: str = LOCAL_HASH_EMBEDDING_MODEL,
+    *,
+    dimensions: int | None = None,
+) -> EmbeddingProvider:
+    """Build the provider matching the stored embedding model identifier."""
+
+    if is_openrouter_embedding_model(embedding_model):
+        return OpenRouterEmbeddingProvider(embedding_model=embedding_model, dimensions=dimensions)
+    return LocalDeterministicEmbeddingProvider(
+        embedding_model=embedding_model,
+        dimensions=dimensions or LOCAL_HASH_EMBEDDING_DIMENSIONS,
+    )
+
+
+def is_openrouter_embedding_model(embedding_model: str) -> bool:
+    return embedding_model.startswith(OPENROUTER_MODEL_PREFIX) or embedding_model in {
+        model.removeprefix(OPENROUTER_MODEL_PREFIX) for model in OPENROUTER_EMBEDDING_MODELS
+    }
+
+
+def default_embedding_model_for_environment() -> str:
+    configured = os.environ.get("HSA_EMBEDDING_MODEL")
+    if configured:
+        return configured
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return OPENROUTER_EMBEDDING_MODEL_LARGE
+    return LOCAL_HASH_EMBEDDING_MODEL
+
+
+def select_embedding_model_from_coverage(embedding_models: dict[str, int]) -> str:
+    configured = os.environ.get("HSA_EMBEDDING_MODEL")
+    if configured and embedding_models.get(configured):
+        return configured
+    preferred = default_embedding_model_for_environment()
+    if embedding_models.get(preferred):
+        return preferred
+    return max(embedding_models.items(), key=lambda item: item[1])[0] if embedding_models else preferred
+
+
+def _normalize_openrouter_embedding_model(embedding_model: str) -> str:
+    if embedding_model.startswith(OPENROUTER_MODEL_PREFIX):
+        return embedding_model
+    return f"{OPENROUTER_MODEL_PREFIX}{embedding_model}"
 
 
 class _EmbeddingRepository(Protocol):
@@ -224,15 +407,16 @@ def index_embeddings_for_repository(
     limit: int | None = None,
     embedding_model: str = LOCAL_HASH_EMBEDDING_MODEL,
     force: bool = False,
+    batch_size: int = 32,
 ) -> EmbeddingIndexResult:
-    """Index local deterministic embeddings for repository document chunks."""
+    """Index embeddings for repository document chunks."""
 
-    provider = LocalDeterministicEmbeddingProvider(embedding_model=embedding_model)
     chunks = repository.list_document_chunks(source_key=source_key, limit=limit)
     created = 0
     updated = 0
     skipped = 0
     errors: list[str] = []
+    pending: list[tuple[DocumentChunk, ResearchObject | None, list[EntityMention], str, str, TextEmbedding | None]] = []
 
     for chunk in chunks:
         research_object = repository.get_research_object(chunk.research_object_id)
@@ -250,38 +434,60 @@ def index_embeddings_for_repository(
             skipped += 1
             continue
 
-        vector = provider.embed_text(embedding_text)
-        saved = repository.upsert_text_embedding(
-            TextEmbedding(
-                chunk_id=chunk.id,
-                research_object_id=chunk.research_object_id,
-                chunk_index=chunk.chunk_index,
-                source_key=research_object.source_key if research_object else None,
-                object_type=research_object.object_type if research_object else None,
-                content_hash=embedding_content_hash,
-                embedding_model=embedding_model,
-                embedding_dimensions=provider.dimensions,
-                embedding=vector,
-                text_preview=_text_preview(embedding_text),
-                metadata={
-                    "provider": "local_deterministic_hash",
-                    "provider_version": "1",
-                    "chunk_content_hash": chunk.content_hash,
-                    "embedding_text_hash": embedding_content_hash,
-                    "canonical_entity_count": len(_canonical_entity_context(entity_mentions)),
-                },
-            )
-        )
-        if repository.get_text_embedding(saved.embedding_id) is None:
-            errors.append(f"embedding not readable after upsert: {saved.embedding_id}")
+        pending.append((chunk, research_object, entity_mentions, embedding_text, embedding_content_hash, existing))
 
-        if existing:
-            updated += 1
-        else:
-            created += 1
+    try:
+        provider = build_embedding_provider(embedding_model)
+    except Exception as exc:
+        errors.append(str(exc))
+        provider = None
+
+    if provider is not None:
+        safe_batch_size = max(1, batch_size)
+        for start in range(0, len(pending), safe_batch_size):
+            batch = pending[start : start + safe_batch_size]
+            try:
+                vectors = provider.embed_texts([item[3] for item in batch])
+            except Exception as exc:
+                errors.append(f"embedding batch {start // safe_batch_size + 1} failed: {exc}")
+                continue
+            for (chunk, research_object, entity_mentions, embedding_text, embedding_content_hash, existing), vector in zip(
+                batch,
+                vectors,
+                strict=True,
+            ):
+                saved = repository.upsert_text_embedding(
+                    TextEmbedding(
+                        chunk_id=chunk.id,
+                        research_object_id=chunk.research_object_id,
+                        chunk_index=chunk.chunk_index,
+                        source_key=research_object.source_key if research_object else None,
+                        object_type=research_object.object_type if research_object else None,
+                        content_hash=embedding_content_hash,
+                        embedding_model=provider.embedding_model,
+                        embedding_dimensions=len(vector),
+                        embedding=vector,
+                        text_preview=_text_preview(embedding_text),
+                        metadata={
+                            "provider": provider.provider_name,
+                            "provider_model": provider.provider_model,
+                            "provider_version": "1",
+                            "chunk_content_hash": chunk.content_hash,
+                            "embedding_text_hash": embedding_content_hash,
+                            "canonical_entity_count": len(_canonical_entity_context(entity_mentions)),
+                        },
+                    )
+                )
+                if repository.get_text_embedding(saved.embedding_id) is None:
+                    errors.append(f"embedding not readable after upsert: {saved.embedding_id}")
+
+                if existing:
+                    updated += 1
+                else:
+                    created += 1
 
     return EmbeddingIndexResult(
-        embedding_model=embedding_model,
+        embedding_model=provider.embedding_model if provider is not None else embedding_model,
         source_key=source_key,
         chunks_seen=len(chunks),
         embeddings_created=created,

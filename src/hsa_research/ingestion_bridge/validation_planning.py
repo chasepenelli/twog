@@ -433,7 +433,7 @@ def _tasks_from_findings(
                     evaluation=evaluation,
                     finding=finding,
                     priority=250 + index,
-                    validation_type=None,
+                    validation_type="omics",
                     candidate_name=candidate_name,
                     target_name=target_name,
                     tool_hint="geo_sra_expression_review",
@@ -666,6 +666,8 @@ def _validation_quality_gates_for_task(
         gates.append("candidate_identity_required")
     if task_type in {"admet", "safety", "wet_lab"}:
         gates.append("safety_context_required")
+    if task_type == "omics" or validation_type == "omics":
+        gates.append("omics_dataset_context_required")
     return _dedupe_labels(gates)
 
 

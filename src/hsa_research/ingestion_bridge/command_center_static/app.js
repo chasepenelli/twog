@@ -1,0 +1,811 @@
+const state = {
+  runtime: null,
+  commandCenter: null,
+  actionItems: null,
+  validationQueue: null,
+  validationAutopilot: null,
+  researchLeads: null,
+  ideas: null,
+};
+
+const $ = (id) => document.getElementById(id);
+
+document.addEventListener("DOMContentLoaded", () => {
+  $("refreshButton").addEventListener("click", refreshAll);
+  document.querySelectorAll(".tab-button").forEach((button) => {
+    button.addEventListener("click", () => showPage(button.dataset.page));
+  });
+  $("validationStatus").addEventListener("change", refreshValidationQueue);
+  $("validationSource").addEventListener("change", refreshValidationQueue);
+  $("leadStatus").addEventListener("change", () => Promise.all([refreshActionItems(), refreshResearchLeads()]));
+  $("ideaKind").addEventListener("change", refreshIdeas);
+  $("ideaSource").addEventListener("change", refreshIdeas);
+  $("ideaQuery").addEventListener("input", debounce(refreshIdeas, 250));
+  $("autopilotPreviewButton").addEventListener("click", refreshValidationAutopilot);
+  $("autopilotDryRunButton").addEventListener("click", () => runValidationAutopilot(true));
+  $("autopilotRunButton").addEventListener("click", () => runValidationAutopilot(false));
+  $("actionItemsList").addEventListener("click", handleQueueAction);
+  $("validationRows").addEventListener("click", handleValidationAction);
+  $("researchLeadRows").addEventListener("click", handleQueueAction);
+  refreshAll();
+});
+
+async function refreshAll() {
+  $("refreshButton").disabled = true;
+  try {
+    await Promise.all([
+      refreshRuntime(),
+      refreshCommandCenter(),
+      refreshActionItems(),
+      refreshValidationQueue(),
+      refreshValidationAutopilot(),
+      refreshResearchLeads(),
+      refreshIdeas(),
+    ]);
+    showToast("Command center refreshed.");
+  } catch (error) {
+    showToast(error.message || String(error));
+  } finally {
+    $("refreshButton").disabled = false;
+  }
+}
+
+async function refreshRuntime() {
+  const payload = await getJson("/api/runtime");
+  state.runtime = payload;
+  renderRuntime(payload);
+}
+
+async function refreshCommandCenter() {
+  const report = await getJson("/api/command-center?queue_limit=25&lead_limit=25&agent_run_limit=25");
+  state.commandCenter = report;
+  renderSummary(report.summary || {});
+  renderRecommendations(report.recommendations || []);
+  renderAgentRuns(report.recent_agent_runs || []);
+  renderBriefQueue((report.research_brief_queue || {}).items || []);
+}
+
+async function refreshActionItems() {
+  const payload = await getJson("/api/action-items?limit=50");
+  state.actionItems = payload;
+  renderActionItems(payload);
+}
+
+async function refreshValidationQueue() {
+  const params = new URLSearchParams();
+  const status = $("validationStatus").value.trim();
+  const source = $("validationSource").value.trim();
+  if (status) params.append("status", status);
+  if (source) params.append("source", source);
+  params.append("limit", "50");
+  const payload = await getJson(`/api/validation-requests?${params.toString()}`);
+  state.validationQueue = payload;
+  renderValidationQueue(payload);
+}
+
+async function refreshValidationAutopilot() {
+  const params = new URLSearchParams();
+  params.append("max_per_run", $("autopilotMaxPerRun").value || "2");
+  params.append("manual_grace_period_hours", $("autopilotGraceHours").value || "6");
+  params.append("force", $("autopilotForce").checked ? "true" : "false");
+  const payload = await getJson(`/api/validation-autopilot?${params.toString()}`);
+  state.validationAutopilot = payload;
+  renderValidationAutopilot(payload);
+}
+
+async function refreshResearchLeads() {
+  const params = new URLSearchParams();
+  const status = $("leadStatus").value.trim();
+  if (status) params.append("status", status);
+  params.append("limit", "50");
+  const payload = await getJson(`/api/research-leads?${params.toString()}`);
+  state.researchLeads = payload;
+  renderResearchLeads(payload);
+}
+
+async function refreshIdeas() {
+  const params = new URLSearchParams();
+  const kind = $("ideaKind").value.trim();
+  const source = $("ideaSource").value.trim();
+  const query = $("ideaQuery").value.trim();
+  if (kind) params.append("kind", kind);
+  if (source) params.append("source", source);
+  if (query) params.append("query", query);
+  params.append("limit", "100");
+  const payload = await getJson(`/api/ideas?${params.toString()}`);
+  state.ideas = payload;
+  renderIdeas(payload);
+}
+
+function showPage(pageId) {
+  document.querySelectorAll(".page-view").forEach((page) => {
+    page.classList.toggle("active", page.id === pageId);
+  });
+  document.querySelectorAll(".tab-button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.page === pageId);
+  });
+}
+
+function renderRuntime(payload) {
+  const runtime = (payload || {}).validation_dispatch || {};
+  const ready = Boolean(runtime.dispatch_ready);
+  const model = runtime.default_model ? ` | ${runtime.default_model}` : "";
+  $("runtimeStatus").className = `runtime-status ${ready ? "ready" : "blocked"}`;
+  $("runtimeStatus").textContent = `${ready ? "Dispatch ready" : "Dispatch disabled"}${model}`;
+  $("runtimeStatus").title = runtime.message || "";
+  if ($("autopilotRunButton")) {
+    $("autopilotRunButton").disabled = !ready;
+    $("autopilotRunButton").title = ready ? "" : "OpenRouter must be configured before live autopilot dispatch.";
+  }
+}
+
+function validationDispatchReady() {
+  return Boolean(((state.runtime || {}).validation_dispatch || {}).dispatch_ready);
+}
+
+function renderSummary(summary) {
+  $("metricBriefQueue").textContent = value(summary.brief_queue_total);
+  $("metricBriefQueueMeta").textContent =
+    `${value(summary.brief_queue_ready)} ready, ${value(summary.brief_queue_failed)} failed`;
+  $("metricResearchLeads").textContent = value(summary.research_leads_total);
+  $("metricResearchLeadsMeta").textContent =
+    `${value(summary.research_leads_actionable)} actionable, ${value(summary.research_leads_followup)} follow-up`;
+  $("metricSourceHealth").textContent = value(summary.source_health_failed);
+  $("metricSourceHealthMeta").textContent =
+    `${value(summary.source_health_triage)} triage, ${value(summary.source_health_watch)} watch`;
+  $("metricRecommendations").textContent = value(summary.recommendation_count);
+  $("metricRecommendationsMeta").textContent = `${value(summary.blocking_recommendations)} blocking`;
+}
+
+function renderValidationQueue(payload) {
+  const counts = payload.status_counts || {};
+  const countText = Object.entries(counts)
+    .map(([status, count]) => `${status}: ${count}`)
+    .join(" | ");
+  $("validationSummary").textContent =
+    `${value(payload.visible)} visible of ${value(payload.total)} total` + (countText ? ` | ${countText}` : "");
+
+  const rows = payload.items || [];
+  if (!rows.length) {
+    $("validationRows").innerHTML = `<tr><td colspan="6" class="empty-state">No validation queue items match the current filters.</td></tr>`;
+    return;
+  }
+
+  $("validationRows").innerHTML = renderValidationPlanRows(rows);
+}
+
+function renderValidationAutopilot(payload) {
+  const blockers = payload.blockers || [];
+  const selected = payload.selected || [];
+  const dispatched = payload.dispatched || [];
+  const costText = `est $${Number(payload.estimated_cost_usd || 0).toFixed(4)} | spent $${Number(payload.daily_spend_usd || 0).toFixed(4)}/day`;
+  $("autopilotSummary").textContent =
+    `${value(payload.selected_count)} selected from ${value(payload.scanned_count)} pending | ` +
+    `${value(payload.eligible_count)} eligible | ${value(payload.skipped_count)} skipped | ` +
+    `${payload.dry_run ? "preview" : "apply"} | ${costText}` +
+    (blockers.length ? ` | blockers: ${blockers.join(", ")}` : "");
+
+  const rows = dispatched.length ? dispatched : selected;
+  if (!rows.length) {
+    $("autopilotList").innerHTML = `<div class="empty-state">No autopilot-eligible validation requests found.</div>`;
+    return;
+  }
+  $("autopilotList").innerHTML = rows.map((item) => `
+    <div class="list-item">
+      <div class="list-item-header">
+        <strong>${escapeHtml(item.title)}</strong>
+        ${tag(item.status, item.status)}
+      </div>
+      <div class="subtext">${escapeHtml(item.reason)}</div>
+      <div class="tag-row">
+        ${tag(`priority ${item.priority}`, "info")}
+        ${tag(item.task_type, "info")}
+        ${tag(item.validation_type, "info")}
+        ${item.source_key ? tag(item.source_key, "info") : ""}
+        ${item.decision ? tag(`decision: ${item.decision}`, item.decision === "promote" ? "approved" : "watch") : ""}
+        ${item.cost_usd !== null && item.cost_usd !== undefined ? tag(`$${Number(item.cost_usd).toFixed(4)}`, "info") : ""}
+      </div>
+    </div>
+  `).join("");
+}
+
+function renderValidationPlanRows(items) {
+  const groups = new Map();
+  items.forEach((item) => {
+    const key = item.plan_id || "unplanned";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  return Array.from(groups.entries()).map(([planId, planItems]) => {
+    const sortedItems = planItems.slice().sort((a, b) => Number(a.priority || 0) - Number(b.priority || 0));
+    const first = sortedItems[0] || {};
+    const statuses = sortedItems.reduce((counts, item) => {
+      counts[item.status] = (counts[item.status] || 0) + 1;
+      return counts;
+    }, {});
+    const statusText = Object.entries(statuses).map(([status, count]) => `${status}: ${count}`).join(" | ");
+    const title = ((first.metadata || {}).idea_title || first.topic || "Validation plan").trim();
+    return `
+      <tr class="plan-group-row">
+        <td colspan="6">
+          <div class="plan-group">
+            <strong>${escapeHtml(title)}</strong>
+            <span>${escapeHtml(shortId(planId))} | ${escapeHtml(sortedItems.length)} tasks${statusText ? ` | ${escapeHtml(statusText)}` : ""}</span>
+          </div>
+        </td>
+      </tr>
+      ${sortedItems.map(renderValidationRow).join("")}
+    `;
+  }).join("");
+}
+
+function renderActionItems(payload) {
+  const counts = payload.area_counts || {};
+  const areaText = Object.entries(counts)
+    .map(([area, count]) => `${area}: ${count}`)
+    .join(" | ");
+  $("actionSummary").textContent = `${value(payload.total)} open action items` + (areaText ? ` | ${areaText}` : "");
+  const items = payload.items || [];
+  if (!items.length) {
+    $("actionItemsList").innerHTML = `<div class="empty-state">No action items found.</div>`;
+    return;
+  }
+  $("actionItemsList").innerHTML = items.map(renderActionItem).join("");
+}
+
+function renderActionItem(item) {
+  return `
+    <article class="action-item">
+      <div class="action-topline">
+        <div class="title-cell">
+          <strong>${escapeHtml(item.title)}</strong>
+          <span class="subtext">${escapeHtml(item.description)}</span>
+        </div>
+        <div class="tag-row">
+          ${tag(item.severity || item.status, item.severity || item.status)}
+          ${tag(item.area, "info")}
+          ${item.source_key ? tag(item.source_key, "info") : ""}
+        </div>
+      </div>
+      <div class="action-meta">
+        <span>${escapeHtml(item.kind)}</span>
+        <span>Priority ${escapeHtml(item.priority)}</span>
+        ${item.job_name ? `<span>${escapeHtml(item.job_name)}</span>` : ""}
+      </div>
+      ${renderActionButtons(item)}
+      <details>
+        <summary>Read details</summary>
+        <pre>${escapeHtml(JSON.stringify(item.metadata || {}, null, 2))}</pre>
+      </details>
+    </article>
+  `;
+}
+
+function renderActionButtons(item) {
+  const actions = item.actions || [];
+  if (!actions.length) return "";
+  const buttons = actions.map((action) => {
+    if (action === "approve_validation") {
+      return actionButton("approve", item.item_id, "Approve");
+    }
+    if (action === "dispatch_validation") {
+      return actionButton("dispatch", item.item_id, "Dispatch", "", !validationDispatchReady());
+    }
+    if (action === "promote_lead") {
+      return actionButton("lead-status", item.item_id, "Promote", "watching");
+    }
+    if (action === "mark_followup") {
+      return actionButton("lead-status", item.item_id, "Follow-up", "followup");
+    }
+    if (action === "demote_lead") {
+      return actionButton("lead-status", item.item_id, "Demote", "dismissed");
+    }
+    return "";
+  });
+  return `<div class="actions">${buttons.join("")}</div>`;
+}
+
+function renderValidationRow(item) {
+  const request = item.validation_request || {};
+  const context = request.assay_context || {};
+  const blockers = item.dispatch_blockers || [];
+  const gates = item.quality_gates || [];
+  const metadata = item.metadata || {};
+  const requiredInputs = metadata.required_inputs || [];
+  const expectedOutputs = metadata.expected_outputs || [];
+  const agentResult = metadata.validation_agent_result || {};
+  const canApprove = item.status === "needs_approval";
+  const canDispatch = item.status === "approved" && validationDispatchReady();
+  const dispatchHint = item.status === "approved" && !validationDispatchReady()
+    ? `<div class="subtext">Dispatch disabled until OpenRouter is configured on the server.</div>`
+    : "";
+  return `
+    <tr>
+      <td>${tag(item.status, item.status)}</td>
+      <td>${escapeHtml(item.priority)}</td>
+      <td>
+        <div class="title-cell">
+          <span class="work-lane">${escapeHtml(validationTaskLabel(item.task_type))}</span>
+          <strong>${escapeHtml(item.title)}</strong>
+          <span class="subtext">${escapeHtml(item.objective || request.objective || "No objective recorded")}</span>
+          <div class="tag-row">
+            ${tag(item.task_type, "info")}
+            ${tag(request.validation_type || "unknown", "info")}
+            ${item.source_key ? tag(item.source_key, "info") : tag("all sources", "info")}
+          </div>
+        </div>
+      </td>
+      <td>
+        <div class="title-cell">
+          <span>${escapeHtml(context.assay_type || context.model_system || "No assay/model context")}</span>
+          <span class="subtext">${escapeHtml((context.species || []).join(", ") || "No species context")}</span>
+          <span class="subtext">${escapeHtml(context.readout || context.endpoint || "No readout/endpoint recorded")}</span>
+          <span class="subtext">${escapeHtml(context.disease_context || "No disease context")}</span>
+          <div class="tag-row">${gates.slice(0, 4).map((gate) => tag(gate, "info")).join("")}</div>
+        </div>
+      </td>
+      <td>
+        ${blockers.length ? `<div class="tag-row">${blockers.map((blocker) => tag(blocker, "blocked")).join("")}</div>` : tag("clear", "approved")}
+        ${item.last_error ? `<div class="subtext">${escapeHtml(item.last_error)}</div>` : ""}
+        ${renderValidationAgentResult(agentResult)}
+        <details>
+          <summary>Inputs and outputs</summary>
+          <div class="detail-grid">
+            <div>
+              <strong>Required</strong>
+              ${renderInlineList(requiredInputs)}
+            </div>
+            <div>
+              <strong>Expected</strong>
+              ${renderInlineList(expectedOutputs)}
+            </div>
+          </div>
+        </details>
+      </td>
+      <td>
+        <div class="actions">
+          <button type="button" data-action="approve" data-id="${escapeHtml(item.queue_item_id)}" ${canApprove ? "" : "disabled"}>Approve</button>
+          <button type="button" data-action="dispatch" data-id="${escapeHtml(item.queue_item_id)}" ${canDispatch ? "" : "disabled"}>Dispatch</button>
+        </div>
+        ${dispatchHint}
+      </td>
+    </tr>
+  `;
+}
+
+function renderValidationAgentResult(result) {
+  if (!result || !result.decision) return "";
+  const tone = result.decision === "promote" ? "approved" : result.decision === "demote" ? "blocked" : "watch";
+  return `
+    <div class="agent-result">
+      <div class="tag-row">
+        ${tag(`decision: ${result.decision}`, tone)}
+        ${tag(`confidence: ${Math.round(Number(result.confidence || 0) * 100)}%`, "info")}
+      </div>
+      <div class="subtext">${escapeHtml(result.summary || "No validation summary recorded.")}</div>
+    </div>
+  `;
+}
+
+function validationTaskLabel(taskType) {
+  const labels = {
+    expert_review: "Evidence review",
+    wet_lab: "Assay design",
+    safety: "Safety gate",
+    target_validation: "Target validation",
+    docking: "Docking",
+    boltz: "Structure prediction",
+    md: "Molecular dynamics",
+    omics: "Omics review",
+    partner_review: "Partner review",
+  };
+  return labels[taskType] || taskType || "Validation task";
+}
+
+function renderInlineList(values) {
+  if (!values.length) {
+    return `<p class="subtext">None recorded.</p>`;
+  }
+  return `<ul class="inline-list">${values.map((value) => `<li>${escapeHtml(value)}</li>`).join("")}</ul>`;
+}
+
+function renderResearchLeads(payload) {
+  const counts = payload.status_counts || {};
+  const countText = Object.entries(counts)
+    .map(([status, count]) => `${status}: ${count}`)
+    .join(" | ");
+  $("researchLeadSummary").textContent =
+    `${value(payload.visible)} visible of ${value(payload.total)} total` + (countText ? ` | ${countText}` : "");
+
+  const rows = payload.items || [];
+  if (!rows.length) {
+    $("researchLeadRows").innerHTML = `<tr><td colspan="6" class="empty-state">No research leads match the current filters.</td></tr>`;
+    return;
+  }
+
+  $("researchLeadRows").innerHTML = rows.map(renderResearchLeadRow).join("");
+}
+
+function renderResearchLeadRow(item) {
+  const tags = [...(item.topic_tags || []), ...(item.suggested_sources || [])].slice(0, 8);
+  return `
+    <tr>
+      <td>${tag(item.status, item.status)}</td>
+      <td>${escapeHtml(item.priority)}</td>
+      <td>
+        <div class="title-cell">
+          <strong>${escapeHtml(item.title || "Untitled research lead")}</strong>
+          <span class="subtext">${escapeHtml(item.lead_type)} | ${escapeHtml(item.source_key || item.origin_source_key || "unknown source")}</span>
+          ${item.url ? `<a href="${escapeAttribute(item.url)}" target="_blank" rel="noreferrer">Open source</a>` : ""}
+        </div>
+      </td>
+      <td>${escapeHtml(item.reason || item.summary || "No reason recorded.")}</td>
+      <td><div class="tag-row">${tags.map((label) => tag(label, "info")).join("")}</div></td>
+      <td>
+        <div class="actions">
+          ${actionButton("lead-status", item.lead_id, "Promote", "watching", item.status === "watching")}
+          ${actionButton("lead-status", item.lead_id, "Follow-up", "followup", item.status === "followup")}
+          ${actionButton("lead-status", item.lead_id, "Demote", "dismissed", item.status === "dismissed")}
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function renderIdeas(payload) {
+  const kinds = Object.entries(payload.kind_counts || {})
+    .map(([kind, count]) => `${kind}: ${count}`)
+    .join(" | ");
+  const statuses = Object.entries(payload.status_counts || {})
+    .map(([status, count]) => `${status}: ${count}`)
+    .join(" | ");
+  $("ideaSummary").textContent =
+    `${value(payload.visible)} visible of ${value(payload.total)} idea records` +
+    (kinds ? ` | ${kinds}` : "") +
+    (statuses ? ` | ${statuses}` : "");
+
+  const items = payload.items || [];
+  if (!items.length) {
+    $("ideaList").innerHTML = `<div class="empty-state">No idea records match the current filters.</div>`;
+    return;
+  }
+  $("ideaList").innerHTML = items.map(renderIdeaCard).join("");
+}
+
+function renderIdeaCard(item) {
+  const score = item.priority_score !== null && item.priority_score !== undefined
+    ? `priority ${Math.round(Number(item.priority_score) * 100)}`
+    : item.confidence !== null && item.confidence !== undefined
+      ? `confidence ${Math.round(Number(item.confidence) * 100)}`
+      : "unscored";
+  const tags = [
+    ...(item.candidate_therapies || []),
+    ...(item.targets || []),
+    ...(item.biomarkers || []),
+  ].slice(0, 12);
+  return `
+    <article class="idea-card">
+      <div class="idea-card-header">
+        <div class="title-cell">
+          <span class="work-lane">${escapeHtml(ideaKindLabel(item.kind))}</span>
+          <strong>${escapeHtml(item.title || "Untitled idea")}</strong>
+          <span class="subtext">${escapeHtml(item.topic || "No source topic recorded.")}</span>
+        </div>
+        <div class="tag-row">
+          ${tag(item.status || "recorded", item.status || "info")}
+          ${tag(score, "info")}
+          ${item.source_key ? tag(item.source_key, "info") : ""}
+          ${item.evidence_strength ? tag(`evidence: ${item.evidence_strength}`, "info") : ""}
+        </div>
+      </div>
+      <div class="idea-body">
+        <div>
+          <h3>Hypothesis</h3>
+          <p>${escapeHtml(item.hypothesis || "No hypothesis recorded.")}</p>
+        </div>
+        <div>
+          <h3>Rationale</h3>
+          <p>${escapeHtml(item.rationale || "No rationale recorded.")}</p>
+        </div>
+      </div>
+      ${item.mechanism || item.translational_path ? `
+        <div class="idea-body compact">
+          ${item.mechanism ? `<div><h3>Mechanism</h3><p>${escapeHtml(item.mechanism)}</p></div>` : ""}
+          ${item.translational_path ? `<div><h3>Translation Path</h3><p>${escapeHtml(item.translational_path)}</p></div>` : ""}
+        </div>
+      ` : ""}
+      <div class="tag-row">${tags.map((label) => tag(label, "info")).join("")}</div>
+      <div class="idea-footer">
+        <span>${escapeHtml(shortId(item.idea_id))}</span>
+        ${item.committee_run_id ? `<span>committee ${escapeHtml(shortId(item.committee_run_id))}</span>` : ""}
+        ${item.plan_id ? `<span>plan ${escapeHtml(shortId(item.plan_id))}</span>` : ""}
+        ${item.origin_agent_run_id ? `<span>agent ${escapeHtml(shortId(item.origin_agent_run_id))}</span>` : ""}
+      </div>
+      <details>
+        <summary>Evidence, risks, validation records</summary>
+        <div class="detail-grid two-up">
+          <div>
+            <strong>Evidence Refs</strong>
+            ${renderInlineList(item.evidence_refs || [])}
+          </div>
+          <div>
+            <strong>Validation Status</strong>
+            ${renderStatusCounts(item.validation_status_counts || {})}
+          </div>
+          <div>
+            <strong>Risks</strong>
+            ${renderInlineList(item.risks || [])}
+          </div>
+          <div>
+            <strong>Next Experiments</strong>
+            ${renderInlineList(item.next_experiments || [])}
+          </div>
+        </div>
+      </details>
+    </article>
+  `;
+}
+
+function renderStatusCounts(counts) {
+  const entries = Object.entries(counts);
+  if (!entries.length) return `<p class="subtext">No validation queue records yet.</p>`;
+  return `<div class="tag-row">${entries.map(([status, count]) => tag(`${status}: ${count}`, status)).join("")}</div>`;
+}
+
+function ideaKindLabel(kind) {
+  const labels = {
+    therapy_idea: "Therapy idea",
+    validation_hypothesis: "Validation hypothesis",
+  };
+  return labels[kind] || kind || "Idea";
+}
+
+function renderRecommendations(items) {
+  if (!items.length) {
+    $("recommendationsList").innerHTML = `<div class="empty-state">No current recommendations.</div>`;
+    return;
+  }
+  $("recommendationsList").innerHTML = items.map((item) => `
+    <div class="list-item">
+      <div class="list-item-header">
+        <strong>${escapeHtml(item.action)}</strong>
+        ${tag(item.severity, item.severity)}
+      </div>
+      <div class="subtext">${escapeHtml(item.reason)}</div>
+      <div class="tag-row">
+        ${tag(item.area, "info")}
+        ${item.job_name ? tag(item.job_name, "info") : ""}
+      </div>
+    </div>
+  `).join("");
+}
+
+function renderAgentRuns(items) {
+  if (!items.length) {
+    $("agentRunsList").innerHTML = `<div class="empty-state">No recent agent runs found.</div>`;
+    return;
+  }
+  $("agentRunsList").innerHTML = items.slice(0, 12).map((item) => `
+    <div class="list-item">
+      <div class="list-item-header">
+        <strong>${escapeHtml(item.agent_name)}</strong>
+        ${tag(item.status, item.status)}
+      </div>
+      <div class="subtext">${escapeHtml(formatSummary(item.summary))}</div>
+      <div class="tag-row">
+        ${tag(item.model_profile || "model profile unset", "info")}
+        ${item.source_key ? tag(item.source_key, "info") : ""}
+        ${item.error_count ? tag(`${item.error_count} errors`, "failed") : ""}
+      </div>
+    </div>
+  `).join("");
+}
+
+function renderBriefQueue(items) {
+  if (!items.length) {
+    $("briefQueueRows").innerHTML = `<tr><td colspan="6" class="empty-state">No research brief queue items found.</td></tr>`;
+    return;
+  }
+  $("briefQueueRows").innerHTML = items.map((item) => `
+    <tr>
+      <td>${tag(item.status, item.status)}</td>
+      <td>${escapeHtml(item.priority)}</td>
+      <td>${escapeHtml(item.topic)}</td>
+      <td>${escapeHtml(item.source_key || "all sources")}</td>
+      <td>${escapeHtml(item.attempts)}</td>
+      <td>${escapeHtml(item.last_error || "")}</td>
+    </tr>
+  `).join("");
+}
+
+async function handleValidationAction(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button || button.disabled) return;
+  const action = button.dataset.action;
+  const id = button.dataset.id;
+  button.disabled = true;
+  try {
+    if (action === "approve") {
+      await approveValidationRequest(id);
+      showToast("Validation request approved.");
+    }
+    if (action === "dispatch") {
+      const result = await dispatchValidationRequest(id);
+      const item = result.item || {};
+      showToast(validationDispatchToast(item));
+    }
+    await Promise.all([refreshCommandCenter(), refreshActionItems(), refreshValidationQueue()]);
+  } catch (error) {
+    showToast(error.message || String(error));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function handleQueueAction(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button || button.disabled) return;
+  const action = button.dataset.action;
+  const id = button.dataset.id;
+  const status = button.dataset.status;
+  button.disabled = true;
+  try {
+    if (action === "approve") {
+      await approveValidationRequest(id);
+      showToast("Validation request approved.");
+    }
+    if (action === "dispatch") {
+      const result = await dispatchValidationRequest(id);
+      const item = result.item || {};
+      showToast(validationDispatchToast(item));
+    }
+    if (action === "lead-status") {
+      await updateResearchLeadStatus(id, status);
+      showToast(`Research lead moved to ${status}.`);
+    }
+    await Promise.all([refreshCommandCenter(), refreshActionItems(), refreshValidationQueue(), refreshResearchLeads()]);
+  } catch (error) {
+    showToast(error.message || String(error));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function runValidationAutopilot(dryRun) {
+  const button = dryRun ? $("autopilotDryRunButton") : $("autopilotRunButton");
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  try {
+    const payload = await postJson("/api/validation-autopilot/run", {
+      enabled: true,
+      dry_run: dryRun,
+      force: $("autopilotForce").checked,
+      max_per_run: Number($("autopilotMaxPerRun").value || 2),
+      manual_grace_period_hours: Number($("autopilotGraceHours").value || 6),
+      model_profile: "openrouter_required",
+      operator: $("operatorName").value.trim() || "command_center_operator",
+    });
+    state.validationAutopilot = payload;
+    renderValidationAutopilot(payload);
+    showToast(dryRun ? "Autopilot dry run recorded." : `Autopilot dispatched ${payload.dispatched_count || 0} item(s).`);
+    await Promise.all([refreshCommandCenter(), refreshActionItems(), refreshValidationQueue(), refreshValidationAutopilot()]);
+  } catch (error) {
+    showToast(error.message || String(error));
+  } finally {
+    button.disabled = dryRun ? false : validationDispatchReady() ? false : true;
+  }
+}
+
+function approveValidationRequest(id) {
+  return postJson(`/api/validation-requests/${encodeURIComponent(id)}/approve`, {
+    approved_by: $("operatorName").value.trim() || "command_center_operator",
+  });
+}
+
+function dispatchValidationRequest(id) {
+  return postJson(`/api/validation-requests/${encodeURIComponent(id)}/dispatch`, {
+    model_profile: "openrouter_required",
+  });
+}
+
+function validationDispatchToast(item) {
+  if (item.status === "completed") return "Validation agent completed.";
+  if (item.status === "blocked") return "Dispatch blocked. Missing context is listed in the queue.";
+  if (item.status === "failed") return "Validation agent failed. Error is listed in the queue.";
+  return "Validation request dispatched.";
+}
+
+function updateResearchLeadStatus(id, status) {
+  return postJson(`/api/research-leads/${encodeURIComponent(id)}/status`, {
+    status,
+    operator: $("operatorName").value.trim() || "command_center_operator",
+  });
+}
+
+async function getJson(url) {
+  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  return readJsonResponse(response);
+}
+
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  return readJsonResponse(response);
+}
+
+async function readJsonResponse(response) {
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || `Request failed with ${response.status}`);
+  }
+  return payload;
+}
+
+function tag(label, tone) {
+  return `<span class="tag ${escapeHtml(tone || "")}">${escapeHtml(label || "unknown")}</span>`;
+}
+
+function actionButton(action, id, label, status = "", disabled = false) {
+  return `<button type="button" data-action="${escapeAttribute(action)}" data-id="${escapeAttribute(id)}" data-status="${escapeAttribute(status)}" ${disabled ? "disabled" : ""}>${escapeHtml(label)}</button>`;
+}
+
+function value(input) {
+  return input === null || input === undefined ? "0" : String(input);
+}
+
+function shortId(input) {
+  const value = String(input || "");
+  return value.length > 12 ? `${value.slice(0, 8)}...` : value;
+}
+
+function formatSummary(input) {
+  if (!input) return "No summary";
+  if (typeof input === "string") return input;
+  if (Array.isArray(input)) return input.join(", ");
+  const pairs = Object.entries(input)
+    .slice(0, 5)
+    .map(([key, val]) => `${key}: ${formatSummaryValue(val)}`);
+  return pairs.length ? pairs.join(" | ") : "No summary";
+}
+
+function formatSummaryValue(input) {
+  if (input === null || input === undefined) return "";
+  if (typeof input === "object") return JSON.stringify(input);
+  return String(input);
+}
+
+function escapeHtml(input) {
+  return String(input === null || input === undefined ? "" : input)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function escapeAttribute(input) {
+  return escapeHtml(input).replaceAll("`", "&#096;");
+}
+
+function debounce(fn, delay) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), delay);
+  };
+}
+
+let toastTimer = null;
+function showToast(message) {
+  const toast = $("toast");
+  toast.textContent = message;
+  toast.classList.add("visible");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove("visible"), 3200);
+}

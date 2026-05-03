@@ -47,6 +47,7 @@ HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS=8
 HSA_FULL_TEXT_REQUEST_ATTEMPTS=1
 HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS=120
 HSA_PMC_OA_MAX_CANDIDATE_RECORDS=20
+HSA_EMBEDDING_MODEL=openrouter:openai/text-embedding-3-large
 OPENROUTER_API_KEY=<required for hosted OpenRouter review modes>
 TWITTERAPI_IO_KEY=<optional for X/Twitter topic monitoring>
 ```
