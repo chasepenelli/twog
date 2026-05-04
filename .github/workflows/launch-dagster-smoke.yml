@@ -373,6 +373,158 @@ jobs:
             --deployment "$DAGSTER_CLOUD_DEPLOYMENT" || true
         shell: bash
 
+      - name: Print hosted validation gap completion summary
+        if: ${{ always() && inputs.job == 'validation_gap_completion_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          from collections import Counter
+          from uuid import UUID
+
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          config = json.loads(os.getenv("DAGSTER_CLOUD_CONFIG_JSON") or "{}")
+          op_config = (
+              config.get("ops", {})
+              .get("validation_gap_completion_report", {})
+              .get("config", {})
+          )
+          queue_item_ids = [
+              UUID(value)
+              for value in op_config.get("queue_item_ids", [])
+              if value
+          ]
+          queue_id_text = {str(value) for value in queue_item_ids}
+          source_keys = op_config.get("source_keys", [])
+
+          service = HSAResearchService(build_research_repository())
+          validation_items = [
+              item
+              for queue_item_id in queue_item_ids
+              if (item := service.get_validation_request_queue_item(queue_item_id)) is not None
+          ]
+          leads = [
+              lead
+              for lead in service.list_research_leads(limit=None)
+              if str((lead.metadata.get("evidence_gap_resolver") or {}).get("queue_item_id")) in queue_id_text
+          ]
+          source_queries = []
+          for source_key in source_keys or [None]:
+              source_queries.extend(
+                  query
+                  for query in service.repository.list_source_queries(source_key=source_key, active_only=True)
+                  if query.track == "validation_gap"
+                  and str((query.query_params or {}).get("queue_item_id")) in queue_id_text
+              )
+          deduped_queries = {
+              (query.source_key, query.query_name): query
+              for query in source_queries
+          }
+          source_queries = list(deduped_queries.values())
+          brief_queue_items = [
+              item
+              for item in service.list_research_brief_queue_items(limit=None)
+              if str((item.metadata.get("evidence_gap_resolver") or {}).get("queue_item_id")) in queue_id_text
+          ]
+          briefs = [
+              brief
+              for item in brief_queue_items
+              if item.last_brief_id is not None
+              if (brief := service.get_research_brief(item.last_brief_id)) is not None
+          ]
+
+          lane_counts = Counter(
+              str((lead.metadata.get("evidence_gap_resolver") or {}).get("lane", "unknown"))
+              for lead in leads
+          )
+          query_source_counts = Counter(query.source_key for query in source_queries)
+          brief_status_counts = Counter(item.status for item in brief_queue_items)
+          payload = {
+              "queue_item_ids": [str(value) for value in queue_item_ids],
+              "dagster_run_id": os.getenv("DAGSTER_CLOUD_RUN_ID"),
+              "validation_items": [
+                  {
+                      "queue_item_id": str(item.queue_item_id),
+                      "status": item.status,
+                      "task_type": item.task_type,
+                      "validation_type": item.validation_request.validation_type,
+                      "decision": (item.metadata.get("validation_agent_result") or {}).get("decision"),
+                      "title": item.title[:300],
+                  }
+                  for item in validation_items
+              ],
+              "research_lead_count": len(leads),
+              "research_leads_by_lane": dict(sorted(lane_counts.items())),
+              "research_leads": [
+                  {
+                      "lead_id": str(lead.lead_id),
+                      "status": lead.status,
+                      "priority": lead.priority,
+                      "source_key": lead.source_key,
+                      "lane": (lead.metadata.get("evidence_gap_resolver") or {}).get("lane"),
+                      "title": lead.title[:300],
+                      "reason": (lead.reason or "")[:300],
+                  }
+                  for lead in sorted(leads, key=lambda item: (item.priority, item.created_at))[:20]
+              ],
+              "source_query_count": len(source_queries),
+              "source_queries_by_source": dict(sorted(query_source_counts.items())),
+              "source_queries": [
+                  {
+                      "source_key": query.source_key,
+                      "query_name": query.query_name,
+                      "lane": (query.query_params or {}).get("lane"),
+                      "query_text": query.query_text[:300],
+                      "active": query.active,
+                  }
+                  for query in sorted(source_queries, key=lambda item: (item.source_key, item.query_name))[:20]
+              ],
+              "brief_queue_count": len(brief_queue_items),
+              "brief_queue_by_status": dict(sorted(brief_status_counts.items())),
+              "brief_queue_items": [
+                  {
+                      "queue_item_id": str(item.queue_item_id),
+                      "status": item.status,
+                      "priority": item.priority,
+                      "source_key": item.source_key,
+                      "attempts": item.attempts,
+                      "last_brief_id": str(item.last_brief_id) if item.last_brief_id else None,
+                      "last_agent_run_id": str(item.last_agent_run_id) if item.last_agent_run_id else None,
+                      "last_error": item.last_error,
+                      "topic": item.topic[:300],
+                  }
+                  for item in sorted(brief_queue_items, key=lambda item: (item.priority, item.created_at))[:20]
+              ],
+              "briefs": [
+                  {
+                      "brief_id": str(brief.brief_id),
+                      "status": brief.status,
+                      "source_key": brief.source_key,
+                      "citation_count": brief.citation_count,
+                      "finding_count": brief.finding_count,
+                      "error_count": brief.error_count,
+                      "topic": brief.topic[:300],
+                  }
+                  for brief in briefs[:20]
+              ],
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Validation gap completion summary\n")
+                  summary.write(f"- Queue items: `{len(queue_item_ids)}`\n")
+                  summary.write(f"- Research leads: `{len(leads)}`\n")
+                  summary.write(f"- Source queries: `{len(source_queries)}`\n")
+                  summary.write(f"- Brief queue items: `{len(brief_queue_items)}`\n")
+                  summary.write(f"- Briefs completed/failed: `{dict(sorted(brief_status_counts.items()))}`\n")
+          PY
+        shell: bash
+
       - name: Print hosted research brief queue summary
         if: ${{ always() && (inputs.job == 'research_brief_queue_batch_job' || inputs.job == 'research_brief_queue_runner_job' || inputs.job == 'research_brief_queue_seed_job' || inputs.job == 'research_brief_queue_maintenance_job') }}
         continue-on-error: true
