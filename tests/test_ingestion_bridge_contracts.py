@@ -116,6 +116,7 @@ from hsa_research.ingestion_bridge.claim_extractor import LocalRuleClaimExtracto
 from hsa_research.ingestion_bridge.chunker import chunk_text
 from hsa_research.ingestion_bridge.full_text_triage import FullTextTriageAgent
 from hsa_research.ingestion_bridge import full_text_ops
+from hsa_research.ingestion_bridge import research_brief_evaluation
 from hsa_research.ingestion_bridge import research_followup_resolver
 from hsa_research.ingestion_bridge import research_brief_agent
 from hsa_research.ingestion_bridge import therapy_committee
@@ -894,6 +895,7 @@ def test_dagster_research_brief_evaluation_asset_uses_injected_repository(monkey
         def evaluate_research_brief(self, request):
             assert isinstance(request, ResearchBriefEvaluationRequest)
             assert request.brief_id == brief_id
+            assert request.review_mode == "openrouter_required"
             return ResearchBriefEvaluationResult(
                 brief_id=brief_id,
                 agent_run_id=uuid4(),
@@ -2805,6 +2807,107 @@ def test_research_brief_evaluation_contract_rejects_invalid_values():
             overall_score=0.5,
             readiness="not_real",
         )
+
+
+def test_research_brief_evaluation_openrouter_judge_uses_model_payload(monkeypatch):
+    citation = ResearchBriefCitation(
+        citation_id="C1",
+        chunk_id=uuid4(),
+        research_object_id=uuid4(),
+        source_key="pubmed",
+        title="PD-1 and VEGFR-2 translational evidence",
+        quote="PD-1 and VEGFR-2 evidence supports a testable translational hypothesis.",
+    )
+    finding = ResearchBriefFinding(
+        claim="PD-1 plus VEGFR-2 blockade has a testable translational rationale.",
+        stance="supporting",
+        citations=["C1"],
+        evidence_strength="medium",
+        reasoning="The cited evidence connects immune checkpoint and angiogenic biology.",
+    )
+    brief_payload = ResearchBriefResult(
+        topic="PD-1 plus VEGFR-2 in canine hemangiosarcoma",
+        disease_scope="canine hemangiosarcoma and human angiosarcoma",
+        final_brief="The synthesis is actionable and cited [C1].",
+        citations=[citation],
+        perspective_reports=[
+            ResearchBriefPerspectiveReport(
+                perspective="evidence_scout",
+                agent_name="evidence_scout_agent",
+                summary="Evidence scout found cited rationale.",
+                findings=[finding],
+                citations=[citation],
+            ),
+            ResearchBriefPerspectiveReport(
+                perspective="translational_hypothesis",
+                agent_name="translational_hypothesis_agent",
+                summary="Translational hypothesis is testable.",
+                findings=[finding],
+                citations=[citation],
+            ),
+            ResearchBriefPerspectiveReport(
+                perspective="skeptic_validation",
+                agent_name="skeptic_validation_agent",
+                summary="Skeptic view flagged no blocking contradiction.",
+                findings=[finding.model_copy(update={"stance": "uncertain"})],
+                citations=[citation],
+            ),
+        ],
+        ranked_hypotheses=[finding],
+        unresolved_questions=["Confirm effect size and assay readout."],
+    )
+    brief = ResearchBriefRecord(
+        topic=brief_payload.topic,
+        disease_scope=brief_payload.disease_scope,
+        source_key="pubmed",
+        final_brief=brief_payload.final_brief,
+        citation_count=1,
+        finding_count=3,
+        hypothesis_count=1,
+        result_payload=brief_payload.model_dump(mode="json"),
+    )
+
+    def fake_openrouter(model_name, review_payload):
+        assert model_name == "test/model"
+        assert review_payload["brief"]["brief_id"] == str(brief.brief_id)
+        return {
+            "text": json.dumps(
+                {
+                    "overall_score": 0.91,
+                    "citation_coverage_score": 0.9,
+                    "perspective_balance_score": 0.88,
+                    "contradiction_handling_score": 0.82,
+                    "novelty_score": 0.86,
+                    "actionability_score": 0.93,
+                    "weakness_transparency_score": 0.78,
+                    "passes_quality_bar": True,
+                    "readiness": "ready_for_hypothesis_review",
+                    "strengths": ["Cited and actionable."],
+                    "weaknesses": ["Needs assay confirmation."],
+                    "recommendations": ["Promote into validation planning."],
+                    "evidence": {"agent_review_summary": "Model judged the brief ready."},
+                    "errors": [],
+                }
+            ),
+            "metadata": {"provider": "openrouter", "requested_model": model_name},
+        }
+
+    monkeypatch.setattr(research_brief_evaluation, "_openrouter_review_model", fake_openrouter)
+
+    result = research_brief_evaluation.evaluate_research_brief_synthesis(
+        brief,
+        ResearchBriefEvaluationRequest(
+            brief_id=brief.brief_id,
+            review_mode="openrouter_required",
+            review_models=["test/model"],
+        ),
+    )
+
+    assert result.overall_score == 0.91
+    assert result.passes_quality_bar is True
+    assert result.readiness == "ready_for_hypothesis_review"
+    assert result.evidence["model_review"]["requested_model"] == "test/model"
+    assert result.evidence["deterministic_floor"]["brief_id"] == str(brief.brief_id)
 
 
 def test_research_brief_followup_queue_contracts_validate():

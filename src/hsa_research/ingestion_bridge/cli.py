@@ -848,6 +848,18 @@ def main() -> None:
         default="synthesis_quality_evaluator",
         help="Evaluator model/profile label recorded in the ledger",
     )
+    evaluate_research_brief.add_argument(
+        "--review-mode",
+        choices=("openrouter_required", "openrouter_compare", "deterministic_only"),
+        default="openrouter_required",
+        help="Whether evaluation is OpenRouter-backed or deterministic only",
+    )
+    evaluate_research_brief.add_argument(
+        "--review-model",
+        action="append",
+        default=[],
+        help="OpenRouter evaluator model id; repeat to compare multiple models",
+    )
 
     research_brief_evaluations = subparsers.add_parser(
         "research-brief-evaluations",
@@ -1725,6 +1737,8 @@ def main() -> None:
                 limit=args.limit,
                 minimum_overall_score=args.minimum_overall_score,
                 model_profile=args.model_profile,
+                review_mode=args.review_mode,
+                review_models=args.review_model,
             )
         ).model_dump(mode="json")
     elif args.command == "research-brief-evaluations":

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import json
+import os
 import re
 from typing import Any
+import urllib.error
+import urllib.request
 
 from .contracts import (
     ResearchBriefEvaluationReadiness,
@@ -18,6 +22,7 @@ from .research_brief_errors import split_research_brief_errors
 
 RESEARCH_BRIEF_EVALUATION_AGENT_NAME = "research_brief_synthesis_evaluator_agent"
 RESEARCH_BRIEF_EVALUATION_AGENT_VERSION = "v1"
+DEFAULT_RESEARCH_BRIEF_EVALUATION_MODEL = "anthropic/claude-sonnet-4.6"
 
 _EXPECTED_PERSPECTIVES = {
     "evidence_scout",
@@ -38,6 +43,30 @@ _LIMITATION_TERMS = {
 }
 _ACTION_TERMS = {"next step", "next steps", "prioritize", "validation", "test", "monitor"}
 def evaluate_research_brief_synthesis(
+    brief: ResearchBriefRecord,
+    request: ResearchBriefEvaluationRequest,
+) -> ResearchBriefEvaluationResult:
+    """Evaluate whether a persisted brief is ready for hypothesis review."""
+
+    deterministic = _evaluate_research_brief_deterministic(brief, request)
+    if request.review_mode == "deterministic_only":
+        return deterministic
+    try:
+        return _evaluate_research_brief_openrouter(brief, request, deterministic)
+    except Exception as exc:
+        if request.review_mode == "openrouter_required":
+            raise
+        evidence = dict(deterministic.evidence)
+        evidence["openrouter_evaluation_error"] = str(exc)
+        return deterministic.model_copy(
+            update={
+                "evidence": evidence,
+                "errors": [*deterministic.errors, f"OpenRouter evaluation failed: {exc}"],
+            }
+        )
+
+
+def _evaluate_research_brief_deterministic(
     brief: ResearchBriefRecord,
     request: ResearchBriefEvaluationRequest,
 ) -> ResearchBriefEvaluationResult:
@@ -223,6 +252,273 @@ def _brief_payload(brief: ResearchBriefRecord) -> tuple[dict[str, Any], list[str
     except Exception as exc:
         return payload, [f"Could not validate stored research brief payload: {exc}"]
     return typed.model_dump(mode="json"), []
+
+
+def _evaluate_research_brief_openrouter(
+    brief: ResearchBriefRecord,
+    request: ResearchBriefEvaluationRequest,
+    deterministic: ResearchBriefEvaluationResult,
+) -> ResearchBriefEvaluationResult:
+    errors: list[str] = []
+    for model_name in _select_models(request):
+        try:
+            review = _openrouter_review_model(
+                model_name,
+                _openrouter_evaluation_payload(brief, request, deterministic),
+            )
+            return _evaluation_from_model(brief, request, deterministic, review)
+        except Exception as exc:
+            errors.append(f"{model_name}: {exc}")
+            if request.review_mode == "openrouter_required":
+                break
+    raise RuntimeError("; ".join(errors) or "OpenRouter evaluation failed")
+
+
+def _openrouter_evaluation_payload(
+    brief: ResearchBriefRecord,
+    request: ResearchBriefEvaluationRequest,
+    deterministic: ResearchBriefEvaluationResult,
+) -> dict[str, Any]:
+    payload, parse_errors = _brief_payload(brief)
+    return {
+        "request": request.model_dump(mode="json"),
+        "brief": {
+            "brief_id": str(brief.brief_id),
+            "topic": brief.topic,
+            "disease_scope": brief.disease_scope,
+            "source_key": brief.source_key,
+            "status": brief.status,
+            "citation_count": brief.citation_count,
+            "finding_count": brief.finding_count,
+            "hypothesis_count": brief.hypothesis_count,
+            "hard_error_count": brief.hard_error_count,
+            "evidence_limitation_count": brief.evidence_limitation_count,
+            "final_brief": _compact_text(str(payload.get("final_brief") or brief.final_brief or ""), 5000),
+            "citations": _trim_citations(_as_list(payload.get("citations"))),
+            "perspective_reports": _trim_perspective_reports(_as_list(payload.get("perspective_reports"))),
+            "ranked_hypotheses": _trim_mappings(_as_list(payload.get("ranked_hypotheses")), 6, 900),
+            "unresolved_questions": [str(item)[:600] for item in _as_list(payload.get("unresolved_questions"))[:12]],
+            "payload_parse_errors": parse_errors,
+        },
+        "deterministic_floor": deterministic.model_dump(mode="json"),
+    }
+
+
+def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) -> dict[str, Any]:
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is required for OpenRouter research brief evaluation.")
+    user_payload = {
+        "instructions": [
+            "Evaluate whether this research brief is ready to move into validation planning.",
+            "Return JSON only. Do not include markdown or prose outside JSON.",
+            "Use the deterministic floor as an audit baseline, but make your own scientific judgment.",
+            "Penalize unsupported claims, missing citation IDs, weak translational relevance, and vague next steps.",
+            "Do not invent citations or facts beyond the supplied brief payload.",
+        ],
+        "response_contract": {
+            "overall_score": "number 0.0-1.0",
+            "citation_coverage_score": "number 0.0-1.0",
+            "perspective_balance_score": "number 0.0-1.0",
+            "contradiction_handling_score": "number 0.0-1.0",
+            "novelty_score": "number 0.0-1.0",
+            "actionability_score": "number 0.0-1.0",
+            "weakness_transparency_score": "number 0.0-1.0",
+            "passes_quality_bar": "boolean",
+            "readiness": "ready_for_hypothesis_review | needs_more_evidence | needs_human_review | blocked",
+            "strengths": ["short strength strings"],
+            "weaknesses": ["short weakness strings"],
+            "recommendations": ["short operator recommendations"],
+            "evidence": {"agent_review_summary": "short summary", "notable_risks": ["strings"]},
+            "errors": ["hard errors only; evidence limitations belong in weaknesses"],
+        },
+        "evaluation_payload": review_payload,
+    }
+    payload = {
+        "model": model_name,
+        "temperature": float(os.getenv("HSA_RESEARCH_BRIEF_EVALUATION_TEMPERATURE", "0.1")),
+        "max_tokens": int(os.getenv("HSA_RESEARCH_BRIEF_EVALUATION_MAX_TOKENS", "3000")),
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a rigorous translational oncology synthesis evaluator. "
+                    "Your job is to decide whether a generated research brief is reliable enough "
+                    "to feed downstream hypothesis and validation planning."
+                ),
+            },
+            {"role": "user", "content": json.dumps(user_payload, sort_keys=True, default=str)},
+        ],
+    }
+    http_request = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": os.getenv("OPENROUTER_HTTP_REFERER", "https://github.com/chasepenelli/hsa-dagster"),
+            "X-Title": os.getenv("OPENROUTER_APP_TITLE", "hsa-dagster"),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            http_request,
+            timeout=float(os.getenv("HSA_RESEARCH_BRIEF_EVALUATION_TIMEOUT_SECONDS", "90")),
+        ) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenRouter HTTP {error.code}: {body}") from error
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"OpenRouter request failed: {error}") from error
+
+    choices = response_payload.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"OpenRouter response had no choices: {response_payload}")
+    message = choices[0].get("message") or {}
+    text = message.get("content") or ""
+    if not text:
+        raise RuntimeError(f"OpenRouter response had no text content: {response_payload}")
+    return {
+        "text": text,
+        "metadata": {
+            "provider": "openrouter",
+            "model_name": response_payload.get("model", model_name),
+            "requested_model": model_name,
+            "request_id": response_payload.get("id"),
+            "usage": response_payload.get("usage", {}),
+        },
+    }
+
+
+def _evaluation_from_model(
+    brief: ResearchBriefRecord,
+    request: ResearchBriefEvaluationRequest,
+    deterministic: ResearchBriefEvaluationResult,
+    review: Mapping[str, Any],
+) -> ResearchBriefEvaluationResult:
+    payload = _load_json_object(str(review.get("text") or ""))
+    readiness = str(payload.get("readiness") or deterministic.readiness)
+    if readiness not in {"ready_for_hypothesis_review", "needs_more_evidence", "needs_human_review", "blocked"}:
+        readiness = "needs_human_review"
+    evidence = dict(payload.get("evidence") if isinstance(payload.get("evidence"), Mapping) else {})
+    evidence.update(
+        {
+            "review_mode": request.review_mode,
+            "model_review": review.get("metadata", {}),
+            "deterministic_floor": deterministic.model_dump(mode="json"),
+        }
+    )
+    return ResearchBriefEvaluationResult(
+        brief_id=brief.brief_id,
+        agent_name=RESEARCH_BRIEF_EVALUATION_AGENT_NAME,
+        model_profile=request.model_profile,
+        topic=brief.topic,
+        source_key=brief.source_key,
+        overall_score=_payload_score(payload, "overall_score", deterministic.overall_score),
+        citation_coverage_score=_payload_score(
+            payload, "citation_coverage_score", deterministic.citation_coverage_score
+        ),
+        perspective_balance_score=_payload_score(
+            payload, "perspective_balance_score", deterministic.perspective_balance_score
+        ),
+        contradiction_handling_score=_payload_score(
+            payload, "contradiction_handling_score", deterministic.contradiction_handling_score
+        ),
+        novelty_score=_payload_score(payload, "novelty_score", deterministic.novelty_score),
+        actionability_score=_payload_score(payload, "actionability_score", deterministic.actionability_score),
+        weakness_transparency_score=_payload_score(
+            payload, "weakness_transparency_score", deterministic.weakness_transparency_score
+        ),
+        passes_quality_bar=_payload_bool(payload.get("passes_quality_bar")),
+        readiness=readiness,  # type: ignore[arg-type]
+        strengths=_dedupe([str(item) for item in _as_list(payload.get("strengths")) if str(item).strip()])[:20],
+        weaknesses=_dedupe([str(item) for item in _as_list(payload.get("weaknesses")) if str(item).strip()])[:20],
+        recommendations=_dedupe(
+            [str(item) for item in _as_list(payload.get("recommendations")) if str(item).strip()]
+        )[:20],
+        evidence=evidence,
+        errors=[str(item) for item in _as_list(payload.get("errors")) if str(item).strip()],
+    )
+
+
+def _select_models(request: ResearchBriefEvaluationRequest) -> list[str]:
+    if request.review_models:
+        return list(request.review_models)
+    return [
+        os.getenv(
+            "HSA_RESEARCH_BRIEF_EVALUATION_MODEL",
+            os.getenv("HSA_RESEARCH_BRIEF_MODEL", DEFAULT_RESEARCH_BRIEF_EVALUATION_MODEL),
+        )
+    ]
+
+
+def _payload_score(payload: Mapping[str, Any], key: str, default: float) -> float:
+    try:
+        return _rounded(float(payload.get(key, default)))
+    except (TypeError, ValueError):
+        return _rounded(default)
+
+
+def _payload_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return bool(value)
+
+
+def _trim_citations(citations: Sequence[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw in citations[:30]:
+        if not isinstance(raw, Mapping):
+            continue
+        rows.append(
+            {
+                "citation_id": raw.get("citation_id"),
+                "title": _compact_text(str(raw.get("title") or ""), 400),
+                "source_key": raw.get("source_key"),
+                "published_year": raw.get("published_year"),
+                "doi": raw.get("doi"),
+                "pmid": raw.get("pmid"),
+            }
+        )
+    return rows
+
+
+def _trim_perspective_reports(reports: Sequence[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw in reports[:6]:
+        if not isinstance(raw, Mapping):
+            continue
+        rows.append(
+            {
+                "perspective": raw.get("perspective"),
+                "summary": _compact_text(str(raw.get("summary") or ""), 900),
+                "findings": _trim_mappings(_as_list(raw.get("findings")), 5, 700),
+                "evidence_limitations": [
+                    _compact_text(str(item), 500) for item in _as_list(raw.get("evidence_limitations"))[:8]
+                ],
+                "errors": [_compact_text(str(item), 500) for item in _as_list(raw.get("errors"))[:8]],
+            }
+        )
+    return rows
+
+
+def _trim_mappings(values: Sequence[Any], limit: int, max_chars: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw in values[:limit]:
+        if not isinstance(raw, Mapping):
+            continue
+        rows.append(
+            {
+                str(key): _compact_text(str(value), max_chars) if isinstance(value, str) else value
+                for key, value in raw.items()
+            }
+        )
+    return rows
 
 
 def _citation_coverage_score(
@@ -448,6 +744,79 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
 def _contains_any(value: str, terms: set[str]) -> bool:
     normalized = value.lower()
     return any(term in normalized for term in terms)
+
+
+def _load_json_object(text: str) -> dict[str, Any]:
+    cleaned = _strip_json_fences(text).strip()
+    candidates = [cleaned]
+    extracted = _extract_balanced_json_object(cleaned)
+    if extracted and extracted not in candidates:
+        candidates.append(extracted)
+
+    errors: list[str] = []
+    for candidate in candidates:
+        for repaired in _json_repair_candidates(candidate):
+            try:
+                payload = json.loads(repaired)
+                if not isinstance(payload, dict):
+                    raise ValueError("model response JSON must be an object")
+                return payload
+            except (json.JSONDecodeError, ValueError) as exc:
+                errors.append(str(exc))
+                continue
+    preview = _compact_text(cleaned, 500)
+    raise ValueError(f"model response JSON parse failed: {errors[-1] if errors else 'unknown error'}; preview={preview}")
+
+
+def _strip_json_fences(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.I)
+        stripped = re.sub(r"\s*```$", "", stripped)
+    return stripped
+
+
+def _extract_balanced_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text[start:], start=start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
+def _json_repair_candidates(text: str) -> list[str]:
+    candidates = [text]
+    without_trailing_commas = re.sub(r",\s*([}\]])", r"\1", text)
+    if without_trailing_commas not in candidates:
+        candidates.append(without_trailing_commas)
+    return candidates
+
+
+def _compact_text(value: str, max_chars: int) -> str:
+    text = re.sub(r"\s+", " ", value).strip()
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3].rstrip()}..."
 
 
 def _rounded(value: float) -> float:

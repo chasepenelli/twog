@@ -2701,6 +2701,21 @@ if dg is not None:
                 default_value=0.7,
                 description="Minimum weighted score required to pass the synthesis quality bar.",
             ),
+            "review_mode": dg.Field(
+                str,
+                default_value="openrouter_required",
+                description="Evaluation review mode: openrouter_required, openrouter_compare, or deterministic_only.",
+            ),
+            "review_models": dg.Field(
+                [str],
+                default_value=[],
+                description="OpenRouter model ids to use for live synthesis-quality evaluation.",
+            ),
+            "model_profile": dg.Field(
+                str,
+                default_value="synthesis_quality_evaluator",
+                description="Logical model/profile label recorded in the agent ledger.",
+            ),
         },
     )
     def research_brief_evaluation_report(
@@ -2722,6 +2737,9 @@ if dg is not None:
                 source_key=config.get("source_key"),
                 limit=config["limit"],
                 minimum_overall_score=config["minimum_overall_score"],
+                model_profile=config.get("model_profile") or "synthesis_quality_evaluator",
+                review_mode=config.get("review_mode") or "openrouter_required",
+                review_models=config.get("review_models") or [],
                 dagster_run_id=context.run_id,
             )
         )

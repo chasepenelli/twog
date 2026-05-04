@@ -1054,6 +1054,12 @@ class ResearchBriefEvaluationRequest(StrictBaseModel):
     limit: int = Field(default=1, ge=1, le=50)
     minimum_overall_score: float = Field(default=0.7, ge=0.0, le=1.0)
     model_profile: str = "synthesis_quality_evaluator"
+    review_mode: Literal[
+        "openrouter_required",
+        "openrouter_compare",
+        "deterministic_only",
+    ] = "deterministic_only"
+    review_models: list[str] = Field(default_factory=list, max_length=10)
     dagster_run_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
