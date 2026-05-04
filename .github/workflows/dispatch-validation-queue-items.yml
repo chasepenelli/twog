@@ -1,0 +1,176 @@
+name: Dispatch Validation Queue Items
+
+on:
+  workflow_dispatch:
+    inputs:
+      queue_item_ids:
+        description: "Validation queue item IDs to approve and dispatch; comma, space, or newline separated"
+        type: string
+        required: true
+      model_profile:
+        description: "Validation agent model profile or explicit OpenRouter model"
+        type: string
+        required: true
+        default: "anthropic/claude-sonnet-4.6"
+      approved_by:
+        description: "Approval operator recorded on queue items"
+        type: string
+        required: true
+        default: "github-actions"
+      approval_note:
+        description: "Approval note recorded on queue items"
+        type: string
+        required: false
+        default: "Manual operator-selected validation dispatch from GitHub Actions."
+
+jobs:
+  dispatch_validation_queue_items:
+    name: Dispatch Validation Queue Items
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      HSA_STORAGE_BACKEND: "postgres"
+      HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_HTTP_REFERER: "https://github.com/chasepenelli/hsa-dagster"
+      OPENROUTER_APP_TITLE: "hsa-dagster"
+      HSA_VALIDATION_AGENT_MODEL: "anthropic/claude-sonnet-4.6"
+      VALIDATION_QUEUE_ITEM_IDS: ${{ inputs.queue_item_ids }}
+      VALIDATION_MODEL_PROFILE: ${{ inputs.model_profile }}
+      VALIDATION_APPROVED_BY: ${{ inputs.approved_by }}
+      VALIDATION_APPROVAL_NOTE: ${{ inputs.approval_note }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: python -m pip install uv
+        shell: bash
+
+      - name: Validate required secrets
+        run: |
+          if [ -z "$HSA_DATABASE_URL" ]; then
+            echo "::error::HSA_DATABASE_URL is not configured."
+            exit 1
+          fi
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error::OPENROUTER_API_KEY is not configured."
+            exit 1
+          fi
+        shell: bash
+
+      - name: Install project dependencies
+        run: uv sync
+        shell: bash
+
+      - name: Approve and dispatch selected queue items
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from uuid import UUID
+
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          raw_ids = os.environ["VALIDATION_QUEUE_ITEM_IDS"]
+          queue_item_ids = [
+              UUID(token)
+              for token in re.split(r"[\s,]+", raw_ids.strip())
+              if token
+          ]
+          if not queue_item_ids:
+              raise SystemExit("At least one queue item ID is required.")
+
+          service = HSAResearchService(build_research_repository())
+          approved_by = os.environ["VALIDATION_APPROVED_BY"]
+          approval_note = os.getenv("VALIDATION_APPROVAL_NOTE") or None
+          model_profile = os.environ["VALIDATION_MODEL_PROFILE"]
+          rows = []
+          failed = False
+
+          for queue_item_id in queue_item_ids:
+              before = service.get_validation_request_queue_item(queue_item_id)
+              if before is None:
+                  rows.append({"queue_item_id": str(queue_item_id), "status": "missing"})
+                  failed = True
+                  continue
+
+              approved = service.approve_validation_request_queue_item(
+                  queue_item_id,
+                  approved_by=approved_by,
+                  approval_note=approval_note,
+              )
+              if approved is None:
+                  rows.append({"queue_item_id": str(queue_item_id), "status": "approval_failed"})
+                  failed = True
+                  continue
+
+              dispatched = service.dispatch_validation_request_queue_item(
+                  queue_item_id,
+                  model_profile=model_profile,
+              )
+              if dispatched is None:
+                  rows.append({"queue_item_id": str(queue_item_id), "status": "dispatch_missing"})
+                  failed = True
+                  continue
+
+              result = (dispatched.metadata or {}).get("validation_agent_result") or {}
+              row = {
+                  "queue_item_id": str(dispatched.queue_item_id),
+                  "before_status": before.status,
+                  "final_status": dispatched.status,
+                  "title": dispatched.title,
+                  "task_type": dispatched.task_type,
+                  "validation_type": dispatched.validation_request.validation_type,
+                  "priority": dispatched.priority,
+                  "attempts": dispatched.attempts,
+                  "last_run_id": str(dispatched.last_run_id) if dispatched.last_run_id else None,
+                  "last_error": dispatched.last_error,
+                  "decision": result.get("decision"),
+                  "confidence": result.get("confidence"),
+                  "agent_name": result.get("agent_name"),
+                  "model_profile": result.get("model_profile"),
+                  "summary": result.get("summary"),
+                  "missing_evidence": result.get("missing_evidence", [])[:5],
+                  "risks": result.get("risks", [])[:5],
+                  "next_actions": result.get("next_actions", [])[:5],
+              }
+              rows.append(row)
+              if dispatched.status in {"blocked", "failed"}:
+                  failed = True
+
+          report = {
+              "requested_count": len(queue_item_ids),
+              "model_profile": model_profile,
+              "results": rows,
+          }
+          print(json.dumps(report, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Validation dispatch results\n")
+                  summary.write(f"- Requested items: `{len(queue_item_ids)}`\n")
+                  summary.write(f"- Model profile: `{model_profile}`\n")
+                  for row in rows:
+                      summary.write(
+                          f"- `{row.get('final_status', row.get('status'))}` `{row['queue_item_id']}`: "
+                          f"{row.get('task_type', 'unknown')} / {row.get('validation_type', 'unknown')} "
+                          f"decision={row.get('decision')} confidence={row.get('confidence')}\n"
+                      )
+                      if row.get("last_error"):
+                          summary.write(f"  - Error: {row['last_error']}\n")
+
+          if failed:
+              sys.exit(1)
+          PY
+        shell: bash
