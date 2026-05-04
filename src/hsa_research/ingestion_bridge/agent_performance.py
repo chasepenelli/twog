@@ -406,13 +406,29 @@ def _review_payload(review: AgentRunReviewRecord | None) -> dict[str, Any] | Non
 
 def _specialist_for_agent(agent_name: str) -> str:
     normalized = agent_name.casefold()
-    if any(token in normalized for token in ("research_brief", "therapy_committee", "hypothesis", "validation_planning")):
+    if any(
+        token in normalized
+        for token in ("research_brief", "research_synthesis", "therapy_committee", "hypothesis", "validation_planning")
+    ):
         return "synthesis"
     if any(token in normalized for token in ("validation_agent", "validation_request", "omics", "assay", "evidence_review")):
         return "validation"
     if any(
         token in normalized
-        for token in ("source_scout", "full_text", "x_topic", "x_linked", "twitter", "source_followup", "gap_resolver")
+        for token in (
+            "claim_curator",
+            "evidence_gap",
+            "evidence_scout",
+            "followup_resolver",
+            "full_text",
+            "gap_resolver",
+            "source_followup",
+            "source_pack",
+            "source_scout",
+            "twitter",
+            "x_linked",
+            "x_topic",
+        )
     ):
         return "ingestion"
     return "general"

@@ -813,6 +813,17 @@ def test_agent_performance_evaluator_persists_specialist_reviews(monkeypatch, tm
     assert batch_runs[0].summary["review_created_count"] == 4
 
 
+def test_agent_performance_specialist_routing_covers_agent_lanes():
+    assert agent_performance._specialist_for_agent("research_synthesis_editor_agent") == "synthesis"
+    assert agent_performance._specialist_for_agent("therapy_committee_chair_agent") == "synthesis"
+    assert agent_performance._specialist_for_agent("validation_gap_source_pack_agent") == "ingestion"
+    assert agent_performance._specialist_for_agent("research_followup_resolver_agent") == "ingestion"
+    assert agent_performance._specialist_for_agent("claim_curator_agent") == "ingestion"
+    assert agent_performance._specialist_for_agent("evidence_scout_agent") == "ingestion"
+    assert agent_performance._specialist_for_agent("omics_validation_agent") == "validation"
+    assert agent_performance._specialist_for_agent("unknown_agent") == "general"
+
+
 def test_agent_performance_evaluator_invalid_json_fails_batch_without_review(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "agent-performance-evaluator-fail.sqlite3", seed=False)
     service = HSAResearchService(repo)
