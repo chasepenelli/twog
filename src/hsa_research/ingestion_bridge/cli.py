@@ -2108,7 +2108,7 @@ def _model_review_summary(run: dict[str, Any]) -> dict[str, Any]:
         "schedule_readiness": output_payload.get("schedule_readiness"),
         "should_block_schedule": output_payload.get("should_block_schedule"),
         "selected_model": evidence.get("selected_model"),
-        "errors": (output_payload.get("errors") or [])[:5],
+        "errors": (output_payload.get("errors") or run.get("errors") or [])[:5],
         "actions": [
             {
                 "source_key": action.get("source_key"),

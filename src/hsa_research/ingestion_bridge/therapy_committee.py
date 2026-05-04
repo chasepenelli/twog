@@ -32,7 +32,7 @@ from .repository import ResearchRepository
 
 THERAPY_COMMITTEE_AGENT_NAME = "therapy_committee_chair_agent"
 THERAPY_COMMITTEE_AGENT_VERSION = "v1"
-DEFAULT_THERAPY_COMMITTEE_MODEL = "~anthropic/claude-sonnet-latest"
+DEFAULT_THERAPY_COMMITTEE_MODEL = "anthropic/claude-sonnet-4.6"
 THERAPY_COMMITTEE_PERSPECTIVES: tuple[TherapyCommitteePerspectiveName, ...] = (
     "target_biology",
     "drug_repurposing",

@@ -30,6 +30,7 @@ jobs:
       HSA_THERAPY_COMMITTEE_TIMEOUT_SECONDS: "60"
       HSA_THERAPY_COMMITTEE_MAX_TOKENS: "3500"
       HSA_THERAPY_COMMITTEE_WORKERS: "4"
+      HSA_THERAPY_COMMITTEE_MODEL: "anthropic/claude-sonnet-4.6"
 
     steps:
       - name: Checkout
@@ -91,6 +92,7 @@ jobs:
             create_env "$scope" HSA_THERAPY_COMMITTEE_TIMEOUT_SECONDS "$HSA_THERAPY_COMMITTEE_TIMEOUT_SECONDS"
             create_env "$scope" HSA_THERAPY_COMMITTEE_MAX_TOKENS "$HSA_THERAPY_COMMITTEE_MAX_TOKENS"
             create_env "$scope" HSA_THERAPY_COMMITTEE_WORKERS "$HSA_THERAPY_COMMITTEE_WORKERS"
+            create_env "$scope" HSA_THERAPY_COMMITTEE_MODEL "$HSA_THERAPY_COMMITTEE_MODEL"
 
             if [ -n "$OPENROUTER_API_KEY" ]; then
               create_env "$scope" OPENROUTER_API_KEY --from-local-env
