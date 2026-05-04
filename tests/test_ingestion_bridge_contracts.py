@@ -13,6 +13,11 @@ from hsa_research.ingestion_bridge import command_center_web
 from hsa_research.ingestion_bridge import entity_resolution
 from hsa_research.ingestion_bridge import storage, structured_orchestration
 from hsa_research.ingestion_bridge.contracts import (
+    AgentPerformanceEvaluationRequest,
+    AgentPerformanceEvaluationResult,
+    AgentPerformanceReportRequest,
+    AgentPerformanceReportResult,
+    AgentPerformanceRow,
     AgentRunRecord,
     AgentRunReviewRecord,
     BoltzRunRequest,
@@ -116,6 +121,7 @@ from hsa_research.ingestion_bridge.claim_curator import ClaimCuratorAgent
 from hsa_research.ingestion_bridge.claim_extractor import LocalRuleClaimExtractor, extract_claims_for_repository
 from hsa_research.ingestion_bridge.chunker import chunk_text
 from hsa_research.ingestion_bridge.full_text_triage import FullTextTriageAgent
+from hsa_research.ingestion_bridge import agent_performance
 from hsa_research.ingestion_bridge import full_text_ops
 from hsa_research.ingestion_bridge import research_brief_evaluation
 from hsa_research.ingestion_bridge import research_followup_resolver
@@ -584,6 +590,7 @@ def test_agent_run_review_repository_roundtrip_sqlite_and_memory(tmp_path):
             AgentRunReviewRecord(
                 agent_run_id=run.agent_run_id,
                 reviewer=" operator ",
+                reviewer_type="operator",
                 verdict="needs_followup",
                 feedback="  Need mutation-function evidence. ",
                 tags=["KDR", "kdr", "omics"],
@@ -592,6 +599,7 @@ def test_agent_run_review_repository_roundtrip_sqlite_and_memory(tmp_path):
         )
 
         assert review.reviewer == "operator"
+        assert review.reviewer_type == "operator"
         assert review.feedback == "Need mutation-function evidence."
         assert review.tags == ["kdr", "omics"]
         assert review.followup_actions == ["queue_research"]
@@ -601,6 +609,236 @@ def test_agent_run_review_repository_roundtrip_sqlite_and_memory(tmp_path):
 
     with pytest.raises(ValidationError):
         AgentRunReviewRecord(agent_run_id=uuid4(), verdict="wrong")
+    with pytest.raises(ValidationError):
+        AgentRunReviewRecord(agent_run_id=uuid4(), reviewer_type="robot", verdict="useful")
+
+
+def test_agent_performance_contracts_validate_allowed_values():
+    row = AgentPerformanceRow(
+        group_type="agent_name",
+        group_value="therapy_committee_chair_agent",
+        run_count=3,
+        reviewed_run_count=2,
+        performance_score=78,
+    )
+    result = AgentPerformanceReportResult(rows=[row], top_rows=[row], bottom_rows=[row])
+    evaluation = AgentPerformanceEvaluationResult(evaluated_count=1, review_created_count=1)
+
+    assert result.rows[0].group_type == "agent_name"
+    assert evaluation.agent_name == "agent_performance_evaluator_agent"
+    assert AgentPerformanceReportRequest().limit == 500
+    assert AgentPerformanceEvaluationRequest().reviewed_only is True
+    with pytest.raises(ValidationError):
+        AgentPerformanceRow(group_type="wrong", group_value="bad")
+
+
+def test_agent_performance_report_aggregates_latest_reviews_by_group(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "agent-performance.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    now = datetime.now(UTC)
+
+    run_one = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="therapy_committee_chair_agent",
+            agent_version="prompt-default",
+            model_profile="openrouter_required",
+            status=RunStatus.COMPLETED,
+            source_key="pubmed",
+            started_at=now - timedelta(minutes=4),
+            metadata={"model_name": "anthropic/claude-sonnet-4.6", "prompt_version": "therapy-v2"},
+        )
+    )
+    run_two = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="therapy_committee_chair_agent",
+            agent_version="prompt-default",
+            model_profile="openrouter_required",
+            status=RunStatus.COMPLETED,
+            source_key="pubmed",
+            started_at=now - timedelta(minutes=3),
+            input_payload={"openrouter_model": "anthropic/claude-sonnet-4.6", "prompt_key": "therapy-v2"},
+        )
+    )
+    run_three = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="therapy_committee_chair_agent",
+            agent_version="prompt-default",
+            model_profile="openrouter_required",
+            status=RunStatus.COMPLETED,
+            source_key="pubmed",
+            started_at=now - timedelta(minutes=2),
+        )
+    )
+    run_four = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="full_text_ops_agent",
+            model_profile="reviewer",
+            status=RunStatus.COMPLETED,
+            started_at=now - timedelta(minutes=1),
+            output_payload={"evidence": {"selected_model": "anthropic/claude-sonnet-latest"}},
+        )
+    )
+    repo.create_agent_run_review(
+        AgentRunReviewRecord(
+            agent_run_id=run_one.agent_run_id,
+            reviewer="operator",
+            verdict="useful",
+            created_at=now - timedelta(minutes=3),
+        )
+    )
+    repo.create_agent_run_review(
+        AgentRunReviewRecord(
+            agent_run_id=run_one.agent_run_id,
+            reviewer="operator",
+            verdict="needs_followup",
+            created_at=now - timedelta(minutes=1),
+        )
+    )
+    repo.create_agent_run_review(
+        AgentRunReviewRecord(
+            agent_run_id=run_one.agent_run_id,
+            reviewer="ingestion_openrouter_evaluator",
+            reviewer_type="llm_evaluator",
+            verdict="useful",
+            created_at=now,
+        )
+    )
+    repo.create_agent_run_review(
+        AgentRunReviewRecord(
+            agent_run_id=run_two.agent_run_id,
+            reviewer="operator",
+            verdict="bad",
+            created_at=now,
+        )
+    )
+    repo.create_agent_run_review(
+        AgentRunReviewRecord(
+            agent_run_id=run_four.agent_run_id,
+            reviewer="ingestion_openrouter_evaluator",
+            reviewer_type="llm_evaluator",
+            verdict="useful",
+            created_at=now,
+        )
+    )
+
+    report = service.build_agent_performance_report(AgentPerformanceReportRequest(limit=10, min_sample_size=3))
+    agent_row = next(row for row in report.rows if row.group_type == "agent_name" and row.group_value == "therapy_committee_chair_agent")
+    model_row = next(row for row in report.rows if row.group_type == "model_key" and row.group_value == "anthropic/claude-sonnet-4.6")
+    prompt_row = next(row for row in report.rows if row.group_type == "prompt_key" and row.group_value == "therapy-v2")
+
+    assert report.agent_run_count == 4
+    assert report.reviewed_run_count == 3
+    assert report.unreviewed_run_count == 1
+    assert report.operator_reviewed_count == 2
+    assert report.evaluator_reviewed_count == 2
+    assert report.disagreement_count == 1
+    assert report.verdict_counts == {"bad": 1, "needs_followup": 1, "useful": 1}
+    assert agent_row.run_count == 3
+    assert agent_row.reviewed_run_count == 2
+    assert agent_row.operator_reviewed_count == 2
+    assert agent_row.evaluator_reviewed_count == 1
+    assert agent_row.performance_score == 28
+    assert agent_row.low_sample is True
+    assert agent_row.disagreement_count == 1
+    assert model_row.reviewed_run_count == 2
+    assert prompt_row.reviewed_run_count == 2
+    assert any(row.group_value == "full_text_ops_agent" for row in report.top_rows)
+
+
+def test_agent_performance_evaluator_persists_specialist_reviews(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "agent-performance-evaluator.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    agent_names = [
+        "research_brief_synthesis_editor_agent",
+        "validation_agent_omics",
+        "full_text_ops_agent",
+        "misc_agent",
+    ]
+    for agent_name in agent_names:
+        run = repo.create_agent_run(
+            AgentRunRecord(
+                agent_name=agent_name,
+                model_profile="openrouter_required",
+                status=RunStatus.COMPLETED,
+                input_payload={"topic": "KDR angiosarcoma"},
+                output_payload={"summary": "Useful output."},
+            )
+        )
+        repo.create_agent_run_review(
+            AgentRunReviewRecord(
+                agent_run_id=run.agent_run_id,
+                reviewer="operator",
+                verdict="useful",
+            )
+        )
+
+    specialists = []
+
+    def fake_openrouter(model_name, review_payload):
+        specialists.append(review_payload["specialist"])
+        assert review_payload["operator_review"]["verdict"] == "useful"
+        return {
+            "text": json.dumps(
+                {
+                    "verdict": "useful",
+                    "confidence": 0.82,
+                    "rationale": f"{review_payload['specialist']} evaluator agrees.",
+                    "strengths": ["Clear next step."],
+                    "failure_modes": [],
+                    "recommended_followup_actions": ["keep_tracking"],
+                    "rubric_scores": {"actionability": 0.8},
+                }
+            ),
+            "metadata": {"provider": "openrouter", "model_name": model_name},
+        }
+
+    monkeypatch.setattr(agent_performance, "_openrouter_review_model", fake_openrouter)
+
+    result = service.run_agent_performance_evaluation(
+        AgentPerformanceEvaluationRequest(
+            limit=4,
+            review_models=["anthropic/claude-sonnet-4.6"],
+        )
+    )
+    evaluator_reviews = repo.list_agent_run_reviews(reviewer="synthesis_openrouter_evaluator", limit=10)
+    batch_runs = repo.list_agent_runs(agent_name="agent_performance_evaluator_agent", status="completed", limit=5)
+
+    assert result.agent_run_id is not None
+    assert result.evaluated_count == 4
+    assert result.review_created_count == 4
+    assert set(specialists) == {"synthesis", "validation", "ingestion", "general"}
+    assert evaluator_reviews[0].reviewer_type == "llm_evaluator"
+    assert evaluator_reviews[0].metadata["agent_performance_evaluation"]["model_name"] == "anthropic/claude-sonnet-4.6"
+    assert batch_runs
+    assert batch_runs[0].summary["review_created_count"] == 4
+
+
+def test_agent_performance_evaluator_invalid_json_fails_batch_without_review(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "agent-performance-evaluator-fail.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    run = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="therapy_committee_chair_agent",
+            status=RunStatus.COMPLETED,
+        )
+    )
+    repo.create_agent_run_review(AgentRunReviewRecord(agent_run_id=run.agent_run_id, reviewer="operator", verdict="useful"))
+
+    def fake_openrouter(model_name, review_payload):
+        return {"text": "not json", "metadata": {"provider": "openrouter", "model_name": model_name}}
+
+    monkeypatch.setattr(agent_performance, "_openrouter_review_model", fake_openrouter)
+
+    with pytest.raises(json.JSONDecodeError):
+        service.run_agent_performance_evaluation(AgentPerformanceEvaluationRequest(limit=1))
+
+    failed_runs = repo.list_agent_runs(agent_name="agent_performance_evaluator_agent", status="failed", limit=5)
+    evaluator_reviews = [
+        review for review in repo.list_agent_run_reviews(agent_run_id=run.agent_run_id, limit=10)
+        if review.reviewer_type == "llm_evaluator"
+    ]
+    assert failed_runs
+    assert evaluator_reviews == []
 
 
 def test_research_lead_repository_roundtrip_sqlite_and_memory(tmp_path):
@@ -960,6 +1198,83 @@ def test_dagster_research_brief_evaluation_asset_uses_injected_repository(monkey
     assert calls == ["build_repository"]
     assert result.value["brief_id"] == str(brief_id)
     assert result.metadata["readiness"] == "ready_for_hypothesis_review"
+
+
+def test_dagster_agent_performance_assets_use_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    class FakeService:
+        def __init__(self, repository):
+            assert repository is sentinel_repository
+
+        def build_agent_performance_report(self, request):
+            assert request.limit == 25
+            return AgentPerformanceReportResult(
+                agent_run_count=2,
+                reviewed_run_count=1,
+                operator_reviewed_count=1,
+                rows=[
+                    AgentPerformanceRow(
+                        group_type="agent_name",
+                        group_value="therapy_committee_chair_agent",
+                        run_count=2,
+                        reviewed_run_count=1,
+                        performance_score=100,
+                        low_sample=True,
+                    )
+                ],
+            )
+
+        def run_agent_performance_evaluation(self, request):
+            assert request.dagster_run_id == "dagster-agent-performance-test"
+            return AgentPerformanceEvaluationResult(
+                evaluated_count=1,
+                review_created_count=1,
+                evaluations=[
+                    {
+                        "agent_run_id": str(uuid4()),
+                        "agent_name": "therapy_committee_chair_agent",
+                        "specialist": "synthesis",
+                        "model_name": "test-model",
+                        "verdict": "useful",
+                        "confidence": 0.8,
+                        "review_id": str(uuid4()),
+                        "rationale": "Useful output.",
+                    }
+                ],
+            )
+
+    monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
+
+    report_result = dagster_asset_module.agent_performance_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(op_config={"limit": 25, "min_sample_size": 3}),
+        FakeRepositoryResource(),
+    )
+    evaluation_result = dagster_asset_module.agent_performance_evaluation_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "status": "completed",
+                "limit": 1,
+                "reviewed_only": True,
+                "model_profile": "agent_performance_evaluator",
+                "review_models": [],
+            },
+            run_id="dagster-agent-performance-test",
+        ),
+        FakeRepositoryResource(),
+    )
+
+    assert calls == ["build_repository", "build_repository"]
+    assert report_result.value["reviewed_run_count"] == 1
+    assert report_result.metadata["reviewed_run_count"].value == 1
+    assert evaluation_result.value["review_created_count"] == 1
+    assert evaluation_result.metadata["review_created_count"].value == 1
 
 
 def test_dagster_validation_plan_asset_uses_injected_repository(monkeypatch):
@@ -4300,6 +4615,7 @@ def test_command_center_web_lists_agent_runs_with_payloads(tmp_path):
     assert payload["items"][0]["duration_seconds"] is not None
     assert payload["items"][0]["review_count"] == 1
     assert payload["items"][0]["latest_review"]["verdict"] == "useful"
+    assert payload["items"][0]["latest_review"]["reviewer_type"] == "operator"
     assert payload["items"][0]["latest_review"]["tags"] == ["kdr", "committee"]
     assert review_payload["item"]["feedback"] == "Good committee output."
     assert detail["item"]["agent_run_id"] == str(completed.agent_run_id)
@@ -4315,6 +4631,58 @@ def test_command_center_web_lists_agent_runs_with_payloads(tmp_path):
         command_center_web.create_agent_run_review_payload(service, str(completed.agent_run_id), {"verdict": "wrong"})
     with pytest.raises(LookupError):
         command_center_web.create_agent_run_review_payload(service, str(uuid4()), {"verdict": "bad"})
+
+
+def test_command_center_web_agent_performance_payloads(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "command-center-web-agent-performance.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    run = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="therapy_committee_chair_agent",
+            model_profile="openrouter_required",
+            status=RunStatus.COMPLETED,
+            output_payload={"ranked_ideas": [{"title": "KDR validation"}]},
+        )
+    )
+    repo.create_agent_run_review(
+        AgentRunReviewRecord(
+            agent_run_id=run.agent_run_id,
+            reviewer="operator",
+            verdict="useful",
+        )
+    )
+
+    def fake_openrouter(model_name, review_payload):
+        assert review_payload["specialist"] == "synthesis"
+        return {
+            "text": json.dumps(
+                {
+                    "verdict": "useful",
+                    "confidence": 0.9,
+                    "rationale": "Clear committee output.",
+                    "strengths": ["Specific validation idea."],
+                    "failure_modes": [],
+                    "recommended_followup_actions": ["keep"],
+                    "rubric_scores": {"actionability": 0.9},
+                }
+            ),
+            "metadata": {"provider": "openrouter", "model_name": model_name},
+        }
+
+    monkeypatch.setattr(agent_performance, "_openrouter_review_model", fake_openrouter)
+
+    payload = command_center_web.agent_performance_payload(service)
+    evaluation = command_center_web.run_agent_performance_evaluation_payload(
+        service,
+        {"limit": 1, "operator": "operator"},
+    )
+    updated = command_center_web.agent_performance_payload(service)
+
+    assert payload["agent_run_count"] == 1
+    assert payload["reviewed_run_count"] == 1
+    assert payload["rows"][0]["performance_score"] == 100
+    assert evaluation["review_created_count"] == 1
+    assert updated["evaluator_reviewed_count"] == 1
 
 
 def test_command_center_web_action_items_and_research_lead_status_updates(tmp_path):
@@ -9564,6 +9932,45 @@ def test_mcp_agent_run_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
     assert runs_payload[0]["agent_run_id"] == payload["agent_run_id"]
 
 
+def test_mcp_agent_performance_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "mcp-agent-performance.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    monkeypatch.setattr(mcp_server, "get_service", lambda: service)
+    run = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="full_text_ops_agent",
+            status=RunStatus.COMPLETED,
+            output_payload={"schedule_readiness": "keep_stopped"},
+        )
+    )
+    repo.create_agent_run_review(AgentRunReviewRecord(agent_run_id=run.agent_run_id, verdict="needs_followup"))
+
+    def fake_openrouter(model_name, review_payload):
+        return {
+            "text": json.dumps(
+                {
+                    "verdict": "needs_followup",
+                    "confidence": 0.7,
+                    "rationale": "Needs partition evidence.",
+                    "strengths": ["Useful blocker."],
+                    "failure_modes": [],
+                    "recommended_followup_actions": ["run_source_date_partition"],
+                    "rubric_scores": {"evidence_paths": 0.7},
+                }
+            ),
+            "metadata": {"provider": "openrouter", "model_name": model_name},
+        }
+
+    monkeypatch.setattr(agent_performance, "_openrouter_review_model", fake_openrouter)
+
+    report_payload = mcp_server.agent_performance_report_tool(limit=10)
+    evaluation_payload = mcp_server.run_agent_performance_evaluation_tool(limit=1)
+
+    assert report_payload["reviewed_run_count"] == 1
+    assert report_payload["rows"]
+    assert evaluation_payload["review_created_count"] == 1
+
+
 def test_mcp_research_lead_tools_dump_json_safe_payloads(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "mcp-research-leads.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -11312,6 +11719,8 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.source_followup_queue_job is not None
     assert dagster_asset_module.source_followup_ingest_job is not None
     assert dagster_asset_module.command_center_job is not None
+    assert dagster_asset_module.agent_performance_report_job is not None
+    assert dagster_asset_module.agent_performance_evaluation_job is not None
     assert dagster_asset_module.pubmed_source_followup_ingest_job is not None
     assert dagster_asset_module.crossref_source_followup_ingest_job is not None
     assert dagster_asset_module.pmc_oa_source_followup_ingest_job is not None

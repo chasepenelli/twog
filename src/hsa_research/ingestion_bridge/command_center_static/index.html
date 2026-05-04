@@ -289,6 +289,48 @@
         <section class="panel">
           <div class="panel-header">
             <div>
+              <h2>Agent Performance</h2>
+              <p>Hybrid performance view across operator reviews and OpenRouter specialist evaluator reviews.</p>
+            </div>
+            <div class="filters">
+              <label>
+                <span>Scan limit</span>
+                <input id="agentPerformanceLimit" type="number" min="1" max="2000" value="500">
+              </label>
+              <label>
+                <span>Min sample</span>
+                <input id="agentPerformanceMinSample" type="number" min="1" max="100" value="3">
+              </label>
+              <label>
+                <span>Eval limit</span>
+                <input id="agentPerformanceEvalLimit" type="number" min="1" max="100" value="25">
+              </label>
+              <button id="agentPerformanceEvaluateButton" class="primary-button" type="button">Evaluate Reviewed Runs</button>
+            </div>
+          </div>
+          <div id="agentPerformanceSummary" class="summary-line">Loading agent performance...</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Group</th>
+                  <th>Score</th>
+                  <th>Coverage</th>
+                  <th>Useful</th>
+                  <th>Follow-up</th>
+                  <th>Bad</th>
+                  <th>Unclear</th>
+                  <th>Flags</th>
+                </tr>
+              </thead>
+              <tbody id="agentPerformanceRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
               <h2>Agent Runs</h2>
               <p>Durable ledger for every agent invocation, including inputs, outputs, summaries, errors, and model profile.</p>
             </div>

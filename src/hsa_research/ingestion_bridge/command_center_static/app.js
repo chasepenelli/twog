@@ -8,6 +8,7 @@ const state = {
   researchBriefs: null,
   ideas: null,
   agentRuns: null,
+  agentPerformance: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -30,6 +31,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("agentStatus").addEventListener("change", refreshAgentRuns);
   $("agentSource").addEventListener("change", refreshAgentRuns);
   $("agentQuery").addEventListener("input", debounce(refreshAgentRuns, 250));
+  $("agentPerformanceLimit").addEventListener("change", refreshAgentPerformance);
+  $("agentPerformanceMinSample").addEventListener("change", refreshAgentPerformance);
+  $("agentPerformanceEvaluateButton").addEventListener("click", runAgentPerformanceEvaluation);
   $("autopilotPreviewButton").addEventListener("click", refreshValidationAutopilot);
   $("autopilotDryRunButton").addEventListener("click", () => runValidationAutopilot(true));
   $("autopilotRunButton").addEventListener("click", () => runValidationAutopilot(false));
@@ -53,6 +57,7 @@ async function refreshAll() {
       refreshResearchBriefs(),
       refreshIdeas(),
       refreshAgentRuns(),
+      refreshAgentPerformance(),
     ]);
     showToast("Command center refreshed.");
   } catch (error) {
@@ -159,6 +164,15 @@ async function refreshAgentRuns() {
   renderAgentRunsPage(payload);
 }
 
+async function refreshAgentPerformance() {
+  const params = new URLSearchParams();
+  params.append("limit", $("agentPerformanceLimit").value || "500");
+  params.append("min_sample_size", $("agentPerformanceMinSample").value || "3");
+  const payload = await getJson(`/api/agent-performance?${params.toString()}`);
+  state.agentPerformance = payload;
+  renderAgentPerformance(payload);
+}
+
 function showPage(pageId) {
   document.querySelectorAll(".page-view").forEach((page) => {
     page.classList.toggle("active", page.id === pageId);
@@ -178,6 +192,10 @@ function renderRuntime(payload) {
   if ($("autopilotRunButton")) {
     $("autopilotRunButton").disabled = !ready;
     $("autopilotRunButton").title = ready ? "" : "OpenRouter must be configured before live autopilot dispatch.";
+  }
+  if ($("agentPerformanceEvaluateButton")) {
+    $("agentPerformanceEvaluateButton").disabled = !ready;
+    $("agentPerformanceEvaluateButton").title = ready ? "" : "OpenRouter must be configured before evaluator runs.";
   }
 }
 
@@ -766,6 +784,51 @@ function renderAgentRunsPage(payload) {
   $("agentRunCards").innerHTML = items.map(renderAgentRunCard).join("");
 }
 
+function renderAgentPerformance(payload) {
+  const coverage = percent(payload.review_coverage || 0);
+  const verdicts = payload.verdict_counts || {};
+  $("agentPerformanceSummary").textContent =
+    `${value(payload.reviewed_run_count)} reviewed of ${value(payload.agent_run_count)} runs (${coverage}) | ` +
+    `${value(payload.operator_reviewed_count)} operator reviewed | ${value(payload.evaluator_reviewed_count)} evaluator reviewed | ` +
+    `${value(payload.disagreement_count)} disagreements | ` +
+    `useful ${value(verdicts.useful)}, follow-up ${value(verdicts.needs_followup)}, bad ${value(verdicts.bad)}, unclear ${value(verdicts.unclear)}`;
+
+  const rows = (payload.rows || [])
+    .filter((row) => row.reviewed_run_count > 0)
+    .sort((a, b) => {
+      const scoreDiff = Number(b.performance_score ?? -1) - Number(a.performance_score ?? -1);
+      if (scoreDiff !== 0) return scoreDiff;
+      return Number(b.reviewed_run_count || 0) - Number(a.reviewed_run_count || 0);
+    })
+    .slice(0, 24);
+  if (!rows.length) {
+    $("agentPerformanceRows").innerHTML = `<tr><td colspan="8" class="empty-state">No reviewed agent runs are available yet.</td></tr>`;
+    return;
+  }
+  $("agentPerformanceRows").innerHTML = rows.map((row) => `
+    <tr>
+      <td>
+        <div class="title-cell">
+          <strong>${escapeHtml(row.group_value)}</strong>
+          <span class="subtext">${escapeHtml(row.group_type)} | ${value(row.reviewed_run_count)} reviewed / ${value(row.run_count)} runs</span>
+        </div>
+      </td>
+      <td>${row.performance_score === null || row.performance_score === undefined ? "n/a" : escapeHtml(row.performance_score)}</td>
+      <td>${escapeHtml(percent(row.review_coverage || 0))}</td>
+      <td>${escapeHtml(percent(row.useful_rate || 0))}</td>
+      <td>${escapeHtml(percent(row.followup_rate || 0))}</td>
+      <td>${escapeHtml(percent(row.bad_rate || 0))}</td>
+      <td>${escapeHtml(percent(row.unclear_rate || 0))}</td>
+      <td>
+        <div class="tag-row">
+          ${row.low_sample ? tag("low sample", "watch") : ""}
+          ${row.disagreement_count ? tag(`${row.disagreement_count} disagree`, "watch") : ""}
+        </div>
+      </td>
+    </tr>
+  `).join("");
+}
+
 function renderAgentRunCard(item) {
   const started = formatDateTime(item.started_at);
   const completed = item.completed_at ? formatDateTime(item.completed_at) : "not completed";
@@ -951,11 +1014,31 @@ async function handleAgentRunReview(event) {
     });
     if (feedbackInput) feedbackInput.value = "";
     showToast(`Agent run marked ${verdict}.`);
-    await refreshAgentRuns();
+    await Promise.all([refreshAgentRuns(), refreshAgentPerformance()]);
   } catch (error) {
     showToast(error.message || String(error));
   } finally {
     button.disabled = false;
+  }
+}
+
+async function runAgentPerformanceEvaluation() {
+  const button = $("agentPerformanceEvaluateButton");
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  try {
+    const payload = await postJson("/api/agent-performance/evaluate", {
+      limit: Number($("agentPerformanceEvalLimit").value || 25),
+      reviewed_only: true,
+      model_profile: "agent_performance_evaluator",
+      operator: $("operatorName").value.trim() || "command_center_operator",
+    });
+    showToast(`Evaluator created ${payload.review_created_count || 0} review(s).`);
+    await Promise.all([refreshAgentPerformance(), refreshAgentRuns()]);
+  } catch (error) {
+    showToast(error.message || String(error));
+  } finally {
+    button.disabled = validationDispatchReady() ? false : true;
   }
 }
 
@@ -1051,6 +1134,10 @@ function actionButton(action, id, label, status = "", disabled = false) {
 
 function value(input) {
   return input === null || input === undefined ? "0" : String(input);
+}
+
+function percent(input) {
+  return `${Math.round(Number(input || 0) * 100)}%`;
 }
 
 function shortId(input) {

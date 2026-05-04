@@ -14,6 +14,8 @@ import time
 from typing import Any
 
 from .contracts import (
+    AgentPerformanceEvaluationRequest,
+    AgentPerformanceReportRequest,
     ClaimCurationRequest,
     ClaimSearchRequest,
     CommandCenterRequest,
@@ -143,6 +145,29 @@ _COMMAND_CENTER_RECOMMENDATION_TABLE_COLUMNS = (
     "action",
     "job_name",
     "reason",
+)
+_AGENT_PERFORMANCE_TABLE_COLUMNS = (
+    "group_type",
+    "group_value",
+    "run_count",
+    "reviewed_run_count",
+    "performance_score",
+    "useful_rate",
+    "followup_rate",
+    "bad_rate",
+    "unclear_rate",
+    "disagreement_count",
+    "low_sample",
+)
+_AGENT_PERFORMANCE_EVALUATION_TABLE_COLUMNS = (
+    "agent_run_id",
+    "agent_name",
+    "specialist",
+    "model_name",
+    "verdict",
+    "confidence",
+    "review_id",
+    "rationale",
 )
 _FULL_TEXT_TRIAGE_TABLE_COLUMNS = (
     "source_key",
@@ -639,6 +664,36 @@ if dg is not None:
             "recommendations": _metadata_table(
                 recommendation_rows,
                 _COMMAND_CENTER_RECOMMENDATION_TABLE_COLUMNS,
+            ),
+        }
+
+    def _agent_performance_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "agent_run_count": dg.MetadataValue.int(int(report.get("agent_run_count") or 0)),
+            "reviewed_run_count": dg.MetadataValue.int(int(report.get("reviewed_run_count") or 0)),
+            "unreviewed_run_count": dg.MetadataValue.int(int(report.get("unreviewed_run_count") or 0)),
+            "operator_reviewed_count": dg.MetadataValue.int(int(report.get("operator_reviewed_count") or 0)),
+            "evaluator_reviewed_count": dg.MetadataValue.int(int(report.get("evaluator_reviewed_count") or 0)),
+            "disagreement_count": dg.MetadataValue.int(int(report.get("disagreement_count") or 0)),
+            "review_coverage": float(report.get("review_coverage") or 0.0),
+            "verdict_counts": dg.MetadataValue.json(report.get("verdict_counts", {})),
+            "reviewer_type_counts": dg.MetadataValue.json(report.get("reviewer_type_counts", {})),
+            "top_rows": _metadata_table(report.get("top_rows", []), _AGENT_PERFORMANCE_TABLE_COLUMNS),
+            "bottom_rows": _metadata_table(report.get("bottom_rows", []), _AGENT_PERFORMANCE_TABLE_COLUMNS),
+        }
+
+    def _agent_performance_evaluation_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "agent_run_id": str(report.get("agent_run_id") or ""),
+            "scanned_count": dg.MetadataValue.int(int(report.get("scanned_count") or 0)),
+            "candidate_count": dg.MetadataValue.int(int(report.get("candidate_count") or 0)),
+            "evaluated_count": dg.MetadataValue.int(int(report.get("evaluated_count") or 0)),
+            "review_created_count": dg.MetadataValue.int(int(report.get("review_created_count") or 0)),
+            "failed_count": dg.MetadataValue.int(int(report.get("failed_count") or 0)),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "evaluations": _metadata_table(
+                report.get("evaluations", []),
+                _AGENT_PERFORMANCE_EVALUATION_TABLE_COLUMNS,
             ),
         }
 
@@ -2365,6 +2420,82 @@ if dg is not None:
         result = HSAResearchService(repository).run_full_text_ops(FullTextOpsRequest())
         report = result.model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_full_text_ops_report_metadata(report))
+
+    @dg.asset(
+        group_name="agent_ops",
+        config_schema={
+            "agent_name": dg.Field(str, is_required=False, description="Optional agent name filter."),
+            "status": dg.Field(str, is_required=False, description="Optional run status filter."),
+            "source_key": dg.Field(str, is_required=False, description="Optional source key filter."),
+            "limit": dg.Field(int, default_value=500, description="Recent agent runs to scan."),
+            "min_sample_size": dg.Field(int, default_value=3, description="Runs required before sample is reliable."),
+        },
+    )
+    def agent_performance_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Hybrid operator/evaluator performance report for the agent ledger."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_agent_performance_report(
+            AgentPerformanceReportRequest(
+                agent_name=config.get("agent_name"),
+                status=config.get("status"),
+                source_key=config.get("source_key"),
+                limit=config["limit"],
+                min_sample_size=config["min_sample_size"],
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_agent_performance_report_metadata(report))
+
+    @dg.asset(
+        group_name="agent_ops",
+        config_schema={
+            "agent_name": dg.Field(str, is_required=False, description="Optional agent name filter."),
+            "status": dg.Field(str, default_value="completed", description="Optional run status filter."),
+            "source_key": dg.Field(str, is_required=False, description="Optional source key filter."),
+            "limit": dg.Field(int, default_value=25, description="Recent reviewed runs to evaluate."),
+            "reviewed_only": dg.Field(bool, default_value=True, description="Evaluate only operator-reviewed runs."),
+            "model_profile": dg.Field(
+                str,
+                default_value="agent_performance_evaluator",
+                description="Logical evaluator profile recorded in the ledger.",
+            ),
+            "review_models": dg.Field(
+                [str],
+                default_value=[],
+                description="OpenRouter evaluator model ids to use.",
+            ),
+        },
+    )
+    def agent_performance_evaluation_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual OpenRouter specialist evaluator pass over recent reviewed agent runs."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).run_agent_performance_evaluation(
+            AgentPerformanceEvaluationRequest(
+                agent_name=config.get("agent_name"),
+                status=config.get("status"),
+                source_key=config.get("source_key"),
+                limit=config["limit"],
+                reviewed_only=config["reviewed_only"],
+                model_profile=config.get("model_profile") or "agent_performance_evaluator",
+                review_models=config.get("review_models") or [],
+                dagster_run_id=context.run_id,
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_agent_performance_evaluation_metadata(report))
 
     @dg.asset(
         group_name="ai_research",
@@ -5103,6 +5234,8 @@ if dg is not None:
         source_health_report,
         command_center_report,
         full_text_ops_agent_report,
+        agent_performance_report,
+        agent_performance_evaluation_report,
         research_brief_agent_report,
         therapy_committee_report,
         therapy_committee_validation_queue_report,
@@ -5218,6 +5351,14 @@ if dg is not None:
     full_text_ops_agent_job = dg.define_asset_job(
         "full_text_ops_agent_job",
         selection=dg.AssetSelection.assets(full_text_ops_agent_report),
+    )
+    agent_performance_report_job = dg.define_asset_job(
+        "agent_performance_report_job",
+        selection=dg.AssetSelection.assets(agent_performance_report),
+    )
+    agent_performance_evaluation_job = dg.define_asset_job(
+        "agent_performance_evaluation_job",
+        selection=dg.AssetSelection.assets(agent_performance_evaluation_report),
     )
     research_brief_agent_job = dg.define_asset_job(
         "research_brief_agent_job",
@@ -5557,6 +5698,8 @@ if dg is not None:
             source_health_report_job,
             command_center_job,
             full_text_ops_agent_job,
+            agent_performance_report_job,
+            agent_performance_evaluation_job,
             research_brief_agent_job,
             therapy_committee_job,
             therapy_committee_validation_queue_job,
@@ -5641,6 +5784,8 @@ else:
     source_health_report_job = None
     command_center_job = None
     full_text_ops_agent_job = None
+    agent_performance_report_job = None
+    agent_performance_evaluation_job = None
     research_brief_agent_job = None
     therapy_committee_job = None
     therapy_committee_validation_queue_job = None

@@ -374,11 +374,17 @@ class AgentRunRecord(StrictBaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+AgentRunReviewVerdict = Literal["useful", "needs_followup", "bad", "unclear"]
+AgentRunReviewerType = Literal["operator", "llm_evaluator", "system"]
+AgentPerformanceGroupType = Literal["agent_name", "model_profile", "model_key", "prompt_key"]
+
+
 class AgentRunReviewRecord(StrictBaseModel):
     review_id: UUID = Field(default_factory=uuid4)
     agent_run_id: UUID
     reviewer: str = "command_center_operator"
-    verdict: Literal["useful", "needs_followup", "bad", "unclear"]
+    reviewer_type: AgentRunReviewerType = "operator"
+    verdict: AgentRunReviewVerdict
     feedback: str | None = None
     tags: list[str] = Field(default_factory=list)
     followup_actions: list[str] = Field(default_factory=list)
@@ -392,6 +398,86 @@ class AgentRunReviewRecord(StrictBaseModel):
         self.tags = _dedupe_lower_tokens(self.tags)
         self.followup_actions = _dedupe_lower_tokens(self.followup_actions)
         return self
+
+
+class AgentPerformanceReportRequest(StrictBaseModel):
+    agent_name: str | None = None
+    status: str | None = None
+    source_key: str | None = None
+    limit: int = Field(default=500, ge=1, le=2000)
+    review_limit: int | None = Field(default=None, ge=1, le=10000)
+    min_sample_size: int = Field(default=3, ge=1, le=100)
+
+
+class AgentPerformanceRow(StrictBaseModel):
+    group_type: AgentPerformanceGroupType
+    group_value: str
+    run_count: int = Field(default=0, ge=0)
+    reviewed_run_count: int = Field(default=0, ge=0)
+    unreviewed_run_count: int = Field(default=0, ge=0)
+    operator_reviewed_count: int = Field(default=0, ge=0)
+    evaluator_reviewed_count: int = Field(default=0, ge=0)
+    useful_count: int = Field(default=0, ge=0)
+    needs_followup_count: int = Field(default=0, ge=0)
+    bad_count: int = Field(default=0, ge=0)
+    unclear_count: int = Field(default=0, ge=0)
+    useful_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    followup_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    bad_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    unclear_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    review_coverage: float = Field(default=0.0, ge=0.0, le=1.0)
+    performance_score: int | None = Field(default=None, ge=0, le=100)
+    disagreement_count: int = Field(default=0, ge=0)
+    low_sample: bool = False
+    latest_run_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentPerformanceReportResult(StrictBaseModel):
+    agent_run_count: int = Field(default=0, ge=0)
+    reviewed_run_count: int = Field(default=0, ge=0)
+    unreviewed_run_count: int = Field(default=0, ge=0)
+    operator_reviewed_count: int = Field(default=0, ge=0)
+    evaluator_reviewed_count: int = Field(default=0, ge=0)
+    disagreement_count: int = Field(default=0, ge=0)
+    review_coverage: float = Field(default=0.0, ge=0.0, le=1.0)
+    verdict_counts: dict[str, int] = Field(default_factory=dict)
+    reviewer_type_counts: dict[str, int] = Field(default_factory=dict)
+    rows: list[AgentPerformanceRow] = Field(default_factory=list)
+    top_rows: list[AgentPerformanceRow] = Field(default_factory=list)
+    bottom_rows: list[AgentPerformanceRow] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class AgentPerformanceEvaluationRequest(StrictBaseModel):
+    agent_name: str | None = None
+    status: str | None = "completed"
+    source_key: str | None = None
+    limit: int = Field(default=25, ge=1, le=100)
+    reviewed_only: bool = True
+    model_profile: str = "agent_performance_evaluator"
+    review_mode: Literal["openrouter_required"] = "openrouter_required"
+    review_models: list[str] = Field(default_factory=list, max_length=10)
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentPerformanceEvaluationResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    agent_name: str = "agent_performance_evaluator_agent"
+    agent_version: str = "v1"
+    model_profile: str = "agent_performance_evaluator"
+    reviewed_only: bool = True
+    scanned_count: int = Field(default=0, ge=0)
+    candidate_count: int = Field(default=0, ge=0)
+    evaluated_count: int = Field(default=0, ge=0)
+    review_created_count: int = Field(default=0, ge=0)
+    failed_count: int = Field(default=0, ge=0)
+    review_ids: list[UUID] = Field(default_factory=list)
+    evaluations: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ResearchLeadRecord(StrictBaseModel):

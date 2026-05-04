@@ -15,6 +15,10 @@ from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from .contracts import (
+    AgentPerformanceEvaluationRequest,
+    AgentPerformanceEvaluationResult,
+    AgentPerformanceReportRequest,
+    AgentPerformanceReportResult,
     AgentRunRecord,
     AgentRunReviewRecord,
     AsyncRunHandle,
@@ -110,6 +114,13 @@ from .contracts import (
     XTopicReviewResult,
     XLinkedArticleFollowupRequest,
     XLinkedArticleFollowupResult,
+)
+from .agent_performance import (
+    AGENT_PERFORMANCE_EVALUATOR_AGENT_NAME,
+    AGENT_PERFORMANCE_EVALUATOR_AGENT_VERSION,
+    build_agent_performance_report,
+    run_agent_performance_evaluation,
+    summarize_agent_performance_evaluation,
 )
 from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
@@ -2310,6 +2321,28 @@ class HSAResearchService:
             verdict=verdict,
             reviewer=reviewer,
             limit=limit,
+        )
+
+    def build_agent_performance_report(
+        self,
+        request: AgentPerformanceReportRequest,
+    ) -> AgentPerformanceReportResult:
+        return build_agent_performance_report(self.repository, request)
+
+    def run_agent_performance_evaluation(
+        self,
+        request: AgentPerformanceEvaluationRequest,
+    ) -> AgentPerformanceEvaluationResult:
+        return AgentRunner(self.repository).run(
+            agent_name=AGENT_PERFORMANCE_EVALUATOR_AGENT_NAME,
+            agent_version=AGENT_PERFORMANCE_EVALUATOR_AGENT_VERSION,
+            model_profile=request.model_profile,
+            input_payload={"request": request.model_dump(mode="json")},
+            execute=lambda: run_agent_performance_evaluation(self.repository, request),
+            source_key=request.source_key,
+            dagster_run_id=request.dagster_run_id,
+            metadata=request.metadata,
+            summarize=summarize_agent_performance_evaluation,
         )
 
     def get_candidate(self, request: CandidateDossierRequest) -> CandidateDossier | None:

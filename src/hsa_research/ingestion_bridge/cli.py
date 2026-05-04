@@ -15,6 +15,8 @@ from .backfill import backfill_deep_dives, backfill_papers_json
 from .claim_curator import curate_claims_for_repository
 from .claim_extractor import extract_claims_for_repository
 from .contracts import (
+    AgentPerformanceEvaluationRequest,
+    AgentPerformanceReportRequest,
     ClaimCurationRequest,
     CommandCenterRequest,
     DoiOpenAccessFollowupQueueRequest,
@@ -823,6 +825,41 @@ def main() -> None:
     agent_runs.add_argument("--status", default=None, help="Optional status filter")
     agent_runs.add_argument("--source", default=None, help="Optional source key filter")
     agent_runs.add_argument("--limit", type=int, default=50, help="Maximum runs to return")
+
+    agent_performance = subparsers.add_parser(
+        "agent-performance",
+        help="Aggregate operator and evaluator reviews into agent/model/prompt performance rows",
+    )
+    agent_performance.add_argument("--agent-name", default=None, help="Optional agent name filter")
+    agent_performance.add_argument("--status", default=None, help="Optional run status filter")
+    agent_performance.add_argument("--source", default=None, help="Optional source key filter")
+    agent_performance.add_argument("--limit", type=int, default=500, help="Recent agent runs to scan")
+    agent_performance.add_argument("--min-sample-size", type=int, default=3, help="Runs required before sample is reliable")
+
+    agent_performance_evaluate = subparsers.add_parser(
+        "agent-performance-evaluate",
+        help="Run OpenRouter specialist evaluators over recent reviewed agent runs",
+    )
+    agent_performance_evaluate.add_argument("--agent-name", default=None, help="Optional agent name filter")
+    agent_performance_evaluate.add_argument("--status", default="completed", help="Optional run status filter")
+    agent_performance_evaluate.add_argument("--source", default=None, help="Optional source key filter")
+    agent_performance_evaluate.add_argument("--limit", type=int, default=25, help="Recent reviewed runs to evaluate")
+    agent_performance_evaluate.add_argument(
+        "--include-unreviewed",
+        action="store_true",
+        help="Evaluate unreviewed runs too; default is reviewed runs only",
+    )
+    agent_performance_evaluate.add_argument(
+        "--model-profile",
+        default="agent_performance_evaluator",
+        help="Logical evaluator profile recorded in the ledger",
+    )
+    agent_performance_evaluate.add_argument(
+        "--review-model",
+        action="append",
+        default=[],
+        help="OpenRouter evaluator model id; repeat to override the default",
+    )
 
     evaluate_research_brief = subparsers.add_parser(
         "evaluate-research-brief",
@@ -1728,6 +1765,28 @@ def main() -> None:
                     limit=args.limit,
                 )
             ]
+    elif args.command == "agent-performance":
+        output = HSAResearchService(repo).build_agent_performance_report(
+            AgentPerformanceReportRequest(
+                agent_name=args.agent_name,
+                status=args.status,
+                source_key=args.source,
+                limit=args.limit,
+                min_sample_size=args.min_sample_size,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "agent-performance-evaluate":
+        output = HSAResearchService(repo).run_agent_performance_evaluation(
+            AgentPerformanceEvaluationRequest(
+                agent_name=args.agent_name,
+                status=args.status,
+                source_key=args.source,
+                limit=args.limit,
+                reviewed_only=not args.include_unreviewed,
+                model_profile=args.model_profile,
+                review_models=args.review_model,
+            )
+        ).model_dump(mode="json")
     elif args.command == "evaluate-research-brief":
         output = HSAResearchService(repo).evaluate_research_brief(
             ResearchBriefEvaluationRequest(

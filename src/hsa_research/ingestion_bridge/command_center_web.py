@@ -20,6 +20,8 @@ from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 
 from .contracts import (
+    AgentPerformanceEvaluationRequest,
+    AgentPerformanceReportRequest,
     AgentRunReviewRecord,
     CommandCenterRequest,
     ResearchBriefQualityReportRequest,
@@ -316,6 +318,7 @@ def create_agent_run_review_payload(
         AgentRunReviewRecord(
             agent_run_id=run_id,
             reviewer=str(payload.get("reviewer") or "command_center_operator").strip(),
+            reviewer_type="operator",
             verdict=verdict,
             feedback=str(payload.get("feedback") or "").strip() or None,
             tags=_payload_string_list(payload.get("tags")),
@@ -328,6 +331,51 @@ def create_agent_run_review_payload(
         )
     )
     return {"item": _command_center_agent_run_review(review)}
+
+
+def agent_performance_payload(
+    service: HSAResearchService,
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Return hybrid operator/evaluator performance aggregation."""
+
+    params = params or {}
+    result = service.build_agent_performance_report(
+        AgentPerformanceReportRequest(
+            agent_name=_str_param(params, "agent_name"),
+            status=_str_param(params, "status"),
+            source_key=_str_param(params, "source"),
+            limit=max(1, min(_int_param(params, "limit", 500), 2000)),
+            min_sample_size=max(1, min(_int_param(params, "min_sample_size", 3), 100)),
+        )
+    )
+    return result.model_dump(mode="json")
+
+
+def run_agent_performance_evaluation_payload(
+    service: HSAResearchService,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run OpenRouter specialist evaluators over recent reviewed runs."""
+
+    payload = payload or {}
+    result = service.run_agent_performance_evaluation(
+        AgentPerformanceEvaluationRequest(
+            agent_name=str(payload.get("agent_name") or "").strip() or None,
+            status=str(payload.get("status") or "completed").strip() or None,
+            source_key=str(payload.get("source_key") or payload.get("source") or "").strip() or None,
+            limit=max(1, min(int(payload.get("limit") or 25), 100)),
+            reviewed_only=_payload_bool(payload.get("reviewed_only", True)),
+            model_profile=str(payload.get("model_profile") or "agent_performance_evaluator").strip(),
+            review_models=_payload_string_list(payload.get("review_models")),
+            metadata={
+                "command_center": {
+                    "operator": str(payload.get("operator") or "command_center_operator").strip(),
+                }
+            },
+        )
+    )
+    return result.model_dump(mode="json")
 
 
 def update_research_lead_status_payload(
@@ -707,6 +755,7 @@ def _command_center_agent_run_review(review: Any) -> dict[str, Any]:
         "review_id": str(review.review_id),
         "agent_run_id": str(review.agent_run_id),
         "reviewer": review.reviewer,
+        "reviewer_type": review.reviewer_type,
         "verdict": review.verdict,
         "feedback": review.feedback,
         "tags": review.tags,
@@ -762,6 +811,14 @@ def _string_list(value: Any) -> list[str]:
 
 def _requires_openrouter(model_profile: str) -> bool:
     return model_profile not in {"deterministic_only", "external_required"}
+
+
+def _payload_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().casefold() not in {"0", "false", "no", "off"}
+    return bool(value)
 
 
 def run_server(
@@ -830,6 +887,9 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
             if parsed.path == "/api/agent-runs":
                 self._send_json(list_agent_runs_payload(service_factory(), parse_qs(parsed.query)))
                 return
+            if parsed.path == "/api/agent-performance":
+                self._send_json(agent_performance_payload(service_factory(), parse_qs(parsed.query)))
+                return
             parts = [part for part in PurePosixPath(parsed.path).parts if part != "/"]
             if len(parts) == 3 and parts[:2] == ["api", "agent-runs"]:
                 try:
@@ -872,6 +932,15 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
                     self._send_json(run_validation_autopilot_payload(service_factory(), payload))
                 except (json.JSONDecodeError, ValueError) as exc:
                     self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            if parts == ["api", "agent-performance", "evaluate"]:
+                try:
+                    payload = self._read_json_body()
+                    self._send_json(run_agent_performance_evaluation_payload(service_factory(), payload))
+                except (json.JSONDecodeError, ValueError) as exc:
+                    self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                except RuntimeError as exc:
+                    self._send_error(HTTPStatus.CONFLICT, str(exc))
                 return
             if len(parts) == 4 and parts[:2] == ["api", "research-leads"] and parts[3] == "status":
                 try:

@@ -388,10 +388,24 @@ td {
 
 .tag.approved,
 .tag.dispatched,
-.tag.completed {
+.tag.completed,
+.tag.useful {
   border-color: rgba(20, 107, 99, 0.24);
   background: rgba(20, 107, 99, 0.08);
   color: var(--accent-strong);
+}
+
+.tag.needs_followup,
+.tag.unclear {
+  border-color: rgba(154, 97, 0, 0.25);
+  background: rgba(154, 97, 0, 0.09);
+  color: var(--amber);
+}
+
+.tag.bad {
+  border-color: rgba(180, 35, 24, 0.24);
+  background: rgba(180, 35, 24, 0.08);
+  color: var(--red);
 }
 
 .actions {

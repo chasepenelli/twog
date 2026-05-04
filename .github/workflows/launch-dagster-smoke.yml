@@ -25,6 +25,8 @@ on:
           - "source_health_report_job"
           - "command_center_job"
           - "full_text_ops_agent_job"
+          - "agent_performance_report_job"
+          - "agent_performance_evaluation_job"
           - "research_brief_agent_job"
           - "therapy_committee_job"
           - "therapy_committee_validation_queue_job"

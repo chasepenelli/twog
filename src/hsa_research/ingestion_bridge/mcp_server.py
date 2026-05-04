@@ -12,6 +12,8 @@ from __future__ import annotations
 from uuid import UUID
 
 from .contracts import (
+    AgentPerformanceEvaluationRequest,
+    AgentPerformanceReportRequest,
     BoltzRunRequest,
     CandidateDossierRequest,
     ChunkContextRequest,
@@ -1108,6 +1110,50 @@ def command_center_tool(
     return get_service().build_command_center_report(request).model_dump(mode="json")
 
 
+def agent_performance_report_tool(
+    agent_name: str | None = None,
+    status: str | None = None,
+    source_key: str | None = None,
+    limit: int = 500,
+    min_sample_size: int = 3,
+) -> dict:
+    """Return hybrid operator/evaluator performance aggregation."""
+
+    return get_service().build_agent_performance_report(
+        AgentPerformanceReportRequest(
+            agent_name=agent_name,
+            status=status,
+            source_key=source_key,
+            limit=limit,
+            min_sample_size=min_sample_size,
+        )
+    ).model_dump(mode="json")
+
+
+def run_agent_performance_evaluation_tool(
+    agent_name: str | None = None,
+    status: str | None = "completed",
+    source_key: str | None = None,
+    limit: int = 25,
+    reviewed_only: bool = True,
+    model_profile: str = "agent_performance_evaluator",
+    review_models: list[str] | None = None,
+) -> dict:
+    """Run OpenRouter specialist evaluators over recent reviewed agent runs."""
+
+    return get_service().run_agent_performance_evaluation(
+        AgentPerformanceEvaluationRequest(
+            agent_name=agent_name,
+            status=status,
+            source_key=source_key,
+            limit=limit,
+            reviewed_only=reviewed_only,
+            model_profile=model_profile,
+            review_models=review_models or [],
+        )
+    ).model_dump(mode="json")
+
+
 if mcp is not None:
 
     @mcp.tool()
@@ -2090,6 +2136,46 @@ if mcp is not None:
             agent_run_limit=agent_run_limit,
             min_health_score=min_health_score,
             require_claims=require_claims,
+        )
+
+    @mcp.tool()
+    def agent_performance_report(
+        agent_name: str | None = None,
+        status: str | None = None,
+        source_key: str | None = None,
+        limit: int = 500,
+        min_sample_size: int = 3,
+    ) -> dict:
+        """Return hybrid operator/evaluator performance aggregation."""
+
+        return agent_performance_report_tool(
+            agent_name=agent_name,
+            status=status,
+            source_key=source_key,
+            limit=limit,
+            min_sample_size=min_sample_size,
+        )
+
+    @mcp.tool()
+    def run_agent_performance_evaluation(
+        agent_name: str | None = None,
+        status: str | None = "completed",
+        source_key: str | None = None,
+        limit: int = 25,
+        reviewed_only: bool = True,
+        model_profile: str = "agent_performance_evaluator",
+        review_models: list[str] | None = None,
+    ) -> dict:
+        """Run OpenRouter specialist evaluators over recent reviewed agent runs."""
+
+        return run_agent_performance_evaluation_tool(
+            agent_name=agent_name,
+            status=status,
+            source_key=source_key,
+            limit=limit,
+            reviewed_only=reviewed_only,
+            model_profile=model_profile,
+            review_models=review_models,
         )
 
     @mcp.tool()
