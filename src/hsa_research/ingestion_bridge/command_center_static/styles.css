@@ -424,6 +424,12 @@ td {
   padding: 14px;
 }
 
+.agent-run-list {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+}
+
 .brief-card {
   display: grid;
   gap: 14px;
@@ -508,6 +514,43 @@ td {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.agent-run-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: #fbfcfc;
+}
+
+.agent-run-card-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: start;
+}
+
+.agent-run-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.agent-run-summary {
+  border-left: 3px solid var(--accent);
+  padding-left: 10px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.agent-run-details {
+  display: grid;
+  gap: 8px;
 }
 
 .action-item {
@@ -658,7 +701,8 @@ a:hover {
 
   .action-topline,
   .brief-card-header,
-  .idea-card-header {
+  .idea-card-header,
+  .agent-run-card-header {
     grid-template-columns: 1fr;
   }
 

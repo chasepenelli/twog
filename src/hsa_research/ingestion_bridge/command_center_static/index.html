@@ -50,6 +50,7 @@
         <button class="tab-button active" type="button" data-page="operationsPage">Operations</button>
         <button class="tab-button" type="button" data-page="briefsPage">Briefs</button>
         <button class="tab-button" type="button" data-page="ideasPage">Ideas</button>
+        <button class="tab-button" type="button" data-page="agentsPage">Agents</button>
       </nav>
 
       <section id="operationsPage" class="page-view active">
@@ -281,6 +282,43 @@
           </div>
           <div id="ideaSummary" class="summary-line">Loading idea records...</div>
           <div id="ideaList" class="idea-list"></div>
+        </section>
+      </section>
+
+      <section id="agentsPage" class="page-view">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Agent Runs</h2>
+              <p>Durable ledger for every agent invocation, including inputs, outputs, summaries, errors, and model profile.</p>
+            </div>
+            <div class="filters">
+              <label>
+                <span>Agent</span>
+                <input id="agentName" type="text" placeholder="therapy_committee">
+              </label>
+              <label>
+                <span>Status</span>
+                <select id="agentStatus">
+                  <option value="">All</option>
+                  <option value="completed">Completed</option>
+                  <option value="failed">Failed</option>
+                  <option value="running">Running</option>
+                  <option value="queued">Queued</option>
+                </select>
+              </label>
+              <label>
+                <span>Source</span>
+                <input id="agentSource" type="text" placeholder="pubmed">
+              </label>
+              <label>
+                <span>Search</span>
+                <input id="agentQuery" type="search" placeholder="KDR, validation, error">
+              </label>
+            </div>
+          </div>
+          <div id="agentRunSummary" class="summary-line">Loading agent runs...</div>
+          <div id="agentRunCards" class="agent-run-list"></div>
         </section>
       </section>
     </main>

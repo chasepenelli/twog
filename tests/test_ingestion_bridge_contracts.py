@@ -4203,6 +4203,71 @@ def test_command_center_web_lists_research_briefs_with_quality_state(tmp_path):
     assert ready_payload["items"][0]["hypothesis_preview"][0]["evidence_strength"] == "medium"
 
 
+def test_command_center_web_lists_agent_runs_with_payloads(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "command-center-web-agent-runs.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    started_at = datetime.now(UTC) - timedelta(seconds=12)
+    therapy_run = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="therapy_committee_chair_agent",
+            model_profile="openrouter_required",
+            status=RunStatus.RUNNING,
+            source_key="pubmed",
+            started_at=started_at,
+            input_payload={"topic": "KDR angiosarcoma therapy", "committee": "translational"},
+            metadata={"estimated_cost_usd": 0.04},
+        )
+    )
+    completed = repo.finish_agent_run(
+        therapy_run.agent_run_id,
+        status="completed",
+        output_payload={"ranked_ideas": [{"title": "KDR/VEGFR2 validation lane"}]},
+        summary={"topic": "KDR angiosarcoma therapy", "ideas": 1},
+        errors=[],
+    )
+    assert completed is not None
+    failed_seed = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="validation_planning_agent",
+            model_profile="openrouter_required",
+            status=RunStatus.RUNNING,
+            source_key="x_topic_monitor",
+            input_payload={"topic": "KIT mutation function"},
+        )
+    )
+    failed = repo.finish_agent_run(
+        failed_seed.agent_run_id,
+        status="failed",
+        output_payload={},
+        summary={"topic": "KIT mutation function"},
+        errors=["Missing mutation-function evidence."],
+    )
+    assert failed is not None
+
+    payload = command_center_web.list_agent_runs_payload(
+        service,
+        {"agent_name": ["therapy_committee_chair_agent"], "query": ["VEGFR2"]},
+    )
+    detail = command_center_web.get_agent_run_payload(service, str(completed.agent_run_id))
+    failed_payload = command_center_web.list_agent_runs_payload(service, {"status": ["failed"]})
+
+    assert payload["total"] == 1
+    assert payload["visible"] == 1
+    assert payload["status_counts"] == {"completed": 1}
+    assert payload["agent_counts"] == {"therapy_committee_chair_agent": 1}
+    assert payload["items"][0]["input_payload"]["topic"] == "KDR angiosarcoma therapy"
+    assert payload["items"][0]["output_payload"]["ranked_ideas"][0]["title"] == "KDR/VEGFR2 validation lane"
+    assert payload["items"][0]["duration_seconds"] is not None
+    assert detail["item"]["agent_run_id"] == str(completed.agent_run_id)
+    assert detail["item"]["summary"]["ideas"] == 1
+    assert failed_payload["visible"] == 1
+    assert failed_payload["items"][0]["errors"] == ["Missing mutation-function evidence."]
+    with pytest.raises(ValueError):
+        command_center_web.get_agent_run_payload(service, "bad-id")
+    with pytest.raises(LookupError):
+        command_center_web.get_agent_run_payload(service, str(uuid4()))
+
+
 def test_command_center_web_action_items_and_research_lead_status_updates(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "command-center-web-actions.sqlite3", seed=False)
     service = HSAResearchService(repo)

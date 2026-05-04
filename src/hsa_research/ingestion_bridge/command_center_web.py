@@ -236,6 +236,54 @@ def list_research_briefs_payload(
     }
 
 
+def list_agent_runs_payload(
+    service: HSAResearchService,
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Return persisted agent ledger rows with full JSON payloads for inspection."""
+
+    params = params or {}
+    agent_name = _str_param(params, "agent_name")
+    status = _str_param(params, "status")
+    source_key = _str_param(params, "source")
+    query = (_str_param(params, "query") or "").casefold()
+    limit = max(1, min(_int_param(params, "limit", 100), 500))
+
+    runs = service.list_agent_runs(
+        agent_name=agent_name,
+        status=status,
+        source_key=source_key,
+        limit=max(limit, 500),
+    )
+    items = [_command_center_agent_run_detail(run) for run in runs]
+    if query:
+        items = [item for item in items if query in _agent_run_search_text(item)]
+
+    visible = items[:limit]
+    return {
+        "total": len(items),
+        "visible": len(visible),
+        "scanned": len(runs),
+        "status_counts": _status_counts(items),
+        "agent_counts": _count_by(items, "agent_name"),
+        "source_counts": _count_by(items, "source_key"),
+        "items": visible,
+    }
+
+
+def get_agent_run_payload(service: HSAResearchService, agent_run_id: str) -> dict[str, Any]:
+    """Return one persisted agent ledger row."""
+
+    try:
+        run_id = UUID(agent_run_id)
+    except ValueError as exc:
+        raise ValueError("Invalid agent_run_id") from exc
+    run = service.get_agent_run(run_id)
+    if run is None:
+        raise LookupError("Agent run not found")
+    return {"item": _command_center_agent_run_detail(run)}
+
+
 def update_research_lead_status_payload(
     service: HSAResearchService,
     lead_id: str,
@@ -579,6 +627,54 @@ def _command_center_research_brief(row: dict[str, Any], brief: Any | None) -> di
     }
 
 
+def _command_center_agent_run_detail(run: Any) -> dict[str, Any]:
+    duration_seconds: float | None = None
+    if run.completed_at is not None:
+        duration_seconds = max(0.0, (run.completed_at - run.started_at).total_seconds())
+    input_payload = run.input_payload or {}
+    output_payload = run.output_payload or {}
+    metadata = run.metadata or {}
+    return {
+        "agent_run_id": str(run.agent_run_id),
+        "agent_name": run.agent_name,
+        "agent_version": run.agent_version,
+        "model_profile": run.model_profile,
+        "status": str(run.status),
+        "source_key": run.source_key,
+        "partition_date": run.partition_date,
+        "dagster_run_id": run.dagster_run_id,
+        "started_at": run.started_at.isoformat(),
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "duration_seconds": duration_seconds,
+        "input_payload": input_payload,
+        "output_payload": output_payload,
+        "summary": run.summary or {},
+        "errors": run.errors or [],
+        "metadata": metadata,
+        "input_size": len(json.dumps(input_payload, sort_keys=True, default=str)),
+        "output_size": len(json.dumps(output_payload, sort_keys=True, default=str)),
+    }
+
+
+def _agent_run_search_text(item: Mapping[str, Any]) -> str:
+    fields = [
+        item.get("agent_run_id"),
+        item.get("agent_name"),
+        item.get("agent_version"),
+        item.get("model_profile"),
+        item.get("status"),
+        item.get("source_key"),
+        item.get("partition_date"),
+        item.get("dagster_run_id"),
+        json.dumps(item.get("summary") or {}, sort_keys=True, default=str),
+        json.dumps(item.get("input_payload") or {}, sort_keys=True, default=str),
+        json.dumps(item.get("output_payload") or {}, sort_keys=True, default=str),
+        json.dumps(item.get("metadata") or {}, sort_keys=True, default=str),
+        " ".join(str(error) for error in item.get("errors") or []),
+    ]
+    return " ".join(str(field or "") for field in fields).casefold()
+
+
 def _idea_status(validation_items: list[dict[str, Any]]) -> str:
     counts = _count_by(validation_items, "status")
     for status in ("failed", "blocked", "approved", "needs_approval", "completed"):
@@ -669,6 +765,18 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
                 return
             if parsed.path == "/api/research-briefs":
                 self._send_json(list_research_briefs_payload(service_factory(), parse_qs(parsed.query)))
+                return
+            if parsed.path == "/api/agent-runs":
+                self._send_json(list_agent_runs_payload(service_factory(), parse_qs(parsed.query)))
+                return
+            parts = [part for part in PurePosixPath(parsed.path).parts if part != "/"]
+            if len(parts) == 3 and parts[:2] == ["api", "agent-runs"]:
+                try:
+                    self._send_json(get_agent_run_payload(service_factory(), parts[2]))
+                except ValueError as exc:
+                    self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                except LookupError as exc:
+                    self._send_error(HTTPStatus.NOT_FOUND, str(exc))
                 return
             self._send_error(HTTPStatus.NOT_FOUND, "Not found")
 

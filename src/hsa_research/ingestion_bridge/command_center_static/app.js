@@ -7,6 +7,7 @@ const state = {
   researchLeads: null,
   researchBriefs: null,
   ideas: null,
+  agentRuns: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -25,6 +26,10 @@ document.addEventListener("DOMContentLoaded", () => {
   $("ideaKind").addEventListener("change", refreshIdeas);
   $("ideaSource").addEventListener("change", refreshIdeas);
   $("ideaQuery").addEventListener("input", debounce(refreshIdeas, 250));
+  $("agentName").addEventListener("change", refreshAgentRuns);
+  $("agentStatus").addEventListener("change", refreshAgentRuns);
+  $("agentSource").addEventListener("change", refreshAgentRuns);
+  $("agentQuery").addEventListener("input", debounce(refreshAgentRuns, 250));
   $("autopilotPreviewButton").addEventListener("click", refreshValidationAutopilot);
   $("autopilotDryRunButton").addEventListener("click", () => runValidationAutopilot(true));
   $("autopilotRunButton").addEventListener("click", () => runValidationAutopilot(false));
@@ -46,6 +51,7 @@ async function refreshAll() {
       refreshResearchLeads(),
       refreshResearchBriefs(),
       refreshIdeas(),
+      refreshAgentRuns(),
     ]);
     showToast("Command center refreshed.");
   } catch (error) {
@@ -134,6 +140,22 @@ async function refreshIdeas() {
   const payload = await getJson(`/api/ideas?${params.toString()}`);
   state.ideas = payload;
   renderIdeas(payload);
+}
+
+async function refreshAgentRuns() {
+  const params = new URLSearchParams();
+  const agentName = $("agentName").value.trim();
+  const status = $("agentStatus").value.trim();
+  const source = $("agentSource").value.trim();
+  const query = $("agentQuery").value.trim();
+  if (agentName) params.append("agent_name", agentName);
+  if (status) params.append("status", status);
+  if (source) params.append("source", source);
+  if (query) params.append("query", query);
+  params.append("limit", "100");
+  const payload = await getJson(`/api/agent-runs?${params.toString()}`);
+  state.agentRuns = payload;
+  renderAgentRunsPage(payload);
 }
 
 function showPage(pageId) {
@@ -722,6 +744,94 @@ function renderAgentRuns(items) {
   `).join("");
 }
 
+function renderAgentRunsPage(payload) {
+  const statuses = Object.entries(payload.status_counts || {})
+    .map(([status, count]) => `${status}: ${count}`)
+    .join(" | ");
+  const agents = Object.entries(payload.agent_counts || {})
+    .slice(0, 6)
+    .map(([agentName, count]) => `${agentName}: ${count}`)
+    .join(" | ");
+  $("agentRunSummary").textContent =
+    `${value(payload.visible)} visible of ${value(payload.total)} matching agent runs` +
+    (statuses ? ` | ${statuses}` : "") +
+    (agents ? ` | ${agents}` : "");
+
+  const items = payload.items || [];
+  if (!items.length) {
+    $("agentRunCards").innerHTML = `<div class="empty-state">No agent runs match the current filters.</div>`;
+    return;
+  }
+  $("agentRunCards").innerHTML = items.map(renderAgentRunCard).join("");
+}
+
+function renderAgentRunCard(item) {
+  const started = formatDateTime(item.started_at);
+  const completed = item.completed_at ? formatDateTime(item.completed_at) : "not completed";
+  const duration = item.duration_seconds !== null && item.duration_seconds !== undefined
+    ? formatDuration(item.duration_seconds)
+    : "open";
+  return `
+    <article class="agent-run-card">
+      <div class="agent-run-card-header">
+        <div class="title-cell">
+          <span class="work-lane">${escapeHtml(item.agent_version || "v1")}</span>
+          <strong>${escapeHtml(item.agent_name)}</strong>
+          <span class="subtext">${escapeHtml(shortId(item.agent_run_id))} | ${escapeHtml(started)} -> ${escapeHtml(completed)}</span>
+        </div>
+        <div class="tag-row">
+          ${tag(item.status || "unknown", item.status || "info")}
+          ${tag(item.model_profile || "model profile unset", "info")}
+          ${item.source_key ? tag(item.source_key, "info") : ""}
+          ${item.partition_date ? tag(item.partition_date, "info") : ""}
+          ${item.errors && item.errors.length ? tag(`${item.errors.length} errors`, "failed") : ""}
+        </div>
+      </div>
+      <div class="agent-run-metrics">
+        <span>${escapeHtml(duration)}</span>
+        <span>input ${escapeHtml(formatBytes(item.input_size || 0))}</span>
+        <span>output ${escapeHtml(formatBytes(item.output_size || 0))}</span>
+        ${item.dagster_run_id ? `<span>dagster ${escapeHtml(shortId(item.dagster_run_id))}</span>` : ""}
+      </div>
+      <div class="agent-run-summary">${escapeHtml(formatSummary(item.summary))}</div>
+      ${renderAgentRunErrors(item.errors || [])}
+      <div class="agent-run-details">
+        ${renderJsonDetails("Summary", item.summary)}
+        ${renderJsonDetails("Input", item.input_payload)}
+        ${renderJsonDetails("Output", item.output_payload)}
+        ${renderJsonDetails("Metadata", item.metadata)}
+      </div>
+    </article>
+  `;
+}
+
+function renderAgentRunErrors(errors) {
+  if (!errors.length) return "";
+  return `
+    <details open>
+      <summary>Errors</summary>
+      <pre>${escapeHtml(JSON.stringify(errors, null, 2))}</pre>
+    </details>
+  `;
+}
+
+function renderJsonDetails(label, payload) {
+  if (!hasJsonPayload(payload)) return "";
+  return `
+    <details>
+      <summary>${escapeHtml(label)}</summary>
+      <pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+    </details>
+  `;
+}
+
+function hasJsonPayload(payload) {
+  if (payload === null || payload === undefined) return false;
+  if (Array.isArray(payload)) return payload.length > 0;
+  if (typeof payload === "object") return Object.keys(payload).length > 0;
+  return String(payload).length > 0;
+}
+
 function renderBriefQueue(items) {
   if (!items.length) {
     $("briefQueueRows").innerHTML = `<tr><td colspan="6" class="empty-state">No research brief queue items found.</td></tr>`;
@@ -755,7 +865,7 @@ async function handleValidationAction(event) {
       const item = result.item || {};
       showToast(validationDispatchToast(item));
     }
-    await Promise.all([refreshCommandCenter(), refreshActionItems(), refreshValidationQueue()]);
+    await Promise.all([refreshCommandCenter(), refreshActionItems(), refreshValidationQueue(), refreshAgentRuns()]);
   } catch (error) {
     showToast(error.message || String(error));
   } finally {
@@ -784,7 +894,13 @@ async function handleQueueAction(event) {
       await updateResearchLeadStatus(id, status);
       showToast(`Research lead moved to ${status}.`);
     }
-    await Promise.all([refreshCommandCenter(), refreshActionItems(), refreshValidationQueue(), refreshResearchLeads()]);
+    await Promise.all([
+      refreshCommandCenter(),
+      refreshActionItems(),
+      refreshValidationQueue(),
+      refreshResearchLeads(),
+      refreshAgentRuns(),
+    ]);
   } catch (error) {
     showToast(error.message || String(error));
   } finally {
@@ -809,7 +925,13 @@ async function runValidationAutopilot(dryRun) {
     state.validationAutopilot = payload;
     renderValidationAutopilot(payload);
     showToast(dryRun ? "Autopilot dry run recorded." : `Autopilot dispatched ${payload.dispatched_count || 0} item(s).`);
-    await Promise.all([refreshCommandCenter(), refreshActionItems(), refreshValidationQueue(), refreshValidationAutopilot()]);
+    await Promise.all([
+      refreshCommandCenter(),
+      refreshActionItems(),
+      refreshValidationQueue(),
+      refreshValidationAutopilot(),
+      refreshAgentRuns(),
+    ]);
   } catch (error) {
     showToast(error.message || String(error));
   } finally {
@@ -883,6 +1005,28 @@ function value(input) {
 function shortId(input) {
   const value = String(input || "");
   return value.length > 12 ? `${value.slice(0, 8)}...` : value;
+}
+
+function formatDateTime(input) {
+  if (!input) return "unknown date";
+  const date = new Date(input);
+  if (Number.isNaN(date.getTime())) return String(input);
+  return date.toLocaleString();
+}
+
+function formatDuration(seconds) {
+  const value = Number(seconds || 0);
+  if (value < 1) return `${Math.round(value * 1000)} ms`;
+  if (value < 60) return `${value.toFixed(1)} sec`;
+  if (value < 3600) return `${Math.floor(value / 60)} min ${Math.round(value % 60)} sec`;
+  return `${Math.floor(value / 3600)} hr ${Math.round((value % 3600) / 60)} min`;
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function formatSummary(input) {
