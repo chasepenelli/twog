@@ -1096,6 +1096,35 @@ if dg is not None:
         }
 
     def _research_brief_queue_runner_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        if "runs" in report:
+            rows = []
+            for run in report.get("runs", []):
+                brief = run.get("brief") or {}
+                queue_item = run.get("queue_item") or {}
+                rows.append(
+                    {
+                        "queue_item_id": queue_item.get("queue_item_id"),
+                        "status": queue_item.get("status"),
+                        "topic": str(queue_item.get("topic") or brief.get("topic") or "")[:300],
+                        "source_key": queue_item.get("source_key") or brief.get("source_key"),
+                        "brief_id": brief.get("brief_id"),
+                        "agent_run_id": brief.get("agent_run_id"),
+                        "citation_count": len(brief.get("citations", [])),
+                        "error_count": len(run.get("errors", [])),
+                        "last_error": str(queue_item.get("last_error") or "")[:300],
+                    }
+                )
+            return {
+                "ran_count": dg.MetadataValue.int(int(report.get("ran_count", 0))),
+                "completed_count": dg.MetadataValue.int(int(report.get("completed_count", 0))),
+                "failed_count": dg.MetadataValue.int(int(report.get("failed_count", 0))),
+                "requested_max_runs": dg.MetadataValue.int(int(report.get("requested_max_runs", 0))),
+                "queue_item_ids": dg.MetadataValue.json(report.get("queue_item_ids", [])),
+                "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
+                "errors": dg.MetadataValue.json(report.get("errors", [])),
+                "brief_runs": _metadata_table(rows, _VALIDATION_GAP_COMPLETION_BRIEF_TABLE_COLUMNS),
+            }
+
         brief = report.get("brief") or {}
         queue_item = report.get("queue_item") or {}
         return {
@@ -3406,6 +3435,11 @@ if dg is not None:
     @dg.asset(
         group_name="ai_research",
         config_schema={
+            "queue_item_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Specific research brief queue item IDs to run.",
+            ),
             "statuses": dg.Field(
                 [str],
                 default_value=["queued"],
@@ -3426,6 +3460,11 @@ if dg is not None:
                 default_value=1,
                 description="Candidate queued brief requests to inspect.",
             ),
+            "max_runs": dg.Field(
+                int,
+                default_value=1,
+                description="Maximum queue items to execute in this materialization.",
+            ),
         },
     )
     def research_brief_queue_runner_report(
@@ -3434,20 +3473,47 @@ if dg is not None:
     ) -> dg.MaterializeResult:
         """Run the next queued research brief request and persist the output."""
 
+        from uuid import UUID
+
         from .service import HSAResearchService
 
         config = context.op_config
         repository = research_repository.build_repository()
-        result = HSAResearchService(repository).run_next_research_brief_queue_item(
-            ResearchBriefQueueRunRequest(
-                statuses=config["statuses"],
-                source_key=config.get("source_key"),
-                topic_query=config.get("topic_query"),
-                limit=config["limit"],
-                dagster_run_id=context.run_id,
+        service = HSAResearchService(repository)
+        queue_item_ids = [UUID(value) for value in config["queue_item_ids"]]
+        runs = []
+        for _ in range(max(int(config["max_runs"]), 0)):
+            result = service.run_next_research_brief_queue_item(
+                ResearchBriefQueueRunRequest(
+                    queue_item_ids=queue_item_ids,
+                    statuses=config["statuses"],
+                    source_key=config.get("source_key"),
+                    topic_query=config.get("topic_query"),
+                    limit=config["limit"],
+                    dagster_run_id=context.run_id,
+                )
             )
+            run_report = result.model_dump(mode="json")
+            runs.append(run_report)
+            if not result.ran:
+                break
+        errors = [error for run in runs for error in run.get("errors", [])]
+        completed_count = sum(
+            1 for run in runs if (run.get("queue_item") or {}).get("status") == "completed"
         )
-        report = result.model_dump(mode="json")
+        failed_count = sum(1 for run in runs if (run.get("queue_item") or {}).get("status") == "failed")
+        report = {
+            "runs": runs,
+            "ran_count": sum(1 for run in runs if run.get("ran")),
+            "completed_count": completed_count,
+            "failed_count": failed_count,
+            "requested_max_runs": int(config["max_runs"]),
+            "queue_item_ids": [str(value) for value in queue_item_ids],
+            "statuses": config["statuses"],
+            "source_key": config.get("source_key"),
+            "topic_query": config.get("topic_query"),
+            "errors": errors,
+        }
         return dg.MaterializeResult(
             value=report,
             metadata=_research_brief_queue_runner_metadata(report),
