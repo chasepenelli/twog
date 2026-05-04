@@ -4138,6 +4138,71 @@ def test_command_center_web_lists_idea_records(tmp_path):
     assert any(item.get("plan_id") == str(plan.plan_id) for item in payload["items"])
 
 
+def test_command_center_web_lists_research_briefs_with_quality_state(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "command-center-web-briefs.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            topic="KDR translational synthesis",
+            disease_scope="canine hemangiosarcoma and human angiosarcoma",
+            source_key="pubmed",
+            status="completed",
+            final_brief="KDR/VEGFR2 translation should move into validation planning [C1].",
+            citation_count=1,
+            finding_count=1,
+            hypothesis_count=1,
+            result_payload={
+                "citations": [
+                    {
+                        "citation_id": "C1",
+                        "chunk_id": str(uuid4()),
+                        "research_object_id": str(uuid4()),
+                        "source_key": "pubmed",
+                        "title": "VEGFR2 in angiosarcoma",
+                        "source_url": "https://pubmed.ncbi.nlm.nih.gov/example",
+                        "quote": "VEGFR2 signal.",
+                    }
+                ],
+                "ranked_hypotheses": [
+                    {
+                        "claim": "KDR-altered tumors should be reviewed for VEGFR2 inhibition.",
+                        "stance": "supports",
+                        "citations": ["C1"],
+                        "evidence_strength": "medium",
+                        "reasoning": "Citation-backed rationale.",
+                    }
+                ],
+                "evidence_limitations": ["Canine clinical-response bridge remains incomplete."],
+            },
+        )
+    )
+    repo.upsert_research_brief_evaluation(
+        ResearchBriefEvaluationRecord(
+            brief_id=brief.brief_id,
+            topic=brief.topic,
+            source_key="pubmed",
+            overall_score=0.82,
+            passes_quality_bar=True,
+            readiness="ready_for_hypothesis_review",
+        )
+    )
+
+    payload = command_center_web.list_research_briefs_payload(service)
+    ready_payload = command_center_web.list_research_briefs_payload(
+        service,
+        {"quality_status": ["ready_for_validation"], "query": ["KDR"]},
+    )
+
+    assert payload["total"] == 1
+    assert payload["ready_count"] == 1
+    assert ready_payload["visible"] == 1
+    assert ready_payload["items"][0]["brief_id"] == str(brief.brief_id)
+    assert ready_payload["items"][0]["quality_status"] == "ready_for_validation"
+    assert ready_payload["items"][0]["final_brief"].startswith("KDR/VEGFR2")
+    assert ready_payload["items"][0]["citation_preview"][0]["citation_id"] == "C1"
+    assert ready_payload["items"][0]["hypothesis_preview"][0]["evidence_strength"] == "medium"
+
+
 def test_command_center_web_action_items_and_research_lead_status_updates(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "command-center-web-actions.sqlite3", seed=False)
     service = HSAResearchService(repo)

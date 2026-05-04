@@ -48,6 +48,7 @@
 
       <nav class="page-tabs" aria-label="Command center pages">
         <button class="tab-button active" type="button" data-page="operationsPage">Operations</button>
+        <button class="tab-button" type="button" data-page="briefsPage">Briefs</button>
         <button class="tab-button" type="button" data-page="ideasPage">Ideas</button>
       </nav>
 
@@ -216,6 +217,40 @@
           </table>
         </div>
       </section>
+      </section>
+
+      <section id="briefsPage" class="page-view">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Research Briefs</h2>
+              <p>Persisted synthesis outputs with quality state, citations, hypotheses, and full brief text.</p>
+            </div>
+            <div class="filters">
+              <label>
+                <span>Quality</span>
+                <select id="briefQuality">
+                  <option value="">All</option>
+                  <option value="ready_for_validation">Ready for validation</option>
+                  <option value="needs_evaluation">Needs evaluation</option>
+                  <option value="needs_followup_research">Needs follow-up</option>
+                  <option value="needs_human_review">Needs human review</option>
+                  <option value="brief_failed">Brief failed</option>
+                </select>
+              </label>
+              <label>
+                <span>Source</span>
+                <input id="briefSource" type="text" placeholder="pubmed">
+              </label>
+              <label>
+                <span>Search</span>
+                <input id="briefQuery" type="search" placeholder="VEGF, KDR, assay">
+              </label>
+            </div>
+          </div>
+          <div id="briefSummary" class="summary-line">Loading research briefs...</div>
+          <div id="briefList" class="brief-list"></div>
+        </section>
       </section>
 
       <section id="ideasPage" class="page-view">

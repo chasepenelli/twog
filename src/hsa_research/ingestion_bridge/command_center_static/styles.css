@@ -418,6 +418,49 @@ td {
   padding: 14px;
 }
 
+.brief-list {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+}
+
+.brief-card {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: #fbfcfc;
+}
+
+.brief-card-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: start;
+}
+
+.brief-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.brief-text {
+  max-height: 360px;
+  overflow: auto;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f7f9fa;
+  padding: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
 .idea-card {
   display: grid;
   gap: 14px;
@@ -614,6 +657,7 @@ a:hover {
   }
 
   .action-topline,
+  .brief-card-header,
   .idea-card-header {
     grid-template-columns: 1fr;
   }

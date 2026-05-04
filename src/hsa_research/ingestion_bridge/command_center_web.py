@@ -19,7 +19,11 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 
-from .contracts import CommandCenterRequest, ValidationAutopilotRequest
+from .contracts import (
+    CommandCenterRequest,
+    ResearchBriefQualityReportRequest,
+    ValidationAutopilotRequest,
+)
 from .service import HSAResearchService
 from .validation_agents import DEFAULT_VALIDATION_AGENT_MODEL
 
@@ -184,6 +188,51 @@ def list_ideas_payload(
         "status_counts": dict(sorted(status_counts.items())),
         "validation_status_counts": dict(sorted(validation_status_counts.items())),
         "items": visible,
+    }
+
+
+def list_research_briefs_payload(
+    service: HSAResearchService,
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Return persisted research briefs with latest quality state for the command center."""
+
+    params = params or {}
+    quality_status = _str_param(params, "quality_status")
+    limit = _int_param(params, "limit", 50)
+    report = service.build_research_brief_quality_report(
+        ResearchBriefQualityReportRequest(
+            status=_str_param(params, "status"),
+            source_key=_str_param(params, "source"),
+            topic_query=_str_param(params, "query"),
+            limit=limit,
+            include_evaluations=True,
+        )
+    )
+    briefs_by_id = {
+        str(brief.brief_id): brief
+        for brief in service.list_research_briefs(
+            status=_str_param(params, "status"),
+            source_key=_str_param(params, "source"),
+            topic_query=_str_param(params, "query"),
+            limit=limit,
+        )
+    }
+    rows = [row for row in report.rows if not quality_status or row.quality_status == quality_status]
+    items = [_command_center_research_brief(row.model_dump(mode="json"), briefs_by_id.get(str(row.brief_id))) for row in rows]
+    return {
+        "total": report.brief_count,
+        "visible": len(items),
+        "evaluated_count": report.evaluated_count,
+        "ready_count": report.ready_count,
+        "failed_count": report.failed_count,
+        "followup_count": report.followup_count,
+        "needs_evaluation_count": report.needs_evaluation_count,
+        "average_overall_score": report.average_overall_score,
+        "status_counts": report.status_counts,
+        "quality_status_counts": report.quality_status_counts,
+        "items": items,
+        "errors": report.errors,
     }
 
 
@@ -496,6 +545,40 @@ def _collect_idea_records(service: HSAResearchService) -> list[dict[str, Any]]:
     return list(records.values())
 
 
+def _command_center_research_brief(row: dict[str, Any], brief: Any | None) -> dict[str, Any]:
+    result_payload = brief.result_payload if brief else {}
+    citations = result_payload.get("citations") or []
+    hypotheses = result_payload.get("ranked_hypotheses") or []
+    limitations = result_payload.get("evidence_limitations") or []
+    return {
+        **row,
+        "final_brief": brief.final_brief if brief else "",
+        "summary": brief.summary if brief else {},
+        "disease_scope": brief.disease_scope if brief else None,
+        "agent_run_ids": [str(agent_run_id) for agent_run_id in (brief.agent_run_ids if brief else [])],
+        "citation_preview": [
+            {
+                "citation_id": citation.get("citation_id"),
+                "title": citation.get("title"),
+                "source_key": citation.get("source_key"),
+                "source_url": citation.get("source_url"),
+            }
+            for citation in citations[:8]
+            if isinstance(citation, Mapping)
+        ],
+        "hypothesis_preview": [
+            {
+                "claim": hypothesis.get("claim"),
+                "evidence_strength": hypothesis.get("evidence_strength"),
+                "citations": _string_list(hypothesis.get("citations")),
+            }
+            for hypothesis in hypotheses[:5]
+            if isinstance(hypothesis, Mapping)
+        ],
+        "evidence_limitations": _string_list(limitations)[:10],
+    }
+
+
 def _idea_status(validation_items: list[dict[str, Any]]) -> str:
     counts = _count_by(validation_items, "status")
     for status in ("failed", "blocked", "approved", "needs_approval", "completed"):
@@ -583,6 +666,9 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
                 return
             if parsed.path == "/api/ideas":
                 self._send_json(list_ideas_payload(service_factory(), parse_qs(parsed.query)))
+                return
+            if parsed.path == "/api/research-briefs":
+                self._send_json(list_research_briefs_payload(service_factory(), parse_qs(parsed.query)))
                 return
             self._send_error(HTTPStatus.NOT_FOUND, "Not found")
 

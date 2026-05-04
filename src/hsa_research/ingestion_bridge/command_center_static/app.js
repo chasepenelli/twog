@@ -5,6 +5,7 @@ const state = {
   validationQueue: null,
   validationAutopilot: null,
   researchLeads: null,
+  researchBriefs: null,
   ideas: null,
 };
 
@@ -18,6 +19,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("validationStatus").addEventListener("change", refreshValidationQueue);
   $("validationSource").addEventListener("change", refreshValidationQueue);
   $("leadStatus").addEventListener("change", () => Promise.all([refreshActionItems(), refreshResearchLeads()]));
+  $("briefQuality").addEventListener("change", refreshResearchBriefs);
+  $("briefSource").addEventListener("change", refreshResearchBriefs);
+  $("briefQuery").addEventListener("input", debounce(refreshResearchBriefs, 250));
   $("ideaKind").addEventListener("change", refreshIdeas);
   $("ideaSource").addEventListener("change", refreshIdeas);
   $("ideaQuery").addEventListener("input", debounce(refreshIdeas, 250));
@@ -40,6 +44,7 @@ async function refreshAll() {
       refreshValidationQueue(),
       refreshValidationAutopilot(),
       refreshResearchLeads(),
+      refreshResearchBriefs(),
       refreshIdeas(),
     ]);
     showToast("Command center refreshed.");
@@ -101,6 +106,20 @@ async function refreshResearchLeads() {
   const payload = await getJson(`/api/research-leads?${params.toString()}`);
   state.researchLeads = payload;
   renderResearchLeads(payload);
+}
+
+async function refreshResearchBriefs() {
+  const params = new URLSearchParams();
+  const quality = $("briefQuality").value.trim();
+  const source = $("briefSource").value.trim();
+  const query = $("briefQuery").value.trim();
+  if (quality) params.append("quality_status", quality);
+  if (source) params.append("source", source);
+  if (query) params.append("query", query);
+  params.append("limit", "100");
+  const payload = await getJson(`/api/research-briefs?${params.toString()}`);
+  state.researchBriefs = payload;
+  renderResearchBriefs(payload);
 }
 
 async function refreshIdeas() {
@@ -450,6 +469,108 @@ function renderResearchLeadRow(item) {
       </td>
     </tr>
   `;
+}
+
+function renderResearchBriefs(payload) {
+  const qualities = Object.entries(payload.quality_status_counts || {})
+    .map(([status, count]) => `${status}: ${count}`)
+    .join(" | ");
+  const score = payload.average_overall_score !== null && payload.average_overall_score !== undefined
+    ? ` | avg score ${Number(payload.average_overall_score).toFixed(2)}`
+    : "";
+  $("briefSummary").textContent =
+    `${value(payload.visible)} visible of ${value(payload.total)} briefs` +
+    ` | ${value(payload.evaluated_count)} evaluated | ${value(payload.ready_count)} ready` +
+    `${score}` +
+    (qualities ? ` | ${qualities}` : "");
+
+  const items = payload.items || [];
+  if (!items.length) {
+    $("briefList").innerHTML = `<div class="empty-state">No research briefs match the current filters.</div>`;
+    return;
+  }
+  $("briefList").innerHTML = items.map(renderResearchBriefCard).join("");
+}
+
+function renderResearchBriefCard(item) {
+  const score = item.overall_score !== null && item.overall_score !== undefined
+    ? `score ${Number(item.overall_score).toFixed(2)}`
+    : "unevaluated";
+  const created = item.created_at ? new Date(item.created_at).toLocaleString() : "unknown date";
+  return `
+    <article class="brief-card">
+      <div class="brief-card-header">
+        <div class="title-cell">
+          <span class="work-lane">${escapeHtml(item.brief_style || "brief")}</span>
+          <strong>${escapeHtml(item.topic || "Untitled research brief")}</strong>
+          <span class="subtext">${escapeHtml(item.disease_scope || "No disease scope recorded.")}</span>
+        </div>
+        <div class="tag-row">
+          ${tag(item.quality_status || "unknown", item.quality_status || "info")}
+          ${tag(score, "info")}
+          ${item.source_key ? tag(item.source_key, "info") : tag("all sources", "info")}
+          ${item.readiness ? tag(item.readiness, item.passes_quality_bar ? "approved" : "watch") : ""}
+        </div>
+      </div>
+      <div class="brief-metrics">
+        <span>${escapeHtml(item.citation_count)} citations</span>
+        <span>${escapeHtml(item.finding_count)} findings</span>
+        <span>${escapeHtml(item.hypothesis_count)} hypotheses</span>
+        <span>${escapeHtml(item.evidence_limitation_count)} limitations</span>
+        <span>${escapeHtml(created)}</span>
+      </div>
+      <details open>
+        <summary>Read brief</summary>
+        <div class="brief-text">${escapeHtml(item.final_brief || "No final brief text recorded.")}</div>
+      </details>
+      <details>
+        <summary>Hypotheses, citations, limitations</summary>
+        <div class="detail-grid two-up">
+          <div>
+            <strong>Ranked Hypotheses</strong>
+            ${renderHypothesisPreview(item.hypothesis_preview || [])}
+          </div>
+          <div>
+            <strong>Citations</strong>
+            ${renderCitationPreview(item.citation_preview || [])}
+          </div>
+          <div>
+            <strong>Evidence Limitations</strong>
+            ${renderInlineList(item.evidence_limitations || [])}
+          </div>
+          <div>
+            <strong>Record</strong>
+            <div class="tag-row">
+              ${tag(shortId(item.brief_id), "info")}
+              ${item.evaluation_id ? tag(`eval ${shortId(item.evaluation_id)}`, "info") : ""}
+              ${item.agent_run_id ? tag(`agent ${shortId(item.agent_run_id)}`, "info") : ""}
+            </div>
+          </div>
+        </div>
+      </details>
+    </article>
+  `;
+}
+
+function renderHypothesisPreview(items) {
+  if (!items.length) return `<p class="subtext">No ranked hypotheses recorded.</p>`;
+  return `<ul class="inline-list">${items.map((item) => `
+    <li>
+      ${escapeHtml(item.claim || "No claim recorded.")}
+      <span class="subtext">${escapeHtml(item.evidence_strength || "unknown")} | ${(item.citations || []).map(escapeHtml).join(", ")}</span>
+    </li>
+  `).join("")}</ul>`;
+}
+
+function renderCitationPreview(items) {
+  if (!items.length) return `<p class="subtext">No citations recorded.</p>`;
+  return `<ul class="inline-list">${items.map((item) => `
+    <li>
+      ${escapeHtml(item.citation_id || "citation")}
+      ${item.source_url ? `<a href="${escapeAttribute(item.source_url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title || item.source_url)}</a>` : escapeHtml(item.title || "Untitled citation")}
+      <span class="subtext">${escapeHtml(item.source_key || "")}</span>
+    </li>
+  `).join("")}</ul>`;
 }
 
 function renderIdeas(payload) {
