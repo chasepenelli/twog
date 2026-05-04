@@ -2098,6 +2098,7 @@ def main() -> None:
 def _model_review_summary(run: dict[str, Any]) -> dict[str, Any]:
     output_payload = run.get("output_payload") or {}
     evidence = output_payload.get("evidence") or {}
+    ranked_ideas = output_payload.get("ranked_ideas") or []
     summary = {
         "agent_run_id": run.get("agent_run_id"),
         "agent_name": run.get("agent_name"),
@@ -2105,9 +2106,23 @@ def _model_review_summary(run: dict[str, Any]) -> dict[str, Any]:
         "source_key": run.get("source_key"),
         "partition_date": run.get("partition_date"),
         "completed_at": run.get("completed_at"),
+        "summary": run.get("summary"),
         "schedule_readiness": output_payload.get("schedule_readiness"),
         "should_block_schedule": output_payload.get("should_block_schedule"),
         "selected_model": evidence.get("selected_model"),
+        "committee_run_id": output_payload.get("committee_run_id"),
+        "decision_summary": output_payload.get("decision_summary"),
+        "idea_count": len(ranked_ideas),
+        "top_ideas": [
+            {
+                "idea_id": idea.get("idea_id"),
+                "title": idea.get("title"),
+                "priority_score": idea.get("priority_score"),
+                "evidence_strength": idea.get("evidence_strength"),
+            }
+            for idea in ranked_ideas[:5]
+            if isinstance(idea, dict)
+        ],
         "errors": (output_payload.get("errors") or run.get("errors") or [])[:5],
         "actions": [
             {
@@ -2141,6 +2156,30 @@ def _model_review_summary(run: dict[str, Any]) -> dict[str, Any]:
                 "error": review.get("error"),
             }
         )
+    if not summary["model_reviews"]:
+        for report in (output_payload.get("reports") or [])[:10]:
+            if not isinstance(report, dict):
+                continue
+            metadata = ((report.get("evidence") or {}).get("model_review") or {})
+            if not isinstance(metadata, dict):
+                continue
+            usage = metadata.get("usage") or {}
+            original_review = metadata.get("original_review") or {}
+            summary["model_reviews"].append(
+                {
+                    "perspective": report.get("perspective"),
+                    "requested_model": metadata.get("requested_model"),
+                    "resolved_model": metadata.get("model_name"),
+                    "json_repair_attempted": bool(metadata.get("json_repair_attempted")),
+                    "original_requested_model": original_review.get("requested_model"),
+                    "original_resolved_model": original_review.get("model_name"),
+                    "usage": {
+                        key: usage[key]
+                        for key in ("prompt_tokens", "completion_tokens", "total_tokens", "cost")
+                        if key in usage
+                    },
+                }
+            )
     return summary
 
 

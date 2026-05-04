@@ -653,6 +653,54 @@ def test_model_review_summary_compacts_agent_run_payload():
     assert not _contains_key(summary, "review_packet")
 
 
+def test_model_review_summary_includes_therapy_committee_ideas_and_model_reviews():
+    run = {
+        "agent_run_id": "run-therapy",
+        "agent_name": "therapy_committee_chair_agent",
+        "status": "completed",
+        "source_key": None,
+        "partition_date": None,
+        "completed_at": "2026-05-04T01:19:36Z",
+        "summary": {"idea_count": 1, "top_idea": "PD-1 plus VEGFR2"},
+        "output_payload": {
+            "committee_run_id": "committee-1",
+            "decision_summary": "Top recommend-only idea: PD-1 plus VEGFR2.",
+            "errors": [],
+            "ranked_ideas": [
+                {
+                    "idea_id": "idea-1",
+                    "title": "PD-1 plus VEGFR2",
+                    "priority_score": 0.82,
+                    "evidence_strength": "low",
+                }
+            ],
+            "reports": [
+                {
+                    "perspective": "target_biology",
+                    "evidence": {
+                        "model_review": {
+                            "requested_model": "anthropic/claude-sonnet-4.6",
+                            "model_name": "anthropic/claude-sonnet-4.6",
+                            "json_repair_attempted": True,
+                            "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+                            "original_review": {"model_name": "anthropic/claude-sonnet-4.6"},
+                        }
+                    },
+                }
+            ],
+        },
+    }
+
+    summary = cli_module._model_review_summary(run)
+
+    assert summary["committee_run_id"] == "committee-1"
+    assert summary["idea_count"] == 1
+    assert summary["top_ideas"][0]["title"] == "PD-1 plus VEGFR2"
+    assert summary["model_reviews"][0]["perspective"] == "target_biology"
+    assert summary["model_reviews"][0]["json_repair_attempted"] is True
+    assert summary["model_reviews"][0]["usage"]["total_tokens"] == 30
+
+
 def test_dagster_structured_asset_uses_injected_repository(monkeypatch):
     sentinel_repository = object()
     calls = []
