@@ -2910,6 +2910,63 @@ def test_research_brief_evaluation_openrouter_judge_uses_model_payload(monkeypat
     assert result.evidence["deterministic_floor"]["brief_id"] == str(brief.brief_id)
 
 
+def test_research_brief_evaluation_requires_ready_readiness_to_pass_quality_bar():
+    brief = ResearchBriefRecord(
+        topic="Toceranib PK evidence",
+        disease_scope="canine hemangiosarcoma and human angiosarcoma",
+        source_key="pubmed",
+        final_brief="Evidence is incomplete [C1].",
+        citation_count=1,
+        finding_count=1,
+        hypothesis_count=1,
+    )
+    deterministic = ResearchBriefEvaluationResult(
+        brief_id=brief.brief_id,
+        topic=brief.topic,
+        source_key=brief.source_key,
+        overall_score=1.0,
+        citation_coverage_score=1.0,
+        perspective_balance_score=1.0,
+        contradiction_handling_score=1.0,
+        novelty_score=1.0,
+        actionability_score=1.0,
+        weakness_transparency_score=1.0,
+        passes_quality_bar=True,
+        readiness="ready_for_hypothesis_review",
+    )
+
+    result = research_brief_evaluation._evaluation_from_model(
+        brief,
+        ResearchBriefEvaluationRequest(brief_id=brief.brief_id, review_mode="openrouter_required"),
+        deterministic,
+        {
+            "text": json.dumps(
+                {
+                    "overall_score": 0.76,
+                    "citation_coverage_score": 0.7,
+                    "perspective_balance_score": 0.7,
+                    "contradiction_handling_score": 0.7,
+                    "novelty_score": 0.7,
+                    "actionability_score": 0.7,
+                    "weakness_transparency_score": 0.7,
+                    "passes_quality_bar": True,
+                    "readiness": "needs_more_evidence",
+                    "strengths": [],
+                    "weaknesses": ["Primary question remains indirect."],
+                    "recommendations": ["Run a narrower evidence search."],
+                    "evidence": {},
+                    "errors": [],
+                }
+            ),
+            "metadata": {"provider": "openrouter"},
+        },
+    )
+
+    assert result.readiness == "needs_more_evidence"
+    assert result.passes_quality_bar is False
+    assert "model_quality_bar_overridden" in result.evidence
+
+
 def test_research_brief_followup_queue_contracts_validate():
     lead = ResearchLeadRecord(
         identity_key="research_lead:brief_followup:test",

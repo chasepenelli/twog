@@ -411,13 +411,26 @@ def _evaluation_from_model(
             "deterministic_floor": deterministic.model_dump(mode="json"),
         }
     )
+    overall_score = _payload_score(payload, "overall_score", deterministic.overall_score)
+    model_passes_quality_bar = _payload_bool(payload.get("passes_quality_bar"))
+    passes_quality_bar = (
+        model_passes_quality_bar
+        and readiness == "ready_for_hypothesis_review"
+        and overall_score >= request.minimum_overall_score
+    )
+    if model_passes_quality_bar and not passes_quality_bar:
+        evidence["model_quality_bar_overridden"] = (
+            f"Model returned passes_quality_bar=true with readiness={readiness} "
+            f"and overall_score={overall_score}; promotion requires ready_for_hypothesis_review "
+            f"and score >= {request.minimum_overall_score}."
+        )
     return ResearchBriefEvaluationResult(
         brief_id=brief.brief_id,
         agent_name=RESEARCH_BRIEF_EVALUATION_AGENT_NAME,
         model_profile=request.model_profile,
         topic=brief.topic,
         source_key=brief.source_key,
-        overall_score=_payload_score(payload, "overall_score", deterministic.overall_score),
+        overall_score=overall_score,
         citation_coverage_score=_payload_score(
             payload, "citation_coverage_score", deterministic.citation_coverage_score
         ),
@@ -432,7 +445,7 @@ def _evaluation_from_model(
         weakness_transparency_score=_payload_score(
             payload, "weakness_transparency_score", deterministic.weakness_transparency_score
         ),
-        passes_quality_bar=_payload_bool(payload.get("passes_quality_bar")),
+        passes_quality_bar=passes_quality_bar,
         readiness=readiness,  # type: ignore[arg-type]
         strengths=_dedupe([str(item) for item in _as_list(payload.get("strengths")) if str(item).strip()])[:20],
         weaknesses=_dedupe([str(item) for item in _as_list(payload.get("weaknesses")) if str(item).strip()])[:20],
