@@ -26,6 +26,8 @@ on:
           - "command_center_job"
           - "full_text_ops_agent_job"
           - "research_brief_agent_job"
+          - "therapy_committee_job"
+          - "therapy_committee_validation_queue_job"
           - "research_brief_library_job"
           - "research_brief_evaluation_job"
           - "research_brief_evaluation_library_job"
@@ -848,6 +850,15 @@ jobs:
         run: |
           uv run python -m hsa_research.ingestion_bridge.cli model-review-summary \
             --agent-name full_text_ops_agent \
+            --limit 3
+        shell: bash
+
+      - name: Print hosted therapy committee summary
+        if: ${{ always() && (inputs.job == 'therapy_committee_job' || inputs.job == 'therapy_committee_validation_queue_job') }}
+        continue-on-error: true
+        run: |
+          uv run python -m hsa_research.ingestion_bridge.cli model-review-summary \
+            --agent-name therapy_committee_chair_agent \
             --limit 3
         shell: bash
 
