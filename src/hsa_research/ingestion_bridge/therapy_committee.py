@@ -218,7 +218,16 @@ def _run_openrouter_perspective(
     for model_name in _select_models(request):
         try:
             review = _openrouter_review_model(model_name, _perspective_payload(request, perspective, evidence))
-            return _report_from_model(request, perspective, evidence, review)
+            try:
+                return _report_from_model(request, perspective, evidence, review)
+            except ValueError as parse_error:
+                repaired = _openrouter_repair_json_model(
+                    model_name,
+                    str(review.get("text") or ""),
+                    parse_error=str(parse_error),
+                    original_metadata=review.get("metadata"),
+                )
+                return _report_from_model(request, perspective, evidence, repaired)
         except Exception as exc:
             errors.append(f"{model_name}: {exc}")
             if request.review_mode == "openrouter_required":
@@ -385,6 +394,7 @@ def _report_from_model(
             for item in payload.get("errors", [])
             if str(item).strip()
         ],
+        evidence=_model_review_evidence(review),
     )
 
 
@@ -511,6 +521,92 @@ def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) ->
             "usage": response_payload.get("usage", {}),
         },
     }
+
+
+def _openrouter_repair_json_model(
+    model_name: str,
+    malformed_text: str,
+    *,
+    parse_error: str,
+    original_metadata: Any = None,
+) -> dict[str, Any]:
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is required for OpenRouter JSON repair.")
+    payload = {
+        "model": os.getenv("HSA_THERAPY_COMMITTEE_REPAIR_MODEL", model_name),
+        "temperature": 0,
+        "max_tokens": int(os.getenv("HSA_THERAPY_COMMITTEE_REPAIR_MAX_TOKENS", "3500")),
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You repair malformed JSON for a therapy committee result. "
+                    "Return valid JSON only. Do not add new scientific claims, citations, ideas, or evidence."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "instructions": [
+                            "Repair syntax only.",
+                            "Preserve supplied fields and values when possible.",
+                            "The repaired object must match the response contract.",
+                            "If an idea is incomplete, keep it but do not invent citation IDs.",
+                        ],
+                        "parse_error": parse_error,
+                        "response_contract": _response_contract(),
+                        "malformed_json": _compact_text(malformed_text, max_chars=40000),
+                    },
+                    sort_keys=True,
+                    default=str,
+                ),
+            },
+        ],
+    }
+    request = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": os.getenv("OPENROUTER_HTTP_REFERER", "https://github.com/chasepenelli/hsa-dagster"),
+            "X-Title": os.getenv("OPENROUTER_APP_TITLE", "hsa-dagster"),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=float(os.getenv("HSA_THERAPY_COMMITTEE_REPAIR_TIMEOUT_SECONDS", "45")),
+        ) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenRouter JSON repair HTTP {error.code}: {body}") from error
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"OpenRouter JSON repair request failed: {error}") from error
+    choices = response_payload.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"OpenRouter JSON repair response had no choices: {response_payload}")
+    text = ((choices[0].get("message") or {}).get("content")) or ""
+    if not text:
+        raise RuntimeError(f"OpenRouter JSON repair response had no text content: {response_payload}")
+
+    metadata: dict[str, Any] = {
+        "provider": "openrouter",
+        "model_name": response_payload.get("model", payload["model"]),
+        "requested_model": payload["model"],
+        "request_id": response_payload.get("id"),
+        "usage": response_payload.get("usage", {}),
+        "json_repair_attempted": True,
+        "json_parse_error": _compact_text(parse_error, max_chars=500),
+    }
+    if isinstance(original_metadata, Mapping):
+        metadata["original_review"] = dict(original_metadata)
+    return {"text": text, "metadata": metadata}
 
 
 def _response_contract() -> dict[str, Any]:
@@ -640,15 +736,94 @@ def _dedupe_strings(values: Sequence[str]) -> list[str]:
 
 
 def _load_json_object(text: str) -> dict[str, Any]:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.I)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start >= 0 and end > start:
-        cleaned = cleaned[start : end + 1]
-    payload = json.loads(cleaned)
-    if not isinstance(payload, dict):
-        raise ValueError("model response JSON must be an object")
-    return payload
+    cleaned = _strip_json_fences(text).strip()
+    candidates = [cleaned]
+    extracted = _extract_balanced_json_object(cleaned)
+    if extracted and extracted not in candidates:
+        candidates.append(extracted)
+
+    errors: list[str] = []
+    for candidate in candidates:
+        for repaired in _json_repair_candidates(candidate):
+            try:
+                payload = json.loads(repaired)
+                if not isinstance(payload, dict):
+                    raise ValueError("model response JSON must be an object")
+                return payload
+            except (json.JSONDecodeError, ValueError) as exc:
+                errors.append(str(exc))
+                continue
+    preview = _compact_text(cleaned, max_chars=500)
+    raise ValueError(f"model response JSON parse failed: {errors[-1] if errors else 'unknown error'}; preview={preview}")
+
+
+def _model_review_evidence(review: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = review.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return {}
+    return {"model_review": dict(metadata)}
+
+
+def _compact_text(value: str, *, max_chars: int) -> str:
+    text = re.sub(r"\s+", " ", value).strip()
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3].rstrip()}..."
+
+
+def _strip_json_fences(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.I)
+        stripped = re.sub(r"\s*```$", "", stripped)
+    return stripped
+
+
+def _extract_balanced_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text[start:], start=start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
+def _json_repair_candidates(text: str) -> list[str]:
+    candidates = [text]
+    without_trailing_commas = re.sub(r",\s*([}\]])", r"\1", text)
+    if without_trailing_commas not in candidates:
+        candidates.append(without_trailing_commas)
+
+    comma_repaired = without_trailing_commas
+    comma_repaired = re.sub(
+        r'([}\]"])\s*\n(\s*"[^"\n]+"\s*:)',
+        r"\1,\n\2",
+        comma_repaired,
+    )
+    comma_repaired = re.sub(
+        r"([}\]])\s*\n(\s*\{)",
+        r"\1,\n\2",
+        comma_repaired,
+    )
+    if comma_repaired not in candidates:
+        candidates.append(comma_repaired)
+    return candidates

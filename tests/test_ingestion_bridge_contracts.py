@@ -118,6 +118,7 @@ from hsa_research.ingestion_bridge.full_text_triage import FullTextTriageAgent
 from hsa_research.ingestion_bridge import full_text_ops
 from hsa_research.ingestion_bridge import research_followup_resolver
 from hsa_research.ingestion_bridge import research_brief_agent
+from hsa_research.ingestion_bridge import therapy_committee
 from hsa_research.ingestion_bridge import source_followup
 from hsa_research.ingestion_bridge.full_text_ops import FullTextOpsAgent
 from hsa_research.ingestion_bridge.dagster_assets import (
@@ -3975,6 +3976,100 @@ def test_therapy_committee_contract_rejects_invalid_priority_score():
             evidence_refs=["C1"],
             priority_score=1.5,
         )
+
+
+def test_therapy_committee_load_json_object_repairs_model_formatting():
+    payload = therapy_committee._load_json_object(
+        """
+        Model output:
+        ```json
+        {
+          "summary": "Parsed after local cleanup"
+          "ideas": [],
+          "evidence_limitations": [],
+          "errors": [],
+        }
+        ```
+        """
+    )
+
+    assert payload["summary"] == "Parsed after local cleanup"
+    assert payload["ideas"] == []
+
+
+def test_therapy_committee_openrouter_perspective_repairs_invalid_model_json(monkeypatch):
+    review_calls = []
+    repair_calls = []
+
+    def fake_review_model(model_name, review_payload):
+        review_calls.append((model_name, review_payload))
+        return {
+            "text": '{"summary": "truncated", "ideas": [',
+            "metadata": {"model_name": model_name, "request_id": "review-1"},
+        }
+
+    def fake_repair_model(model_name, malformed_text, *, parse_error, original_metadata=None):
+        repair_calls.append((model_name, malformed_text, parse_error, original_metadata))
+        return {
+            "text": json.dumps(
+                {
+                    "summary": "Repaired committee JSON",
+                    "ideas": [
+                        {
+                            "title": "KDR-gated kinase validation",
+                            "hypothesis": "KDR-positive HSA warrants a cited kinase validation pass.",
+                            "rationale": "The cited evidence links vascular signaling with the disease context.",
+                            "candidate_therapies": ["toceranib"],
+                            "targets": ["KDR"],
+                            "biomarkers": ["KDR"],
+                            "mechanism": "VEGFR signaling blockade may reduce vascular tumor signaling.",
+                            "evidence_refs": ["C1"],
+                            "evidence_strength": "low",
+                            "translational_path": "Start with ex vivo or cell-model validation.",
+                            "risks": ["Evidence remains indirect."],
+                            "next_experiments": ["Run a KDR/phospho-VEGFR readout."],
+                            "priority_score": 0.71,
+                        }
+                    ],
+                    "evidence_limitations": ["Repair preserved model content after syntax failure."],
+                    "errors": [],
+                }
+            ),
+            "metadata": {
+                "model_name": model_name,
+                "request_id": "repair-1",
+                "json_repair_attempted": True,
+            },
+        }
+
+    monkeypatch.setattr(therapy_committee, "_openrouter_review_model", fake_review_model)
+    monkeypatch.setattr(therapy_committee, "_openrouter_repair_json_model", fake_repair_model)
+
+    citation = ResearchBriefCitation(
+        citation_id="C1",
+        chunk_id=uuid4(),
+        research_object_id=uuid4(),
+        source_key="pubmed",
+        title="KDR therapy signal",
+        quote="Canine hemangiosarcoma evidence discusses KDR and vascular tumor signaling.",
+    )
+    report = therapy_committee._run_openrouter_perspective(
+        TherapyCommitteeRequest(
+            topic="KDR therapy ideas for canine hemangiosarcoma",
+            review_mode="openrouter_required",
+            review_models=["test/model"],
+            max_ideas_per_perspective=1,
+        ),
+        "target_biology",
+        {"citations": [citation], "claims": [], "research_leads": [], "search_queries": {}, "errors": []},
+    )
+
+    assert len(review_calls) == 1
+    assert len(repair_calls) == 1
+    assert repair_calls[0][3]["request_id"] == "review-1"
+    assert report.summary == "Repaired committee JSON"
+    assert report.ideas[0].title == "KDR-gated kinase validation"
+    assert report.evidence["model_review"]["json_repair_attempted"] is True
 
 
 def test_therapy_committee_runs_cited_idea_layer(tmp_path):
