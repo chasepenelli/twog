@@ -5680,6 +5680,78 @@ def test_research_brief_queue_runner_persists_brief_and_updates_queue(tmp_path):
     assert saved_brief.status == "completed"
 
 
+def test_research_brief_queue_runner_can_target_explicit_queue_ids(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-queue-runner-targeted.sqlite3", seed=False)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:queue-brief-targeted",
+            content_hash="queue-brief-targeted-raw",
+            source_url="https://pubmed.ncbi.nlm.nih.gov/queue-brief-targeted/",
+            raw_payload={"pmid": "queue-brief-targeted"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="VEGF targeted queue runner evidence in canine hemangiosarcoma",
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            canonical_url="https://pubmed.ncbi.nlm.nih.gov/queue-brief-targeted/",
+            dedupe_key="pmid:queue-brief-targeted",
+            identifiers={"pmid": "queue-brief-targeted"},
+        ),
+        raw_record_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "Canine hemangiosarcoma VEGF therapy evidence includes clinical outcome, "
+                "toxicity, translational relevance, biomarker uncertainty, and target selection."
+            ),
+            content_hash="queue-brief-targeted-chunk",
+        )
+    )
+    service = HSAResearchService(repo)
+    unselected = service.queue_research_brief(
+        ResearchBriefQueueRequest(
+            topic="KIT therapy in canine mast cell tumor",
+            source_key="pubmed",
+            priority=1,
+            review_mode="deterministic_only",
+            max_claims=0,
+            max_chunks_per_perspective=2,
+        )
+    )
+    selected = service.queue_research_brief(
+        ResearchBriefQueueRequest(
+            topic="VEGF therapy in canine hemangiosarcoma",
+            source_key="pubmed",
+            priority=100,
+            review_mode="deterministic_only",
+            max_claims=0,
+            max_chunks_per_perspective=2,
+        )
+    )
+
+    result = service.run_next_research_brief_queue_item(
+        ResearchBriefQueueRunRequest(queue_item_ids=[selected.queue_item_id])
+    )
+    untouched = repo.get_research_brief_queue_item(unselected.queue_item_id)
+    updated = repo.get_research_brief_queue_item(selected.queue_item_id)
+
+    assert result.ran is True
+    assert result.queue_item is not None
+    assert result.queue_item.queue_item_id == selected.queue_item_id
+    assert untouched is not None
+    assert untouched.status == "queued"
+    assert updated is not None
+    assert updated.status == "completed"
+
+
 def test_research_brief_queue_runner_fails_unusable_brief(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "research-brief-queue-runner-fail.sqlite3", seed=False)
     service = HSAResearchService(repo)

@@ -1926,12 +1926,33 @@ class HSAResearchService:
         self,
         request: ResearchBriefQueueRunRequest,
     ) -> ResearchBriefQueueRunResult:
-        candidates = self.repository.list_research_brief_queue_items(
-            statuses=list(request.statuses),
-            source_key=request.source_key,
-            topic_query=request.topic_query,
-            limit=request.limit,
-        )
+        if request.queue_item_ids:
+            statuses = set(request.statuses)
+            topic_query = (request.topic_query or "").casefold().strip()
+            seen: set[UUID] = set()
+            candidates = []
+            for queue_item_id in request.queue_item_ids:
+                if queue_item_id in seen:
+                    continue
+                seen.add(queue_item_id)
+                item = self.repository.get_research_brief_queue_item(queue_item_id)
+                if item is None:
+                    continue
+                if statuses and item.status not in statuses:
+                    continue
+                if request.source_key and item.source_key != request.source_key:
+                    continue
+                if topic_query and topic_query not in f"{item.topic} {item.disease_scope}".casefold():
+                    continue
+                candidates.append(item)
+            candidates = sorted(candidates, key=lambda item: (item.priority, item.updated_at))[: request.limit]
+        else:
+            candidates = self.repository.list_research_brief_queue_items(
+                statuses=list(request.statuses),
+                source_key=request.source_key,
+                topic_query=request.topic_query,
+                limit=request.limit,
+            )
         if not candidates:
             return ResearchBriefQueueRunResult(ran=False)
 

@@ -44,6 +44,10 @@ on:
           - "research_brief_queue_maintenance_job"
           - "research_brief_playground_pack_job"
           - "research_leads_job"
+          - "evidence_gap_resolver_job"
+          - "validation_gap_source_pack_job"
+          - "validation_gap_source_ingest_job"
+          - "validation_gap_completion_job"
           - "research_followup_resolver_job"
           - "x_topic_monitor_review_job"
           - "x_linked_article_followup_job"
@@ -106,6 +110,7 @@ jobs:
       HSA_THERAPY_COMMITTEE_MAX_TOKENS: "3500"
       HSA_THERAPY_COMMITTEE_WORKERS: "4"
       HSA_THERAPY_COMMITTEE_MODEL: "anthropic/claude-sonnet-4.6"
+      HSA_RESEARCH_BRIEF_MODEL: "anthropic/claude-sonnet-4.6"
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
       HSA_X_LINKED_ARTICLE_APPROVED_BY: "github-actions"

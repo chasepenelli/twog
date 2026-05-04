@@ -793,6 +793,7 @@ class ResearchBriefQueueRequest(StrictBaseModel):
 
 
 class ResearchBriefQueueRunRequest(StrictBaseModel):
+    queue_item_ids: list[UUID] = Field(default_factory=list, max_length=100)
     statuses: list[ResearchBriefQueueStatus] = Field(default_factory=lambda: ["queued"], max_length=5)
     source_key: str | None = None
     topic_query: str | None = None

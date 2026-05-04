@@ -379,6 +379,17 @@ _VALIDATION_GAP_SOURCE_INGEST_TABLE_COLUMNS = (
     "full_text_research_objects",
     "errors",
 )
+_VALIDATION_GAP_COMPLETION_BRIEF_TABLE_COLUMNS = (
+    "queue_item_id",
+    "status",
+    "topic",
+    "source_key",
+    "brief_id",
+    "agent_run_id",
+    "citation_count",
+    "error_count",
+    "last_error",
+)
 _RESEARCH_BRIEF_PLAYGROUND_PROMPT_TABLE_COLUMNS = (
     "perspective",
     "agent_name",
@@ -1323,6 +1334,47 @@ if dg is not None:
             "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "results": _metadata_table(rows or dry_run_rows, _VALIDATION_GAP_SOURCE_INGEST_TABLE_COLUMNS),
+        }
+
+    def _validation_gap_completion_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        summary = report.get("summary", {})
+        brief_rows = []
+        for run in report.get("brief_runs", []):
+            queue_item = run.get("queue_item") or {}
+            brief = run.get("brief") or {}
+            brief_rows.append(
+                {
+                    "queue_item_id": queue_item.get("queue_item_id"),
+                    "status": queue_item.get("status"),
+                    "topic": str(queue_item.get("topic") or brief.get("topic") or "")[:300],
+                    "source_key": queue_item.get("source_key") or brief.get("source_key"),
+                    "brief_id": brief.get("brief_id"),
+                    "agent_run_id": brief.get("agent_run_id"),
+                    "citation_count": len(brief.get("citations", [])),
+                    "error_count": len(run.get("errors", [])),
+                    "last_error": str(queue_item.get("last_error") or "")[:300],
+                }
+            )
+        return {
+            "dry_run": bool(summary.get("dry_run", True)),
+            "queue_item_count": dg.MetadataValue.int(int(summary.get("queue_item_count", 0))),
+            "gap_count": dg.MetadataValue.int(int(summary.get("gap_count", 0))),
+            "leads_created": dg.MetadataValue.int(int(summary.get("leads_created", 0))),
+            "existing_leads": dg.MetadataValue.int(int(summary.get("existing_leads", 0))),
+            "brief_queue_count": dg.MetadataValue.int(int(summary.get("brief_queue_count", 0))),
+            "source_query_count": dg.MetadataValue.int(int(summary.get("source_query_count", 0))),
+            "persisted_query_count": dg.MetadataValue.int(int(summary.get("persisted_query_count", 0))),
+            "ingested_query_count": dg.MetadataValue.int(int(summary.get("ingested_query_count", 0))),
+            "raw_records": dg.MetadataValue.int(int(summary.get("raw_records", 0))),
+            "research_objects": dg.MetadataValue.int(int(summary.get("research_objects", 0))),
+            "document_chunks": dg.MetadataValue.int(int(summary.get("document_chunks", 0))),
+            "brief_runs_requested": dg.MetadataValue.int(int(summary.get("brief_runs_requested", 0))),
+            "brief_runs_attempted": dg.MetadataValue.int(int(summary.get("brief_runs_attempted", 0))),
+            "brief_runs_completed": dg.MetadataValue.int(int(summary.get("brief_runs_completed", 0))),
+            "brief_runs_failed": dg.MetadataValue.int(int(summary.get("brief_runs_failed", 0))),
+            "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "brief_runs": _metadata_table(brief_rows, _VALIDATION_GAP_COMPLETION_BRIEF_TABLE_COLUMNS),
         }
 
     def _x_topic_monitor_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -3761,6 +3813,183 @@ if dg is not None:
     @dg.asset(
         group_name="ai_research",
         config_schema={
+            "queue_item_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Specific validation queue item IDs to complete.",
+            ),
+            "statuses": dg.Field(
+                [str],
+                default_value=["completed"],
+                description="Validation queue statuses eligible for gap resolution.",
+            ),
+            "decisions": dg.Field(
+                [str],
+                default_value=["hold", "demote"],
+                description="Validation decisions to convert into follow-up work.",
+            ),
+            "task_types": dg.Field([str], default_value=[], description="Optional validation task-type filters."),
+            "gap_types": dg.Field(
+                [str],
+                default_value=["missing_evidence", "next_action"],
+                description="Gap types to resolve. Risks stay human-facing by default.",
+            ),
+            "source_keys": dg.Field(
+                [str],
+                default_value=[
+                    "pubmed",
+                    "europe_pmc",
+                    "pmc_oa",
+                    "openalex",
+                    "clinicaltrials_gov",
+                    "chembl",
+                    "openfda_animal_events",
+                ],
+                description="Sources to target for generated validation-gap searches.",
+            ),
+            "lanes": dg.Field([str], default_value=[], description="Optional evidence lanes to include."),
+            "limit": dg.Field(int, default_value=10, description="Maximum validation items/leads to scan."),
+            "max_gaps_per_item": dg.Field(int, default_value=5, description="Maximum gaps to convert per item."),
+            "priority": dg.Field(int, default_value=30, description="Default priority cap for generated leads."),
+            "max_queries_per_lane": dg.Field(int, default_value=2, description="Maximum queries per evidence lane."),
+            "limit_per_query": dg.Field(int, default_value=3, description="Maximum records to ingest per query."),
+            "max_ingest_queries": dg.Field(int, default_value=20, description="Maximum generated queries to ingest."),
+            "queue_research_briefs": dg.Field(
+                bool,
+                default_value=True,
+                description="Queue research briefs for generated evidence-gap leads.",
+            ),
+            "brief_runs": dg.Field(
+                int,
+                default_value=2,
+                description="Maximum generated research brief queue items to execute after ingest.",
+            ),
+            "dry_run": dg.Field(bool, default_value=True, description="Preview without writing or API ingestion."),
+        },
+    )
+    def validation_gap_completion_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Resolve validation gaps, ingest targeted source evidence, and run bounded follow-up briefs."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config or {}
+        dry_run = bool(config.get("dry_run", True))
+        repository = research_repository.build_repository()
+        service = HSAResearchService(repository)
+        queue_item_ids = [UUID(value) for value in config["queue_item_ids"]]
+
+        gap_result = service.resolve_evidence_gaps(
+            EvidenceGapResolverRequest(
+                queue_item_ids=queue_item_ids,
+                statuses=config.get("statuses") or ["completed"],
+                decisions=config.get("decisions") or ["hold", "demote"],
+                task_types=config.get("task_types") or [],
+                gap_types=config.get("gap_types") or ["missing_evidence", "next_action"],
+                limit=int(config.get("limit") or 10),
+                max_gaps_per_item=int(config.get("max_gaps_per_item") or 5),
+                priority=int(config.get("priority") or 30),
+                dry_run=dry_run,
+                queue_research_briefs=bool(config.get("queue_research_briefs", True)),
+                dagster_run_id=context.run_id,
+                metadata={"dagster_asset": "validation_gap_completion_report"},
+            )
+        )
+
+        lead_ids = [lead.lead_id for lead in gap_result.research_leads]
+        source_pack_result = service.build_validation_gap_source_pack(
+            ValidationGapSourcePackRequest(
+                queue_item_ids=queue_item_ids,
+                lead_ids=lead_ids,
+                lead_statuses=["new", "followup"],
+                source_keys=config.get("source_keys") or [],
+                lanes=config.get("lanes") or [],
+                limit=int(config.get("limit") or 10),
+                max_queries_per_lane=int(config.get("max_queries_per_lane") or 2),
+                persist_queries=not dry_run,
+                active=True,
+                dry_run=dry_run,
+                dagster_run_id=context.run_id,
+                metadata={"dagster_asset": "validation_gap_completion_report"},
+            )
+        )
+
+        query_names = [query.query_name for query in source_pack_result.queries]
+        ingest_result = service.ingest_validation_gap_source_queries(
+            ValidationGapSourceIngestRequest(
+                source_keys=config.get("source_keys") or [],
+                query_names=query_names,
+                limit_per_query=int(config.get("limit_per_query") or 3),
+                max_queries=int(config.get("max_ingest_queries") or 20),
+                dry_run=dry_run,
+                dagster_run_id=context.run_id,
+                metadata={"dagster_asset": "validation_gap_completion_report"},
+            )
+        )
+
+        brief_runs = []
+        generated_brief_ids = [item.queue_item_id for item in gap_result.brief_queue_items]
+        if not dry_run and generated_brief_ids:
+            for _ in range(max(int(config.get("brief_runs") or 0), 0)):
+                run_result = service.run_next_research_brief_queue_item(
+                    ResearchBriefQueueRunRequest(
+                        queue_item_ids=generated_brief_ids,
+                        statuses=["queued"],
+                        limit=min(max(len(generated_brief_ids), 1), 10),
+                        dagster_run_id=context.run_id,
+                    )
+                )
+                brief_runs.append(run_result.model_dump(mode="json"))
+                if not run_result.ran:
+                    break
+
+        errors = [
+            *gap_result.errors,
+            *source_pack_result.errors,
+            *ingest_result.errors,
+            *(error for run in brief_runs for error in run.get("errors", [])),
+        ]
+        brief_runs_completed = sum(
+            1 for run in brief_runs if (run.get("queue_item") or {}).get("status") == "completed"
+        )
+        brief_runs_failed = sum(1 for run in brief_runs if (run.get("queue_item") or {}).get("status") == "failed")
+        report = {
+            "summary": {
+                "dry_run": dry_run,
+                "queue_item_count": len(queue_item_ids) or gap_result.queue_items_seen,
+                "gap_count": gap_result.gap_count,
+                "leads_created": gap_result.leads_created,
+                "existing_leads": gap_result.existing_leads,
+                "brief_queue_count": gap_result.brief_queue_count,
+                "source_query_count": source_pack_result.query_count,
+                "persisted_query_count": source_pack_result.persisted_query_count,
+                "ingested_query_count": ingest_result.completed_query_count,
+                "raw_records": ingest_result.raw_records,
+                "research_objects": ingest_result.research_objects,
+                "document_chunks": ingest_result.document_chunks,
+                "brief_runs_requested": int(config.get("brief_runs") or 0),
+                "brief_runs_attempted": sum(1 for run in brief_runs if run.get("ran")),
+                "brief_runs_completed": brief_runs_completed,
+                "brief_runs_failed": brief_runs_failed,
+            },
+            "evidence_gap_resolver": gap_result.model_dump(mode="json"),
+            "source_pack": source_pack_result.model_dump(mode="json"),
+            "source_ingest": ingest_result.model_dump(mode="json"),
+            "brief_runs": brief_runs,
+            "errors": errors,
+        }
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_validation_gap_completion_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
             "lead_ids": dg.Field([str], default_value=[], description="Specific follow-up lead IDs."),
             "statuses": dg.Field([str], default_value=["followup"], description="Lead statuses to inspect."),
             "source_keys": dg.Field([str], default_value=[], description="Optional lead source filters."),
@@ -4813,6 +5042,7 @@ if dg is not None:
         evidence_gap_resolver_report,
         validation_gap_source_pack_report,
         validation_gap_source_ingest_report,
+        validation_gap_completion_report,
         research_followup_resolver_report,
         x_topic_monitor_review_report,
         x_linked_article_followup_report,
@@ -4996,6 +5226,10 @@ if dg is not None:
     validation_gap_source_ingest_job = dg.define_asset_job(
         "validation_gap_source_ingest_job",
         selection=dg.AssetSelection.assets(validation_gap_source_ingest_report),
+    )
+    validation_gap_completion_job = dg.define_asset_job(
+        "validation_gap_completion_job",
+        selection=dg.AssetSelection.assets(validation_gap_completion_report),
     )
     research_followup_resolver_job = dg.define_asset_job(
         "research_followup_resolver_job",
@@ -5262,6 +5496,7 @@ if dg is not None:
             evidence_gap_resolver_job,
             validation_gap_source_pack_job,
             validation_gap_source_ingest_job,
+            validation_gap_completion_job,
             research_followup_resolver_job,
             x_topic_monitor_review_job,
             x_linked_article_followup_job,
@@ -5345,6 +5580,7 @@ else:
     evidence_gap_resolver_job = None
     validation_gap_source_pack_job = None
     validation_gap_source_ingest_job = None
+    validation_gap_completion_job = None
     research_followup_resolver_job = None
     x_topic_monitor_review_job = None
     x_linked_article_followup_job = None

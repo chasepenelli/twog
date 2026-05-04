@@ -512,6 +512,12 @@ def main() -> None:
         help="Run the next queued research brief request",
     )
     run_research_brief_queue.add_argument(
+        "--id",
+        action="append",
+        default=[],
+        help="Specific queue_item_id to run; repeat for multiple items",
+    )
+    run_research_brief_queue.add_argument(
         "--status",
         action="append",
         default=[],
@@ -1463,6 +1469,7 @@ def main() -> None:
     elif args.command == "run-research-brief-queue":
         output = HSAResearchService(repo).run_next_research_brief_queue_item(
             ResearchBriefQueueRunRequest(
+                queue_item_ids=[UUID(value) for value in args.id],
                 statuses=args.status or ["queued"],
                 source_key=args.source,
                 topic_query=args.topic_query,
