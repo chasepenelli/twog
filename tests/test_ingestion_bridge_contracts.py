@@ -732,12 +732,12 @@ def test_agent_performance_report_aggregates_latest_reviews_by_group(tmp_path):
     assert report.operator_reviewed_count == 2
     assert report.evaluator_reviewed_count == 2
     assert report.disagreement_count == 1
-    assert report.verdict_counts == {"bad": 1, "needs_followup": 1, "useful": 1}
+    assert report.verdict_counts == {"bad": 1, "useful": 2}
     assert agent_row.run_count == 3
     assert agent_row.reviewed_run_count == 2
     assert agent_row.operator_reviewed_count == 2
     assert agent_row.evaluator_reviewed_count == 1
-    assert agent_row.performance_score == 28
+    assert agent_row.performance_score == 50
     assert agent_row.low_sample is True
     assert agent_row.disagreement_count == 1
     assert model_row.reviewed_run_count == 2

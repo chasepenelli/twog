@@ -67,7 +67,7 @@ def build_agent_performance_report(
         state = review_state.get(str(run.agent_run_id), {})
         operator_review = state.get("operator")
         evaluator_review = state.get("llm_evaluator")
-        primary_review = operator_review or evaluator_review
+        primary_review = evaluator_review or operator_review
         disagreement = bool(operator_review and evaluator_review and operator_review.verdict != evaluator_review.verdict)
 
         for reviewer_type in state:

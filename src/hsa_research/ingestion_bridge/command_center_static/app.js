@@ -793,19 +793,26 @@ function renderAgentPerformance(payload) {
     `${value(payload.disagreement_count)} disagreements | ` +
     `useful ${value(verdicts.useful)}, follow-up ${value(verdicts.needs_followup)}, bad ${value(verdicts.bad)}, unclear ${value(verdicts.unclear)}`;
 
-  const rows = (payload.rows || [])
+  const topRows = (payload.top_rows || []).filter((row) => row.reviewed_run_count > 0);
+  const topKeys = new Set(topRows.map(agentPerformanceRowKey));
+  const bottomRows = (payload.bottom_rows || [])
     .filter((row) => row.reviewed_run_count > 0)
-    .sort((a, b) => {
-      const scoreDiff = Number(b.performance_score ?? -1) - Number(a.performance_score ?? -1);
-      if (scoreDiff !== 0) return scoreDiff;
-      return Number(b.reviewed_run_count || 0) - Number(a.reviewed_run_count || 0);
-    })
-    .slice(0, 24);
+    .filter((row) => !topKeys.has(agentPerformanceRowKey(row)));
+
+  renderAgentPerformanceRows("agentPerformanceTopRows", topRows, "No top rows are available yet.");
+  renderAgentPerformanceRows("agentPerformanceBottomRows", bottomRows, "No separate bottom rows are available yet.");
+}
+
+function agentPerformanceRowKey(row) {
+  return `${row.group_type || "unknown"}:${row.group_value || "unknown"}`;
+}
+
+function renderAgentPerformanceRows(elementId, rows, emptyMessage) {
   if (!rows.length) {
-    $("agentPerformanceRows").innerHTML = `<tr><td colspan="8" class="empty-state">No reviewed agent runs are available yet.</td></tr>`;
+    $(elementId).innerHTML = `<tr><td colspan="8" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`;
     return;
   }
-  $("agentPerformanceRows").innerHTML = rows.map((row) => `
+  $(elementId).innerHTML = rows.map((row) => `
     <tr>
       <td>
         <div class="title-cell">

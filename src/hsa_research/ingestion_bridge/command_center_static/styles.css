@@ -265,6 +265,27 @@ button:disabled {
   font-size: 13px;
 }
 
+.performance-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.performance-split > div + div {
+  border-top: 1px solid var(--line);
+}
+
+.subsection-title {
+  margin: 0;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  background: #f8fafb;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
 .two-column {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

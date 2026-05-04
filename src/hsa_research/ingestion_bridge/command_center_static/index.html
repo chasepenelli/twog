@@ -309,22 +309,47 @@
             </div>
           </div>
           <div id="agentPerformanceSummary" class="summary-line">Loading agent performance...</div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Group</th>
-                  <th>Score</th>
-                  <th>Coverage</th>
-                  <th>Useful</th>
-                  <th>Follow-up</th>
-                  <th>Bad</th>
-                  <th>Unclear</th>
-                  <th>Flags</th>
-                </tr>
-              </thead>
-              <tbody id="agentPerformanceRows"></tbody>
-            </table>
+          <div class="performance-split">
+            <div>
+              <h3 class="subsection-title">Top Rows</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Group</th>
+                      <th>Score</th>
+                      <th>Coverage</th>
+                      <th>Useful</th>
+                      <th>Follow-up</th>
+                      <th>Bad</th>
+                      <th>Unclear</th>
+                      <th>Flags</th>
+                    </tr>
+                  </thead>
+                  <tbody id="agentPerformanceTopRows"></tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <h3 class="subsection-title">Bottom Rows</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Group</th>
+                      <th>Score</th>
+                      <th>Coverage</th>
+                      <th>Useful</th>
+                      <th>Follow-up</th>
+                      <th>Bad</th>
+                      <th>Unclear</th>
+                      <th>Flags</th>
+                    </tr>
+                  </thead>
+                  <tbody id="agentPerformanceBottomRows"></tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </section>
 
