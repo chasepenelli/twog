@@ -553,6 +553,31 @@ td {
   gap: 8px;
 }
 
+.agent-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-review-actions input {
+  flex: 1 1 260px;
+  min-width: 220px;
+}
+
+.agent-review-summary {
+  display: grid;
+  gap: 6px;
+}
+
+.review-chip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .action-item {
   display: grid;
   gap: 12px;

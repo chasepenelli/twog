@@ -16,6 +16,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from .contracts import (
     AgentRunRecord,
+    AgentRunReviewRecord,
     AsyncRunHandle,
     BoltzRunRequest,
     CandidateDossier,
@@ -2287,6 +2288,27 @@ class HSAResearchService:
             agent_name=agent_name,
             status=status,
             source_key=source_key,
+            limit=limit,
+        )
+
+    def create_agent_run_review(self, record: AgentRunReviewRecord) -> AgentRunReviewRecord:
+        return self.repository.create_agent_run_review(record)
+
+    def get_agent_run_review(self, review_id: UUID) -> AgentRunReviewRecord | None:
+        return self.repository.get_agent_run_review(review_id)
+
+    def list_agent_run_reviews(
+        self,
+        *,
+        agent_run_id: UUID | None = None,
+        verdict: str | None = None,
+        reviewer: str | None = None,
+        limit: int = 50,
+    ) -> list[AgentRunReviewRecord]:
+        return self.repository.list_agent_run_reviews(
+            agent_run_id=agent_run_id,
+            verdict=verdict,
+            reviewer=reviewer,
             limit=limit,
         )
 

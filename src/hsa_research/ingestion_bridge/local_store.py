@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 
 from .contracts import (
     AgentRunRecord,
+    AgentRunReviewRecord,
     ArtifactHandle,
     AsyncRunHandle,
     CandidateDossier,
@@ -1486,6 +1487,72 @@ class SQLiteResearchRepository(ResearchRepository):
         params.append(limit)
         return [
             AgentRunRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
+    def create_agent_run_review(self, record: AgentRunReviewRecord) -> AgentRunReviewRecord:
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into agent_run_reviews (
+              review_id, agent_run_id, reviewer, verdict, created_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?)
+            on conflict(review_id) do update set
+              agent_run_id = excluded.agent_run_id,
+              reviewer = excluded.reviewer,
+              verdict = excluded.verdict,
+              created_at = excluded.created_at,
+              payload = excluded.payload,
+              updated_at = current_timestamp
+            """,
+            (
+                str(record.review_id),
+                str(record.agent_run_id),
+                record.reviewer,
+                record.verdict,
+                record.created_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_agent_run_review(self, review_id: UUID) -> AgentRunReviewRecord | None:
+        row = self.conn.execute(
+            "select payload from agent_run_reviews where review_id = ?",
+            (str(review_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return AgentRunReviewRecord.model_validate(json.loads(row["payload"]))
+
+    def list_agent_run_reviews(
+        self,
+        *,
+        agent_run_id: UUID | None = None,
+        verdict: str | None = None,
+        reviewer: str | None = None,
+        limit: int = 50,
+    ) -> list[AgentRunReviewRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if agent_run_id:
+            clauses.append("agent_run_id = ?")
+            params.append(str(agent_run_id))
+        if verdict:
+            clauses.append("verdict = ?")
+            params.append(verdict)
+        if reviewer:
+            clauses.append("reviewer = ?")
+            params.append(reviewer)
+        sql = "select payload from agent_run_reviews"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by created_at desc limit ?"
+        params.append(limit)
+        return [
+            AgentRunReviewRecord.model_validate(json.loads(row["payload"]))
             for row in self.conn.execute(sql, params).fetchall()
         ]
 
@@ -3012,6 +3079,21 @@ class SQLiteResearchRepository(ResearchRepository):
               on agent_runs(agent_name, status, created_at desc);
             create index if not exists agent_runs_source_idx
               on agent_runs(source_key, created_at desc);
+
+            create table if not exists agent_run_reviews (
+              review_id text primary key,
+              agent_run_id text not null,
+              reviewer text not null,
+              verdict text not null,
+              created_at text not null,
+              payload text not null,
+              updated_at text not null default current_timestamp
+            );
+
+            create index if not exists agent_run_reviews_run_idx
+              on agent_run_reviews(agent_run_id, created_at desc);
+            create index if not exists agent_run_reviews_verdict_idx
+              on agent_run_reviews(verdict, created_at desc);
 
             create table if not exists research_briefs (
               brief_id text primary key,

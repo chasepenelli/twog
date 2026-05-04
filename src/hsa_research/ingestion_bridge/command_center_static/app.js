@@ -36,6 +36,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("actionItemsList").addEventListener("click", handleQueueAction);
   $("validationRows").addEventListener("click", handleValidationAction);
   $("researchLeadRows").addEventListener("click", handleQueueAction);
+  $("agentRunCards").addEventListener("click", handleAgentRunReview);
   refreshAll();
 });
 
@@ -795,6 +796,14 @@ function renderAgentRunCard(item) {
       </div>
       <div class="agent-run-summary">${escapeHtml(formatSummary(item.summary))}</div>
       ${renderAgentRunErrors(item.errors || [])}
+      ${renderAgentReviewSummary(item.latest_reviews || [])}
+      <div class="agent-review-actions">
+        <input type="text" data-review-feedback="${escapeAttribute(item.agent_run_id)}" placeholder="Optional review note">
+        <button type="button" data-action="agent-review" data-id="${escapeAttribute(item.agent_run_id)}" data-verdict="useful">Useful</button>
+        <button type="button" data-action="agent-review" data-id="${escapeAttribute(item.agent_run_id)}" data-verdict="needs_followup">Needs Follow-up</button>
+        <button type="button" data-action="agent-review" data-id="${escapeAttribute(item.agent_run_id)}" data-verdict="bad">Bad</button>
+        <button type="button" data-action="agent-review" data-id="${escapeAttribute(item.agent_run_id)}" data-verdict="unclear">Unclear</button>
+      </div>
       <div class="agent-run-details">
         ${renderJsonDetails("Summary", item.summary)}
         ${renderJsonDetails("Input", item.input_payload)}
@@ -802,6 +811,24 @@ function renderAgentRunCard(item) {
         ${renderJsonDetails("Metadata", item.metadata)}
       </div>
     </article>
+  `;
+}
+
+function renderAgentReviewSummary(reviews) {
+  if (!reviews.length) {
+    return `<div class="subtext">No operator reviews recorded yet.</div>`;
+  }
+  return `
+    <div class="agent-review-summary">
+      ${reviews.slice(0, 3).map((review) => `
+        <div class="review-chip">
+          ${tag(review.verdict, review.verdict)}
+          <span>${escapeHtml(review.reviewer || "operator")}</span>
+          <span>${escapeHtml(formatDateTime(review.created_at))}</span>
+          ${review.feedback ? `<span>${escapeHtml(review.feedback)}</span>` : ""}
+        </div>
+      `).join("")}
+    </div>
   `;
 }
 
@@ -901,6 +928,30 @@ async function handleQueueAction(event) {
       refreshResearchLeads(),
       refreshAgentRuns(),
     ]);
+  } catch (error) {
+    showToast(error.message || String(error));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function handleAgentRunReview(event) {
+  const button = event.target.closest("button[data-action='agent-review']");
+  if (!button || button.disabled) return;
+  const agentRunId = button.dataset.id;
+  const verdict = button.dataset.verdict;
+  const feedbackInput = button.closest(".agent-run-card")?.querySelector("input[data-review-feedback]");
+  button.disabled = true;
+  try {
+    await postJson(`/api/agent-runs/${encodeURIComponent(agentRunId)}/reviews`, {
+      verdict,
+      feedback: feedbackInput ? feedbackInput.value.trim() : "",
+      reviewer: $("operatorName").value.trim() || "command_center_operator",
+      operator: $("operatorName").value.trim() || "command_center_operator",
+    });
+    if (feedbackInput) feedbackInput.value = "";
+    showToast(`Agent run marked ${verdict}.`);
+    await refreshAgentRuns();
   } catch (error) {
     showToast(error.message || String(error));
   } finally {

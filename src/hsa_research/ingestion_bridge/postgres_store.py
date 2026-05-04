@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 
 from .contracts import (
     AgentRunRecord,
+    AgentRunReviewRecord,
     ArtifactHandle,
     AsyncRunHandle,
     CandidateDossier,
@@ -1399,6 +1400,65 @@ class PostgresResearchRepository(ResearchRepository):
         sql += " order by created_at desc limit %s"
         params.append(limit)
         return [AgentRunRecord.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
+
+    def create_agent_run_review(self, record: AgentRunReviewRecord) -> AgentRunReviewRecord:
+        payload = record.model_dump(mode="json")
+        self._execute(
+            """
+            insert into agent_run_reviews (
+              review_id, agent_run_id, reviewer, verdict, created_at, payload
+            )
+            values (%s, %s, %s, %s, %s, %s)
+            on conflict(review_id) do update set
+              agent_run_id = excluded.agent_run_id,
+              reviewer = excluded.reviewer,
+              verdict = excluded.verdict,
+              created_at = excluded.created_at,
+              payload = excluded.payload,
+              updated_at = now()
+            """,
+            (
+                str(record.review_id),
+                str(record.agent_run_id),
+                record.reviewer,
+                record.verdict,
+                record.created_at,
+                self._json(payload),
+            ),
+        )
+        return record
+
+    def get_agent_run_review(self, review_id: UUID) -> AgentRunReviewRecord | None:
+        row = self._fetchone("select payload from agent_run_reviews where review_id = %s", (str(review_id),))
+        if row is None:
+            return None
+        return AgentRunReviewRecord.model_validate(_payload(row))
+
+    def list_agent_run_reviews(
+        self,
+        *,
+        agent_run_id: UUID | None = None,
+        verdict: str | None = None,
+        reviewer: str | None = None,
+        limit: int = 50,
+    ) -> list[AgentRunReviewRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if agent_run_id:
+            clauses.append("agent_run_id = %s")
+            params.append(str(agent_run_id))
+        if verdict:
+            clauses.append("verdict = %s")
+            params.append(verdict)
+        if reviewer:
+            clauses.append("reviewer = %s")
+            params.append(reviewer)
+        sql = "select payload from agent_run_reviews"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by created_at desc limit %s"
+        params.append(limit)
+        return [AgentRunReviewRecord.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
 
     def upsert_research_brief(self, record: ResearchBriefRecord) -> ResearchBriefRecord:
         payload = record.model_dump(mode="json")
@@ -2869,6 +2929,21 @@ class PostgresResearchRepository(ResearchRepository):
               on agent_runs(agent_name, status, created_at desc);
             create index if not exists agent_runs_source_idx
               on agent_runs(source_key, created_at desc);
+
+            create table if not exists agent_run_reviews (
+              review_id text primary key,
+              agent_run_id text not null,
+              reviewer text not null,
+              verdict text not null,
+              created_at timestamptz not null,
+              payload jsonb not null,
+              updated_at timestamptz not null default now()
+            );
+
+            create index if not exists agent_run_reviews_run_idx
+              on agent_run_reviews(agent_run_id, created_at desc);
+            create index if not exists agent_run_reviews_verdict_idx
+              on agent_run_reviews(verdict, created_at desc);
 
             create table if not exists research_briefs (
               brief_id text primary key,

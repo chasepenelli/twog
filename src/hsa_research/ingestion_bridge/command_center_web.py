@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 
 from .contracts import (
+    AgentRunReviewRecord,
     CommandCenterRequest,
     ResearchBriefQualityReportRequest,
     ValidationAutopilotRequest,
@@ -256,6 +257,11 @@ def list_agent_runs_payload(
         limit=max(limit, 500),
     )
     items = [_command_center_agent_run_detail(run) for run in runs]
+    for item in items:
+        reviews = service.list_agent_run_reviews(agent_run_id=UUID(item["agent_run_id"]), limit=10)
+        item["latest_reviews"] = [_command_center_agent_run_review(review) for review in reviews]
+        item["review_count"] = len(reviews)
+        item["latest_review"] = item["latest_reviews"][0] if item["latest_reviews"] else None
     if query:
         items = [item for item in items if query in _agent_run_search_text(item)]
 
@@ -281,7 +287,47 @@ def get_agent_run_payload(service: HSAResearchService, agent_run_id: str) -> dic
     run = service.get_agent_run(run_id)
     if run is None:
         raise LookupError("Agent run not found")
-    return {"item": _command_center_agent_run_detail(run)}
+    item = _command_center_agent_run_detail(run)
+    reviews = service.list_agent_run_reviews(agent_run_id=run.agent_run_id, limit=50)
+    item["latest_reviews"] = [_command_center_agent_run_review(review) for review in reviews]
+    item["review_count"] = len(reviews)
+    item["latest_review"] = item["latest_reviews"][0] if item["latest_reviews"] else None
+    return {"item": item}
+
+
+def create_agent_run_review_payload(
+    service: HSAResearchService,
+    agent_run_id: str,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist an operator review for one agent run from the command center."""
+
+    payload = payload or {}
+    try:
+        run_id = UUID(agent_run_id)
+    except ValueError as exc:
+        raise ValueError("Invalid agent_run_id") from exc
+    if service.get_agent_run(run_id) is None:
+        raise LookupError("Agent run not found")
+    verdict = str(payload.get("verdict") or "").strip()
+    if verdict not in {"useful", "needs_followup", "bad", "unclear"}:
+        raise ValueError("Invalid agent run review verdict")
+    review = service.create_agent_run_review(
+        AgentRunReviewRecord(
+            agent_run_id=run_id,
+            reviewer=str(payload.get("reviewer") or "command_center_operator").strip(),
+            verdict=verdict,
+            feedback=str(payload.get("feedback") or "").strip() or None,
+            tags=_payload_string_list(payload.get("tags")),
+            followup_actions=_payload_string_list(payload.get("followup_actions")),
+            metadata={
+                "command_center": {
+                    "operator": str(payload.get("operator") or payload.get("reviewer") or "command_center_operator").strip()
+                }
+            },
+        )
+    )
+    return {"item": _command_center_agent_run_review(review)}
 
 
 def update_research_lead_status_payload(
@@ -656,6 +702,20 @@ def _command_center_agent_run_detail(run: Any) -> dict[str, Any]:
     }
 
 
+def _command_center_agent_run_review(review: Any) -> dict[str, Any]:
+    return {
+        "review_id": str(review.review_id),
+        "agent_run_id": str(review.agent_run_id),
+        "reviewer": review.reviewer,
+        "verdict": review.verdict,
+        "feedback": review.feedback,
+        "tags": review.tags,
+        "followup_actions": review.followup_actions,
+        "created_at": review.created_at.isoformat(),
+        "metadata": review.metadata,
+    }
+
+
 def _agent_run_search_text(item: Mapping[str, Any]) -> str:
     fields = [
         item.get("agent_run_id"),
@@ -670,6 +730,7 @@ def _agent_run_search_text(item: Mapping[str, Any]) -> str:
         json.dumps(item.get("input_payload") or {}, sort_keys=True, default=str),
         json.dumps(item.get("output_payload") or {}, sort_keys=True, default=str),
         json.dumps(item.get("metadata") or {}, sort_keys=True, default=str),
+        json.dumps(item.get("latest_reviews") or [], sort_keys=True, default=str),
         " ".join(str(error) for error in item.get("errors") or []),
     ]
     return " ".join(str(field or "") for field in fields).casefold()
@@ -818,6 +879,15 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
                     self._send_json(update_research_lead_status_payload(service_factory(), parts[2], payload))
                 except (json.JSONDecodeError, ValueError) as exc:
                     self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "agent-runs"] and parts[3] == "reviews":
+                try:
+                    payload = self._read_json_body()
+                    self._send_json(create_agent_run_review_payload(service_factory(), parts[2], payload))
+                except (json.JSONDecodeError, ValueError) as exc:
+                    self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                except LookupError as exc:
+                    self._send_error(HTTPStatus.NOT_FOUND, str(exc))
                 return
             self._send_error(HTTPStatus.NOT_FOUND, "Not found")
 

@@ -14,6 +14,7 @@ from hsa_research.ingestion_bridge import entity_resolution
 from hsa_research.ingestion_bridge import storage, structured_orchestration
 from hsa_research.ingestion_bridge.contracts import (
     AgentRunRecord,
+    AgentRunReviewRecord,
     BoltzRunRequest,
     CandidateDossierRequest,
     ChunkContextRequest,
@@ -571,6 +572,35 @@ def test_agent_run_repository_roundtrip_sqlite_and_memory(tmp_path):
         assert repo.get_agent_run(record.agent_run_id).summary == {"actions": 1}
         assert repo.list_agent_runs(agent_name="full_text_ops_agent", status="completed", source_key="europe_pmc")
         assert repo.list_agent_runs(agent_name="source_scout_agent") == []
+
+
+def test_agent_run_review_repository_roundtrip_sqlite_and_memory(tmp_path):
+    sqlite_repo = SQLiteResearchRepository(tmp_path / "agent-run-reviews.sqlite3", seed=False)
+    memory_repo = InMemoryResearchRepository()
+
+    for repo in (sqlite_repo, memory_repo):
+        run = repo.create_agent_run(AgentRunRecord(agent_name="therapy_committee_chair_agent"))
+        review = repo.create_agent_run_review(
+            AgentRunReviewRecord(
+                agent_run_id=run.agent_run_id,
+                reviewer=" operator ",
+                verdict="needs_followup",
+                feedback="  Need mutation-function evidence. ",
+                tags=["KDR", "kdr", "omics"],
+                followup_actions=["queue_research", "queue_research"],
+            )
+        )
+
+        assert review.reviewer == "operator"
+        assert review.feedback == "Need mutation-function evidence."
+        assert review.tags == ["kdr", "omics"]
+        assert review.followup_actions == ["queue_research"]
+        assert repo.get_agent_run_review(review.review_id).verdict == "needs_followup"
+        assert repo.list_agent_run_reviews(agent_run_id=run.agent_run_id, verdict="needs_followup", reviewer="operator")
+        assert repo.list_agent_run_reviews(verdict="bad") == []
+
+    with pytest.raises(ValidationError):
+        AgentRunReviewRecord(agent_run_id=uuid4(), verdict="wrong")
 
 
 def test_research_lead_repository_roundtrip_sqlite_and_memory(tmp_path):
@@ -4243,6 +4273,16 @@ def test_command_center_web_lists_agent_runs_with_payloads(tmp_path):
         errors=["Missing mutation-function evidence."],
     )
     assert failed is not None
+    review_payload = command_center_web.create_agent_run_review_payload(
+        service,
+        str(completed.agent_run_id),
+        {
+            "verdict": "useful",
+            "feedback": "Good committee output.",
+            "reviewer": "operator",
+            "tags": ["KDR", "committee"],
+        },
+    )
 
     payload = command_center_web.list_agent_runs_payload(
         service,
@@ -4258,14 +4298,23 @@ def test_command_center_web_lists_agent_runs_with_payloads(tmp_path):
     assert payload["items"][0]["input_payload"]["topic"] == "KDR angiosarcoma therapy"
     assert payload["items"][0]["output_payload"]["ranked_ideas"][0]["title"] == "KDR/VEGFR2 validation lane"
     assert payload["items"][0]["duration_seconds"] is not None
+    assert payload["items"][0]["review_count"] == 1
+    assert payload["items"][0]["latest_review"]["verdict"] == "useful"
+    assert payload["items"][0]["latest_review"]["tags"] == ["kdr", "committee"]
+    assert review_payload["item"]["feedback"] == "Good committee output."
     assert detail["item"]["agent_run_id"] == str(completed.agent_run_id)
     assert detail["item"]["summary"]["ideas"] == 1
+    assert detail["item"]["latest_reviews"][0]["reviewer"] == "operator"
     assert failed_payload["visible"] == 1
     assert failed_payload["items"][0]["errors"] == ["Missing mutation-function evidence."]
     with pytest.raises(ValueError):
         command_center_web.get_agent_run_payload(service, "bad-id")
     with pytest.raises(LookupError):
         command_center_web.get_agent_run_payload(service, str(uuid4()))
+    with pytest.raises(ValueError):
+        command_center_web.create_agent_run_review_payload(service, str(completed.agent_run_id), {"verdict": "wrong"})
+    with pytest.raises(LookupError):
+        command_center_web.create_agent_run_review_payload(service, str(uuid4()), {"verdict": "bad"})
 
 
 def test_command_center_web_action_items_and_research_lead_status_updates(tmp_path):

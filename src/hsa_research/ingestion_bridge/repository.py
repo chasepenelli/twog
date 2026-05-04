@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 from .contracts import (
     AgentRunRecord,
+    AgentRunReviewRecord,
     ArtifactHandle,
     AsyncRunHandle,
     CandidateDossier,
@@ -206,6 +207,22 @@ class ResearchRepository(Protocol):
         limit: int = 50,
     ) -> list[AgentRunRecord]:
         """Return recent agent runs by durable filters."""
+
+    def create_agent_run_review(self, record: AgentRunReviewRecord) -> AgentRunReviewRecord:
+        """Persist an operator review for an agent run."""
+
+    def get_agent_run_review(self, review_id: UUID) -> AgentRunReviewRecord | None:
+        """Return a persisted agent run review."""
+
+    def list_agent_run_reviews(
+        self,
+        *,
+        agent_run_id: UUID | None = None,
+        verdict: str | None = None,
+        reviewer: str | None = None,
+        limit: int = 50,
+    ) -> list[AgentRunReviewRecord]:
+        """Return recent operator reviews for agent runs."""
 
     def upsert_research_brief(self, record: ResearchBriefRecord) -> ResearchBriefRecord:
         """Persist a generated research brief and its full typed payload."""
@@ -460,6 +477,7 @@ class InMemoryResearchRepository:
         self.research_brief_queue: dict[UUID, ResearchBriefQueueItem] = {}
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
         self.agent_runs: dict[UUID, AgentRunRecord] = {}
+        self.agent_run_reviews: dict[UUID, AgentRunReviewRecord] = {}
 
     def get_research_object(self, object_id: UUID) -> ResearchObject | None:
         return self.research_objects.get(object_id)
@@ -945,6 +963,31 @@ class InMemoryResearchRepository:
             runs = [run for run in runs if run.source_key == source_key]
         runs.sort(key=lambda run: run.started_at, reverse=True)
         return runs[:limit]
+
+    def create_agent_run_review(self, record: AgentRunReviewRecord) -> AgentRunReviewRecord:
+        self.agent_run_reviews[record.review_id] = record
+        return record
+
+    def get_agent_run_review(self, review_id: UUID) -> AgentRunReviewRecord | None:
+        return self.agent_run_reviews.get(review_id)
+
+    def list_agent_run_reviews(
+        self,
+        *,
+        agent_run_id: UUID | None = None,
+        verdict: str | None = None,
+        reviewer: str | None = None,
+        limit: int = 50,
+    ) -> list[AgentRunReviewRecord]:
+        reviews = list(self.agent_run_reviews.values())
+        if agent_run_id:
+            reviews = [review for review in reviews if review.agent_run_id == agent_run_id]
+        if verdict:
+            reviews = [review for review in reviews if review.verdict == verdict]
+        if reviewer:
+            reviews = [review for review in reviews if review.reviewer == reviewer]
+        reviews.sort(key=lambda review: review.created_at, reverse=True)
+        return reviews[:limit]
 
     def upsert_research_brief(self, record: ResearchBriefRecord) -> ResearchBriefRecord:
         self.research_briefs[record.brief_id] = record

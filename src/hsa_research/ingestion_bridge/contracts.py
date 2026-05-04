@@ -374,6 +374,26 @@ class AgentRunRecord(StrictBaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class AgentRunReviewRecord(StrictBaseModel):
+    review_id: UUID = Field(default_factory=uuid4)
+    agent_run_id: UUID
+    reviewer: str = "command_center_operator"
+    verdict: Literal["useful", "needs_followup", "bad", "unclear"]
+    feedback: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    followup_actions: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_review(self) -> AgentRunReviewRecord:
+        self.reviewer = self.reviewer.strip() or "command_center_operator"
+        self.feedback = self.feedback.strip() if self.feedback and self.feedback.strip() else None
+        self.tags = _dedupe_lower_tokens(self.tags)
+        self.followup_actions = _dedupe_lower_tokens(self.followup_actions)
+        return self
+
+
 class ResearchLeadRecord(StrictBaseModel):
     lead_id: UUID = Field(default_factory=uuid4)
     identity_key: str | None = None
