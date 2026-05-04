@@ -828,6 +828,7 @@ jobs:
         if: ${{ inputs.job == 'embedding_maintenance_job' }}
         run: |
           uv run python -m hsa_research.ingestion_bridge.cli embedding-maintenance \
+            --embedding-model "$HSA_EMBEDDING_MODEL" \
             --fail-on-error
         shell: bash
 

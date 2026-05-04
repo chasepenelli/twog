@@ -53,7 +53,11 @@ from .contracts import (
     XTopicReviewRequest,
 )
 from .embedding_bakeoff import DEFAULT_EMBEDDING_BAKEOFF_MODELS, run_embedding_bakeoff
-from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, index_embeddings_for_repository, maintain_embedding_index
+from .embeddings import (
+    default_embedding_model_for_environment,
+    index_embeddings_for_repository,
+    maintain_embedding_index,
+)
 from .entity_resolution import resolve_entities_for_repository
 from .local_ingest import LocalIngestionPipeline
 from .local_store import SQLiteResearchRepository
@@ -1082,8 +1086,8 @@ def main() -> None:
     embedding_index.add_argument("--source", default=None, help="Optional source key filter")
     embedding_index.add_argument(
         "--embedding-model",
-        default=LOCAL_HASH_EMBEDDING_MODEL,
-        help="Embedding model to write",
+        default=None,
+        help="Embedding model to write; defaults to HSA_EMBEDDING_MODEL, then OpenRouter large when configured",
     )
     embedding_index.add_argument("--limit", type=int, default=None, help="Optional maximum chunks to inspect")
     embedding_index.add_argument("--force", action="store_true", help="Rebuild existing embeddings")
@@ -1097,8 +1101,8 @@ def main() -> None:
     embedding_maintenance.add_argument("--object-type", default=None, help="Optional research object type filter")
     embedding_maintenance.add_argument(
         "--embedding-model",
-        default=LOCAL_HASH_EMBEDDING_MODEL,
-        help="Active embedding model to enforce coverage against",
+        default=None,
+        help="Active embedding model to enforce coverage against; defaults to HSA_EMBEDDING_MODEL, then OpenRouter large when configured",
     )
     embedding_maintenance.add_argument(
         "--prune-model",
@@ -1904,10 +1908,11 @@ def main() -> None:
             )
         ).model_dump(mode="json")
     elif args.command == "embedding-index":
+        embedding_model = args.embedding_model or default_embedding_model_for_environment()
         output = asdict(
             index_embeddings_for_repository(
                 repo,
-                embedding_model=args.embedding_model,
+                embedding_model=embedding_model,
                 source_key=args.source,
                 limit=args.limit,
                 force=args.force,
@@ -1915,9 +1920,10 @@ def main() -> None:
             )
         )
     elif args.command == "embedding-maintenance":
+        embedding_model = args.embedding_model or default_embedding_model_for_environment()
         output = maintain_embedding_index(
             repo,
-            embedding_model=args.embedding_model,
+            embedding_model=embedding_model,
             prune_embedding_model=args.prune_model,
             source_key=args.source,
             object_type=args.object_type,
