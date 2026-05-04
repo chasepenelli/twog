@@ -27,6 +27,9 @@ jobs:
       HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS: "120"
       HSA_PMC_OA_MAX_CANDIDATE_RECORDS: "20"
       HSA_EMBEDDING_MODEL: "openrouter:openai/text-embedding-3-large"
+      HSA_THERAPY_COMMITTEE_TIMEOUT_SECONDS: "60"
+      HSA_THERAPY_COMMITTEE_MAX_TOKENS: "3500"
+      HSA_THERAPY_COMMITTEE_WORKERS: "4"
 
     steps:
       - name: Checkout
@@ -85,6 +88,9 @@ jobs:
             create_env "$scope" HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS "$HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS"
             create_env "$scope" HSA_PMC_OA_MAX_CANDIDATE_RECORDS "$HSA_PMC_OA_MAX_CANDIDATE_RECORDS"
             create_env "$scope" HSA_EMBEDDING_MODEL "$HSA_EMBEDDING_MODEL"
+            create_env "$scope" HSA_THERAPY_COMMITTEE_TIMEOUT_SECONDS "$HSA_THERAPY_COMMITTEE_TIMEOUT_SECONDS"
+            create_env "$scope" HSA_THERAPY_COMMITTEE_MAX_TOKENS "$HSA_THERAPY_COMMITTEE_MAX_TOKENS"
+            create_env "$scope" HSA_THERAPY_COMMITTEE_WORKERS "$HSA_THERAPY_COMMITTEE_WORKERS"
 
             if [ -n "$OPENROUTER_API_KEY" ]; then
               create_env "$scope" OPENROUTER_API_KEY --from-local-env

@@ -7,6 +7,7 @@ that can later feed validation planning.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Mapping, Sequence
 import json
 import os
@@ -101,10 +102,7 @@ def run_therapy_committee(
     """Run the multi-perspective therapy committee over stored evidence."""
 
     evidence = _build_evidence(repository, request)
-    reports = [
-        _run_perspective(request, perspective, evidence)
-        for perspective in THERAPY_COMMITTEE_PERSPECTIVES
-    ]
+    reports = _run_perspectives(request, evidence)
     ranked_ideas = _rank_ideas([idea for report in reports for idea in report.ideas])[:12]
     errors = _dedupe_strings([*evidence["errors"], *[error for report in reports for error in report.errors]])
     limitations = _dedupe_strings(
@@ -141,6 +139,26 @@ def summarize_therapy_committee(result: TherapyCommitteeResult) -> dict[str, Any
         "error_count": len(result.errors),
         "top_idea": result.ranked_ideas[0].title if result.ranked_ideas else None,
     }
+
+
+def _run_perspectives(
+    request: TherapyCommitteeRequest,
+    evidence: Mapping[str, Any],
+) -> list[TherapyCommitteeReport]:
+    max_workers = max(1, min(len(THERAPY_COMMITTEE_PERSPECTIVES), int(os.getenv("HSA_THERAPY_COMMITTEE_WORKERS", "4"))))
+    if max_workers == 1:
+        return [_run_perspective(request, perspective, evidence) for perspective in THERAPY_COMMITTEE_PERSPECTIVES]
+
+    reports_by_perspective: dict[TherapyCommitteePerspectiveName, TherapyCommitteeReport] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_by_perspective = {
+            executor.submit(_run_perspective, request, perspective, evidence): perspective
+            for perspective in THERAPY_COMMITTEE_PERSPECTIVES
+        }
+        for future in as_completed(future_by_perspective):
+            perspective = future_by_perspective[future]
+            reports_by_perspective[perspective] = future.result()
+    return [reports_by_perspective[perspective] for perspective in THERAPY_COMMITTEE_PERSPECTIVES]
 
 
 def _build_evidence(repository: ResearchRepository, request: TherapyCommitteeRequest) -> dict[str, Any]:
@@ -433,7 +451,7 @@ def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) ->
     payload = {
         "model": model_name,
         "temperature": float(os.getenv("HSA_THERAPY_COMMITTEE_TEMPERATURE", "0.25")),
-        "max_tokens": int(os.getenv("HSA_THERAPY_COMMITTEE_MAX_TOKENS", "7000")),
+        "max_tokens": int(os.getenv("HSA_THERAPY_COMMITTEE_MAX_TOKENS", "3500")),
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
@@ -469,7 +487,7 @@ def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) ->
     try:
         with urllib.request.urlopen(
             request,
-            timeout=float(os.getenv("HSA_THERAPY_COMMITTEE_TIMEOUT_SECONDS", "150")),
+            timeout=float(os.getenv("HSA_THERAPY_COMMITTEE_TIMEOUT_SECONDS", "60")),
         ) as response:
             response_payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
