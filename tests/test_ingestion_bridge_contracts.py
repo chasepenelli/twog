@@ -1282,6 +1282,42 @@ def test_agent_performance_evaluator_can_target_specific_agent_run(monkeypatch, 
     assert repo.list_agent_run_reviews(agent_run_id=other.agent_run_id, limit=10) == []
 
 
+def test_agent_performance_evaluator_payload_exposes_split_evidence_fit_policy():
+    run = AgentRunRecord(
+        agent_name="research_followup_loop_agent",
+        model_profile="agent_performance_evaluator",
+        status=RunStatus.COMPLETED,
+        output_payload={
+            "evidence_fit": {
+                "fit": "strong",
+                "target_safety_fit": "strong",
+                "disease_directness_fit": "partial",
+                "actionability": "strong",
+                "transfer_risk": "moderate",
+                "overall_fit": "strong",
+            }
+        },
+    )
+
+    payload = agent_performance._evaluation_payload(
+        run=run,
+        review_state={},
+        specialist="ingestion",
+        request=AgentPerformanceEvaluationRequest(limit=1),
+    )
+
+    assert payload["run"]["evidence_fit"]["target_safety_fit"] == "strong"
+    assert payload["run"]["evidence_fit_interpretation"]["observed_dimensions"] == {
+        "overall_fit": "strong",
+        "target_safety_fit": "strong",
+        "disease_directness_fit": "partial",
+        "actionability": "strong",
+        "transfer_risk": "moderate",
+    }
+    assert "split evidence-fit dimensions are interpreted correctly" in payload["rubric"]["criteria"]
+    assert "Partial disease directness is not automatically bad" in agent_performance._AGENT_PERFORMANCE_SYSTEM_PROMPT
+
+
 def test_agent_performance_specialist_routing_covers_agent_lanes():
     assert agent_performance._specialist_for_agent("research_synthesis_editor_agent") == "synthesis"
     assert agent_performance._specialist_for_agent("therapy_committee_chair_agent") == "synthesis"
@@ -5849,6 +5885,9 @@ def test_command_center_web_runs_research_followup_loop_payload(monkeypatch, tmp
     assert payload["query_count"] == 1
     assert payload["document_chunks"] == 1
     assert payload["evidence_fit"]["fit"] == "strong"
+    assert payload["evidence_fit"]["target_safety_fit"] == "strong"
+    assert payload["evidence_fit"]["actionability"] == "strong"
+    assert payload["evidence_fit"]["overall_fit"] == "strong"
 
 
 def test_therapy_committee_contract_rejects_invalid_priority_score():
@@ -7585,6 +7624,9 @@ def test_research_followup_loop_runs_search_and_updates_status(monkeypatch):
     assert loop_runs
     assert loop_runs[0].summary["document_chunks"] == 2
     assert loop_runs[0].summary["evidence_fit"] == "strong"
+    assert loop_runs[0].summary["target_safety_fit"] == "strong"
+    assert loop_runs[0].summary["actionability"] == "strong"
+    assert loop_runs[0].summary["overall_fit"] == "strong"
 
 
 def test_research_followup_loop_keeps_weak_evidence_in_followup(monkeypatch):

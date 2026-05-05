@@ -1057,8 +1057,21 @@ function followupLoopToast(result, mode) {
     const verdict = result.latest_evaluator_verdict ? ` verdict ${result.latest_evaluator_verdict}` : "";
     return `Re-evaluated lead.${verdict} est $${Number(result.estimated_cost_usd || 0).toFixed(4)} spent $${Number(result.actual_cost_usd || 0).toFixed(4)}.`;
   }
-  const fit = result.evidence_fit && result.evidence_fit.fit ? ` Evidence fit: ${result.evidence_fit.fit}.` : "";
+  const fit = evidenceFitToast(result.evidence_fit);
   return `Ran ${result.query_count || 0} follow-up quer${(result.query_count || 0) === 1 ? "y" : "ies"}; added ${result.document_chunks || 0} chunk(s).${fit}`;
+}
+
+function evidenceFitToast(evidenceFit) {
+  if (!evidenceFit || !evidenceFit.fit) {
+    return "";
+  }
+  const details = [
+    evidenceFit.target_safety_fit ? `target ${evidenceFit.target_safety_fit}` : "",
+    evidenceFit.disease_directness_fit ? `disease ${evidenceFit.disease_directness_fit}` : "",
+    evidenceFit.actionability ? `action ${evidenceFit.actionability}` : "",
+    evidenceFit.transfer_risk ? `risk ${evidenceFit.transfer_risk}` : "",
+  ].filter(Boolean);
+  return ` Evidence fit: ${evidenceFit.fit}${details.length ? ` (${details.join(", ")})` : ""}.`;
 }
 
 async function escalateAgentFinding(itemId) {

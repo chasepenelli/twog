@@ -360,6 +360,28 @@ def _evaluation_payload(
 ) -> dict[str, Any]:
     operator_review = review_state.get("operator")
     evaluator_review = review_state.get("llm_evaluator")
+    evidence_fit = _evidence_fit_payload(run)
+    run_payload = {
+        "agent_run_id": str(run.agent_run_id),
+        "agent_name": run.agent_name,
+        "agent_version": run.agent_version,
+        "model_profile": run.model_profile,
+        "model_key": _derived_key(run, _MODEL_KEYS, run.model_profile),
+        "prompt_key": _derived_key(run, _PROMPT_KEYS, run.agent_version),
+        "status": str(run.status),
+        "source_key": run.source_key,
+        "partition_date": run.partition_date,
+        "started_at": run.started_at.isoformat(),
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "summary": _compact_jsonable(run.summary, 2500),
+        "input_payload": _compact_jsonable(run.input_payload, 4000),
+        "output_payload": _compact_jsonable(run.output_payload, 7000),
+        "errors": run.errors[:20],
+        "metadata": _compact_jsonable(run.metadata, 2500),
+    }
+    if evidence_fit:
+        run_payload["evidence_fit"] = evidence_fit
+        run_payload["evidence_fit_interpretation"] = _evidence_fit_interpretation(evidence_fit)
     return {
         "task": "Judge whether one persisted agent run produced useful operational or scientific output.",
         "specialist": specialist,
@@ -375,26 +397,61 @@ def _evaluation_payload(
             "rubric_scores": {"criterion": "number 0.0-1.0"},
         },
         "request": request.model_dump(mode="json"),
-        "run": {
-            "agent_run_id": str(run.agent_run_id),
-            "agent_name": run.agent_name,
-            "agent_version": run.agent_version,
-            "model_profile": run.model_profile,
-            "model_key": _derived_key(run, _MODEL_KEYS, run.model_profile),
-            "prompt_key": _derived_key(run, _PROMPT_KEYS, run.agent_version),
-            "status": str(run.status),
-            "source_key": run.source_key,
-            "partition_date": run.partition_date,
-            "started_at": run.started_at.isoformat(),
-            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-            "summary": _compact_jsonable(run.summary, 2500),
-            "input_payload": _compact_jsonable(run.input_payload, 4000),
-            "output_payload": _compact_jsonable(run.output_payload, 7000),
-            "errors": run.errors[:20],
-            "metadata": _compact_jsonable(run.metadata, 2500),
-        },
+        "run": run_payload,
         "operator_review": _review_payload(operator_review),
         "latest_evaluator_review": _review_payload(evaluator_review),
+    }
+
+
+def _evidence_fit_payload(run: AgentRunRecord) -> dict[str, Any] | None:
+    for payload in (run.output_payload, run.summary, run.metadata, run.input_payload):
+        evidence_fit = _find_mapping(payload, "evidence_fit")
+        if evidence_fit:
+            return evidence_fit
+    return None
+
+
+def _find_mapping(value: Any, key: str) -> dict[str, Any] | None:
+    if isinstance(value, Mapping):
+        candidate = value.get(key)
+        if isinstance(candidate, Mapping):
+            return dict(candidate)
+        for nested in value.values():
+            found = _find_mapping(nested, key)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value[:20]:
+            found = _find_mapping(item, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _evidence_fit_interpretation(evidence_fit: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "policy": (
+            "Evaluate target_safety_fit, disease_directness_fit, actionability, and transfer_risk separately. "
+            "Do not mark a run bad only because disease_directness_fit is partial when target safety and "
+            "actionability are strong and the transfer risk is explicit."
+        ),
+        "useful_when": [
+            "The run retrieved concrete records or chunks that improve the next research action.",
+            "Target-safety or mechanism evidence is strong and actionability is strong, even if disease directness is partial.",
+            "Transfer risk is clearly labeled rather than hidden.",
+        ],
+        "needs_followup_when": [
+            "Target-safety fit or actionability is weak.",
+            "Disease directness is weak and no transfer-risk caveat or next search is provided.",
+            "The run found records but left parser, license, identifier, or source-coverage blockers unresolved.",
+        ],
+        "observed_dimensions": {
+            "overall_fit": evidence_fit.get("overall_fit") or evidence_fit.get("fit"),
+            "target_safety_fit": evidence_fit.get("target_safety_fit"),
+            "disease_directness_fit": evidence_fit.get("disease_directness_fit"),
+            "actionability": evidence_fit.get("actionability"),
+            "transfer_risk": evidence_fit.get("transfer_risk"),
+        },
     }
 
 
@@ -468,10 +525,17 @@ def _rubric_for_specialist(specialist: str) -> dict[str, Any]:
             "criteria": [
                 "source-specific operational recommendation",
                 "evidence paths and concrete blocker",
+                "split evidence-fit dimensions are interpreted correctly",
                 "preserves deterministic guardrails",
                 "identifies links or records that need ingestion",
             ],
-            "failure_modes": ["invented source state", "no evidence path", "unsafe schedule recommendation", "missed parser/license risk"],
+            "failure_modes": [
+                "invented source state",
+                "no evidence path",
+                "unsafe schedule recommendation",
+                "missed parser/license risk",
+                "treats partial disease directness as failure despite strong target safety and explicit transfer risk",
+            ],
         },
         "general": {
             "criteria": [
@@ -633,4 +697,7 @@ Rules:
 - Mark needs_followup when the output is directionally useful but lacks enough evidence or specificity.
 - Mark bad when the output is misleading, unsupported, unusable, or failed its core task.
 - Mark unclear when the payload is insufficient to judge.
+- When run.evidence_fit is present, judge target_safety_fit, disease_directness_fit, actionability, and
+  transfer_risk separately. Partial disease directness is not automatically bad when target safety and
+  actionability are strong and transfer risk is explicitly labeled.
 """

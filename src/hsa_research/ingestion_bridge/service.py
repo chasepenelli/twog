@@ -336,6 +336,7 @@ def summarize_validation_autopilot_result(result: ValidationAutopilotResult) -> 
 
 
 def _summarize_research_followup_loop(result: ResearchFollowupLoopResult) -> dict[str, Any]:
+    evidence_fit = result.evidence_fit
     return {
         "lead_id": str(result.lead_id),
         "lead_status_before": result.lead_status_before,
@@ -344,7 +345,12 @@ def _summarize_research_followup_loop(result: ResearchFollowupLoopResult) -> dic
         "query_count": result.query_count,
         "raw_records": result.raw_records,
         "document_chunks": result.document_chunks,
-        "evidence_fit": result.evidence_fit.fit if result.evidence_fit else None,
+        "evidence_fit": evidence_fit.fit if evidence_fit else None,
+        "target_safety_fit": evidence_fit.target_safety_fit if evidence_fit else None,
+        "disease_directness_fit": evidence_fit.disease_directness_fit if evidence_fit else None,
+        "actionability": evidence_fit.actionability if evidence_fit else None,
+        "transfer_risk": evidence_fit.transfer_risk if evidence_fit else None,
+        "overall_fit": evidence_fit.overall_fit if evidence_fit else None,
         "latest_evaluator_verdict": result.latest_evaluator_verdict,
         "estimated_cost_usd": result.estimated_cost_usd,
         "actual_cost_usd": result.actual_cost_usd,
