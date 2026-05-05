@@ -13,6 +13,7 @@ from uuid import UUID
 from .contracts import (
     ResearchLeadRecord,
     ResearchObjectType,
+    SourceQuery,
     ValidationAgentResult,
     ValidationGapEvidenceLane,
     ValidationGapSourcePackRequest,
@@ -42,6 +43,8 @@ class _GapContext:
     target_name: str | None = None
     task_type: str | None = None
     validation_type: str | None = None
+    origin_review_id: UUID | None = None
+    origin_agent_run_id: UUID | None = None
     metadata: Mapping[str, Any] | None = None
 
 
@@ -97,6 +100,7 @@ def build_validation_gap_source_pack(
     result.skipped_count = len(result.skipped)
 
     if request.persist_queries and not request.dry_run:
+        _deactivate_stale_source_pack_queries(repository, result.queries)
         for query in result.queries:
             try:
                 persisted = repository.upsert_source_query(query.as_source_query())  # type: ignore[attr-defined]
@@ -210,6 +214,8 @@ def _context_from_lead(
         target_name=request.target_name if request else _target_from_text(gap_text),
         task_type=task_type,
         validation_type=validation_type,
+        origin_review_id=lead.origin_review_id,
+        origin_agent_run_id=lead.origin_agent_run_id,
         metadata=metadata,
     )
 
@@ -335,7 +341,7 @@ def _query_text_for_source(
         if not candidates and not targets:
             return "", []
         if source_key == "chembl" and targets and candidates:
-            return f"{_or_group(candidates)} {_or_group(targets)}", required_terms
+            return f"({_or_group(candidates)}) AND ({_or_group(targets)})", required_terms
         return _or_group(candidates or targets), required_terms
 
     if source_key == "openfda_animal_events":
@@ -431,6 +437,12 @@ def _query_params_for_source(
         "lead_id": str(context.lead_id) if context.lead_id else None,
         "queue_item_id": str(context.queue_item_id) if context.queue_item_id else None,
     }
+    if context.lead_id:
+        params["followup_lane"] = "agent_evaluator_followup"
+    if context.origin_review_id:
+        params["origin_review_id"] = str(context.origin_review_id)
+    if context.origin_agent_run_id:
+        params["origin_agent_run_id"] = str(context.origin_agent_run_id)
     if source_key == "europe_pmc":
         params["open_access"] = False
     elif source_key == "pmc_oa":
@@ -465,6 +477,45 @@ def _query_params_for_source(
     return params
 
 
+def _deactivate_stale_source_pack_queries(
+    repository: ResearchRepository,
+    desired_queries: list[ValidationGapSourceQuery],
+) -> int:
+    desired = {(query.source_key, query.query_name) for query in desired_queries}
+    scopes = {
+        (str(lead_id), str(query.lane), query.source_key)
+        for query in desired_queries
+        for lead_id in query.lead_ids
+    }
+    if not scopes:
+        return 0
+
+    deactivated = 0
+    for source_key in sorted({source_key for _, _, source_key in scopes}):
+        for existing in repository.list_source_queries(source_key=source_key, active_only=True):  # type: ignore[arg-type]
+            params = existing.query_params or {}
+            if not isinstance(params, Mapping) or not params.get("source_pack_request"):
+                continue
+            scope = (str(params.get("lead_id") or ""), str(params.get("lane") or ""), existing.source_key)
+            if scope not in scopes or (existing.source_key, existing.query_name) in desired:
+                continue
+            repository.upsert_source_query(_inactive_source_query(existing))
+            deactivated += 1
+    return deactivated
+
+
+def _inactive_source_query(query: SourceQuery) -> SourceQuery:
+    return SourceQuery(
+        source_key=query.source_key,
+        query_name=query.query_name,
+        query_text=query.query_text,
+        query_params=query.query_params,
+        track=query.track,
+        object_type=query.object_type,
+        active=False,
+    )
+
+
 def _validation_agent_result(item: ValidationRequestQueueItem) -> ValidationAgentResult | None:
     payload = item.metadata.get("validation_agent_result")
     if not isinstance(payload, Mapping):
@@ -476,21 +527,90 @@ def _validation_agent_result(item: ValidationRequestQueueItem) -> ValidationAgen
 
 
 def _candidate_terms(context: _GapContext) -> list[str]:
-    values = [
-        context.candidate_name,
-        _candidate_from_text(context.gap_text),
-        _candidate_from_text(context.title or ""),
-    ]
-    return _dedupe_terms(values)
+    primary: list[str | None] = []
+    for text in (context.gap_text, context.title):
+        primary.extend(_candidate_terms_from_text(text or ""))
+    primary.append(_candidate_from_text(context.gap_text))
+    primary.append(_candidate_from_text(context.title or ""))
+    primary_terms = _dedupe_terms(primary)
+    if primary_terms:
+        return primary_terms
+
+    fallback: list[str | None] = []
+    fallback.extend(_candidate_terms_from_text(context.candidate_name or ""))
+    fallback.append(_compact_fallback_term(context.candidate_name))
+    return _dedupe_terms(fallback)
 
 
 def _target_terms(context: _GapContext) -> list[str]:
-    values = [
-        context.target_name,
-        _target_from_text(context.gap_text),
-        _target_from_text(context.title or ""),
-    ]
-    return _dedupe_terms(values)
+    primary: list[str | None] = []
+    for text in (context.gap_text, context.title):
+        primary.extend(_target_terms_from_text(text or ""))
+    primary.append(_target_from_text(context.gap_text))
+    primary.append(_target_from_text(context.title or ""))
+    primary_terms = _dedupe_terms(primary)
+    if primary_terms:
+        return primary_terms
+
+    fallback: list[str | None] = []
+    fallback.extend(_target_terms_from_text(context.target_name or ""))
+    fallback.append(_compact_fallback_term(context.target_name))
+    return _dedupe_terms(fallback)
+
+
+def _candidate_terms_from_text(text: str) -> list[str]:
+    lower = text.lower()
+    terms: list[str] = []
+    for term, pattern in (
+        ("ca-4F12-E6", r"\bca[- ]?4f12[- ]?e6\b"),
+        ("anti-PD-1", r"\banti[- ]?pd[- ]?1\b|\bpd[- ]?1\s+(?:inhibitor|blockade|antibody)\b"),
+        ("toceranib", r"\btoceranib\b|\bpalladia\b"),
+        ("pazopanib", r"\bpazopanib\b"),
+        ("axitinib", r"\baxitinib\b"),
+        ("sorafenib", r"\bsorafenib\b"),
+        ("doxorubicin", r"\bdoxorubicin\b"),
+        ("propranolol", r"\bpropranolol\b"),
+        ("sirolimus", r"\bsirolimus\b|\brapamycin\b"),
+        ("vorinostat", r"\bvorinostat\b"),
+        ("paclitaxel", r"\bpaclitaxel\b"),
+        ("cyclophosphamide", r"\bcyclophosphamide\b"),
+        ("enoxacin", r"\benoxacin\b"),
+    ):
+        if re.search(pattern, lower, flags=re.I):
+            terms.append(term)
+    return terms
+
+
+def _target_terms_from_text(text: str) -> list[str]:
+    lower = text.lower()
+    terms: list[str] = []
+    for term, pattern in (
+        ("PD-1", r"\bpd[- ]?1\b"),
+        ("PD-L1", r"\bpd[- ]?l1\b|\bpdl1\b"),
+        ("VEGFR-2", r"\bvegfr[- ]?2\b|\bkdr\b"),
+        ("VEGF", r"\bvegf(?:a)?\b"),
+        ("KIT", r"\bkit\b|\bc-kit\b"),
+        ("FLT4", r"\bflt4\b|\bvegfr[- ]?3\b"),
+        ("MTOR", r"\bmtor\b"),
+        ("CD47", r"\bcd47\b"),
+        ("SIRPA", r"\bsirpa\b|\bsirp[ -]?a\b"),
+        ("TP53", r"\btp53\b"),
+        ("ATF4", r"\batf4\b"),
+    ):
+        if re.search(pattern, lower, flags=re.I):
+            terms.append(term)
+    return terms
+
+
+def _compact_fallback_term(value: str | None) -> str | None:
+    normalized = _normalize_text(value)
+    if not normalized:
+        return None
+    if len(normalized) > 80:
+        return None
+    if re.search(r"\s(?:and|or)\s|/|;|,|\be\.g\.\b", normalized, flags=re.I):
+        return None
+    return normalized
 
 
 def _candidate_from_text(text: str) -> str | None:

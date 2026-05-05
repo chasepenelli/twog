@@ -6873,6 +6873,7 @@ def test_validation_gap_source_pack_builds_and_persists_targeted_queries(tmp_pat
     service = HSAResearchService(repo)
     plan_id = uuid4()
     task_id = uuid4()
+    origin_agent_run_id = uuid4()
     queue_item = repo.upsert_validation_request_queue_item(
         ValidationRequestQueueItem(
             plan_id=plan_id,
@@ -6919,6 +6920,7 @@ def test_validation_gap_source_pack_builds_and_persists_targeted_queries(tmp_pat
             origin_source_key="validation_agent",
             origin_record_id=str(queue_item.queue_item_id),
             origin_review_id=queue_item.queue_item_id,
+            origin_agent_run_id=origin_agent_run_id,
             reason="Direct canine sorafenib safety and dose-limiting toxicity evidence.",
             evidence_refs=[f"validation_queue:{queue_item.queue_item_id}"],
             topic_tags=["validation_gap", "safety_signal", "missing_evidence"],
@@ -6947,6 +6949,20 @@ def test_validation_gap_source_pack_builds_and_persists_targeted_queries(tmp_pat
             max_queries_per_lane=5,
         )
     )
+    repo.upsert_source_query(
+        SourceQuery(
+            source_key="pubmed",
+            query_name="old_source_pack_query",
+            query_text="stale sorafenib query",
+            query_params={
+                "source_pack_request": {"persist_queries": True},
+                "lead_id": str(lead.lead_id),
+                "lane": "safety_signal",
+            },
+            track="validation_gap",
+            active=True,
+        )
+    )
     applied = service.build_validation_gap_source_pack(
         ValidationGapSourcePackRequest(
             lead_ids=[lead.lead_id],
@@ -6957,6 +6973,8 @@ def test_validation_gap_source_pack_builds_and_persists_targeted_queries(tmp_pat
         )
     )
     stored_queries = repo.list_source_queries(active_only=True)
+    all_stored_queries = repo.list_source_queries(active_only=False)
+    stale_query = next(query for query in all_stored_queries if query.query_name == "old_source_pack_query")
 
     assert isinstance(preview, ValidationGapSourcePackResult)
     assert preview.query_count == 3
@@ -6965,8 +6983,100 @@ def test_validation_gap_source_pack_builds_and_persists_targeted_queries(tmp_pat
     assert any("sorafenib" in query.query_text.lower() and "safety" in query.query_text.lower() for query in preview.queries)
     assert applied.persisted_query_count == 3
     assert len(stored_queries) == 3
+    assert stale_query.active is False
     assert all(query.track == "validation_gap" for query in stored_queries)
+    assert all(query.query_params["followup_lane"] == "agent_evaluator_followup" for query in stored_queries)
+    assert all(query.query_params["origin_review_id"] == str(queue_item.queue_item_id) for query in stored_queries)
+    assert all(query.query_params["origin_agent_run_id"] == str(origin_agent_run_id) for query in stored_queries)
     assert repo.list_agent_runs(agent_name="validation_gap_source_pack_agent", status="completed", limit=2)
+
+
+def test_validation_gap_source_pack_compacts_long_candidate_and_target_terms(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-gap-source-pack-compact.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    plan_id = uuid4()
+    task_id = uuid4()
+    queue_item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=plan_id,
+            task_id=task_id,
+            brief_id=uuid4(),
+            topic="Anti-PD-1 VEGFR-2 safety validation",
+            task_type="expert_review",
+            title="Review anti-PD-1 and VEGFR-2 safety in canine HSA",
+            objective="Find canine anti-PD-1 monotherapy safety evidence.",
+            rationale="Validation held because direct canine HSA evidence is missing.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                candidate_name=(
+                    "Canine-specific anti-PD-1 monoclonal antibody (e.g., ca-4F12-E6 or next-generation "
+                    "canine PD-1 inhibitor) / VEGFR-2 blocking antibody or small-molecule VEGFR-2 inhibitor "
+                    "(toceranib phosphate as a clinically available canine-approved option) / Combination arm: "
+                    "anti-PD-1 + VEGFR-2 inhibitor administered concurrently or sequentially following splenectomy"
+                ),
+                target_name="PD-1 / PD-L1 axis / VEGFR-2 (KDR) / VEGF (upstream ligand)",
+                objective="Find canine anti-PD-1 monotherapy safety evidence.",
+                require_approval=False,
+            ),
+            status="completed",
+            metadata={},
+        )
+    )
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            identity_key=f"research_lead:validation_gap:{queue_item.queue_item_id}:safety",
+            title="Safety signal: anti-PD-1 monotherapy in canine HSA",
+            status="new",
+            priority=10,
+            origin_source_key="validation_agent",
+            origin_record_id=str(queue_item.queue_item_id),
+            origin_review_id=queue_item.queue_item_id,
+            origin_agent_run_id=uuid4(),
+            reason=(
+                "Anti-PD-1 monotherapy efficacy and safety data in canine HSA; "
+                "the ca-4F12-E6 precedent is melanoma-only."
+            ),
+            evidence_refs=[f"validation_queue:{queue_item.queue_item_id}"],
+            topic_tags=["validation_gap", "safety_signal", "missing_evidence"],
+            suggested_sources=["pubmed", "chembl", "openfda_animal_events"],
+            metadata={
+                "evidence_gap_resolver": {
+                    "origin": "validation_agent_result",
+                    "gap_type": "missing_evidence",
+                    "lane": "safety_signal",
+                    "gap_text": (
+                        "Anti-PD-1 monotherapy efficacy and safety data in canine HSA; "
+                        "the ca-4F12-E6 precedent is melanoma-only."
+                    ),
+                    "queue_item_id": str(queue_item.queue_item_id),
+                    "plan_id": str(plan_id),
+                    "task_id": str(task_id),
+                    "task_type": "expert_review",
+                    "validation_type": "expert_review",
+                    "decision": "hold",
+                }
+            },
+        )
+    )
+
+    result = service.build_validation_gap_source_pack(
+        ValidationGapSourcePackRequest(
+            lead_ids=[lead.lead_id],
+            source_keys=["pubmed", "chembl", "openfda_animal_events"],
+            max_queries_per_lane=5,
+        )
+    )
+    query_text = " ".join(query.query_text for query in result.queries).lower()
+    required_terms = [term for query in result.queries for term in query.required_terms]
+
+    assert result.query_count == 3
+    assert "combination arm" not in query_text
+    assert "administered concurrently" not in query_text
+    assert "anti-pd-1" in query_text
+    assert "ca-4f12-e6" in query_text
+    assert "toceranib" not in query_text
+    assert "vegfr-2" not in query_text
+    assert all(len(term) <= 80 for term in required_terms)
 
 
 def test_validation_gap_ingest_runs_only_validation_gap_queries(monkeypatch):
