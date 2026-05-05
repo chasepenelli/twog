@@ -1058,8 +1058,13 @@ function followupLoopToast(result, mode) {
     return `Re-evaluated lead.${verdict} est $${Number(result.estimated_cost_usd || 0).toFixed(4)} spent $${Number(result.actual_cost_usd || 0).toFixed(4)}.`;
   }
   const fit = evidenceFitToast(result.evidence_fit);
-  const sourceFollowups = result.source_followups_queued
-    ? ` Queued ${result.source_followups_queued || 0} identifier follow-up(s); ingested ${result.source_followups_ingested || 0}.`
+  const linkedFollowups = Number(result.source_followups_linked || result.source_followups_queued || 0);
+  const newFollowups = Number(result.source_followups_newly_queued || result.source_followups_queued || 0);
+  const alreadyIngestedFollowups = Number(result.source_followups_already_ingested || 0);
+  const pendingFollowups = Number(result.source_followups_pending || 0);
+  const ingestedThisRun = Number(result.source_followups_ingested_this_run || result.source_followups_ingested || 0);
+  const sourceFollowups = linkedFollowups
+    ? ` Identifier follow-ups: ${linkedFollowups} linked, ${newFollowups} new, ${alreadyIngestedFollowups} already ingested, ${pendingFollowups} pending, ${ingestedThisRun} ingested this run.`
     : "";
   const claims = result.claim_chunks_seen
     ? ` Claims written: ${result.claims_written || 0}.`

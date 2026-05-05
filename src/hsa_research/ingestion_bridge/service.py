@@ -8,6 +8,7 @@ decorators or Dagster assets.
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import hashlib
 import os
@@ -268,6 +269,17 @@ VALIDATION_AUTOPILOT_APPROVED_BY = "validation_autopilot"
 VALIDATION_AUTOPILOT_POLICY_VERSION = "v1"
 
 
+@dataclass
+class _SourceFollowupLinkStats:
+    followup_ids: list[UUID] = field(default_factory=list)
+    ingestable_followup_ids: list[UUID] = field(default_factory=list)
+    linked: int = 0
+    newly_queued: int = 0
+    preexisting: int = 0
+    already_ingested: int = 0
+    pending: int = 0
+
+
 def _validation_request_quality_gates(request: ValidationRequest) -> list[str]:
     gates = ["human_approval_required" if request.require_approval else "operator_dispatch_recorded"]
     if request.assay_context is not None:
@@ -347,8 +359,14 @@ def _summarize_research_followup_loop(result: ResearchFollowupLoopResult) -> dic
         "query_count": result.query_count,
         "raw_records": result.raw_records,
         "document_chunks": result.document_chunks,
+        "source_followups_linked": result.source_followups_linked,
         "source_followups_queued": result.source_followups_queued,
+        "source_followups_newly_queued": result.source_followups_newly_queued,
+        "source_followups_preexisting": result.source_followups_preexisting,
+        "source_followups_already_ingested": result.source_followups_already_ingested,
+        "source_followups_pending": result.source_followups_pending,
         "source_followups_ingested": result.source_followups_ingested,
+        "source_followups_ingested_this_run": result.source_followups_ingested_this_run,
         "source_followup_document_chunks": result.source_followup_document_chunks,
         "claim_chunks_seen": result.claim_chunks_seen,
         "claims_extracted": result.claims_extracted,
@@ -2400,18 +2418,25 @@ class HSAResearchService:
             result.errors.extend(ingest_result.errors)
             evidence_fit = assess_research_followup_ingest_evidence_fit(self.repository, lead, ingest_result)
             result.evidence_fit = evidence_fit
-            source_followup_ids: list[UUID] = []
+            source_followup_links = _SourceFollowupLinkStats()
             if request.queue_identifier_followups:
-                source_followup_ids = self._queue_identifier_followups_from_ingest_result(
+                source_followup_links = self._queue_identifier_followups_from_ingest_result(
                     lead,
                     ingest_result,
                     request,
                 )
-                result.source_followups_queued = len(source_followup_ids)
-            if request.ingest_identifier_followups and source_followup_ids and not request.dry_run:
+                result.source_followups_linked = source_followup_links.linked
+                result.source_followups_queued = source_followup_links.newly_queued
+                result.source_followups_newly_queued = source_followup_links.newly_queued
+                result.source_followups_preexisting = source_followup_links.preexisting
+                result.source_followups_already_ingested = source_followup_links.already_ingested
+                result.source_followups_pending = source_followup_links.pending
+                if not request.ingest_identifier_followups and not request.dry_run:
+                    result.source_followups_pending += source_followup_links.newly_queued
+            if request.ingest_identifier_followups and source_followup_links.ingestable_followup_ids and not request.dry_run:
                 source_followup_result = self.ingest_source_followups(
                     SourceFollowupIngestRequest(
-                        followup_ids=source_followup_ids[: request.max_identifier_followups],
+                        followup_ids=source_followup_links.ingestable_followup_ids[: request.max_identifier_followups],
                         statuses=["queued", "approved"],
                         limit=request.max_identifier_followups,
                         approved_by=request.operator,
@@ -2422,7 +2447,11 @@ class HSAResearchService:
                 )
                 result.source_followup_result = source_followup_result
                 result.source_followups_ingested = source_followup_result.ingested
+                result.source_followups_ingested_this_run = source_followup_result.ingested
                 result.source_followup_document_chunks = source_followup_result.document_chunks
+                result.source_followups_pending = self._count_pending_source_followups(
+                    source_followup_links.followup_ids
+                )
                 result.errors.extend(source_followup_result.errors)
             if request.run_claim_extraction and not request.dry_run:
                 claim_result = self._extract_research_followup_claims(ingest_result, result.source_followup_result)
@@ -2445,8 +2474,14 @@ class HSAResearchService:
                         "research_objects": ingest_result.research_objects,
                         "document_chunks": ingest_result.document_chunks,
                         "failed_query_count": ingest_result.failed_query_count,
+                        "source_followups_linked": result.source_followups_linked,
                         "source_followups_queued": result.source_followups_queued,
+                        "source_followups_newly_queued": result.source_followups_newly_queued,
+                        "source_followups_preexisting": result.source_followups_preexisting,
+                        "source_followups_already_ingested": result.source_followups_already_ingested,
+                        "source_followups_pending": result.source_followups_pending,
                         "source_followups_ingested": result.source_followups_ingested,
+                        "source_followups_ingested_this_run": result.source_followups_ingested_this_run,
                         "source_followup_document_chunks": result.source_followup_document_chunks,
                         "claim_chunks_seen": result.claim_chunks_seen,
                         "claims_extracted": result.claims_extracted,
@@ -2547,10 +2582,10 @@ class HSAResearchService:
         lead: ResearchLeadRecord,
         ingest_result: ValidationGapSourceIngestResult,
         request: ResearchFollowupLoopRequest,
-    ) -> list[UUID]:
+    ) -> _SourceFollowupLinkStats:
         fetch_run_ids = _fetch_run_ids_from_ingest_results(ingest_result)
         if not fetch_run_ids:
-            return []
+            return _SourceFollowupLinkStats()
         chunks = self.repository.list_document_chunks_for_fetch_runs(fetch_run_ids, limit=500)
         objects = []
         seen_object_ids: set[UUID] = set()
@@ -2563,21 +2598,43 @@ class HSAResearchService:
             objects.append(obj)
             seen_object_ids.add(chunk.research_object_id)
 
-        followup_ids: list[UUID] = []
+        stats = _SourceFollowupLinkStats()
         seen_identity_keys: set[str] = set()
+        existing_by_identity_key = {
+            item.identity_key: item
+            for item in self.repository.list_source_followups(limit=None)
+            if item.identity_key
+        }
         for obj in objects:
             for item in _source_followup_items_for_research_object(lead, obj, request):
                 if item.identity_key in seen_identity_keys:
                     continue
                 seen_identity_keys.add(item.identity_key or "")
+                existing = existing_by_identity_key.get(item.identity_key)
                 if request.dry_run:
-                    followup_ids.append(item.followup_id)
+                    persisted = existing or item
+                    if existing is None:
+                        stats.newly_queued += 1
                 else:
-                    persisted = self.repository.upsert_source_followup(item)
-                    followup_ids.append(persisted.followup_id)
-                if len(followup_ids) >= request.max_identifier_followups:
-                    return followup_ids
-        return followup_ids
+                    if existing is None:
+                        persisted = self.repository.upsert_source_followup(item)
+                        existing_by_identity_key[persisted.identity_key] = persisted
+                        stats.newly_queued += 1
+                    else:
+                        persisted = existing
+                stats.linked += 1
+                stats.followup_ids.append(persisted.followup_id)
+                if existing is not None:
+                    stats.preexisting += 1
+                    if existing.status == "ingested":
+                        stats.already_ingested += 1
+                    if existing.status in {"queued", "approved"}:
+                        stats.pending += 1
+                if persisted.status in {"queued", "approved"}:
+                    stats.ingestable_followup_ids.append(persisted.followup_id)
+                if stats.linked >= request.max_identifier_followups:
+                    return stats
+        return stats
 
     def _extract_research_followup_claims(
         self,
@@ -2594,6 +2651,14 @@ class HSAResearchService:
         fetch_run_ids = _dedupe_uuids(fetch_run_ids)
         chunks = self.repository.list_document_chunks_for_fetch_runs(fetch_run_ids, limit=1000)
         return extract_claims_for_chunks(self.repository, chunks)
+
+    def _count_pending_source_followups(self, followup_ids: list[UUID]) -> int:
+        return sum(
+            1
+            for followup_id in followup_ids
+            if (item := self.repository.get_source_followup(followup_id)) is not None
+            and item.status in {"queued", "approved"}
+        )
 
     def _transition_research_followup_lead(
         self,

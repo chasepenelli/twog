@@ -7773,19 +7773,53 @@ def test_research_followup_loop_queues_identifier_followups_and_records_claims(m
     loop_runs = repo.list_agent_runs(agent_name="research_followup_loop_agent", status="completed", limit=5)
 
     assert result.source_followups_queued == 3
+    assert result.source_followups_linked == 3
+    assert result.source_followups_newly_queued == 3
+    assert result.source_followups_preexisting == 0
+    assert result.source_followups_already_ingested == 0
+    assert result.source_followups_pending == 0
     assert result.source_followups_ingested == 3
+    assert result.source_followups_ingested_this_run == 3
     assert result.source_followup_document_chunks == 3
     assert {item.source_key for item in followups} >= {"pmc_oa", "pubmed", "unpaywall"}
     assert result.claim_chunks_seen == 4
     assert result.claims_written > 0
     assert result.claim_extraction_errors == []
     assert updated is not None
+    assert updated.metadata["research_followup_loop"]["source_followups_linked"] == 3
     assert updated.metadata["research_followup_loop"]["source_followups_queued"] == 3
+    assert updated.metadata["research_followup_loop"]["source_followups_newly_queued"] == 3
+    assert updated.metadata["research_followup_loop"]["source_followups_already_ingested"] == 0
     assert updated.metadata["research_followup_loop"]["source_followups_ingested"] == 3
+    assert updated.metadata["research_followup_loop"]["source_followups_ingested_this_run"] == 3
     assert updated.metadata["research_followup_loop"]["claims_written"] == result.claims_written
     assert loop_runs
+    assert loop_runs[0].summary["source_followups_linked"] == 3
     assert loop_runs[0].summary["source_followups_queued"] == 3
+    assert loop_runs[0].summary["source_followups_newly_queued"] == 3
+    assert loop_runs[0].summary["source_followups_already_ingested"] == 0
     assert loop_runs[0].summary["claims_written"] == result.claims_written
+
+    repeat_result = service.run_research_followup_loop(
+        ResearchFollowupLoopRequest(
+            lead_id=lead.lead_id,
+            dry_run=False,
+            ingest=True,
+            resolve=False,
+            evaluate=False,
+            max_identifier_followups=3,
+            operator="operator",
+        )
+    )
+
+    assert repeat_result.source_followups_linked == 3
+    assert repeat_result.source_followups_queued == 0
+    assert repeat_result.source_followups_newly_queued == 0
+    assert repeat_result.source_followups_preexisting == 3
+    assert repeat_result.source_followups_already_ingested == 3
+    assert repeat_result.source_followups_ingested == 0
+    assert repeat_result.source_followups_ingested_this_run == 0
+    assert repeat_result.source_followup_result is None
 
 
 def test_research_followup_loop_keeps_weak_evidence_in_followup(monkeypatch):
