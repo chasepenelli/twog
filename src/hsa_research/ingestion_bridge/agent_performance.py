@@ -486,6 +486,7 @@ def _specialist_for_agent(agent_name: str) -> str:
             "claim_curator",
             "evidence_gap",
             "evidence_scout",
+            "followup_loop",
             "followup_resolver",
             "full_text",
             "gap_resolver",

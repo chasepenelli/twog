@@ -1322,6 +1322,7 @@ def test_agent_performance_specialist_routing_covers_agent_lanes():
     assert agent_performance._specialist_for_agent("research_synthesis_editor_agent") == "synthesis"
     assert agent_performance._specialist_for_agent("therapy_committee_chair_agent") == "synthesis"
     assert agent_performance._specialist_for_agent("validation_gap_source_pack_agent") == "ingestion"
+    assert agent_performance._specialist_for_agent("research_followup_loop_agent") == "ingestion"
     assert agent_performance._specialist_for_agent("research_followup_resolver_agent") == "ingestion"
     assert agent_performance._specialist_for_agent("claim_curator_agent") == "ingestion"
     assert agent_performance._specialist_for_agent("evidence_scout_agent") == "ingestion"

@@ -1866,7 +1866,6 @@ def main() -> None:
         output = HSAResearchService(repo).build_agent_performance_report(
             AgentPerformanceReportRequest(
                 agent_name=args.agent_name,
-                agent_run_ids=[UUID(value) for value in args.agent_run_id],
                 status=args.status,
                 source_key=args.source,
                 limit=args.limit,
@@ -1876,6 +1875,7 @@ def main() -> None:
     elif args.command == "agent-performance-evaluate":
         output = HSAResearchService(repo).run_agent_performance_evaluation(
             AgentPerformanceEvaluationRequest(
+                agent_run_ids=[UUID(value) for value in args.agent_run_id],
                 agent_name=args.agent_name,
                 status=args.status,
                 source_key=args.source,
