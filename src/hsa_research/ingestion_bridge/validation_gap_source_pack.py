@@ -444,7 +444,15 @@ def _query_params_for_source(
     if context.origin_agent_run_id:
         params["origin_agent_run_id"] = str(context.origin_agent_run_id)
     if source_key == "europe_pmc":
-        params["open_access"] = False
+        params.update(
+            {
+                "open_access": False,
+                "fetch_full_text": True,
+                "full_text_timeout_seconds": 8,
+                "full_text_attempts": 2,
+                "full_text_time_budget_seconds": 20,
+            }
+        )
     elif source_key == "pmc_oa":
         params["license_required"] = True
     elif source_key == "pubchem":

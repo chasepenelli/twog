@@ -598,7 +598,7 @@ class PubMedHarvesterV2(ScholarlyHarvesterV2):
         )
         doi = None
         pmcid = None
-        for article_id in article.findall(".//ArticleIdList/ArticleId"):
+        for article_id in article.findall("./PubmedData/ArticleIdList/ArticleId"):
             id_type = article_id.attrib.get("IdType")
             if id_type == "doi":
                 doi = _normalize_doi(article_id.text)

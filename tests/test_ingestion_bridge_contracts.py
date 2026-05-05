@@ -4429,6 +4429,13 @@ def test_research_followup_resolver_keeps_unresolved_lead_in_followup(tmp_path):
     assert result.promoted_leads == 0
     assert result.manual_research_required == 1
     assert "manual_research_required" in result.lead_results[0].actions
+    assert result.lead_results[0].metadata["source_followup_ingest"] == {
+        "status": "skipped",
+        "reason": "no_source_followups_queued_or_linked",
+        "source_followup_count": 0,
+        "ingestable_count": 0,
+        "statuses": [],
+    }
     assert updated is not None
     assert updated.status == "followup"
     assert updated.metadata["research_followup_resolver"]["requires_manual_research"] is True
@@ -4566,6 +4573,26 @@ def test_research_followup_resolver_expands_safety_gap_query():
     assert "canine" in query
     assert "veterinary" in query
     assert "dose limiting" in query
+
+
+def test_research_followup_resolver_preserves_hyphenated_therapy_query_terms():
+    lead = ResearchLeadRecord(
+        title="Safety signal: Anti-PD-1 monotherapy efficacy and safety data in canine HSA",
+        summary="Need canine CA-4F12-E6 anti-PD-1 safety and tolerability evidence.",
+        lead_type="unknown",
+        status="watching",
+        source_key="pubmed",
+        topic_tags=["canine", "hemangiosarcoma"],
+    )
+
+    query = research_followup_resolver._lead_search_query(lead, max_terms=12)
+
+    assert "ca-4f12-e6" in query
+    assert "anti-pd-1" in query
+    assert "pd-1" in query
+    assert "canine" in query
+    assert "hemangiosarcoma" in query
+    assert " anti " not in f" {query} "
 
 
 def test_research_followup_resolver_force_live_search_refreshes_existing_evidence(monkeypatch, tmp_path):
@@ -6945,7 +6972,7 @@ def test_validation_gap_source_pack_builds_and_persists_targeted_queries(tmp_pat
     preview = service.build_validation_gap_source_pack(
         ValidationGapSourcePackRequest(
             lead_ids=[lead.lead_id],
-            source_keys=["pubmed", "chembl", "openfda_animal_events"],
+            source_keys=["pubmed", "europe_pmc", "chembl", "openfda_animal_events"],
             max_queries_per_lane=5,
         )
     )
@@ -6966,7 +6993,7 @@ def test_validation_gap_source_pack_builds_and_persists_targeted_queries(tmp_pat
     applied = service.build_validation_gap_source_pack(
         ValidationGapSourcePackRequest(
             lead_ids=[lead.lead_id],
-            source_keys=["pubmed", "chembl", "openfda_animal_events"],
+            source_keys=["pubmed", "europe_pmc", "chembl", "openfda_animal_events"],
             max_queries_per_lane=5,
             persist_queries=True,
             dry_run=False,
@@ -6977,17 +7004,20 @@ def test_validation_gap_source_pack_builds_and_persists_targeted_queries(tmp_pat
     stale_query = next(query for query in all_stored_queries if query.query_name == "old_source_pack_query")
 
     assert isinstance(preview, ValidationGapSourcePackResult)
-    assert preview.query_count == 3
+    assert preview.query_count == 4
     assert preview.persisted_query_count == 0
-    assert {query.source_key for query in preview.queries} == {"pubmed", "chembl", "openfda_animal_events"}
+    assert {query.source_key for query in preview.queries} == {"pubmed", "europe_pmc", "chembl", "openfda_animal_events"}
     assert any("sorafenib" in query.query_text.lower() and "safety" in query.query_text.lower() for query in preview.queries)
-    assert applied.persisted_query_count == 3
-    assert len(stored_queries) == 3
+    assert applied.persisted_query_count == 4
+    assert len(stored_queries) == 4
     assert stale_query.active is False
     assert all(query.track == "validation_gap" for query in stored_queries)
     assert all(query.query_params["followup_lane"] == "agent_evaluator_followup" for query in stored_queries)
     assert all(query.query_params["origin_review_id"] == str(queue_item.queue_item_id) for query in stored_queries)
     assert all(query.query_params["origin_agent_run_id"] == str(origin_agent_run_id) for query in stored_queries)
+    europe_pmc_query = next(query for query in stored_queries if query.source_key == "europe_pmc")
+    assert europe_pmc_query.query_params["fetch_full_text"] is True
+    assert europe_pmc_query.query_params["full_text_time_budget_seconds"] == 20
     assert repo.list_agent_runs(agent_name="validation_gap_source_pack_agent", status="completed", limit=2)
 
 
@@ -8254,6 +8284,50 @@ def test_pubmed_v2_normalizer_handles_nested_xml_text():
         "canine_hsa",
         "human_angiosarcoma",
     ]
+
+
+def test_pubmed_v2_normalizer_uses_only_current_article_identifiers():
+    article = ET.fromstring(
+        """
+        <PubmedArticle>
+          <MedlineCitation>
+            <PMID>36548371</PMID>
+            <Article>
+              <ArticleTitle>Pilot safety evaluation for canine splenic hemangiosarcoma</ArticleTitle>
+              <Abstract>
+                <AbstractText>Canine hemangiosarcoma immunotherapy safety study.</AbstractText>
+              </Abstract>
+              <Journal>
+                <Title>PLOS One</Title>
+                <JournalIssue><PubDate><Year>2022</Year></PubDate></JournalIssue>
+              </Journal>
+            </Article>
+          </MedlineCitation>
+          <PubmedData>
+            <ArticleIdList>
+              <ArticleId IdType="pubmed">36548371</ArticleId>
+              <ArticleId IdType="doi">10.1371/journal.pone.0279594</ArticleId>
+              <ArticleId IdType="pmc">PMC9778498</ArticleId>
+            </ArticleIdList>
+            <ReferenceList>
+              <Reference>
+                <ArticleIdList>
+                  <ArticleId IdType="pubmed">20977336</ArticleId>
+                  <ArticleId IdType="doi">10.1208/s12249-010-9526-5</ArticleId>
+                  <ArticleId IdType="pmc">PMC3011075</ArticleId>
+                </ArticleIdList>
+              </Reference>
+            </ReferenceList>
+          </PubmedData>
+        </PubmedArticle>
+        """
+    )
+
+    record = PubMedHarvesterV2().normalize(article)
+
+    assert record.research_object.identifiers["pmid"] == "36548371"
+    assert record.research_object.identifiers["doi"] == "10.1371/journal.pone.0279594"
+    assert record.research_object.identifiers["pmcid"] == "PMC9778498"
 
 
 def test_europe_pmc_v2_normalizer_cleans_escaped_title_markup():

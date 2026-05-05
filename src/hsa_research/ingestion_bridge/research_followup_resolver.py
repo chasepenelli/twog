@@ -46,8 +46,9 @@ _OBJECT_TYPE_BY_SOURCE = {
     "clinicaltrials_gov": ResearchObjectType.CLINICAL_TRIAL,
 }
 _NON_EVIDENCE_SOURCES = {"x_linked_article", "x_topic", "x_topic_monitor"}
-_TOKEN_PATTERN = re.compile(r"[a-z0-9]+", re.I)
+_TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]*[a-z0-9]", re.I)
 _QUERY_STOPWORDS = {
+    "any",
     "data",
     "evidence",
     "followup",
@@ -59,6 +60,25 @@ _QUERY_STOPWORDS = {
     "signal",
     "source",
 }
+_KNOWN_QUERY_TERM_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("ca-4f12-e6", r"\bca[- ]?4f12[- ]?e6\b"),
+    ("anti-pd-1", r"\banti[- ]?pd[- ]?1\b|\bpd[- ]?1\s+(?:inhibitor|blockade|antibody)\b"),
+    ("pd-l1", r"\bpd[- ]?l1\b|\bpdl1\b"),
+    ("pd-1", r"\bpd[- ]?1\b"),
+    ("vegfr-2", r"\bvegfr[- ]?2\b|\bkdr\b"),
+    ("vegf", r"\bvegf(?:a)?\b"),
+    ("toceranib", r"\btoceranib\b|\bpalladia\b"),
+    ("sorafenib", r"\bsorafenib\b"),
+    ("pazopanib", r"\bpazopanib\b"),
+    ("axitinib", r"\baxitinib\b"),
+    ("doxorubicin", r"\bdoxorubicin\b"),
+    ("propranolol", r"\bpropranolol\b"),
+    ("sirolimus", r"\bsirolimus\b|\brapamycin\b"),
+    ("vorinostat", r"\bvorinostat\b"),
+    ("paclitaxel", r"\bpaclitaxel\b"),
+    ("cyclophosphamide", r"\bcyclophosphamide\b"),
+    ("enoxacin", r"\benoxacin\b"),
+)
 
 
 def resolve_research_followup_leads(
@@ -247,6 +267,16 @@ def _resolve_one_lead(
                 lead_result.metadata["source_followup_ingest"] = ingest_result.model_dump(mode="json")
                 source_followups = _metadata_source_followups(repository, lead)
 
+        if (
+            request.ingest_source_followups
+            and not request.dry_run
+            and "source_followup_ingest" not in lead_result.metadata
+        ):
+            lead_result.metadata["source_followup_ingest"] = _source_followup_ingest_skip_report(
+                source_followups,
+                ingestable,
+            )
+
         evidence_refs, durable_sources = _source_followup_evidence(source_followups, request.min_evidence_chunks)
         if len(evidence_refs) < request.min_evidence_chunks:
             chunk_refs, chunk_sources = _stored_chunk_evidence(repository, lead, request)
@@ -358,6 +388,25 @@ def _resolve_one_lead(
 def _append_action_once(lead_result: ResearchFollowupLeadResult, action: str) -> None:
     if action not in lead_result.actions:
         lead_result.actions.append(action)  # type: ignore[arg-type]
+
+
+def _source_followup_ingest_skip_report(
+    source_followups: list[SourceFollowupQueueItem],
+    ingestable: list[SourceFollowupQueueItem],
+) -> dict[str, Any]:
+    if not source_followups:
+        reason = "no_source_followups_queued_or_linked"
+    elif not ingestable:
+        reason = "no_queued_or_approved_source_followups"
+    else:
+        reason = "ingest_not_attempted"
+    return {
+        "status": "skipped",
+        "reason": reason,
+        "source_followup_count": len(source_followups),
+        "ingestable_count": len(ingestable),
+        "statuses": sorted({item.status for item in source_followups}),
+    }
 
 
 def _inspect_evidence_refs(
@@ -655,18 +704,19 @@ def _lead_search_query(lead: ResearchLeadRecord, *, max_terms: int) -> str:
             " ".join(lead.topic_tags),
         ]
     ).lower()
+    disease_terms = ["canine", "hemangiosarcoma", "human", "angiosarcoma"]
     raw_parts = [
-        _lead_query_expansion_text(context_text),
         lead.summary or "",
         lead.reason or "",
         " ".join(lead.topic_tags),
         " ".join(lead.identifiers.values()),
         lead.title or "",
-        "canine hemangiosarcoma human angiosarcoma",
     ]
     tokens: list[str] = []
     seen: set[str] = set()
-    _extend_query_tokens(tokens, seen, [lead.title or ""], max_terms=min(max_terms, 8), skip_stopwords=True)
+    _extend_query_tokens(tokens, seen, _known_query_terms(context_text), max_terms=max_terms, skip_stopwords=False)
+    _extend_query_tokens(tokens, seen, [_lead_query_expansion_text(context_text)], max_terms=max_terms, skip_stopwords=True)
+    _extend_query_tokens(tokens, seen, [" ".join(disease_terms)], max_terms=max_terms, skip_stopwords=True)
     for part in raw_parts:
         _extend_query_tokens(tokens, seen, [part], max_terms=max_terms, skip_stopwords=True)
         if len(tokens) >= max_terms:
@@ -677,12 +727,34 @@ def _lead_search_query(lead: ResearchLeadRecord, *, max_terms: int) -> str:
 def _lead_query_expansion_text(context_text: str) -> str:
     terms: list[str] = []
     if any(term in context_text for term in ("dlt", "dose limiting", "dose-limiting", "mtd", "maximum tolerated")):
-        terms.extend(["canine", "veterinary", "oncology", "dose", "limiting", "toxicity", "maximum", "tolerated"])
+        terms.extend(
+            [
+                "canine",
+                "dog",
+                "veterinary",
+                "oncology",
+                "dlt",
+                "mtd",
+                "dose",
+                "limiting",
+                "toxicity",
+                "maximum",
+                "tolerated",
+            ]
+        )
     if any(term in context_text for term in ("safety", "tolerability", "toxicity", "adverse")):
-        terms.extend(["canine", "veterinary", "toxicity", "tolerability", "adverse", "events"])
+        terms.extend(["canine", "dog", "veterinary", "toxicity", "tolerability", "adverse", "events"])
     if any(term in context_text for term in ("pharmacokinetic", "pk", "cmax", "auc", "tmax", "exposure")):
         terms.extend(["canine", "pharmacokinetics", "cmax", "auc", "tmax", "plasma", "exposure"])
     return " ".join(terms)
+
+
+def _known_query_terms(context_text: str) -> list[str]:
+    return [
+        term
+        for term, pattern in _KNOWN_QUERY_TERM_PATTERNS
+        if re.search(pattern, context_text, flags=re.I)
+    ]
 
 
 def _extend_query_tokens(
