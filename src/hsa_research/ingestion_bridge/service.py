@@ -82,6 +82,7 @@ from .contracts import (
     ResearchLeadCollectRequest,
     ResearchLeadCollectResult,
     ResearchLeadRecord,
+    ResearchObject,
     ResearchObjectReadRequest,
     ResearchObjectReadResult,
     RetrievalSmokeRequest,
@@ -138,6 +139,7 @@ from .agent_performance import (
 )
 from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
+from .claim_extractor import extract_claims_for_chunks
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, build_embedding_provider, select_embedding_model_from_coverage
 from .evidence_fit import assess_research_followup_ingest_evidence_fit
 from .evidence_gap_resolver import (
@@ -345,6 +347,12 @@ def _summarize_research_followup_loop(result: ResearchFollowupLoopResult) -> dic
         "query_count": result.query_count,
         "raw_records": result.raw_records,
         "document_chunks": result.document_chunks,
+        "source_followups_queued": result.source_followups_queued,
+        "source_followups_ingested": result.source_followups_ingested,
+        "source_followup_document_chunks": result.source_followup_document_chunks,
+        "claim_chunks_seen": result.claim_chunks_seen,
+        "claims_extracted": result.claims_extracted,
+        "claims_written": result.claims_written,
         "evidence_fit": evidence_fit.fit if evidence_fit else None,
         "target_safety_fit": evidence_fit.target_safety_fit if evidence_fit else None,
         "disease_directness_fit": evidence_fit.disease_directness_fit if evidence_fit else None,
@@ -2392,6 +2400,37 @@ class HSAResearchService:
             result.errors.extend(ingest_result.errors)
             evidence_fit = assess_research_followup_ingest_evidence_fit(self.repository, lead, ingest_result)
             result.evidence_fit = evidence_fit
+            source_followup_ids: list[UUID] = []
+            if request.queue_identifier_followups:
+                source_followup_ids = self._queue_identifier_followups_from_ingest_result(
+                    lead,
+                    ingest_result,
+                    request,
+                )
+                result.source_followups_queued = len(source_followup_ids)
+            if request.ingest_identifier_followups and source_followup_ids and not request.dry_run:
+                source_followup_result = self.ingest_source_followups(
+                    SourceFollowupIngestRequest(
+                        followup_ids=source_followup_ids[: request.max_identifier_followups],
+                        statuses=["queued", "approved"],
+                        limit=request.max_identifier_followups,
+                        approved_by=request.operator,
+                        run_claim_extraction=True,
+                        dry_run=False,
+                        metadata={"research_followup_loop": True, **request.metadata},
+                    )
+                )
+                result.source_followup_result = source_followup_result
+                result.source_followups_ingested = source_followup_result.ingested
+                result.source_followup_document_chunks = source_followup_result.document_chunks
+                result.errors.extend(source_followup_result.errors)
+            if request.run_claim_extraction and not request.dry_run:
+                claim_result = self._extract_research_followup_claims(ingest_result, result.source_followup_result)
+                result.claim_chunks_seen = claim_result.chunks_seen
+                result.claims_extracted = claim_result.claims_extracted
+                result.claims_written = claim_result.claims_written
+                result.claim_extraction_errors = claim_result.errors
+                result.errors.extend(f"claim_extraction: {error}" for error in claim_result.errors)
             if not request.dry_run:
                 next_status = "watching" if evidence_fit.fit == "strong" else "followup"
                 self._transition_research_followup_lead(
@@ -2406,6 +2445,13 @@ class HSAResearchService:
                         "research_objects": ingest_result.research_objects,
                         "document_chunks": ingest_result.document_chunks,
                         "failed_query_count": ingest_result.failed_query_count,
+                        "source_followups_queued": result.source_followups_queued,
+                        "source_followups_ingested": result.source_followups_ingested,
+                        "source_followup_document_chunks": result.source_followup_document_chunks,
+                        "claim_chunks_seen": result.claim_chunks_seen,
+                        "claims_extracted": result.claims_extracted,
+                        "claims_written": result.claims_written,
+                        "claim_extraction_errors": result.claim_extraction_errors[:10],
                         "evidence_fit": evidence_fit.model_dump(mode="json"),
                     },
                 )
@@ -2495,6 +2541,59 @@ class HSAResearchService:
         final_lead = self.repository.get_research_lead(request.lead_id)
         result.lead_status_after = final_lead.status if final_lead else result.lead_status_before
         return result
+
+    def _queue_identifier_followups_from_ingest_result(
+        self,
+        lead: ResearchLeadRecord,
+        ingest_result: ValidationGapSourceIngestResult,
+        request: ResearchFollowupLoopRequest,
+    ) -> list[UUID]:
+        fetch_run_ids = _fetch_run_ids_from_ingest_results(ingest_result)
+        if not fetch_run_ids:
+            return []
+        chunks = self.repository.list_document_chunks_for_fetch_runs(fetch_run_ids, limit=500)
+        objects = []
+        seen_object_ids: set[UUID] = set()
+        for chunk in chunks:
+            if chunk.research_object_id in seen_object_ids:
+                continue
+            obj = self.repository.get_research_object(chunk.research_object_id)
+            if obj is None:
+                continue
+            objects.append(obj)
+            seen_object_ids.add(chunk.research_object_id)
+
+        followup_ids: list[UUID] = []
+        seen_identity_keys: set[str] = set()
+        for obj in objects:
+            for item in _source_followup_items_for_research_object(lead, obj, request):
+                if item.identity_key in seen_identity_keys:
+                    continue
+                seen_identity_keys.add(item.identity_key or "")
+                if request.dry_run:
+                    followup_ids.append(item.followup_id)
+                else:
+                    persisted = self.repository.upsert_source_followup(item)
+                    followup_ids.append(persisted.followup_id)
+                if len(followup_ids) >= request.max_identifier_followups:
+                    return followup_ids
+        return followup_ids
+
+    def _extract_research_followup_claims(
+        self,
+        ingest_result: ValidationGapSourceIngestResult,
+        source_followup_result: SourceFollowupIngestResult | None,
+    ):
+        fetch_run_ids = _fetch_run_ids_from_ingest_results(ingest_result)
+        if source_followup_result is not None:
+            fetch_run_ids.extend(
+                item.fetch_run_id
+                for item in source_followup_result.items
+                if item.fetch_run_id is not None and item.document_chunks > 0
+            )
+        fetch_run_ids = _dedupe_uuids(fetch_run_ids)
+        chunks = self.repository.list_document_chunks_for_fetch_runs(fetch_run_ids, limit=1000)
+        return extract_claims_for_chunks(self.repository, chunks)
 
     def _transition_research_followup_lead(
         self,
@@ -3496,6 +3595,70 @@ _FOLLOWUP_SOURCE_BY_IDENTIFIER_TYPE = {
     "pmcid": "pmc_oa",
     "nct": "clinicaltrials_gov",
 }
+
+
+def _fetch_run_ids_from_ingest_results(ingest_result: ValidationGapSourceIngestResult) -> list[UUID]:
+    return _dedupe_uuids(
+        [
+            result.fetch_run_id
+            for result in ingest_result.results
+            if result.fetch_run_id is not None and (result.raw_records or result.research_objects or result.document_chunks)
+        ]
+    )
+
+
+def _dedupe_uuids(values: list[UUID | None]) -> list[UUID]:
+    deduped: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in values:
+        if value is None or value in seen:
+            continue
+        deduped.append(value)
+        seen.add(value)
+    return deduped
+
+
+def _source_followup_items_for_research_object(
+    lead: ResearchLeadRecord,
+    obj: ResearchObject,
+    request: ResearchFollowupLoopRequest,
+) -> list[SourceFollowupQueueItem]:
+    items: list[SourceFollowupQueueItem] = []
+    identifiers = obj.identifiers or {}
+    identifier_targets = [
+        ("pmcid", "pmc_oa", "pmcid_full_text"),
+        ("pmid", "pubmed", "pubmed_metadata_fallback"),
+        ("doi", "unpaywall", "doi_open_access_fallback"),
+        ("doi", "crossref", "doi_metadata_fallback"),
+    ]
+    for identifier_type, source_key, fallback_type in identifier_targets:
+        identifier = identifiers.get(identifier_type) or identifiers.get(identifier_type.upper())
+        if not identifier:
+            continue
+        items.append(
+            SourceFollowupQueueItem(
+                source_key=source_key,
+                identifier_type=identifier_type,  # type: ignore[arg-type]
+                identifier=str(identifier),
+                url=_source_followup_url(identifier_type, str(identifier), fallback=obj.canonical_url),
+                title=obj.title,
+                origin_source_key=obj.source_key,
+                origin_agent_run_id=lead.origin_agent_run_id,
+                reason=f"Research follow-up loop identifier fallback: {fallback_type}.",
+                priority=20 if identifier_type == "pmcid" else 30 if identifier_type == "pmid" else 40,
+                metadata={
+                    "research_followup_loop": True,
+                    "fallback_type": fallback_type,
+                    "lead_id": str(lead.lead_id),
+                    "origin_review_id": str(lead.origin_review_id) if lead.origin_review_id else None,
+                    "origin_research_object_id": str(obj.id),
+                    "origin_dedupe_key": obj.dedupe_key,
+                    "operator": request.operator,
+                    "followup_lane": request.followup_lane,
+                },
+            )
+        )
+    return items
 
 
 def _route_evidence_light_research_lead(

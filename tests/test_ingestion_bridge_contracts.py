@@ -7630,6 +7630,159 @@ def test_research_followup_loop_runs_search_and_updates_status(monkeypatch):
     assert loop_runs[0].summary["overall_fit"] == "strong"
 
 
+def test_research_followup_loop_queues_identifier_followups_and_records_claims(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-followup-loop-identifiers.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    origin_review_id = uuid4()
+    origin_agent_run_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Evaluator follow-up: sorafenib canine HSA safety",
+            status="followup",
+            priority=5,
+            origin_review_id=origin_review_id,
+            origin_agent_run_id=origin_agent_run_id,
+            suggested_sources=["europe_pmc"],
+            topic_tags=["sorafenib", "canine", "hemangiosarcoma", "safety"],
+            metadata={"created_by": "agent_finding_escalation_agent"},
+        )
+    )
+    repo.upsert_source_query(
+        SourceQuery(
+            source_key="europe_pmc",
+            query_name="agent_eval_sorafenib_identifiers",
+            query_text="sorafenib canine hemangiosarcoma safety",
+            query_params={
+                "followup_lane": "agent_evaluator_followup",
+                "origin_review_id": str(origin_review_id),
+                "origin_agent_run_id": str(origin_agent_run_id),
+            },
+            track="validation_gap",
+        )
+    )
+
+    def persist_record(repository, source_key, query_name, title, identifiers, section_label):
+        fetch_run_id = repository.create_fetch_run(source_key, query_name)
+        raw_id = repository.upsert_raw_record(
+            RawSourceRecord(
+                source_key=source_key,
+                source_record_id=f"{source_key}:{query_name}",
+                content_hash=f"{source_key}:{query_name}",
+                raw_payload={"identifiers": identifiers},
+            ),
+            fetch_run_id=fetch_run_id,
+        )
+        object_id = repository.upsert_research_object(
+            ResearchObject(
+                object_type="publication",
+                title=title,
+                abstract=(
+                    "Sorafenib was evaluated in canine hemangiosarcoma with toxicity, "
+                    "safety, tolerability, and dose-limiting endpoints."
+                ),
+                source_key=source_key,
+                dedupe_key=f"{source_key}:{query_name}",
+                identifiers=identifiers,
+                raw_record_id=raw_id,
+            ),
+            raw_id,
+        )
+        repository.upsert_document_chunk(
+            DocumentChunk(
+                research_object_id=object_id,
+                chunk_index=0,
+                section_label=section_label,
+                text_content=(
+                    "Sorafenib canine hemangiosarcoma safety toxicity tolerability "
+                    "dose-limiting evidence supports follow-up claim extraction."
+                ),
+                content_hash=f"{source_key}:{query_name}:chunk",
+            )
+        )
+        return fetch_run_id
+
+    class FakeValidationPipeline:
+        def __init__(self, repository):
+            self.repository = repository
+
+        def ingest_query(self, query, limit, persist_query=True):
+            fetch_run_id = persist_record(
+                self.repository,
+                query.source_key,
+                query.query_name,
+                "Sorafenib safety in canine hemangiosarcoma",
+                {"pmid": "33110170", "pmcid": "PMC7591904", "doi": "10.1038/s41598-020-75533-4"},
+                "abstract",
+            )
+            return IngestionResult(
+                source_key=query.source_key,
+                query_name=query.query_name,
+                query_text=query.query_text,
+                fetch_run_id=fetch_run_id,
+                raw_records=1,
+                research_objects=1,
+                document_chunks=1,
+                status=RunStatus.COMPLETED,
+            )
+
+    class FakeSourceFollowupPipeline:
+        def __init__(self, repository):
+            self.repository = repository
+
+        def ingest_query(self, query, limit, persist_query=True):
+            fetch_run_id = persist_record(
+                self.repository,
+                query.source_key,
+                query.query_name,
+                f"Identifier fallback {query.source_key}",
+                {"pmid": "33110170"},
+                "full_text" if query.source_key == "pmc_oa" else "metadata",
+            )
+            return IngestionResult(
+                source_key=query.source_key,
+                query_name=query.query_name,
+                query_text=query.query_text,
+                fetch_run_id=fetch_run_id,
+                raw_records=1,
+                research_objects=1,
+                document_chunks=1,
+                status=RunStatus.COMPLETED,
+            )
+
+    monkeypatch.setattr(validation_gap_ingest, "LocalIngestionPipeline", FakeValidationPipeline)
+    monkeypatch.setattr(source_followup, "LocalIngestionPipeline", FakeSourceFollowupPipeline)
+
+    result = service.run_research_followup_loop(
+        ResearchFollowupLoopRequest(
+            lead_id=lead.lead_id,
+            dry_run=False,
+            ingest=True,
+            resolve=False,
+            evaluate=False,
+            max_identifier_followups=3,
+            operator="operator",
+        )
+    )
+    updated = repo.get_research_lead(lead.lead_id)
+    followups = repo.list_source_followups(limit=10)
+    loop_runs = repo.list_agent_runs(agent_name="research_followup_loop_agent", status="completed", limit=5)
+
+    assert result.source_followups_queued == 3
+    assert result.source_followups_ingested == 3
+    assert result.source_followup_document_chunks == 3
+    assert {item.source_key for item in followups} >= {"pmc_oa", "pubmed", "unpaywall"}
+    assert result.claim_chunks_seen == 4
+    assert result.claims_written > 0
+    assert result.claim_extraction_errors == []
+    assert updated is not None
+    assert updated.metadata["research_followup_loop"]["source_followups_queued"] == 3
+    assert updated.metadata["research_followup_loop"]["source_followups_ingested"] == 3
+    assert updated.metadata["research_followup_loop"]["claims_written"] == result.claims_written
+    assert loop_runs
+    assert loop_runs[0].summary["source_followups_queued"] == 3
+    assert loop_runs[0].summary["claims_written"] == result.claims_written
+
+
 def test_research_followup_loop_keeps_weak_evidence_in_followup(monkeypatch):
     repo = InMemoryResearchRepository()
     service = HSAResearchService(repo)

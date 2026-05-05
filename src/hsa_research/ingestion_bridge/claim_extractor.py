@@ -8,6 +8,8 @@ storage/search loop before using frontier models for deeper extraction.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
+from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from .contracts import (
@@ -600,10 +602,18 @@ def extract_claims_for_repository(
 ) -> ClaimExtractionResult:
     """Extract and persist draft claims for local chunks."""
 
+    chunks = repository.list_document_chunks(source_key=source_key, object_type=object_type, limit=limit)
+    return extract_claims_for_chunks(repository, chunks)
+
+
+def extract_claims_for_chunks(
+    repository: Any,
+    chunks: Sequence[DocumentChunk],
+) -> ClaimExtractionResult:
+    """Extract and persist draft claims for a known chunk set."""
+
     extractor = LocalRuleClaimExtractor()
     result = ClaimExtractionResult(extractor_name=f"{EXTRACTOR_NAME}:{EXTRACTOR_VERSION}")
-    chunks = repository.list_document_chunks(source_key=source_key, object_type=object_type, limit=limit)
-
     for chunk in chunks:
         result.chunks_seen += 1
         try:

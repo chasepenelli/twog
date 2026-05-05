@@ -1837,6 +1837,10 @@ class ResearchFollowupLoopRequest(StrictBaseModel):
     ingest: bool = True
     resolve: bool = False
     evaluate: bool = False
+    queue_identifier_followups: bool = True
+    ingest_identifier_followups: bool = True
+    run_claim_extraction: bool = True
+    max_identifier_followups: int = Field(default=8, ge=1, le=50)
     dry_run: bool = True
     force_live_search: bool = True
     search_limit_per_source: int = Field(default=2, ge=1, le=25)
@@ -1868,6 +1872,7 @@ class ResearchFollowupLoopResult(StrictBaseModel):
     dry_run: bool = True
     followup_lane: str = "agent_evaluator_followup"
     ingest_result: ValidationGapSourceIngestResult | None = None
+    source_followup_result: SourceFollowupIngestResult | None = None
     resolver_result: ResearchFollowupResolverResult | None = None
     evaluation_result: AgentPerformanceEvaluationResult | None = None
     resolver_agent_run_id: UUID | None = None
@@ -1876,11 +1881,18 @@ class ResearchFollowupLoopResult(StrictBaseModel):
     raw_records: int = Field(default=0, ge=0)
     research_objects: int = Field(default=0, ge=0)
     document_chunks: int = Field(default=0, ge=0)
+    source_followups_queued: int = Field(default=0, ge=0)
+    source_followups_ingested: int = Field(default=0, ge=0)
+    source_followup_document_chunks: int = Field(default=0, ge=0)
+    claim_chunks_seen: int = Field(default=0, ge=0)
+    claims_extracted: int = Field(default=0, ge=0)
+    claims_written: int = Field(default=0, ge=0)
     evidence_fit: EvidenceFitAssessment | None = None
     latest_evaluator_verdict: AgentRunReviewVerdict | None = None
     estimated_cost_usd: float = Field(default=0.0, ge=0.0)
     actual_cost_usd: float = Field(default=0.0, ge=0.0)
     status_transitions: list[dict[str, Any]] = Field(default_factory=list)
+    claim_extraction_errors: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

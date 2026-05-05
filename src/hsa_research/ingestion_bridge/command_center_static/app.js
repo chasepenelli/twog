@@ -1058,7 +1058,13 @@ function followupLoopToast(result, mode) {
     return `Re-evaluated lead.${verdict} est $${Number(result.estimated_cost_usd || 0).toFixed(4)} spent $${Number(result.actual_cost_usd || 0).toFixed(4)}.`;
   }
   const fit = evidenceFitToast(result.evidence_fit);
-  return `Ran ${result.query_count || 0} follow-up quer${(result.query_count || 0) === 1 ? "y" : "ies"}; added ${result.document_chunks || 0} chunk(s).${fit}`;
+  const sourceFollowups = result.source_followups_queued
+    ? ` Queued ${result.source_followups_queued || 0} identifier follow-up(s); ingested ${result.source_followups_ingested || 0}.`
+    : "";
+  const claims = result.claim_chunks_seen
+    ? ` Claims written: ${result.claims_written || 0}.`
+    : "";
+  return `Ran ${result.query_count || 0} follow-up quer${(result.query_count || 0) === 1 ? "y" : "ies"}; added ${result.document_chunks || 0} chunk(s).${sourceFollowups}${claims}${fit}`;
 }
 
 function evidenceFitToast(evidenceFit) {

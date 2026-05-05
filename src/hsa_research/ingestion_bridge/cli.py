@@ -1189,6 +1189,10 @@ def main() -> None:
     research_followup_loop.add_argument("--no-ingest", action="store_true")
     research_followup_loop.add_argument("--resolve", action="store_true", help="Re-run the follow-up resolver after ingestion.")
     research_followup_loop.add_argument("--evaluate", action="store_true", help="Run OpenRouter evaluator on the resolver run.")
+    research_followup_loop.add_argument("--no-identifier-followups", action="store_true")
+    research_followup_loop.add_argument("--no-ingest-identifier-followups", action="store_true")
+    research_followup_loop.add_argument("--no-claim-extraction", action="store_true")
+    research_followup_loop.add_argument("--max-identifier-followups", type=int, default=8)
     research_followup_loop.add_argument("--apply", action="store_true", help="Apply changes. Without this flag the command is a dry run.")
     research_followup_loop.add_argument("--no-force-live-search", action="store_true")
     research_followup_loop.add_argument("--search-limit-per-source", type=int, default=2)
@@ -2106,6 +2110,10 @@ def main() -> None:
                 ingest=not args.no_ingest,
                 resolve=args.resolve,
                 evaluate=args.evaluate,
+                queue_identifier_followups=not args.no_identifier_followups,
+                ingest_identifier_followups=not args.no_ingest_identifier_followups,
+                run_claim_extraction=not args.no_claim_extraction,
+                max_identifier_followups=args.max_identifier_followups,
                 dry_run=not args.apply,
                 force_live_search=not args.no_force_live_search,
                 search_limit_per_source=args.search_limit_per_source,
