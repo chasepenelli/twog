@@ -12,6 +12,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from .contracts import (
+    AgentFindingEscalationRequest,
     AgentPerformanceEvaluationRequest,
     AgentPerformanceReportRequest,
     BoltzRunRequest,
@@ -36,6 +37,7 @@ from .contracts import (
     ResearchBriefRequest,
     ResearchChunkSearchRequest,
     ResearchFollowupResolverRequest,
+    ResearchFollowupLoopRequest,
     ResearchLeadCollectRequest,
     ResearchObjectReadRequest,
     RetrievalSmokeRequest,
@@ -536,6 +538,9 @@ def build_validation_gap_source_pack_tool(
 def ingest_validation_gap_source_queries_tool(
     source_keys: list[str] | None = None,
     query_names: list[str] | None = None,
+    followup_lane: str | None = None,
+    origin_review_ids: list[str] | None = None,
+    origin_agent_run_ids: list[str] | None = None,
     limit_per_query: int = 5,
     max_queries: int = 50,
     dry_run: bool = True,
@@ -545,11 +550,78 @@ def ingest_validation_gap_source_queries_tool(
     request = ValidationGapSourceIngestRequest(
         source_keys=source_keys or [],
         query_names=query_names or [],
+        followup_lane=followup_lane,
+        origin_review_ids=[UUID(value) for value in origin_review_ids or []],
+        origin_agent_run_ids=[UUID(value) for value in origin_agent_run_ids or []],
         limit_per_query=limit_per_query,
         max_queries=max_queries,
         dry_run=dry_run,
     )
     return get_service().ingest_validation_gap_source_queries(request).model_dump(mode="json")
+
+
+def run_research_followup_loop_tool(
+    lead_id: str,
+    followup_lane: str = "agent_evaluator_followup",
+    source_keys: list[str] | None = None,
+    query_names: list[str] | None = None,
+    limit_per_query: int = 2,
+    max_queries: int = 10,
+    ingest: bool = True,
+    resolve: bool = False,
+    evaluate: bool = False,
+    dry_run: bool = True,
+    force_live_search: bool = True,
+    model_profile: str = "agent_performance_evaluator",
+    review_models: list[str] | None = None,
+    operator: str = "mcp_operator",
+) -> dict:
+    """Run the repair loop for one research lead."""
+
+    request = ResearchFollowupLoopRequest(
+        lead_id=UUID(lead_id),
+        followup_lane=followup_lane,
+        source_keys=source_keys or [],
+        query_names=query_names or [],
+        limit_per_query=limit_per_query,
+        max_queries=max_queries,
+        ingest=ingest,
+        resolve=resolve,
+        evaluate=evaluate,
+        dry_run=dry_run,
+        force_live_search=force_live_search,
+        model_profile=model_profile,
+        review_models=review_models or [],
+        operator=operator,
+    )
+    return get_service().run_research_followup_loop(request).model_dump(mode="json")
+
+
+def escalate_agent_findings_tool(
+    review_ids: list[str] | None = None,
+    agent_run_ids: list[str] | None = None,
+    verdicts: list[str] | None = None,
+    source_keys: list[str] | None = None,
+    limit: int = 25,
+    create_research_leads: bool = True,
+    create_source_queries: bool = True,
+    dry_run: bool = False,
+    operator: str = "mcp_operator",
+) -> dict:
+    """Create research leads and source queries from bad/needs-followup evaluator findings."""
+
+    request = AgentFindingEscalationRequest(
+        review_ids=[UUID(value) for value in review_ids or []],
+        agent_run_ids=[UUID(value) for value in agent_run_ids or []],
+        verdicts=verdicts or ["bad", "needs_followup"],  # type: ignore[arg-type]
+        source_keys=source_keys or [],
+        limit=limit,
+        create_research_leads=create_research_leads,
+        create_source_queries=create_source_queries,
+        dry_run=dry_run,
+        operator=operator,
+    )
+    return get_service().escalate_agent_findings(request).model_dump(mode="json")
 
 
 def queue_research_brief_tool(
@@ -1006,7 +1078,10 @@ def resolve_research_followups_tool(
     promote_ready_leads: bool = True,
     run_claim_extraction: bool = True,
     dry_run: bool = False,
+    force_live_search: bool = False,
+    inspect_evidence_refs: bool = True,
     min_evidence_chunks: int = 1,
+    evidence_inspection_limit: int = 8,
     search_limit_per_source: int = 2,
     max_search_terms: int = 12,
     approved_by: str | None = None,
@@ -1025,7 +1100,10 @@ def resolve_research_followups_tool(
         promote_ready_leads=promote_ready_leads,
         run_claim_extraction=run_claim_extraction,
         dry_run=dry_run,
+        force_live_search=force_live_search,
+        inspect_evidence_refs=inspect_evidence_refs,
         min_evidence_chunks=min_evidence_chunks,
+        evidence_inspection_limit=evidence_inspection_limit,
         search_limit_per_source=search_limit_per_source,
         max_search_terms=max_search_terms,
         approved_by=approved_by,
@@ -1131,6 +1209,7 @@ def agent_performance_report_tool(
 
 
 def run_agent_performance_evaluation_tool(
+    agent_run_ids: list[str] | None = None,
     agent_name: str | None = None,
     status: str | None = "completed",
     source_key: str | None = None,
@@ -1143,6 +1222,7 @@ def run_agent_performance_evaluation_tool(
 
     return get_service().run_agent_performance_evaluation(
         AgentPerformanceEvaluationRequest(
+            agent_run_ids=[UUID(value) for value in agent_run_ids or []],
             agent_name=agent_name,
             status=status,
             source_key=source_key,
@@ -1599,6 +1679,9 @@ if mcp is not None:
     def ingest_validation_gap_source_queries(
         source_keys: list[str] | None = None,
         query_names: list[str] | None = None,
+        followup_lane: str | None = None,
+        origin_review_ids: list[str] | None = None,
+        origin_agent_run_ids: list[str] | None = None,
         limit_per_query: int = 5,
         max_queries: int = 50,
         dry_run: bool = True,
@@ -1608,9 +1691,74 @@ if mcp is not None:
         return ingest_validation_gap_source_queries_tool(
             source_keys=source_keys,
             query_names=query_names,
+            followup_lane=followup_lane,
+            origin_review_ids=origin_review_ids,
+            origin_agent_run_ids=origin_agent_run_ids,
             limit_per_query=limit_per_query,
             max_queries=max_queries,
             dry_run=dry_run,
+        )
+
+    @mcp.tool()
+    def run_research_followup_loop(
+        lead_id: str,
+        followup_lane: str = "agent_evaluator_followup",
+        source_keys: list[str] | None = None,
+        query_names: list[str] | None = None,
+        limit_per_query: int = 2,
+        max_queries: int = 10,
+        ingest: bool = True,
+        resolve: bool = False,
+        evaluate: bool = False,
+        dry_run: bool = True,
+        force_live_search: bool = True,
+        model_profile: str = "agent_performance_evaluator",
+        review_models: list[str] | None = None,
+        operator: str = "mcp_operator",
+    ) -> dict:
+        """Run the repair loop for one research lead."""
+
+        return run_research_followup_loop_tool(
+            lead_id=lead_id,
+            followup_lane=followup_lane,
+            source_keys=source_keys,
+            query_names=query_names,
+            limit_per_query=limit_per_query,
+            max_queries=max_queries,
+            ingest=ingest,
+            resolve=resolve,
+            evaluate=evaluate,
+            dry_run=dry_run,
+            force_live_search=force_live_search,
+            model_profile=model_profile,
+            review_models=review_models,
+            operator=operator,
+        )
+
+    @mcp.tool()
+    def escalate_agent_findings(
+        review_ids: list[str] | None = None,
+        agent_run_ids: list[str] | None = None,
+        verdicts: list[str] | None = None,
+        source_keys: list[str] | None = None,
+        limit: int = 25,
+        create_research_leads: bool = True,
+        create_source_queries: bool = True,
+        dry_run: bool = False,
+        operator: str = "mcp_operator",
+    ) -> dict:
+        """Create research leads and source queries from bad/needs-followup evaluator findings."""
+
+        return escalate_agent_findings_tool(
+            review_ids=review_ids,
+            agent_run_ids=agent_run_ids,
+            verdicts=verdicts,
+            source_keys=source_keys,
+            limit=limit,
+            create_research_leads=create_research_leads,
+            create_source_queries=create_source_queries,
+            dry_run=dry_run,
+            operator=operator,
         )
 
     @mcp.tool()
@@ -2042,7 +2190,10 @@ if mcp is not None:
         promote_ready_leads: bool = True,
         run_claim_extraction: bool = True,
         dry_run: bool = False,
+        force_live_search: bool = False,
+        inspect_evidence_refs: bool = True,
         min_evidence_chunks: int = 1,
+        evidence_inspection_limit: int = 8,
         search_limit_per_source: int = 2,
         max_search_terms: int = 12,
         approved_by: str | None = None,
@@ -2061,7 +2212,10 @@ if mcp is not None:
             promote_ready_leads=promote_ready_leads,
             run_claim_extraction=run_claim_extraction,
             dry_run=dry_run,
+            force_live_search=force_live_search,
+            inspect_evidence_refs=inspect_evidence_refs,
             min_evidence_chunks=min_evidence_chunks,
+            evidence_inspection_limit=evidence_inspection_limit,
             search_limit_per_source=search_limit_per_source,
             max_search_terms=max_search_terms,
             approved_by=approved_by,
@@ -2158,6 +2312,7 @@ if mcp is not None:
 
     @mcp.tool()
     def run_agent_performance_evaluation(
+        agent_run_ids: list[str] | None = None,
         agent_name: str | None = None,
         status: str | None = "completed",
         source_key: str | None = None,
@@ -2169,6 +2324,7 @@ if mcp is not None:
         """Run OpenRouter specialist evaluators over recent reviewed agent runs."""
 
         return run_agent_performance_evaluation_tool(
+            agent_run_ids=agent_run_ids,
             agent_name=agent_name,
             status=status,
             source_key=source_key,

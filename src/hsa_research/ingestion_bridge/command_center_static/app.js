@@ -360,6 +360,15 @@ function renderActionButtons(item) {
     if (action === "demote_lead") {
       return actionButton("lead-status", item.item_id, "Demote", "dismissed");
     }
+    if (action === "run_followup_search") {
+      return actionButton("research-followup-loop", item.item_id, "Run search", "search");
+    }
+    if (action === "reevaluate_followup") {
+      return actionButton("research-followup-loop", item.item_id, "Re-evaluate", "evaluate", !validationDispatchReady());
+    }
+    if (action === "escalate_agent_finding") {
+      return actionButton("escalate-agent-finding", item.item_id, "Create follow-up");
+    }
     return "";
   });
   return `<div class="actions">${buttons.join("")}</div>`;
@@ -991,6 +1000,14 @@ async function handleQueueAction(event) {
       await updateResearchLeadStatus(id, status);
       showToast(`Research lead moved to ${status}.`);
     }
+    if (action === "escalate-agent-finding") {
+      const result = await escalateAgentFinding(id);
+      showToast(`Created ${result.research_leads_created || 0} lead(s), ${result.source_queries_created || 0} source quer${(result.source_queries_created || 0) === 1 ? "y" : "ies"}.`);
+    }
+    if (action === "research-followup-loop") {
+      const result = await runResearchFollowupLoop(id, status);
+      showToast(followupLoopToast(result, status));
+    }
     await Promise.all([
       refreshCommandCenter(),
       refreshActionItems(),
@@ -1003,6 +1020,41 @@ async function handleQueueAction(event) {
   } finally {
     button.disabled = false;
   }
+}
+
+async function runResearchFollowupLoop(leadId, mode) {
+  const evaluate = mode === "evaluate";
+  return postJson(`/api/research-leads/${encodeURIComponent(leadId)}/followup-loop`, {
+    ingest: !evaluate,
+    resolve: evaluate,
+    evaluate,
+    dry_run: false,
+    limit_per_query: evaluate ? 1 : 2,
+    max_queries: 10,
+    followup_lane: "agent_evaluator_followup",
+    model_profile: "agent_performance_evaluator",
+    operator: $("operatorName").value.trim() || "command_center_operator",
+  });
+}
+
+function followupLoopToast(result, mode) {
+  if (mode === "evaluate") {
+    const verdict = result.latest_evaluator_verdict ? ` verdict ${result.latest_evaluator_verdict}` : "";
+    return `Re-evaluated lead.${verdict} est $${Number(result.estimated_cost_usd || 0).toFixed(4)} spent $${Number(result.actual_cost_usd || 0).toFixed(4)}.`;
+  }
+  const fit = result.evidence_fit && result.evidence_fit.fit ? ` Evidence fit: ${result.evidence_fit.fit}.` : "";
+  return `Ran ${result.query_count || 0} follow-up quer${(result.query_count || 0) === 1 ? "y" : "ies"}; added ${result.document_chunks || 0} chunk(s).${fit}`;
+}
+
+async function escalateAgentFinding(itemId) {
+  const reviewId = String(itemId || "").replace(/^agent-review:/, "");
+  return postJson("/api/agent-findings/escalate", {
+    review_id: reviewId,
+    operator: $("operatorName").value.trim() || "command_center_operator",
+    dry_run: false,
+    create_research_leads: true,
+    create_source_queries: true,
+  });
 }
 
 async function handleAgentRunReview(event) {

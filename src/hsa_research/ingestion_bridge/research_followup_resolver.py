@@ -19,6 +19,7 @@ from .contracts import (
     SourceFollowupQueueItem,
     SourceQuery,
 )
+from .evidence_fit import assess_research_followup_ref_evidence_fit
 from .local_ingest import LocalIngestionPipeline
 from .repository import ResearchRepository
 from .source_followup import ingest_source_followups
@@ -46,6 +47,18 @@ _OBJECT_TYPE_BY_SOURCE = {
 }
 _NON_EVIDENCE_SOURCES = {"x_linked_article", "x_topic", "x_topic_monitor"}
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+", re.I)
+_QUERY_STOPWORDS = {
+    "data",
+    "evidence",
+    "followup",
+    "follow",
+    "needs",
+    "profile",
+    "proposed",
+    "record",
+    "signal",
+    "source",
+}
 
 
 def resolve_research_followup_leads(
@@ -54,9 +67,27 @@ def resolve_research_followup_leads(
 ) -> ResearchFollowupResolverResult:
     """Resolve follow-up leads without allowing weak evidence into synthesis."""
 
-    result = ResearchFollowupResolverResult(model_profile="deterministic_resolver")
-    leads = _select_leads(repository, request)
+    result = ResearchFollowupResolverResult(
+        model_profile="deterministic_resolver",
+        dry_run=request.dry_run,
+        force_live_search=request.force_live_search,
+    )
+    leads, skipped = _select_leads(repository, request)
     result.leads_seen = len(leads)
+    result.skipped_leads = len(skipped)
+    result.skip_reasons = skipped
+    result.unresolved_lead_ids = [
+        UUID(item["lead_id"])
+        for item in skipped
+        if item.get("reason") == "lead_not_found" and item.get("lead_id")
+    ]
+    if request.lead_ids and skipped:
+        result.errors.extend(_skip_error(item) for item in skipped)
+        result.failed_leads += len(result.unresolved_lead_ids)
+    if request.lead_ids and not leads:
+        result.blocked = True
+        if not result.errors:
+            result.errors.append("No requested research follow-up leads were eligible for resolution.")
 
     for lead in leads:
         lead_result = _resolve_one_lead(repository, request, lead)
@@ -64,6 +95,7 @@ def resolve_research_followup_leads(
         result.source_followups_queued += int("queued_source_followup" in lead_result.actions)
         result.source_followups_ingested += int("ingested_source_followup" in lead_result.actions)
         result.durable_source_searches += int("searched_durable_sources" in lead_result.actions)
+        result.evidence_inspections += int("evidence_inspection" in lead_result.metadata)
         result.promoted_leads += int(lead_result.promoted)
         result.manual_research_required += int(lead_result.manual_research_required)
         result.kept_in_followup += int("kept_in_followup" in lead_result.actions)
@@ -76,9 +108,15 @@ def resolve_research_followup_leads(
 def summarize_research_followup_resolver(result: ResearchFollowupResolverResult) -> dict[str, Any]:
     return {
         "leads_seen": result.leads_seen,
+        "dry_run": result.dry_run,
+        "force_live_search": result.force_live_search,
+        "blocked": result.blocked,
+        "skipped_leads": result.skipped_leads,
+        "unresolved_lead_ids": len(result.unresolved_lead_ids),
         "source_followups_queued": result.source_followups_queued,
         "source_followups_ingested": result.source_followups_ingested,
         "durable_source_searches": result.durable_source_searches,
+        "evidence_inspections": result.evidence_inspections,
         "promoted_leads": result.promoted_leads,
         "manual_research_required": result.manual_research_required,
         "kept_in_followup": result.kept_in_followup,
@@ -90,26 +128,68 @@ def summarize_research_followup_resolver(result: ResearchFollowupResolverResult)
 def _select_leads(
     repository: ResearchRepository,
     request: ResearchFollowupResolverRequest,
-) -> list[ResearchLeadRecord]:
+) -> tuple[list[ResearchLeadRecord], list[dict[str, Any]]]:
+    skipped: list[dict[str, Any]] = []
     if request.lead_ids:
-        leads = [
-            lead
-            for lead_id in request.lead_ids
-            if (lead := repository.get_research_lead(lead_id)) is not None
-        ]
+        leads = []
+        for lead_id in request.lead_ids:
+            lead = repository.get_research_lead(lead_id)
+            if lead is None:
+                skipped.append({"lead_id": str(lead_id), "reason": "lead_not_found"})
+                continue
+            leads.append(lead)
     else:
         leads = repository.list_research_leads(statuses=list(request.statuses), limit=request.limit)
     if request.source_keys:
         allowed_sources = set(request.source_keys)
-        leads = [
-            lead
-            for lead in leads
-            if (lead.source_key in allowed_sources or lead.origin_source_key in allowed_sources)
-        ]
+        eligible = []
+        for lead in leads:
+            if lead.source_key in allowed_sources or lead.origin_source_key in allowed_sources:
+                eligible.append(lead)
+                continue
+            if request.lead_ids:
+                skipped.append(_lead_skip_reason(lead, "source_not_allowed"))
+        leads = eligible
     allowed_statuses = set(request.statuses)
-    leads = [lead for lead in leads if lead.status in allowed_statuses]
+    eligible = []
+    for lead in leads:
+        if lead.status in allowed_statuses:
+            eligible.append(lead)
+            continue
+        if request.lead_ids:
+            skipped.append(_lead_skip_reason(lead, "status_not_allowed"))
+    leads = eligible
     leads.sort(key=lambda item: (item.priority, item.created_at))
-    return leads[: request.limit]
+    if len(leads) > request.limit:
+        if request.lead_ids:
+            skipped.extend(_lead_skip_reason(lead, "limit_exceeded") for lead in leads[request.limit :])
+        leads = leads[: request.limit]
+    return leads, skipped
+
+
+def _lead_skip_reason(lead: ResearchLeadRecord, reason: str) -> dict[str, Any]:
+    return {
+        "lead_id": str(lead.lead_id),
+        "title": lead.title,
+        "status": lead.status,
+        "source_key": lead.source_key,
+        "origin_source_key": lead.origin_source_key,
+        "reason": reason,
+    }
+
+
+def _skip_error(item: dict[str, Any]) -> str:
+    lead_id = item.get("lead_id", "unknown")
+    reason = item.get("reason", "skipped")
+    status = item.get("status")
+    source_key = item.get("source_key")
+    details = []
+    if status:
+        details.append(f"status={status}")
+    if source_key:
+        details.append(f"source_key={source_key}")
+    suffix = f" ({', '.join(details)})" if details else ""
+    return f"lead {lead_id}: {reason}{suffix}"
 
 
 def _resolve_one_lead(
@@ -131,12 +211,19 @@ def _resolve_one_lead(
             [*lead_result.source_followup_ids, *(item.followup_id for item in source_followups)]
         )
 
+        ingestable = [
+            item
+            for item in source_followups
+            if item.status in {"queued", "approved"}
+        ]
+        if request.ingest_source_followups and source_followups and request.dry_run and ingestable:
+            lead_result.metadata["planned_source_followup_ingest"] = {
+                "action": "would_ingest_source_followups",
+                "followup_ids": [str(item.followup_id) for item in ingestable],
+                "source_keys": sorted({item.source_key for item in ingestable}),
+            }
+
         if request.ingest_source_followups and source_followups and not request.dry_run:
-            ingestable = [
-                item
-                for item in source_followups
-                if item.status in {"queued", "approved"}
-            ]
             if ingestable:
                 ingest_result = ingest_source_followups(
                     repository,
@@ -166,17 +253,26 @@ def _resolve_one_lead(
             evidence_refs.extend(chunk_refs)
             durable_sources.extend(chunk_sources)
 
-        if len(evidence_refs) < request.min_evidence_chunks and request.search_missing_identifiers:
+        should_search = request.force_live_search or (
+            len(evidence_refs) < request.min_evidence_chunks and request.search_missing_identifiers
+        )
+        if should_search:
+            search_forced = request.force_live_search and len(evidence_refs) >= request.min_evidence_chunks
             if request.dry_run:
-                lead_result.actions.append("searched_durable_sources")
+                _append_action_once(lead_result, "searched_durable_sources")
                 lead_result.metadata["planned_search"] = {
+                    "action": "would_force_live_search" if search_forced else "would_search_durable_sources",
+                    "force_live_search": request.force_live_search,
+                    "evidence_refs_before_search": len(_dedupe_strings(evidence_refs)),
                     "query": _lead_search_query(lead, max_terms=request.max_search_terms),
                     "source_keys": _search_source_keys(request),
                     "dry_run": True,
                 }
             else:
                 search_report = _search_durable_sources(repository, lead, request)
-                lead_result.actions.append("searched_durable_sources")
+                search_report["force_live_search"] = request.force_live_search
+                search_report["evidence_refs_before_search"] = len(_dedupe_strings(evidence_refs))
+                _append_action_once(lead_result, "searched_durable_sources")
                 lead_result.metadata["durable_source_search"] = search_report
                 chunk_refs, chunk_sources = _stored_chunk_evidence(repository, lead, request)
                 evidence_refs.extend(chunk_refs)
@@ -186,19 +282,57 @@ def _resolve_one_lead(
         durable_sources = _dedupe_strings(durable_sources)
         lead_result.evidence_refs = evidence_refs
         lead_result.durable_source_keys = durable_sources
+        if evidence_refs and request.inspect_evidence_refs:
+            lead_result.metadata["evidence_inspection"] = _inspect_evidence_refs(repository, evidence_refs, request, lead)
 
         if len(evidence_refs) >= request.min_evidence_chunks and durable_sources:
-            if request.promote_ready_leads and not request.dry_run:
+            evidence_fit = assess_research_followup_ref_evidence_fit(
+                repository,
+                lead,
+                evidence_refs,
+                durable_sources,
+            )
+            lead_result.metadata["evidence_fit"] = evidence_fit.model_dump(mode="json")
+            if evidence_fit.fit != "strong":
+                if request.dry_run:
+                    lead_result.metadata["planned_action"] = "would_keep_in_followup_evidence_fit"
+                else:
+                    updated = repository.update_research_lead(
+                        lead.lead_id,
+                        status="followup",
+                        metadata={
+                            "research_followup_resolver": {
+                                "last_checked_at": datetime.now(UTC).isoformat(),
+                                "requires_manual_research": False,
+                                "reason": "Evidence did not pass the direct-fit promotion gate.",
+                                "evidence_refs": evidence_refs,
+                                "durable_source_keys": durable_sources,
+                                "evidence_fit": evidence_fit.model_dump(mode="json"),
+                                "dagster_run_id": request.dagster_run_id,
+                                "min_evidence_chunks": request.min_evidence_chunks,
+                            },
+                            "research_followup_resolver_last_action": "kept_in_followup_evidence_fit",
+                        },
+                    )
+                    lead_result.status_after = updated.status if updated else lead.status
+                _append_action_once(lead_result, "kept_in_followup")
+            elif request.promote_ready_leads and not request.dry_run:
                 promoted = _promote_lead(repository, lead, evidence_refs, durable_sources, request, lead_result)
                 lead_result.status_after = promoted.status
                 lead_result.promoted = promoted.status in {"new", "watching"}
-                lead_result.actions.append("promoted_to_watching")
+                _append_action_once(lead_result, "promoted_to_watching")
             else:
-                lead_result.actions.append("kept_in_followup")
+                if request.dry_run and request.promote_ready_leads:
+                    lead_result.metadata["planned_action"] = "would_promote_to_watching"
+                elif request.dry_run:
+                    lead_result.metadata["planned_action"] = "would_keep_in_followup"
+                _append_action_once(lead_result, "kept_in_followup")
         else:
             lead_result.manual_research_required = True
-            lead_result.actions.append("manual_research_required")
-            lead_result.actions.append("kept_in_followup")
+            _append_action_once(lead_result, "manual_research_required")
+            _append_action_once(lead_result, "kept_in_followup")
+            if request.dry_run:
+                lead_result.metadata["planned_action"] = "would_mark_manual_research_required"
             if not request.dry_run:
                 updated = repository.update_research_lead(
                     lead.lead_id,
@@ -219,6 +353,84 @@ def _resolve_one_lead(
         lead_result.actions.append("failed")
         lead_result.status_after = lead.status
     return lead_result
+
+
+def _append_action_once(lead_result: ResearchFollowupLeadResult, action: str) -> None:
+    if action not in lead_result.actions:
+        lead_result.actions.append(action)  # type: ignore[arg-type]
+
+
+def _inspect_evidence_refs(
+    repository: ResearchRepository,
+    evidence_refs: list[str],
+    request: ResearchFollowupResolverRequest,
+    lead: ResearchLeadRecord,
+) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ref in evidence_refs:
+        if len(records) >= request.evidence_inspection_limit:
+            break
+        ref_type, _, ref_id = ref.partition(":")
+        if ref_type not in {"chunk", "research_object"} or not ref_id:
+            continue
+        try:
+            parsed_id = UUID(ref_id)
+        except ValueError:
+            continue
+        key = f"{ref_type}:{parsed_id}"
+        if key in seen:
+            continue
+        seen.add(key)
+        if ref_type == "chunk":
+            chunk = repository.get_document_chunk(parsed_id)
+            if chunk is None:
+                records.append({"ref": ref, "ref_type": ref_type, "status": "missing"})
+                continue
+            obj = repository.get_research_object(chunk.research_object_id)
+            records.append(
+                {
+                    "ref": ref,
+                    "ref_type": "chunk",
+                    "chunk_id": str(chunk.id),
+                    "research_object_id": str(chunk.research_object_id),
+                    "source_key": obj.source_key if obj else None,
+                    "title": obj.title if obj else None,
+                    "canonical_url": obj.canonical_url if obj else None,
+                    "identifiers": obj.identifiers if obj else {},
+                    "section_label": chunk.section_label,
+                    "chunk_index": chunk.chunk_index,
+                    "text_preview": _preview_text(chunk.text_content),
+                }
+            )
+            continue
+        obj = repository.get_research_object(parsed_id)
+        if obj is None:
+            records.append({"ref": ref, "ref_type": ref_type, "status": "missing"})
+            continue
+        records.append(
+            {
+                "ref": ref,
+                "ref_type": "research_object",
+                "research_object_id": str(obj.id),
+                "source_key": obj.source_key,
+                "title": obj.title,
+                "canonical_url": obj.canonical_url,
+                "identifiers": obj.identifiers,
+                "publication_year": obj.publication_year,
+            }
+        )
+    return {
+        "query": _lead_search_query(lead, max_terms=request.max_search_terms),
+        "inspected_count": len(records),
+        "limit": request.evidence_inspection_limit,
+        "records": records,
+    }
+
+
+def _preview_text(value: str, limit: int = 600) -> str:
+    normalized = re.sub(r"\s+", " ", value).strip()
+    return normalized if len(normalized) <= limit else f"{normalized[: limit - 3]}..."
 
 
 def _ensure_identifier_followups(
@@ -256,6 +468,15 @@ def _ensure_identifier_followups(
             lead_result.source_followup_ids.append(existing.followup_id)
             continue
         if request.dry_run:
+            lead_result.metadata.setdefault("planned_source_followups", []).append(
+                {
+                    "action": "would_queue_source_followup",
+                    "source_key": item.source_key,
+                    "identifier_type": item.identifier_type,
+                    "identifier": item.identifier,
+                    "url": item.url,
+                }
+            )
             items.append(item)
             continue
         persisted = repository.upsert_source_followup(item)
@@ -386,6 +607,7 @@ def _promote_lead(
             "requires_manual_research": False,
             "evidence_refs": evidence_refs,
             "durable_source_keys": durable_source_keys,
+            "evidence_fit": lead_result.metadata.get("evidence_fit"),
             "dagster_run_id": request.dagster_run_id,
             "min_evidence_chunks": request.min_evidence_chunks,
         },
@@ -425,25 +647,62 @@ def _query_params_for_search_source(source_key: str) -> dict[str, Any]:
 
 
 def _lead_search_query(lead: ResearchLeadRecord, *, max_terms: int) -> str:
+    context_text = " ".join(
+        [
+            lead.title or "",
+            lead.summary or "",
+            lead.reason or "",
+            " ".join(lead.topic_tags),
+        ]
+    ).lower()
     raw_parts = [
-        lead.title or "",
+        _lead_query_expansion_text(context_text),
         lead.summary or "",
         lead.reason or "",
         " ".join(lead.topic_tags),
         " ".join(lead.identifiers.values()),
+        lead.title or "",
         "canine hemangiosarcoma human angiosarcoma",
     ]
     tokens: list[str] = []
     seen: set[str] = set()
+    _extend_query_tokens(tokens, seen, [lead.title or ""], max_terms=min(max_terms, 8), skip_stopwords=True)
     for part in raw_parts:
+        _extend_query_tokens(tokens, seen, [part], max_terms=max_terms, skip_stopwords=True)
+        if len(tokens) >= max_terms:
+            return " ".join(tokens)
+    return " ".join(tokens) or "canine hemangiosarcoma human angiosarcoma"
+
+
+def _lead_query_expansion_text(context_text: str) -> str:
+    terms: list[str] = []
+    if any(term in context_text for term in ("dlt", "dose limiting", "dose-limiting", "mtd", "maximum tolerated")):
+        terms.extend(["canine", "veterinary", "oncology", "dose", "limiting", "toxicity", "maximum", "tolerated"])
+    if any(term in context_text for term in ("safety", "tolerability", "toxicity", "adverse")):
+        terms.extend(["canine", "veterinary", "toxicity", "tolerability", "adverse", "events"])
+    if any(term in context_text for term in ("pharmacokinetic", "pk", "cmax", "auc", "tmax", "exposure")):
+        terms.extend(["canine", "pharmacokinetics", "cmax", "auc", "tmax", "plasma", "exposure"])
+    return " ".join(terms)
+
+
+def _extend_query_tokens(
+    tokens: list[str],
+    seen: set[str],
+    parts: Iterable[str],
+    *,
+    max_terms: int,
+    skip_stopwords: bool,
+) -> None:
+    for part in parts:
         for token in _TOKEN_PATTERN.findall(part.lower()):
             if len(token) < 3 or token in seen:
+                continue
+            if skip_stopwords and token in _QUERY_STOPWORDS:
                 continue
             tokens.append(token)
             seen.add(token)
             if len(tokens) >= max_terms:
-                return " ".join(tokens)
-    return " ".join(tokens) or "canine hemangiosarcoma human angiosarcoma"
+                return
 
 
 def _find_existing_followup(

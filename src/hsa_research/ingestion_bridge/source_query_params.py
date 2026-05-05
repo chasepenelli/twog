@@ -139,8 +139,12 @@ _SOURCE_QUERY_PARAM_ALLOWLISTS: dict[str, set[str]] = {
 
 _INTERNAL_QUERY_PARAM_KEYS = {
     "evidence_refs",
+    "followup_lane",
     "lane",
     "lead_id",
+    "operator",
+    "origin_agent_run_id",
+    "origin_review_id",
     "priority",
     "queue_item_id",
     "required_terms",

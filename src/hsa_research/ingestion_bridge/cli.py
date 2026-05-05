@@ -15,6 +15,7 @@ from .backfill import backfill_deep_dives, backfill_papers_json
 from .claim_curator import curate_claims_for_repository
 from .claim_extractor import extract_claims_for_repository
 from .contracts import (
+    AgentFindingEscalationRequest,
     AgentPerformanceEvaluationRequest,
     AgentPerformanceReportRequest,
     ClaimCurationRequest,
@@ -31,6 +32,7 @@ from .contracts import (
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
     ResearchFollowupResolverRequest,
+    ResearchFollowupLoopRequest,
     ResearchLeadCollectRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
@@ -796,7 +798,18 @@ def main() -> None:
     )
     research_followup_resolver.add_argument("--no-claim-extraction", action="store_true")
     research_followup_resolver.add_argument("--dry-run", action="store_true")
+    research_followup_resolver.add_argument(
+        "--force-live-search",
+        action="store_true",
+        help="Refresh durable sources even when stored chunks already satisfy the evidence threshold.",
+    )
+    research_followup_resolver.add_argument(
+        "--no-evidence-inspection",
+        action="store_true",
+        help="Do not attach chunk/object inspection previews for selected evidence refs.",
+    )
     research_followup_resolver.add_argument("--min-evidence-chunks", type=int, default=1)
+    research_followup_resolver.add_argument("--evidence-inspection-limit", type=int, default=8)
     research_followup_resolver.add_argument("--search-limit-per-source", type=int, default=2)
     research_followup_resolver.add_argument("--max-search-terms", type=int, default=12)
     research_followup_resolver.add_argument("--approved-by", default=None)
@@ -841,6 +854,7 @@ def main() -> None:
         help="Run OpenRouter specialist evaluators over recent reviewed agent runs",
     )
     agent_performance_evaluate.add_argument("--agent-name", default=None, help="Optional agent name filter")
+    agent_performance_evaluate.add_argument("--agent-run-id", action="append", default=[], help="Specific agent run ID")
     agent_performance_evaluate.add_argument("--status", default="completed", help="Optional run status filter")
     agent_performance_evaluate.add_argument("--source", default=None, help="Optional source key filter")
     agent_performance_evaluate.add_argument("--limit", type=int, default=25, help="Recent reviewed runs to evaluate")
@@ -860,6 +874,26 @@ def main() -> None:
         default=[],
         help="OpenRouter evaluator model id; repeat to override the default",
     )
+
+    agent_findings_escalate = subparsers.add_parser(
+        "escalate-agent-findings",
+        help="Create research leads and source queries from bad/needs-followup evaluator findings",
+    )
+    agent_findings_escalate.add_argument("--review-id", action="append", default=[], help="Specific evaluator review ID")
+    agent_findings_escalate.add_argument("--agent-run-id", action="append", default=[], help="Specific agent run ID")
+    agent_findings_escalate.add_argument(
+        "--verdict",
+        action="append",
+        default=[],
+        choices=["bad", "needs_followup", "unclear", "useful"],
+        help="Evaluator verdict to escalate; defaults to bad and needs_followup",
+    )
+    agent_findings_escalate.add_argument("--source", action="append", default=[], help="Override target source key")
+    agent_findings_escalate.add_argument("--limit", type=int, default=25, help="Maximum findings to inspect")
+    agent_findings_escalate.add_argument("--no-research-leads", action="store_true", help="Do not create research leads")
+    agent_findings_escalate.add_argument("--no-source-queries", action="store_true", help="Do not create SourceQuery rows")
+    agent_findings_escalate.add_argument("--dry-run", action="store_true", help="Return planned work without persisting")
+    agent_findings_escalate.add_argument("--operator", default="cli_operator", help="Operator identity recorded in metadata")
 
     evaluate_research_brief = subparsers.add_parser(
         "evaluate-research-brief",
@@ -1100,9 +1134,34 @@ def main() -> None:
     )
     validation_gap_ingest.add_argument("--source", action="append", default=[], help="Source key to ingest; repeat for multiple.")
     validation_gap_ingest.add_argument("--query-name", action="append", default=[], help="Specific query name; repeat for multiple.")
+    validation_gap_ingest.add_argument("--followup-lane", default=None, help="Internal follow-up lane filter.")
+    validation_gap_ingest.add_argument("--origin-review-id", action="append", default=[], help="Origin evaluator review ID filter.")
+    validation_gap_ingest.add_argument("--origin-agent-run-id", action="append", default=[], help="Origin agent run ID filter.")
     validation_gap_ingest.add_argument("--limit-per-query", type=int, default=5)
     validation_gap_ingest.add_argument("--max-queries", type=int, default=50)
     validation_gap_ingest.add_argument("--apply", action="store_true", help="Run ingestion. Without this flag the command is a dry run.")
+
+    research_followup_loop = subparsers.add_parser(
+        "research-followup-loop",
+        help="Run the manual repair loop for one research lead: ingest, resolve, and optionally OpenRouter-evaluate.",
+    )
+    research_followup_loop.add_argument("--lead-id", required=True, help="Research lead ID")
+    research_followup_loop.add_argument("--source", action="append", default=[], help="Source key to ingest; repeat for multiple.")
+    research_followup_loop.add_argument("--query-name", action="append", default=[], help="Specific query name; repeat for multiple.")
+    research_followup_loop.add_argument("--followup-lane", default="agent_evaluator_followup")
+    research_followup_loop.add_argument("--limit-per-query", type=int, default=2)
+    research_followup_loop.add_argument("--max-queries", type=int, default=10)
+    research_followup_loop.add_argument("--no-ingest", action="store_true")
+    research_followup_loop.add_argument("--resolve", action="store_true", help="Re-run the follow-up resolver after ingestion.")
+    research_followup_loop.add_argument("--evaluate", action="store_true", help="Run OpenRouter evaluator on the resolver run.")
+    research_followup_loop.add_argument("--apply", action="store_true", help="Apply changes. Without this flag the command is a dry run.")
+    research_followup_loop.add_argument("--no-force-live-search", action="store_true")
+    research_followup_loop.add_argument("--search-limit-per-source", type=int, default=2)
+    research_followup_loop.add_argument("--min-evidence-chunks", type=int, default=1)
+    research_followup_loop.add_argument("--model-profile", default="agent_performance_evaluator")
+    research_followup_loop.add_argument("--review-model", action="append", default=[])
+    research_followup_loop.add_argument("--estimated-evaluator-cost-usd", type=float, default=0.03)
+    research_followup_loop.add_argument("--operator", default="cli_operator")
 
     model_review_summary = subparsers.add_parser(
         "model-review-summary",
@@ -1732,7 +1791,10 @@ def main() -> None:
                 promote_ready_leads=not args.no_promote,
                 run_claim_extraction=not args.no_claim_extraction,
                 dry_run=args.dry_run,
+                force_live_search=args.force_live_search,
+                inspect_evidence_refs=not args.no_evidence_inspection,
                 min_evidence_chunks=args.min_evidence_chunks,
+                evidence_inspection_limit=args.evidence_inspection_limit,
                 search_limit_per_source=args.search_limit_per_source,
                 max_search_terms=args.max_search_terms,
                 approved_by=args.approved_by,
@@ -1769,6 +1831,7 @@ def main() -> None:
         output = HSAResearchService(repo).build_agent_performance_report(
             AgentPerformanceReportRequest(
                 agent_name=args.agent_name,
+                agent_run_ids=[UUID(value) for value in args.agent_run_id],
                 status=args.status,
                 source_key=args.source,
                 limit=args.limit,
@@ -1785,6 +1848,20 @@ def main() -> None:
                 reviewed_only=not args.include_unreviewed,
                 model_profile=args.model_profile,
                 review_models=args.review_model,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "escalate-agent-findings":
+        output = HSAResearchService(repo).escalate_agent_findings(
+            AgentFindingEscalationRequest(
+                review_ids=[UUID(value) for value in args.review_id],
+                agent_run_ids=[UUID(value) for value in args.agent_run_id],
+                verdicts=args.verdict or ["bad", "needs_followup"],
+                limit=args.limit,
+                source_keys=args.source,
+                create_research_leads=not args.no_research_leads,
+                create_source_queries=not args.no_source_queries,
+                dry_run=args.dry_run,
+                operator=args.operator,
             )
         ).model_dump(mode="json")
     elif args.command == "evaluate-research-brief":
@@ -1952,9 +2029,34 @@ def main() -> None:
             ValidationGapSourceIngestRequest(
                 source_keys=args.source,
                 query_names=args.query_name,
+                followup_lane=args.followup_lane,
+                origin_review_ids=[UUID(value) for value in args.origin_review_id],
+                origin_agent_run_ids=[UUID(value) for value in args.origin_agent_run_id],
                 limit_per_query=args.limit_per_query,
                 max_queries=args.max_queries,
                 dry_run=not args.apply,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "research-followup-loop":
+        output = HSAResearchService(repo).run_research_followup_loop(
+            ResearchFollowupLoopRequest(
+                lead_id=UUID(args.lead_id),
+                followup_lane=args.followup_lane,
+                source_keys=args.source,
+                query_names=args.query_name,
+                limit_per_query=args.limit_per_query,
+                max_queries=args.max_queries,
+                ingest=not args.no_ingest,
+                resolve=args.resolve,
+                evaluate=args.evaluate,
+                dry_run=not args.apply,
+                force_live_search=not args.no_force_live_search,
+                search_limit_per_source=args.search_limit_per_source,
+                min_evidence_chunks=args.min_evidence_chunks,
+                model_profile=args.model_profile,
+                review_models=args.review_model,
+                estimated_evaluator_cost_usd=args.estimated_evaluator_cost_usd,
+                operator=args.operator,
             )
         ).model_dump(mode="json")
     elif args.command == "model-review-summary":

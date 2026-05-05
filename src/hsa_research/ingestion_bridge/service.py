@@ -15,6 +15,8 @@ from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from .contracts import (
+    AgentFindingEscalationRequest,
+    AgentFindingEscalationResult,
     AgentPerformanceEvaluationRequest,
     AgentPerformanceEvaluationResult,
     AgentPerformanceReportRequest,
@@ -71,6 +73,8 @@ from .contracts import (
     ResearchChunkSearchResults,
     ResearchFollowupResolverRequest,
     ResearchFollowupResolverResult,
+    ResearchFollowupLoopRequest,
+    ResearchFollowupLoopResult,
     ResearchLeadCollectRequest,
     ResearchLeadCollectResult,
     ResearchLeadRecord,
@@ -115,6 +119,12 @@ from .contracts import (
     XLinkedArticleFollowupRequest,
     XLinkedArticleFollowupResult,
 )
+from .agent_finding_escalation import (
+    AGENT_FINDING_ESCALATION_AGENT_NAME,
+    AGENT_FINDING_ESCALATION_AGENT_VERSION,
+    escalate_agent_findings,
+    summarize_agent_finding_escalation,
+)
 from .agent_performance import (
     AGENT_PERFORMANCE_EVALUATOR_AGENT_NAME,
     AGENT_PERFORMANCE_EVALUATOR_AGENT_VERSION,
@@ -125,6 +135,7 @@ from .agent_performance import (
 from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, build_embedding_provider, select_embedding_model_from_coverage
+from .evidence_fit import assess_research_followup_ingest_evidence_fit
 from .evidence_gap_resolver import (
     EVIDENCE_GAP_RESOLVER_AGENT_NAME,
     EVIDENCE_GAP_RESOLVER_AGENT_VERSION,
@@ -311,6 +322,44 @@ def summarize_validation_autopilot_result(result: ValidationAutopilotResult) -> 
         "estimated_cost_usd": result.estimated_cost_usd,
         "actual_cost_usd": result.actual_cost_usd,
     }
+
+
+def _summarize_research_followup_loop(result: ResearchFollowupLoopResult) -> dict[str, Any]:
+    return {
+        "lead_id": str(result.lead_id),
+        "lead_status_before": result.lead_status_before,
+        "lead_status_after": result.lead_status_after,
+        "dry_run": result.dry_run,
+        "query_count": result.query_count,
+        "raw_records": result.raw_records,
+        "document_chunks": result.document_chunks,
+        "evidence_fit": result.evidence_fit.fit if result.evidence_fit else None,
+        "latest_evaluator_verdict": result.latest_evaluator_verdict,
+        "estimated_cost_usd": result.estimated_cost_usd,
+        "actual_cost_usd": result.actual_cost_usd,
+        "errors": len(result.errors),
+    }
+
+
+def _agent_run_review_cost_usd(review: AgentRunReviewRecord) -> float:
+    metadata = review.metadata or {}
+    evaluation = metadata.get("agent_performance_evaluation") if isinstance(metadata, dict) else {}
+    model_metadata = evaluation.get("model_metadata") if isinstance(evaluation, dict) else {}
+    usage = model_metadata.get("usage") if isinstance(model_metadata, dict) else {}
+    if not isinstance(usage, dict):
+        usage = {}
+    for value in (
+        usage.get("cost"),
+        usage.get("total_cost"),
+        usage.get("cost_usd"),
+        model_metadata.get("cost") if isinstance(model_metadata, dict) else None,
+        model_metadata.get("total_cost") if isinstance(model_metadata, dict) else None,
+        model_metadata.get("cost_usd") if isinstance(model_metadata, dict) else None,
+    ):
+        parsed = _float_or_none(value)
+        if parsed is not None:
+            return parsed
+    return 0.0
 
 
 def _requires_openrouter_for_model_profile(model_profile: str) -> bool:
@@ -2255,6 +2304,204 @@ class HSAResearchService:
     ) -> ValidationGapSourceIngestResult:
         return ingest_validation_gap_source_queries(self.repository, request)
 
+    def run_research_followup_loop(
+        self,
+        request: ResearchFollowupLoopRequest,
+    ) -> ResearchFollowupLoopResult:
+        return AgentRunner(self.repository).run(
+            agent_name="research_followup_loop_agent",
+            agent_version="v1",
+            model_profile=request.model_profile,
+            input_payload=request.model_dump(mode="json"),
+            dagster_run_id=request.dagster_run_id,
+            metadata=request.metadata,
+            execute=lambda: self._execute_research_followup_loop(request),
+            summarize=_summarize_research_followup_loop,
+        )
+
+    def _execute_research_followup_loop(
+        self,
+        request: ResearchFollowupLoopRequest,
+    ) -> ResearchFollowupLoopResult:
+        lead = self.repository.get_research_lead(request.lead_id)
+        result = ResearchFollowupLoopResult(
+            lead_id=request.lead_id,
+            dry_run=request.dry_run,
+            followup_lane=request.followup_lane,
+            estimated_cost_usd=round(request.estimated_evaluator_cost_usd if request.evaluate else 0.0, 6),
+        )
+        if lead is None:
+            result.errors.append("Research lead not found.")
+            return result
+
+        result.lead_status_before = lead.status
+        origin_review_ids = [lead.origin_review_id] if lead.origin_review_id else []
+        origin_agent_run_ids = [lead.origin_agent_run_id] if lead.origin_agent_run_id else []
+        source_keys = request.source_keys or lead.suggested_sources
+
+        if request.ingest:
+            if not request.dry_run:
+                self._transition_research_followup_lead(
+                    result,
+                    request.lead_id,
+                    "queued",
+                    request.operator,
+                    {"phase": "followup_search_started"},
+                )
+            ingest_result = self.ingest_validation_gap_source_queries(
+                ValidationGapSourceIngestRequest(
+                    source_keys=source_keys,
+                    query_names=request.query_names,
+                    followup_lane=request.followup_lane,
+                    origin_review_ids=origin_review_ids,
+                    origin_agent_run_ids=origin_agent_run_ids,
+                    limit_per_query=request.limit_per_query,
+                    max_queries=request.max_queries,
+                    dry_run=request.dry_run,
+                    metadata={"research_followup_loop": True, **request.metadata},
+                )
+            )
+            result.ingest_result = ingest_result
+            result.query_count = ingest_result.query_count
+            result.raw_records = ingest_result.raw_records
+            result.research_objects = ingest_result.research_objects
+            result.document_chunks = ingest_result.document_chunks
+            result.errors.extend(ingest_result.errors)
+            evidence_fit = assess_research_followup_ingest_evidence_fit(self.repository, lead, ingest_result)
+            result.evidence_fit = evidence_fit
+            if not request.dry_run:
+                next_status = "watching" if evidence_fit.fit == "strong" else "followup"
+                self._transition_research_followup_lead(
+                    result,
+                    request.lead_id,
+                    next_status,
+                    request.operator,
+                    {
+                        "phase": "followup_search_completed",
+                        "query_count": ingest_result.query_count,
+                        "raw_records": ingest_result.raw_records,
+                        "research_objects": ingest_result.research_objects,
+                        "document_chunks": ingest_result.document_chunks,
+                        "failed_query_count": ingest_result.failed_query_count,
+                        "evidence_fit": evidence_fit.model_dump(mode="json"),
+                    },
+                )
+
+        resolver_result: ResearchFollowupResolverResult | None = None
+        if request.resolve:
+            try:
+                resolver_result = self.resolve_research_followups(
+                    ResearchFollowupResolverRequest(
+                        lead_ids=[request.lead_id],
+                        statuses=["queued", "watching", "followup", "new"],
+                        search_source_keys=source_keys,
+                        limit=1,
+                        ingest_source_followups=True,
+                        search_missing_identifiers=True,
+                        promote_ready_leads=True,
+                        run_claim_extraction=True,
+                        dry_run=request.dry_run,
+                        force_live_search=request.force_live_search,
+                        inspect_evidence_refs=True,
+                        min_evidence_chunks=request.min_evidence_chunks,
+                        evidence_inspection_limit=8,
+                        search_limit_per_source=request.search_limit_per_source,
+                        approved_by=request.operator,
+                        metadata={"research_followup_loop": True, **request.metadata},
+                    )
+                )
+                result.resolver_result = resolver_result
+                result.resolver_agent_run_id = resolver_result.agent_run_id
+                result.errors.extend(resolver_result.errors)
+            except Exception as exc:
+                result.errors.append(f"resolver_failed: {exc}")
+
+        if request.evaluate and resolver_result and resolver_result.agent_run_id and not request.dry_run:
+            try:
+                evaluation_result = self.run_agent_performance_evaluation(
+                    AgentPerformanceEvaluationRequest(
+                        agent_run_ids=[resolver_result.agent_run_id],
+                        status=None,
+                        limit=1,
+                        reviewed_only=False,
+                        model_profile=request.model_profile,
+                        review_models=request.review_models,
+                        metadata={"research_followup_loop": True, **request.metadata},
+                    )
+                )
+                result.evaluation_result = evaluation_result
+                result.evaluator_agent_run_id = evaluation_result.agent_run_id
+                result.actual_cost_usd = round(
+                    sum(
+                        _agent_run_review_cost_usd(review)
+                        for review_id in evaluation_result.review_ids
+                        if (review := self.repository.get_agent_run_review(review_id)) is not None
+                    ),
+                    6,
+                )
+                if evaluation_result.evaluations:
+                    verdict = str(evaluation_result.evaluations[0].get("verdict") or "")
+                    if verdict in {"useful", "needs_followup", "bad", "unclear"}:
+                        result.latest_evaluator_verdict = verdict  # type: ignore[assignment]
+                        next_status = "ingested" if verdict == "useful" else "watching" if verdict == "unclear" else "followup"
+                        self._transition_research_followup_lead(
+                            result,
+                            request.lead_id,
+                            next_status,
+                            request.operator,
+                            {
+                                "phase": "followup_evaluated",
+                                "verdict": verdict,
+                                "evaluator_agent_run_id": str(evaluation_result.agent_run_id)
+                                if evaluation_result.agent_run_id
+                                else None,
+                                "actual_cost_usd": result.actual_cost_usd,
+                            },
+                        )
+                result.errors.extend(evaluation_result.errors)
+            except Exception as exc:
+                result.errors.append(f"evaluation_failed: {exc}")
+                self._transition_research_followup_lead(
+                    result,
+                    request.lead_id,
+                    "followup",
+                    request.operator,
+                    {"phase": "followup_evaluation_failed", "error": str(exc)},
+                )
+
+        final_lead = self.repository.get_research_lead(request.lead_id)
+        result.lead_status_after = final_lead.status if final_lead else result.lead_status_before
+        return result
+
+    def _transition_research_followup_lead(
+        self,
+        result: ResearchFollowupLoopResult,
+        lead_id: UUID,
+        status: str,
+        operator: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        before = self.repository.get_research_lead(lead_id)
+        updated = self.update_research_lead(
+            lead_id,
+            status=status,
+            metadata={
+                "research_followup_loop": {
+                    "operator": operator,
+                    "updated_at": datetime.now(UTC).isoformat(),
+                    **metadata,
+                }
+            },
+        )
+        if updated is not None:
+            result.status_transitions.append(
+                {
+                    "from": before.status if before else None,
+                    "to": updated.status,
+                    "metadata": metadata,
+                }
+            )
+
     def get_research_lead(self, lead_id: UUID) -> ResearchLeadRecord | None:
         return self.repository.get_research_lead(lead_id)
 
@@ -2343,6 +2590,20 @@ class HSAResearchService:
             dagster_run_id=request.dagster_run_id,
             metadata=request.metadata,
             summarize=summarize_agent_performance_evaluation,
+        )
+
+    def escalate_agent_findings(
+        self,
+        request: AgentFindingEscalationRequest,
+    ) -> AgentFindingEscalationResult:
+        return AgentRunner(self.repository).run(
+            agent_name=AGENT_FINDING_ESCALATION_AGENT_NAME,
+            agent_version=AGENT_FINDING_ESCALATION_AGENT_VERSION,
+            model_profile="deterministic_escalation",
+            input_payload={"request": request.model_dump(mode="json")},
+            execute=lambda: escalate_agent_findings(self.repository, request),
+            metadata=request.metadata,
+            summarize=summarize_agent_finding_escalation,
         )
 
     def get_candidate(self, request: CandidateDossierRequest) -> CandidateDossier | None:

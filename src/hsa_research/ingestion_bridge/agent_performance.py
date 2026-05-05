@@ -129,12 +129,22 @@ def run_agent_performance_evaluation(
 ) -> AgentPerformanceEvaluationResult:
     """Run OpenRouter specialist evaluators over recent reviewed agent runs."""
 
-    runs = repository.list_agent_runs(
-        agent_name=request.agent_name,
-        status=request.status,
-        source_key=request.source_key,
-        limit=request.limit,
-    )
+    if request.agent_run_ids:
+        runs = [
+            run
+            for agent_run_id in request.agent_run_ids
+            if (run := repository.get_agent_run(agent_run_id)) is not None
+            and (request.agent_name is None or run.agent_name == request.agent_name)
+            and (request.status is None or str(run.status) == request.status)
+            and (request.source_key is None or run.source_key == request.source_key)
+        ][: request.limit]
+    else:
+        runs = repository.list_agent_runs(
+            agent_name=request.agent_name,
+            status=request.status,
+            source_key=request.source_key,
+            limit=request.limit,
+        )
     reviews = repository.list_agent_run_reviews(limit=max(request.limit * 20, 500))
     review_state = _latest_reviews_by_run(reviews)
     candidates = [

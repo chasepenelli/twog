@@ -77,6 +77,13 @@ class ResearchRepository(Protocol):
     ) -> list[DocumentChunk]:
         """Return document chunks by durable filters."""
 
+    def list_document_chunks_for_fetch_runs(
+        self,
+        fetch_run_ids: list[UUID],
+        limit: int | None = None,
+    ) -> list[DocumentChunk]:
+        """Return document chunks linked to raw records from specific fetch runs."""
+
     def replace_document_chunks(self, object_id: UUID, chunks: list[DocumentChunk]) -> list[DocumentChunk]:
         """Replace all chunks for a research object."""
 
@@ -521,6 +528,13 @@ class InMemoryResearchRepository:
             chunks = filtered
         chunks.sort(key=lambda chunk: (str(chunk.research_object_id), chunk.chunk_index))
         return chunks[:limit] if limit is not None else chunks
+
+    def list_document_chunks_for_fetch_runs(
+        self,
+        fetch_run_ids: list[UUID],
+        limit: int | None = None,
+    ) -> list[DocumentChunk]:
+        return []
 
     def replace_document_chunks(self, object_id: UUID, chunks: list[DocumentChunk]) -> list[DocumentChunk]:
         existing_chunk_ids = {

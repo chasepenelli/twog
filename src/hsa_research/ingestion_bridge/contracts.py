@@ -306,6 +306,7 @@ ValidationGapEvidenceLane = Literal[
     "chemistry",
     "general_evidence",
 ]
+EvidenceFitLevel = Literal["weak", "partial", "strong"]
 
 ResearchBriefEvaluationReadiness = Literal[
     "ready_for_hypothesis_review",
@@ -451,6 +452,7 @@ class AgentPerformanceReportResult(StrictBaseModel):
 
 
 class AgentPerformanceEvaluationRequest(StrictBaseModel):
+    agent_run_ids: list[UUID] = Field(default_factory=list, max_length=100)
     agent_name: str | None = None
     status: str | None = "completed"
     source_key: str | None = None
@@ -567,7 +569,10 @@ class ResearchFollowupResolverRequest(StrictBaseModel):
     promote_ready_leads: bool = True
     run_claim_extraction: bool = True
     dry_run: bool = False
+    force_live_search: bool = False
+    inspect_evidence_refs: bool = True
     min_evidence_chunks: int = Field(default=1, ge=1, le=25)
+    evidence_inspection_limit: int = Field(default=8, ge=1, le=50)
     search_limit_per_source: int = Field(default=2, ge=1, le=25)
     max_search_terms: int = Field(default=12, ge=3, le=30)
     approved_by: str | None = None
@@ -594,10 +599,17 @@ class ResearchFollowupResolverResult(StrictBaseModel):
     agent_run_id: UUID | None = None
     agent_name: str = "research_followup_resolver_agent"
     model_profile: str = "deterministic_resolver"
+    dry_run: bool = False
+    force_live_search: bool = False
+    blocked: bool = False
     leads_seen: int = 0
+    skipped_leads: int = 0
+    unresolved_lead_ids: list[UUID] = Field(default_factory=list)
+    skip_reasons: list[dict[str, Any]] = Field(default_factory=list)
     source_followups_queued: int = 0
     source_followups_ingested: int = 0
     durable_source_searches: int = 0
+    evidence_inspections: int = 0
     promoted_leads: int = 0
     manual_research_required: int = 0
     kept_in_followup: int = 0
@@ -1554,6 +1566,35 @@ class SourceQuery(StrictBaseModel):
     active: bool = True
 
 
+class AgentFindingEscalationRequest(StrictBaseModel):
+    review_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    agent_run_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    verdicts: list[AgentRunReviewVerdict] = Field(default_factory=lambda: ["bad", "needs_followup"], max_length=4)
+    limit: int = Field(default=25, ge=1, le=200)
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    create_research_leads: bool = True
+    create_source_queries: bool = True
+    dry_run: bool = False
+    operator: str = "command_center_operator"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentFindingEscalationResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    agent_name: str = "agent_finding_escalation_agent"
+    agent_version: str = "v1"
+    dry_run: bool = False
+    scanned_count: int = Field(default=0, ge=0)
+    escalated_count: int = Field(default=0, ge=0)
+    research_leads_created: int = Field(default=0, ge=0)
+    source_queries_created: int = Field(default=0, ge=0)
+    research_leads: list[ResearchLeadRecord] = Field(default_factory=list)
+    source_queries: list[SourceQuery] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ValidationGapSourceQuery(StrictBaseModel):
     query_id: UUID = Field(default_factory=uuid4)
     lane: ValidationGapEvidenceLane
@@ -1647,6 +1688,9 @@ class ValidationGapSourcePackResult(StrictBaseModel):
 class ValidationGapSourceIngestRequest(StrictBaseModel):
     source_keys: list[str] = Field(default_factory=list, max_length=25)
     query_names: list[str] = Field(default_factory=list, max_length=100)
+    followup_lane: str | None = None
+    origin_review_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    origin_agent_run_ids: list[UUID] = Field(default_factory=list, max_length=100)
     limit_per_query: int = Field(default=5, ge=1, le=100)
     max_queries: int = Field(default=50, ge=1, le=500)
     dry_run: bool = True
@@ -1657,6 +1701,7 @@ class ValidationGapSourceIngestRequest(StrictBaseModel):
     def normalize_validation_gap_source_ingest_request(self) -> "ValidationGapSourceIngestRequest":
         self.source_keys = _dedupe_lower_tokens(self.source_keys)
         self.query_names = _normalized_unique_strings(self.query_names)
+        self.followup_lane = self.followup_lane.strip() if self.followup_lane and self.followup_lane.strip() else None
         return self
 
 
@@ -1675,6 +1720,87 @@ class ValidationGapSourceIngestResult(StrictBaseModel):
     source_queries: list[SourceQuery] = Field(default_factory=list)
     results: list[IngestionResult] = Field(default_factory=list)
     skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class EvidenceFitAssessment(StrictBaseModel):
+    fit: EvidenceFitLevel = "weak"
+    matched_terms: list[str] = Field(default_factory=list, max_length=50)
+    missing_terms: list[str] = Field(default_factory=list, max_length=50)
+    required_terms: list[str] = Field(default_factory=list, max_length=50)
+    matched_required_count: int = Field(default=0, ge=0)
+    total_required_count: int = Field(default=0, ge=0)
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    chunk_count: int = Field(default=0, ge=0)
+    reason: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def normalize_evidence_fit_assessment(self) -> "EvidenceFitAssessment":
+        self.matched_terms = _normalized_unique_strings(self.matched_terms)
+        self.missing_terms = _normalized_unique_strings(self.missing_terms)
+        self.required_terms = _normalized_unique_strings(self.required_terms)
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        if self.matched_required_count > self.total_required_count:
+            raise ValueError("matched_required_count cannot exceed total_required_count")
+        return self
+
+
+class ResearchFollowupLoopRequest(StrictBaseModel):
+    lead_id: UUID
+    followup_lane: str = "agent_evaluator_followup"
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    query_names: list[str] = Field(default_factory=list, max_length=100)
+    limit_per_query: int = Field(default=2, ge=1, le=100)
+    max_queries: int = Field(default=10, ge=1, le=100)
+    ingest: bool = True
+    resolve: bool = False
+    evaluate: bool = False
+    dry_run: bool = True
+    force_live_search: bool = True
+    search_limit_per_source: int = Field(default=2, ge=1, le=25)
+    min_evidence_chunks: int = Field(default=1, ge=1, le=25)
+    model_profile: str = "agent_performance_evaluator"
+    review_models: list[str] = Field(default_factory=list, max_length=10)
+    estimated_evaluator_cost_usd: float = Field(default=0.03, ge=0.0, le=10.0)
+    operator: str = "command_center_operator"
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_followup_loop_request(self) -> "ResearchFollowupLoopRequest":
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        self.query_names = _normalized_unique_strings(self.query_names)
+        self.followup_lane = self.followup_lane.strip() or "agent_evaluator_followup"
+        self.review_models = _dedupe_strings(self.review_models)
+        self.operator = self.operator.strip() or "command_center_operator"
+        return self
+
+
+class ResearchFollowupLoopResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    agent_name: str = "research_followup_loop_agent"
+    agent_version: str = "v1"
+    lead_id: UUID
+    lead_status_before: ResearchLeadStatus | None = None
+    lead_status_after: ResearchLeadStatus | None = None
+    dry_run: bool = True
+    followup_lane: str = "agent_evaluator_followup"
+    ingest_result: ValidationGapSourceIngestResult | None = None
+    resolver_result: ResearchFollowupResolverResult | None = None
+    evaluation_result: AgentPerformanceEvaluationResult | None = None
+    resolver_agent_run_id: UUID | None = None
+    evaluator_agent_run_id: UUID | None = None
+    query_count: int = Field(default=0, ge=0)
+    raw_records: int = Field(default=0, ge=0)
+    research_objects: int = Field(default=0, ge=0)
+    document_chunks: int = Field(default=0, ge=0)
+    evidence_fit: EvidenceFitAssessment | None = None
+    latest_evaluator_verdict: AgentRunReviewVerdict | None = None
+    estimated_cost_usd: float = Field(default=0.0, ge=0.0)
+    actual_cost_usd: float = Field(default=0.0, ge=0.0)
+    status_transitions: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

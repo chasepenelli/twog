@@ -665,6 +665,35 @@ class PostgresResearchRepository(ResearchRepository):
             for row in self._fetchall(sql, params)
         ]
 
+    def list_document_chunks_for_fetch_runs(
+        self,
+        fetch_run_ids: list[UUID],
+        limit: int | None = None,
+    ) -> list[DocumentChunk]:
+        if not fetch_run_ids:
+            return []
+        placeholders = ", ".join("%s" for _ in fetch_run_ids)
+        params: list[object] = [str(fetch_run_id) for fetch_run_id in fetch_run_ids]
+        sql = f"""
+            select dc.chunk_id, dc.object_id, dc.payload
+            from document_chunks dc
+            join research_objects ro on ro.object_id = dc.object_id
+            join raw_source_records rr on rr.raw_record_id = ro.raw_record_id
+            where rr.fetch_run_id in ({placeholders})
+            order by dc.object_id, dc.chunk_index
+        """
+        if limit is not None:
+            sql += " limit %s"
+            params.append(limit)
+        return [
+            document_chunk_from_payload(
+                _payload(row),
+                chunk_id=row["chunk_id"],
+                object_id=row["object_id"],
+            )
+            for row in self._fetchall(sql, params)
+        ]
+
     def search_research_chunks(self, request: ResearchChunkSearchRequest) -> list[ResearchChunkSearchResult]:
         terms = keyword_terms(request.query)
         if not terms:

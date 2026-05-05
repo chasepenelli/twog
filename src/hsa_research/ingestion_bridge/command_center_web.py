@@ -20,10 +20,12 @@ from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 
 from .contracts import (
+    AgentFindingEscalationRequest,
     AgentPerformanceEvaluationRequest,
     AgentPerformanceReportRequest,
     AgentRunReviewRecord,
     CommandCenterRequest,
+    ResearchFollowupLoopRequest,
     ResearchBriefQualityReportRequest,
     ValidationAutopilotRequest,
 )
@@ -378,6 +380,37 @@ def run_agent_performance_evaluation_payload(
     return result.model_dump(mode="json")
 
 
+def escalate_agent_findings_payload(
+    service: HSAResearchService,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create durable follow-up work from bad/needs-followup evaluator findings."""
+
+    payload = payload or {}
+    review_ids = _payload_string_list(payload.get("review_ids") or payload.get("review_id"))
+    agent_run_ids = _payload_string_list(payload.get("agent_run_ids") or payload.get("agent_run_id"))
+    verdicts = _payload_string_list(payload.get("verdicts") or payload.get("verdict"))
+    result = service.escalate_agent_findings(
+        AgentFindingEscalationRequest(
+            review_ids=[UUID(value) for value in review_ids],
+            agent_run_ids=[UUID(value) for value in agent_run_ids],
+            verdicts=verdicts or ["bad", "needs_followup"],  # type: ignore[arg-type]
+            limit=max(1, min(int(payload.get("limit") or 25), 200)),
+            source_keys=_payload_string_list(payload.get("source_keys") or payload.get("source_key")),
+            create_research_leads=_payload_bool(payload.get("create_research_leads", True)),
+            create_source_queries=_payload_bool(payload.get("create_source_queries", True)),
+            dry_run=_payload_bool(payload.get("dry_run", False)),
+            operator=str(payload.get("operator") or "command_center_operator").strip(),
+            metadata={
+                "command_center": {
+                    "operator": str(payload.get("operator") or "command_center_operator").strip(),
+                }
+            },
+        )
+    )
+    return result.model_dump(mode="json")
+
+
 def update_research_lead_status_payload(
     service: HSAResearchService,
     lead_id: str,
@@ -400,6 +433,47 @@ def update_research_lead_status_payload(
         },
     )
     return {"item": None if updated is None else updated.model_dump(mode="json")}
+
+
+def run_research_followup_loop_payload(
+    service: HSAResearchService,
+    lead_id: str,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run one repair-loop step for an escalated research lead."""
+
+    payload = payload or {}
+    evaluate = _payload_bool(payload.get("evaluate", False))
+    model_profile = str(payload.get("model_profile") or "agent_performance_evaluator").strip()
+    if evaluate and _requires_openrouter(model_profile) and not runtime_payload()["validation_dispatch"]["openrouter_ready"]:
+        raise RuntimeError(runtime_payload()["validation_dispatch"]["message"])
+    result = service.run_research_followup_loop(
+        ResearchFollowupLoopRequest(
+            lead_id=UUID(lead_id),
+            followup_lane=str(payload.get("followup_lane") or "agent_evaluator_followup").strip(),
+            source_keys=_payload_string_list(payload.get("source_keys") or payload.get("source_key")),
+            query_names=_payload_string_list(payload.get("query_names") or payload.get("query_name")),
+            limit_per_query=max(1, min(int(payload.get("limit_per_query") or 2), 100)),
+            max_queries=max(1, min(int(payload.get("max_queries") or 10), 100)),
+            ingest=_payload_bool(payload.get("ingest", True)),
+            resolve=_payload_bool(payload.get("resolve", False)),
+            evaluate=evaluate,
+            dry_run=_payload_bool(payload.get("dry_run", False)),
+            force_live_search=_payload_bool(payload.get("force_live_search", True)),
+            search_limit_per_source=max(1, min(int(payload.get("search_limit_per_source") or 2), 25)),
+            min_evidence_chunks=max(1, min(int(payload.get("min_evidence_chunks") or 1), 25)),
+            model_profile=model_profile,
+            review_models=_payload_string_list(payload.get("review_models")),
+            estimated_evaluator_cost_usd=float(payload.get("estimated_evaluator_cost_usd") or 0.03),
+            operator=str(payload.get("operator") or "command_center_operator").strip(),
+            metadata={
+                "command_center": {
+                    "operator": str(payload.get("operator") or "command_center_operator").strip(),
+                }
+            },
+        )
+    )
+    return result.model_dump(mode="json")
 
 
 def build_action_items_payload(
@@ -429,6 +503,7 @@ def build_action_items_payload(
     )
 
     items: list[dict[str, Any]] = []
+    items.extend(_agent_evaluator_action_items(service, limit=limit))
     for index, recommendation in enumerate(report.recommendations):
         items.append(
             {
@@ -477,6 +552,8 @@ def build_action_items_payload(
         )
     for lead in research_leads:
         actions = ["promote_lead", "mark_followup", "demote_lead"]
+        if lead.origin_review_id and (lead.metadata or {}).get("created_by") == "agent_finding_escalation_agent":
+            actions = ["run_followup_search", "reevaluate_followup", *actions]
         items.append(
             {
                 "item_id": str(lead.lead_id),
@@ -496,6 +573,9 @@ def build_action_items_payload(
                     "topic_tags": lead.topic_tags,
                     "suggested_sources": lead.suggested_sources,
                     "evidence_refs": lead.evidence_refs,
+                    "origin_review_id": str(lead.origin_review_id) if lead.origin_review_id else None,
+                    "origin_agent_run_id": str(lead.origin_agent_run_id) if lead.origin_agent_run_id else None,
+                    "last_followup_loop": (lead.metadata or {}).get("research_followup_loop"),
                 },
             }
         )
@@ -506,6 +586,69 @@ def build_action_items_payload(
         "status_counts": _status_counts(items),
         "area_counts": _area_counts(items),
     }
+
+
+def _agent_evaluator_action_items(service: HSAResearchService, *, limit: int) -> list[dict[str, Any]]:
+    reviews = service.list_agent_run_reviews(limit=max(100, limit * 10))
+    escalated_review_ids = {
+        lead.origin_review_id
+        for lead in service.list_research_leads(limit=None)
+        if lead.origin_review_id is not None
+    }
+    latest_by_run: dict[UUID, AgentRunReviewRecord] = {}
+    for review in reviews:
+        if review.reviewer_type != "llm_evaluator":
+            continue
+        if review.review_id in escalated_review_ids:
+            continue
+        latest_by_run.setdefault(review.agent_run_id, review)
+
+    items: list[dict[str, Any]] = []
+    for review in latest_by_run.values():
+        if review.verdict not in {"bad", "needs_followup"}:
+            continue
+        run = service.get_agent_run(review.agent_run_id)
+        if run is None:
+            continue
+        severity = "blocking" if review.verdict == "bad" else "watch"
+        title = f"{run.agent_name}: {_humanize_verdict(review.verdict)}"
+        followups = [action for action in review.followup_actions if action]
+        description = review.feedback or "Evaluator marked this run for follow-up."
+        if followups:
+            description = f"{description} Follow-up: {'; '.join(_humanize_verdict(action) for action in followups[:3])}"
+        items.append(
+            {
+                "item_id": f"agent-review:{review.review_id}",
+                "area": "agents",
+                "kind": "agent_evaluator_finding",
+                "severity": severity,
+                "status": review.verdict,
+                "priority": _action_priority(severity, 45),
+                "title": title,
+                "description": description,
+                "source_key": run.source_key,
+                "job_name": run.agent_name,
+                "actions": ["escalate_agent_finding"],
+                "metadata": {
+                    "agent_run_id": str(run.agent_run_id),
+                    "review_id": str(review.review_id),
+                    "reviewer": review.reviewer,
+                    "reviewer_type": review.reviewer_type,
+                    "verdict": review.verdict,
+                    "confidence": review.metadata.get("confidence"),
+                    "tags": review.tags,
+                    "followup_actions": followups,
+                    "run_status": run.status,
+                    "run_summary": run.summary,
+                    "run_errors": run.errors,
+                },
+            }
+        )
+    return items[:limit]
+
+
+def _humanize_verdict(verdict: str) -> str:
+    return verdict.replace("_", " ").title()
 
 
 def approve_validation_request_payload(
@@ -942,10 +1085,26 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
                 except RuntimeError as exc:
                     self._send_error(HTTPStatus.CONFLICT, str(exc))
                 return
+            if parts == ["api", "agent-findings", "escalate"]:
+                try:
+                    payload = self._read_json_body()
+                    self._send_json(escalate_agent_findings_payload(service_factory(), payload))
+                except (json.JSONDecodeError, ValueError) as exc:
+                    self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
             if len(parts) == 4 and parts[:2] == ["api", "research-leads"] and parts[3] == "status":
                 try:
                     payload = self._read_json_body()
                     self._send_json(update_research_lead_status_payload(service_factory(), parts[2], payload))
+                except (json.JSONDecodeError, ValueError) as exc:
+                    self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "research-leads"] and parts[3] == "followup-loop":
+                try:
+                    payload = self._read_json_body()
+                    self._send_json(run_research_followup_loop_payload(service_factory(), parts[2], payload))
+                except RuntimeError as exc:
+                    self._send_error(HTTPStatus.CONFLICT, str(exc))
                 except (json.JSONDecodeError, ValueError) as exc:
                     self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
                 return

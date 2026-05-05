@@ -379,6 +379,7 @@ _RESEARCH_FOLLOWUP_RESOLVER_TABLE_COLUMNS = (
     "source_followup_ids",
     "durable_source_keys",
     "evidence_refs",
+    "evidence_inspection_count",
     "manual_research_required",
     "promoted",
     "errors",
@@ -1326,6 +1327,9 @@ if dg is not None:
                 "source_followup_ids": item.get("source_followup_ids", []),
                 "durable_source_keys": item.get("durable_source_keys", []),
                 "evidence_refs": item.get("evidence_refs", [])[:10],
+                "evidence_inspection_count": (item.get("metadata", {}).get("evidence_inspection", {}) or {}).get(
+                    "inspected_count", 0
+                ),
                 "manual_research_required": item.get("manual_research_required"),
                 "promoted": item.get("promoted"),
                 "errors": item.get("errors", []),
@@ -1334,10 +1338,17 @@ if dg is not None:
         ]
         return {
             "agent_run_id": report.get("agent_run_id"),
+            "dry_run": bool(report.get("dry_run", False)),
+            "force_live_search": bool(report.get("force_live_search", False)),
+            "blocked": bool(report.get("blocked", False)),
             "leads_seen": dg.MetadataValue.int(int(report.get("leads_seen", 0))),
+            "skipped_leads": dg.MetadataValue.int(int(report.get("skipped_leads", 0))),
+            "unresolved_lead_ids": dg.MetadataValue.json(report.get("unresolved_lead_ids", [])),
+            "skip_reasons": dg.MetadataValue.json(report.get("skip_reasons", [])[:100]),
             "source_followups_queued": dg.MetadataValue.int(int(report.get("source_followups_queued", 0))),
             "source_followups_ingested": dg.MetadataValue.int(int(report.get("source_followups_ingested", 0))),
             "durable_source_searches": dg.MetadataValue.int(int(report.get("durable_source_searches", 0))),
+            "evidence_inspections": dg.MetadataValue.int(int(report.get("evidence_inspections", 0))),
             "promoted_leads": dg.MetadataValue.int(int(report.get("promoted_leads", 0))),
             "manual_research_required": dg.MetadataValue.int(int(report.get("manual_research_required", 0))),
             "kept_in_followup": dg.MetadataValue.int(int(report.get("kept_in_followup", 0))),
@@ -3993,6 +4004,9 @@ if dg is not None:
         config_schema={
             "source_keys": dg.Field([str], default_value=[], description="Optional validation-gap source keys."),
             "query_names": dg.Field([str], default_value=[], description="Optional validation-gap query names."),
+            "followup_lane": dg.Field(str, default_value="", description="Optional internal follow-up lane filter."),
+            "origin_review_ids": dg.Field([str], default_value=[], description="Optional origin evaluator review IDs."),
+            "origin_agent_run_ids": dg.Field([str], default_value=[], description="Optional origin agent run IDs."),
             "limit_per_query": dg.Field(int, default_value=5, description="Maximum records per query."),
             "max_queries": dg.Field(int, default_value=50, description="Maximum validation-gap queries to run."),
             "dry_run": dg.Field(bool, default_value=True, description="Preview selected queries without API calls."),
@@ -4004,6 +4018,8 @@ if dg is not None:
     ) -> dg.MaterializeResult:
         """Ingest only active validation-gap source queries."""
 
+        from uuid import UUID
+
         from .service import HSAResearchService
 
         config = context.op_config or {}
@@ -4012,6 +4028,9 @@ if dg is not None:
             ValidationGapSourceIngestRequest(
                 source_keys=config["source_keys"],
                 query_names=config["query_names"],
+                followup_lane=config.get("followup_lane") or None,
+                origin_review_ids=[UUID(value) for value in config.get("origin_review_ids", [])],
+                origin_agent_run_ids=[UUID(value) for value in config.get("origin_agent_run_ids", [])],
                 limit_per_query=int(config["limit_per_query"]),
                 max_queries=int(config["max_queries"]),
                 dry_run=bool(config["dry_run"]),
@@ -4235,7 +4254,22 @@ if dg is not None:
                 description="Run entity, claim extraction, and curation for identifier follow-up ingest.",
             ),
             "dry_run": dg.Field(bool, default_value=False, description="Plan work without mutating lead state."),
+            "force_live_search": dg.Field(
+                bool,
+                default_value=False,
+                description="Refresh durable sources even when stored chunks already satisfy the evidence threshold.",
+            ),
+            "inspect_evidence_refs": dg.Field(
+                bool,
+                default_value=True,
+                description="Attach chunk/object inspection previews for selected evidence refs.",
+            ),
             "min_evidence_chunks": dg.Field(int, default_value=1, description="Minimum evidence chunks to promote."),
+            "evidence_inspection_limit": dg.Field(
+                int,
+                default_value=8,
+                description="Maximum chunk/object evidence refs to inspect in metadata.",
+            ),
             "search_limit_per_source": dg.Field(int, default_value=2, description="Search ingest limit per source."),
             "max_search_terms": dg.Field(int, default_value=12, description="Maximum terms in generated source query."),
             "approved_by": dg.Field(str, is_required=False, description="Operator identity for follow-up ingest."),
@@ -4265,7 +4299,10 @@ if dg is not None:
                 promote_ready_leads=config["promote_ready_leads"],
                 run_claim_extraction=config["run_claim_extraction"],
                 dry_run=config["dry_run"],
+                force_live_search=bool(config.get("force_live_search", False)),
+                inspect_evidence_refs=bool(config.get("inspect_evidence_refs", True)),
                 min_evidence_chunks=config["min_evidence_chunks"],
+                evidence_inspection_limit=int(config.get("evidence_inspection_limit", 8)),
                 search_limit_per_source=config["search_limit_per_source"],
                 max_search_terms=config["max_search_terms"],
                 approved_by=config.get("approved_by"),

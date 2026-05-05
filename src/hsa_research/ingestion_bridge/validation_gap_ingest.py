@@ -65,6 +65,8 @@ def _select_validation_gap_queries(
 ) -> list[SourceQuery]:
     source_filter = set(request.source_keys)
     query_filter = set(request.query_names)
+    origin_review_filter = {str(value) for value in request.origin_review_ids}
+    origin_run_filter = {str(value) for value in request.origin_agent_run_ids}
     queries = []
     for source_key in source_filter or [None]:
         source_queries = repository.list_source_queries(source_key=source_key, active_only=True)  # type: ignore[arg-type]
@@ -74,6 +76,9 @@ def _select_validation_gap_queries(
             if query.track == "validation_gap"
             and (not source_filter or query.source_key in source_filter)
             and (not query_filter or query.query_name in query_filter)
+            and (not request.followup_lane or str((query.query_params or {}).get("followup_lane") or "") == request.followup_lane)
+            and (not origin_review_filter or str((query.query_params or {}).get("origin_review_id") or "") in origin_review_filter)
+            and (not origin_run_filter or str((query.query_params or {}).get("origin_agent_run_id") or "") in origin_run_filter)
         )
     deduped: dict[tuple[str, str], SourceQuery] = {}
     for query in queries:
