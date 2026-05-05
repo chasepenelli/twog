@@ -433,6 +433,7 @@ def _query_params_for_source(
     params: dict[str, Any] = {
         "validation_gap": True,
         "lane": lane,
+        "comparative_policy": "disabled",
         "required_terms": required_terms,
         "lead_id": str(context.lead_id) if context.lead_id else None,
         "queue_item_id": str(context.queue_item_id) if context.queue_item_id else None,

@@ -34,10 +34,23 @@ _SOURCE_HINTS = {
 _OPERATIONAL_RECOMMENDATION_PATTERNS = (
     r"\b(?:increase|raise|expand|bump)\s+(?:the\s+)?(?:search\s+)?limit\b",
     r"\b(?:add|enable|wire|implement|include)\s+(?:new\s+)?source(?:\s+keys?)?\b",
-    r"\b(?:cab\s+abstracts?|vetmed|veterinary\s+databases?)\b",
+    r"\b(?:avma|conference\s+abstracts?|cab\s+abstracts?|vetmed|veterinary\s+databases?)\b",
     r"\b(?:manual|manually|human\s+review|operator\s+review|inspect|curator\s+review)\b",
+    r"\b(?:check|determine|verify)\s+(?:whether|if)\b",
+    r"\b(?:replace|substitute)\s+['\"]?[^'\"]+['\"]?\s+with\b",
+    r"\b(?:reconsider|promote|demote)\s+(?:the\s+)?lead\b",
     r"\b(?:adjust|reduce|increase)\s+batch(?:\s+size)?\b",
     r"\b(?:start|stop|enable|disable|mutate|change)\s+(?:a\s+)?(?:dagster\s+)?(?:schedule|job)\b",
+    r"\b(?:fetch|chunking|converted\s+to\s+document\s+chunks?|raw\s+records?)\b",
+    r"\b(?:max\s+utilization|allowed\s+search\s+terms)\b",
+)
+_NON_SEARCH_QUERY_PATTERNS = (
+    r"\b(?:check|determine|verify)\s+(?:whether|if)\b",
+    r"\b(?:add|enable|wire|implement|include)\b",
+    r"\b(?:replace|substitute)\b",
+    r"\b(?:reconsider|promote|demote|watching)\b",
+    r"\b(?:fetch|chunking|converted\s+to\s+document\s+chunks?|raw\s+records?)\b",
+    r"\b(?:max\s+utilization|allowed\s+search\s+terms)\b",
 )
 
 
@@ -73,7 +86,7 @@ def refine_research_followups(
                 source_key=source_key,
                 query_name=_query_name(review, attempt_index, query_text),
                 query_text=query_text,
-                query_params=_query_params(review, run, lead, request, attempt_index, reason),
+                query_params=_query_params(review, run, lead, request, attempt_index, reason, source_key),
                 track=AGENT_FINDING_TRACK,
                 object_type=_object_type_for_source(source_key),
                 active=True,
@@ -203,8 +216,39 @@ def _query_specs_from_review(
         query_text = _finalize_query(raw_query, base_terms)
         if not query_text:
             continue
+        if _is_non_search_query(query_text):
+            skipped.append(
+                _skip(
+                    review,
+                    run,
+                    lead,
+                    "non_search_query_text",
+                    {"query_text": query_text[:500], "action": _human_text(reason)[:500]},
+                )
+            )
+            continue
         hinted_sources = _hinted_sources(reason)
-        candidate_sources = hinted_sources or source_keys
+        if request.source_keys and hinted_sources:
+            candidate_sources = [source for source in hinted_sources if source in source_keys]
+            if not candidate_sources:
+                skipped.append(
+                    _skip(
+                        review,
+                        run,
+                        lead,
+                        "hinted_source_not_selected",
+                        {
+                            "query_text": query_text[:500],
+                            "hinted_sources": hinted_sources,
+                            "selected_sources": source_keys,
+                        },
+                    )
+                )
+                continue
+        elif request.source_keys:
+            candidate_sources = source_keys
+        else:
+            candidate_sources = hinted_sources or source_keys
         for source_key in candidate_sources:
             key = (source_key, query_text.casefold())
             if key in seen:
@@ -244,6 +288,11 @@ def _is_operational_recommendation(value: str) -> bool:
     return any(re.search(pattern, value, flags=re.I) for pattern in _OPERATIONAL_RECOMMENDATION_PATTERNS)
 
 
+def _is_non_search_query(value: str) -> bool:
+    text = _human_text(value)
+    return any(re.search(pattern, text, flags=re.I) for pattern in _NON_SEARCH_QUERY_PATTERNS)
+
+
 def _finalize_query(raw_query: str, base_terms: list[str]) -> str:
     query = _clean_query(raw_query)
     if not query:
@@ -278,6 +327,11 @@ def _base_terms(
     ).lower()
     terms: list[str] = []
     for term, aliases in (
+        ("ca-4f12-e6", ("ca-4f12-e6", "ca4f12", "ca 4f12", "4f12-e6", "4f12")),
+        ("anti-pd-1", ("anti-pd-1", "anti pd-1", "anti-canine pd-1", "anti canine pd-1")),
+        ("pd-1", ("pd-1", "pd1", "pdcd1", "cd279", "programmed death-1", "programmed death 1")),
+        ("checkpoint inhibitor", ("checkpoint inhibitor", "immune checkpoint", "pd-1 blockade")),
+        ("caninized antibody", ("caninized antibody", "caninised antibody", "canine antibody")),
         ("sorafenib", ("sorafenib", "nexavar")),
         ("canine", ("canine", "dog", "dogs", "veterinary")),
         ("maximum tolerated dose", ("maximum tolerated", "mtd")),
@@ -333,9 +387,10 @@ def _query_params(
     request: ResearchFollowupRefinementRequest,
     attempt_index: int,
     reason: str,
+    source_key: str,
 ) -> dict[str, Any]:
     required_terms = _base_terms(lead, review, run)
-    return {
+    params: dict[str, Any] = {
         "followup_lane": AGENT_FINDING_LANE,
         "origin_agent_run_id": str(lead.origin_agent_run_id or run.agent_run_id),
         "origin_review_id": str(lead.origin_review_id or review.review_id),
@@ -346,10 +401,22 @@ def _query_params(
         "operator": request.operator,
         "refinement_attempt": attempt_index,
         "refinement_source": "llm_evaluator_followup_action",
+        "comparative_policy": "disabled",
         "required_terms": required_terms,
         "why_this_query_exists": _human_text(reason)[:500],
         **request.metadata,
     }
+    if source_key == "europe_pmc":
+        params.update(
+            {
+                "open_access": False,
+                "fetch_full_text": True,
+                "full_text_timeout_seconds": 8,
+                "full_text_attempts": 2,
+                "full_text_time_budget_seconds": 20,
+            }
+        )
+    return params
 
 
 def _query_name(review: AgentRunReviewRecord, attempt_index: int, query_text: str) -> str:

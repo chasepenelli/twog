@@ -795,6 +795,7 @@ def test_research_followup_refinement_creates_refined_source_queries(tmp_path):
                 "retry_pubmed_search_with_refined_terms:_'sorafenib_canine_dose-limiting_toxicity'_or_'sorafenib_dog_maximum_tolerated_dose'",
                 "search_for_known_sorafenib_veterinary_oncology_studies_(e.g.,_robat_et_al._2012,_london_et_al.)_by_pmid_for_direct_ingestion",
                 "increase_limit_per_source_to_at_least_5_and_add_source_keys_veterinary_databases_e.g._cab_abstracts_vetmed_resource",
+                "check whether sorafenib is indexed under an alternative identifier and add that identifier to the next pass",
             ],
         )
     )
@@ -812,8 +813,14 @@ def test_research_followup_refinement_creates_refined_source_queries(tmp_path):
     assert any("sorafenib canine dose-limiting toxicity" in query.query_text for query in queries)
     assert any("robat" in query.query_text.lower() for query in queries)
     assert not any("increase limit" in query.query_text.lower() for query in queries)
+    assert not any("check whether" in query.query_text.lower() for query in queries)
     assert any(skip["reason"] == "operational_recommendation_not_query" for skip in result.skipped)
     assert all(query.query_params["followup_lane"] == "agent_evaluator_followup" for query in queries)
+    assert all(query.query_params["comparative_policy"] == "disabled" for query in queries)
+    europe_pmc_queries = [query for query in queries if query.source_key == "europe_pmc"]
+    if europe_pmc_queries:
+        assert all(query.query_params["fetch_full_text"] is True for query in europe_pmc_queries)
+        assert all(query.query_params["full_text_time_budget_seconds"] == 20 for query in europe_pmc_queries)
     assert all(query.query_params["origin_review_id"] == str(origin_review_id) for query in queries)
     assert all(query.query_params["origin_agent_run_id"] == str(origin_agent_run_id) for query in queries)
     assert all(query.query_params["origin_evaluator_review_id"] == str(evaluator_review.review_id) for query in queries)
@@ -823,6 +830,59 @@ def test_research_followup_refinement_creates_refined_source_queries(tmp_path):
     assert "why_this_query_exists" not in safe_params
     assert refinement_run is not None
     assert refinement_run.summary["source_queries_created"] == result.source_queries_created
+
+
+def test_research_followup_refinement_respects_explicit_source_filter_and_rejects_meta_queries(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-followup-refinement-filter.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Evaluator follow-up: CA-4F12-E6 canine safety",
+            status="followup",
+            priority=5,
+            suggested_sources=["pubmed"],
+            topic_tags=["canine", "safety", "hemangiosarcoma"],
+        )
+    )
+    resolver_run = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="research_followup_resolver_agent",
+            status=RunStatus.COMPLETED,
+            output_payload={"lead_results": [{"lead_id": str(lead.lead_id), "title": lead.title}]},
+        )
+    )
+    repo.create_agent_run_review(
+        AgentRunReviewRecord(
+            agent_run_id=resolver_run.agent_run_id,
+            reviewer_type="llm_evaluator",
+            verdict="needs_followup",
+            followup_actions=[
+                "retry with decomposed search terms: search 'canine anti-pd-1' and 'dog pd-1 checkpoint inhibitor hemangiosarcoma' separately across pubmed and europe pmc",
+                "search clinicaltrials.gov and AVMA abstracts for CA-4F12-E6 sponsor pipeline disclosures",
+                "check whether CA-4F12-E6 is indexed under an alternative identifier and add that identifier to the search",
+                "reconsider lead promotion to watching until compound-specific safety data is confirmed",
+            ],
+        )
+    )
+
+    result = service.refine_research_followups(
+        ResearchFollowupRefinementRequest(
+            lead_ids=[lead.lead_id],
+            source_keys=["pubmed", "europe_pmc"],
+            max_queries_per_review=10,
+            operator="operator",
+        )
+    )
+    queries = repo.list_source_queries(active_only=True)
+
+    assert result.query_count == 4
+    assert {query.source_key for query in queries} == {"pubmed", "europe_pmc"}
+    assert any("canine anti-pd-1" in query.query_text for query in queries)
+    assert any("dog pd-1 checkpoint inhibitor hemangiosarcoma" in query.query_text for query in queries)
+    assert not any(query.source_key == "clinicaltrials_gov" for query in queries)
+    assert not any("check whether" in query.query_text.lower() for query in queries)
+    assert not any("watching" in query.query_text.lower() for query in queries)
+    assert any(skip["reason"] == "operational_recommendation_not_query" for skip in result.skipped)
 
 
 def test_command_center_web_refines_research_followup_payload(tmp_path):
@@ -7093,6 +7153,7 @@ def test_validation_gap_source_pack_builds_and_persists_targeted_queries(tmp_pat
     assert stale_query.active is False
     assert all(query.track == "validation_gap" for query in stored_queries)
     assert all(query.query_params["followup_lane"] == "agent_evaluator_followup" for query in stored_queries)
+    assert all(query.query_params["comparative_policy"] == "disabled" for query in stored_queries)
     assert all(query.query_params["origin_review_id"] == str(queue_item.queue_item_id) for query in stored_queries)
     assert all(query.query_params["origin_agent_run_id"] == str(origin_agent_run_id) for query in stored_queries)
     europe_pmc_query = next(query for query in stored_queries if query.source_key == "europe_pmc")
