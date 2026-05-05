@@ -21,6 +21,7 @@ from .contracts import (
     CommandCenterRequest,
     EvidenceGapResolverRequest,
     FullTextOpsRequest,
+    PubMedIdentifierRepairRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
     ResearchBriefQualityReportRequest,
@@ -168,6 +169,17 @@ _AGENT_PERFORMANCE_EVALUATION_TABLE_COLUMNS = (
     "confidence",
     "review_id",
     "rationale",
+)
+_PUBMED_IDENTIFIER_REPAIR_TABLE_COLUMNS = (
+    "pmid",
+    "status",
+    "old_dedupe_key",
+    "new_dedupe_key",
+    "old_doi",
+    "new_doi",
+    "old_pmcid",
+    "new_pmcid",
+    "error",
 )
 _FULL_TEXT_TRIAGE_TABLE_COLUMNS = (
     "source_key",
@@ -1387,6 +1399,37 @@ if dg is not None:
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "skipped": dg.MetadataValue.json(report.get("skipped", [])[:100]),
             "queries": _metadata_table(rows, _VALIDATION_GAP_SOURCE_PACK_TABLE_COLUMNS),
+        }
+
+    def _pubmed_identifier_repair_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = [
+            {
+                "pmid": item.get("pmid"),
+                "status": item.get("status"),
+                "old_dedupe_key": item.get("old_dedupe_key"),
+                "new_dedupe_key": item.get("new_dedupe_key"),
+                "old_doi": (item.get("old_identifiers") or {}).get("doi"),
+                "new_doi": (item.get("new_identifiers") or {}).get("doi"),
+                "old_pmcid": (item.get("old_identifiers") or {}).get("pmcid"),
+                "new_pmcid": (item.get("new_identifiers") or {}).get("pmcid"),
+                "error": item.get("error"),
+            }
+            for item in report.get("items", [])[:50]
+            if isinstance(item, Mapping)
+        ]
+        return {
+            "dry_run": bool(report.get("dry_run", True)),
+            "scanned_objects": dg.MetadataValue.int(int(report.get("scanned_objects", 0))),
+            "fetched_pmids": dg.MetadataValue.int(int(report.get("fetched_pmids", 0))),
+            "clean": dg.MetadataValue.int(int(report.get("clean", 0))),
+            "repaired": dg.MetadataValue.int(int(report.get("repaired", 0))),
+            "would_repair": dg.MetadataValue.int(int(report.get("would_repair", 0))),
+            "skipped": dg.MetadataValue.int(int(report.get("skipped", 0))),
+            "conflicts": dg.MetadataValue.int(int(report.get("conflicts", 0))),
+            "failed": dg.MetadataValue.int(int(report.get("failed", 0))),
+            "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])[:20]),
+            "items": _metadata_table(rows, _PUBMED_IDENTIFIER_REPAIR_TABLE_COLUMNS),
         }
 
     def _validation_gap_source_ingest_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -4000,6 +4043,39 @@ if dg is not None:
         )
 
     @dg.asset(
+        group_name="ingestion_maintenance",
+        config_schema={
+            "pmids": dg.Field([str], default_value=[], description="Optional PMIDs to repair."),
+            "limit": dg.Field(int, default_value=250, description="Maximum PubMed objects to inspect."),
+            "batch_size": dg.Field(int, default_value=100, description="PubMed EFetch batch size."),
+            "dry_run": dg.Field(bool, default_value=True, description="Preview repairs without updating rows."),
+        },
+    )
+    def pubmed_identifier_repair_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Repair PubMed DOI/PMCID payloads and PubMed dedupe keys."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config or {}
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).repair_pubmed_identifiers(
+            PubMedIdentifierRepairRequest(
+                pmids=config["pmids"],
+                limit=int(config["limit"]),
+                batch_size=int(config["batch_size"]),
+                dry_run=bool(config["dry_run"]),
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_pubmed_identifier_repair_metadata(report),
+        )
+
+    @dg.asset(
         group_name="ai_research",
         config_schema={
             "source_keys": dg.Field([str], default_value=[], description="Optional validation-gap source keys."),
@@ -5295,6 +5371,7 @@ if dg is not None:
         research_leads_report,
         evidence_gap_resolver_report,
         validation_gap_source_pack_report,
+        pubmed_identifier_repair_report,
         validation_gap_source_ingest_report,
         validation_gap_completion_report,
         research_followup_resolver_report,
@@ -5484,6 +5561,10 @@ if dg is not None:
     validation_gap_source_pack_job = dg.define_asset_job(
         "validation_gap_source_pack_job",
         selection=dg.AssetSelection.assets(validation_gap_source_pack_report),
+    )
+    pubmed_identifier_repair_job = dg.define_asset_job(
+        "pubmed_identifier_repair_job",
+        selection=dg.AssetSelection.assets(pubmed_identifier_repair_report),
     )
     validation_gap_source_ingest_job = dg.define_asset_job(
         "validation_gap_source_ingest_job",
@@ -5759,6 +5840,7 @@ if dg is not None:
             research_leads_job,
             evidence_gap_resolver_job,
             validation_gap_source_pack_job,
+            pubmed_identifier_repair_job,
             validation_gap_source_ingest_job,
             validation_gap_completion_job,
             research_followup_resolver_job,
@@ -5845,6 +5927,7 @@ else:
     research_leads_job = None
     evidence_gap_resolver_job = None
     validation_gap_source_pack_job = None
+    pubmed_identifier_repair_job = None
     validation_gap_source_ingest_job = None
     validation_gap_completion_job = None
     research_followup_resolver_job = None

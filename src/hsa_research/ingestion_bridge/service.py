@@ -48,6 +48,8 @@ from .contracts import (
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
+    PubMedIdentifierRepairRequest,
+    PubMedIdentifierRepairResult,
     ResearchBriefEvaluationRecord,
     ResearchBriefEvaluationRequest,
     ResearchBriefEvaluationResult,
@@ -175,6 +177,7 @@ from .research_followup_refinement import (
     refine_research_followups,
     summarize_research_followup_refinement,
 )
+from .pubmed_identifier_repair import repair_pubmed_identifier_metadata
 from .validation_gap_source_pack import (
     VALIDATION_GAP_SOURCE_PACK_AGENT_NAME,
     VALIDATION_GAP_SOURCE_PACK_AGENT_VERSION,
@@ -2311,6 +2314,12 @@ class HSAResearchService:
         request: ValidationGapSourceIngestRequest,
     ) -> ValidationGapSourceIngestResult:
         return ingest_validation_gap_source_queries(self.repository, request)
+
+    def repair_pubmed_identifiers(
+        self,
+        request: PubMedIdentifierRepairRequest,
+    ) -> PubMedIdentifierRepairResult:
+        return repair_pubmed_identifier_metadata(self.repository, request)
 
     def run_research_followup_loop(
         self,

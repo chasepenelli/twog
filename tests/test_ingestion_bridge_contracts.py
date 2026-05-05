@@ -112,6 +112,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ValidationRequestQueueRequest,
     ClaimCurationRequest,
     SourceScoutRequest,
+    PubMedIdentifierRepairRequest,
     RunStatus,
     XLinkedArticleReviewAction,
     XLinkedArticleReviewRequest,
@@ -132,6 +133,7 @@ from hsa_research.ingestion_bridge import agent_performance
 from hsa_research.ingestion_bridge import full_text_ops
 from hsa_research.ingestion_bridge import research_brief_evaluation
 from hsa_research.ingestion_bridge import research_followup_resolver
+from hsa_research.ingestion_bridge import pubmed_identifier_repair
 from hsa_research.ingestion_bridge import research_brief_agent
 from hsa_research.ingestion_bridge import therapy_committee
 from hsa_research.ingestion_bridge import source_followup
@@ -8406,6 +8408,105 @@ def test_pubmed_v2_normalizer_uses_only_current_article_identifiers():
     assert record.research_object.identifiers["pmid"] == "36548371"
     assert record.research_object.identifiers["doi"] == "10.1371/journal.pone.0279594"
     assert record.research_object.identifiers["pmcid"] == "PMC9778498"
+    assert record.research_object.dedupe_key == "pmid:36548371"
+
+
+def test_pubmed_identifier_repair_updates_payload_links_and_dedupe_key(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "pubmed-identifier-repair.sqlite3", seed=False)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="36548371",
+            content_hash="pubmed-36548371-wrong",
+            raw_payload={"pmid": "36548371"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type=ResearchObjectType.PUBLICATION,
+            title="Pilot safety evaluation of doxorubicin chemotherapy combined with immunotherapy",
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            dedupe_key="doi:10.1208/s12249-010-9526-5",
+            identifiers={
+                "pmid": "36548371",
+                "doi": "10.1208/s12249-010-9526-5",
+                "pmcid": "PMC3011075",
+                "source_id": "36548371",
+            },
+        ),
+        raw_record_id,
+    )
+
+    result = pubmed_identifier_repair.repair_pubmed_identifier_metadata(
+        repo,
+        PubMedIdentifierRepairRequest(pmids=["36548371"], dry_run=False),
+        identifier_fetcher=lambda pmids: {
+            "36548371": {
+                "pmid": "36548371",
+                "doi": "10.1371/journal.pone.0279594",
+                "pmcid": "PMC9778498",
+                "source_id": "36548371",
+            }
+        },
+    )
+
+    repaired = repo.get_research_object(object_id)
+    identifier_links = repo.conn.execute(
+        "select identifier_type, identifier_value from identifier_links where object_id = ? order by identifier_type",
+        (str(object_id),),
+    ).fetchall()
+
+    assert result.repaired == 1
+    assert result.items[0].old_dedupe_key == "doi:10.1208/s12249-010-9526-5"
+    assert result.items[0].new_dedupe_key == "pmid:36548371"
+    assert repaired is not None
+    assert repaired.dedupe_key == "pmid:36548371"
+    assert repaired.identifiers["doi"] == "10.1371/journal.pone.0279594"
+    assert repaired.identifiers["pmcid"] == "PMC9778498"
+    assert ("doi", "10.1208/s12249-010-9526-5") not in [
+        (row["identifier_type"], row["identifier_value"]) for row in identifier_links
+    ]
+    assert ("doi", "10.1371/journal.pone.0279594") in [
+        (row["identifier_type"], row["identifier_value"]) for row in identifier_links
+    ]
+
+
+def test_pubmed_identifier_repair_dry_run_does_not_update_object(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "pubmed-identifier-repair-dry-run.sqlite3", seed=False)
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type=ResearchObjectType.PUBLICATION,
+            title="PubMed object with stale identifiers",
+            source_key="pubmed",
+            dedupe_key="doi:10.1208/s12249-010-9526-5",
+            identifiers={
+                "pmid": "36548371",
+                "doi": "10.1208/s12249-010-9526-5",
+                "pmcid": "PMC3011075",
+                "source_id": "36548371",
+            },
+        )
+    )
+
+    result = pubmed_identifier_repair.repair_pubmed_identifier_metadata(
+        repo,
+        PubMedIdentifierRepairRequest(pmids=["36548371"]),
+        identifier_fetcher=lambda pmids: {
+            "36548371": {
+                "pmid": "36548371",
+                "doi": "10.1371/journal.pone.0279594",
+                "pmcid": "PMC9778498",
+                "source_id": "36548371",
+            }
+        },
+    )
+    unchanged = repo.get_research_object(object_id)
+
+    assert result.would_repair == 1
+    assert unchanged is not None
+    assert unchanged.dedupe_key == "doi:10.1208/s12249-010-9526-5"
+    assert unchanged.identifiers["doi"] == "10.1208/s12249-010-9526-5"
 
 
 def test_europe_pmc_v2_normalizer_cleans_escaped_title_markup():
@@ -13227,6 +13328,7 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.research_leads_job is not None
     assert dagster_asset_module.evidence_gap_resolver_job is not None
     assert dagster_asset_module.validation_gap_source_pack_job is not None
+    assert dagster_asset_module.pubmed_identifier_repair_job is not None
     assert dagster_asset_module.validation_gap_source_ingest_job is not None
     assert dagster_asset_module.research_followup_resolver_job is not None
     assert dagster_asset_module.validation_autopilot_hourly_schedule is not None

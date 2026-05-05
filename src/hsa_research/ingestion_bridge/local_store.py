@@ -385,6 +385,58 @@ class SQLiteResearchRepository(ResearchRepository):
             (str(object_id), identifier_type, identifier_value),
         )
 
+    def update_research_object(self, obj: ResearchObject) -> ResearchObject | None:
+        existing = self.conn.execute(
+            "select object_id from research_objects where object_id = ?",
+            (str(obj.id),),
+        ).fetchone()
+        if existing is None:
+            return None
+        dedupe_key = obj.dedupe_key or build_research_object_dedupe_key(obj)
+        conflict = self.conn.execute(
+            "select object_id from research_objects where dedupe_key = ? and object_id != ?",
+            (dedupe_key, str(obj.id)),
+        ).fetchone()
+        if conflict is not None:
+            raise ValueError(f"Research object dedupe key already exists: {dedupe_key}")
+        payload = obj.model_copy(update={"dedupe_key": dedupe_key}).model_dump(mode="json")
+        self.conn.execute(
+            """
+            update research_objects
+            set object_type = ?,
+                title = ?,
+                abstract = ?,
+                canonical_url = ?,
+                publication_year = ?,
+                published_at = ?,
+                source_key = ?,
+                raw_record_id = ?,
+                dedupe_key = ?,
+                payload = ?,
+                updated_at = current_timestamp
+            where object_id = ?
+            """,
+            (
+                str(obj.object_type),
+                obj.title,
+                obj.abstract,
+                obj.canonical_url,
+                obj.publication_year,
+                obj.published_at,
+                obj.source_key,
+                str(obj.raw_record_id) if obj.raw_record_id else None,
+                dedupe_key,
+                json.dumps(payload, sort_keys=True),
+                str(obj.id),
+            ),
+        )
+        self.conn.execute("delete from identifier_links where object_id = ?", (str(obj.id),))
+        for identifier_type, identifier_value in payload.get("identifiers", {}).items():
+            if identifier_value:
+                self.link_identifier(obj.id, identifier_type, identifier_value)
+        self.conn.commit()
+        return ResearchObject.model_validate(payload)
+
     def get_research_object(self, object_id: UUID) -> ResearchObject | None:
         row = self.conn.execute(
             "select payload from research_objects where object_id = ?",

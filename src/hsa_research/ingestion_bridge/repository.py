@@ -57,6 +57,9 @@ class ResearchRepository(Protocol):
     def get_research_object(self, object_id: UUID) -> ResearchObject | None:
         """Return a canonical research object by ID."""
 
+    def update_research_object(self, obj: ResearchObject) -> ResearchObject | None:
+        """Replace a canonical research object payload by ID."""
+
     def list_research_objects(
         self,
         object_type: str | None = None,
@@ -488,6 +491,12 @@ class InMemoryResearchRepository:
 
     def get_research_object(self, object_id: UUID) -> ResearchObject | None:
         return self.research_objects.get(object_id)
+
+    def update_research_object(self, obj: ResearchObject) -> ResearchObject | None:
+        if obj.id not in self.research_objects:
+            return None
+        self.research_objects[obj.id] = obj
+        return obj
 
     def list_research_objects(
         self,

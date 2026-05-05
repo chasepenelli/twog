@@ -619,6 +619,47 @@ class ResearchFollowupResolverResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+PubMedIdentifierRepairStatus = Literal["clean", "repaired", "would_repair", "skipped", "conflict", "failed"]
+
+
+class PubMedIdentifierRepairRequest(StrictBaseModel):
+    pmids: list[str] = Field(default_factory=list, max_length=500)
+    limit: int = Field(default=250, ge=1, le=5000)
+    batch_size: int = Field(default=100, ge=1, le=200)
+    dry_run: bool = True
+
+    @model_validator(mode="after")
+    def normalize_pubmed_identifier_repair_request(self) -> "PubMedIdentifierRepairRequest":
+        self.pmids = _normalized_unique_strings(self.pmids)
+        return self
+
+
+class PubMedIdentifierRepairItem(StrictBaseModel):
+    object_id: UUID
+    pmid: str
+    status: PubMedIdentifierRepairStatus
+    old_dedupe_key: str | None = None
+    new_dedupe_key: str | None = None
+    old_identifiers: dict[str, str] = Field(default_factory=dict)
+    new_identifiers: dict[str, str] = Field(default_factory=dict)
+    error: str | None = None
+
+
+class PubMedIdentifierRepairResult(StrictBaseModel):
+    dry_run: bool = True
+    scanned_objects: int = 0
+    fetched_pmids: int = 0
+    clean: int = 0
+    repaired: int = 0
+    would_repair: int = 0
+    skipped: int = 0
+    conflicts: int = 0
+    failed: int = 0
+    items: list[PubMedIdentifierRepairItem] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class FullTextOpsRequest(StrictBaseModel):
     source_keys: list[str] = Field(default_factory=list)
     partition_date: str | None = None

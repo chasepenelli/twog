@@ -25,6 +25,7 @@ from .contracts import (
     EntityResolutionRequest,
     FullTextTriageRequest,
     FullTextOpsRequest,
+    PubMedIdentifierRepairRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefQueueBatchRequest,
     ResearchBriefQueueMaintenanceRequest,
@@ -1166,6 +1167,15 @@ def main() -> None:
     validation_gap_ingest.add_argument("--max-queries", type=int, default=50)
     validation_gap_ingest.add_argument("--apply", action="store_true", help="Run ingestion. Without this flag the command is a dry run.")
 
+    repair_pubmed_identifiers = subparsers.add_parser(
+        "repair-pubmed-identifiers",
+        help="Refresh PubMed DOI/PMCID metadata and move PubMed rows to PMID dedupe keys",
+    )
+    repair_pubmed_identifiers.add_argument("--pmid", action="append", default=[], help="Specific PMID; repeat for multiple.")
+    repair_pubmed_identifiers.add_argument("--limit", type=int, default=250)
+    repair_pubmed_identifiers.add_argument("--batch-size", type=int, default=100)
+    repair_pubmed_identifiers.add_argument("--apply", action="store_true", help="Apply repairs. Without this flag the command is a dry run.")
+
     research_followup_loop = subparsers.add_parser(
         "research-followup-loop",
         help="Run the manual repair loop for one research lead: ingest, resolve, and optionally OpenRouter-evaluate.",
@@ -2072,6 +2082,15 @@ def main() -> None:
                 origin_agent_run_ids=[UUID(value) for value in args.origin_agent_run_id],
                 limit_per_query=args.limit_per_query,
                 max_queries=args.max_queries,
+                dry_run=not args.apply,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "repair-pubmed-identifiers":
+        output = HSAResearchService(repo).repair_pubmed_identifiers(
+            PubMedIdentifierRepairRequest(
+                pmids=args.pmid,
+                limit=args.limit,
+                batch_size=args.batch_size,
                 dry_run=not args.apply,
             )
         ).model_dump(mode="json")

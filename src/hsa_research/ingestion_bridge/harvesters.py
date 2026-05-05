@@ -230,7 +230,7 @@ class PubMedHarvester(SourceHarvester):
             publication_year=_year_from_date(pub_date),
             published_at=pub_date,
             source_key=self.source_key,
-            dedupe_key=_dedupe_key(identifiers, self.source_key, pmid),
+            dedupe_key=_pubmed_dedupe_key(identifiers, self.source_key, pmid),
             identifiers=identifiers,
             metadata={
                 "journal": _xml_text(article, ".//Journal/Title"),
@@ -287,6 +287,13 @@ def _dedupe_key(identifiers: dict[str, str], source_key: str, fallback: str | No
         if value:
             return f"{identifier_type}:{value.lower()}"
     return f"{source_key}:{(fallback or 'unknown').lower()}"
+
+
+def _pubmed_dedupe_key(identifiers: dict[str, str], source_key: str, fallback: str | None) -> str:
+    pmid = identifiers.get("pmid")
+    if pmid:
+        return f"pmid:{pmid.lower()}"
+    return _dedupe_key(identifiers, source_key, fallback)
 
 
 def _normalize_doi(value: str | None) -> str | None:
