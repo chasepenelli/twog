@@ -11,6 +11,7 @@ from hsa_research.ingestion_bridge import dagster_assets as dagster_asset_module
 from hsa_research.ingestion_bridge import cli as cli_module
 from hsa_research.ingestion_bridge import command_center_web
 from hsa_research.ingestion_bridge import entity_resolution
+from hsa_research.ingestion_bridge import source_query_params
 from hsa_research.ingestion_bridge import storage, structured_orchestration
 from hsa_research.ingestion_bridge.contracts import (
     AgentFindingEscalationRequest,
@@ -70,6 +71,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchFollowupLeadResult,
     ResearchFollowupLoopRequest,
     ResearchFollowupLoopResult,
+    ResearchFollowupRefinementRequest,
     ResearchFollowupResolverRequest,
     ResearchFollowupResolverResult,
     ResearchLeadCollectRequest,
@@ -744,6 +746,128 @@ def test_agent_finding_escalation_dry_run_does_not_persist(tmp_path):
     assert result.source_queries
     assert repo.list_research_leads(limit=10) == []
     assert repo.list_source_queries(active_only=False) == []
+
+
+def test_research_followup_refinement_creates_refined_source_queries(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-followup-refinement.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    origin_review_id = uuid4()
+    origin_agent_run_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Evaluator follow-up: sorafenib canine DLT",
+            status="followup",
+            priority=5,
+            origin_review_id=origin_review_id,
+            origin_agent_run_id=origin_agent_run_id,
+            suggested_sources=["pubmed"],
+            topic_tags=["sorafenib", "canine", "safety", "mtd", "dlt"],
+            metadata={"created_by": "agent_finding_escalation_agent"},
+        )
+    )
+    resolver_run = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="research_followup_resolver_agent",
+            status=RunStatus.COMPLETED,
+            source_key="pubmed",
+            output_payload={
+                "lead_results": [
+                    {
+                        "lead_id": str(lead.lead_id),
+                        "title": lead.title,
+                        "durable_source_keys": ["pubmed"],
+                        "metadata": {"evidence_fit": {"fit": "weak", "missing_terms": ["sorafenib"]}},
+                    }
+                ]
+            },
+        )
+    )
+    evaluator_review = repo.create_agent_run_review(
+        AgentRunReviewRecord(
+            agent_run_id=resolver_run.agent_run_id,
+            reviewer="ingestion_openrouter_evaluator",
+            reviewer_type="llm_evaluator",
+            verdict="needs_followup",
+            feedback="Retry PubMed with more specific sorafenib canine DLT terms.",
+            followup_actions=[
+                "retry_pubmed_search_with_refined_terms:_'sorafenib_canine_dose-limiting_toxicity'_or_'sorafenib_dog_maximum_tolerated_dose'",
+                "search_for_known_sorafenib_veterinary_oncology_studies_(e.g.,_robat_et_al._2012,_london_et_al.)_by_pmid_for_direct_ingestion",
+                "increase_limit_per_source_to_at_least_5_and_add_source_keys_veterinary_databases_e.g._cab_abstracts_vetmed_resource",
+            ],
+        )
+    )
+
+    result = service.refine_research_followups(
+        ResearchFollowupRefinementRequest(lead_ids=[lead.lead_id], operator="operator")
+    )
+    queries = repo.list_source_queries(active_only=True)
+    refinement_run = repo.get_agent_run(result.agent_run_id)
+
+    assert result.scanned_count == 1
+    assert result.lead_count == 1
+    assert result.source_queries_created >= 2
+    assert result.query_count >= 2
+    assert any("sorafenib canine dose-limiting toxicity" in query.query_text for query in queries)
+    assert any("robat" in query.query_text.lower() for query in queries)
+    assert not any("increase limit" in query.query_text.lower() for query in queries)
+    assert any(skip["reason"] == "operational_recommendation_not_query" for skip in result.skipped)
+    assert all(query.query_params["followup_lane"] == "agent_evaluator_followup" for query in queries)
+    assert all(query.query_params["origin_review_id"] == str(origin_review_id) for query in queries)
+    assert all(query.query_params["origin_agent_run_id"] == str(origin_agent_run_id) for query in queries)
+    assert all(query.query_params["origin_evaluator_review_id"] == str(evaluator_review.review_id) for query in queries)
+    assert any("sorafenib" in query.query_params["required_terms"] for query in queries)
+    safe_params = source_query_params.source_safe_query_params(queries[0])
+    assert "origin_evaluator_review_id" not in safe_params
+    assert "why_this_query_exists" not in safe_params
+    assert refinement_run is not None
+    assert refinement_run.summary["source_queries_created"] == result.source_queries_created
+
+
+def test_command_center_web_refines_research_followup_payload(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "command-center-refine-followup.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    origin_review_id = uuid4()
+    origin_agent_run_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Evaluator follow-up: sorafenib canine DLT",
+            status="followup",
+            origin_review_id=origin_review_id,
+            origin_agent_run_id=origin_agent_run_id,
+            suggested_sources=["pubmed"],
+            topic_tags=["sorafenib", "canine", "safety", "mtd", "dlt"],
+            metadata={
+                "created_by": "agent_finding_escalation_agent",
+                "research_followup_loop": {"verdict": "needs_followup"},
+            },
+        )
+    )
+    resolver_run = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="research_followup_resolver_agent",
+            status=RunStatus.COMPLETED,
+            output_payload={"lead_results": [{"lead_id": str(lead.lead_id), "title": lead.title}]},
+        )
+    )
+    repo.create_agent_run_review(
+        AgentRunReviewRecord(
+            agent_run_id=resolver_run.agent_run_id,
+            reviewer_type="llm_evaluator",
+            verdict="needs_followup",
+            followup_actions=["retry_pubmed_search_with_refined_terms:_'sorafenib_canine_dlt_mtd'"],
+        )
+    )
+
+    payload = command_center_web.refine_research_followup_payload(
+        service,
+        str(lead.lead_id),
+        {"operator": "operator"},
+    )
+    action_payload = command_center_web.build_action_items_payload(service, {"limit": ["5"]})
+    lead_item = next(item for item in action_payload["items"] if item["item_id"] == str(lead.lead_id))
+
+    assert payload["source_queries_created"] >= 1
+    assert "create_refined_queries" in lead_item["actions"]
 
 
 def test_agent_performance_contracts_validate_allowed_values():

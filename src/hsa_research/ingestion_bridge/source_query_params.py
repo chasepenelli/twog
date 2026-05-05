@@ -144,12 +144,17 @@ _INTERNAL_QUERY_PARAM_KEYS = {
     "lead_id",
     "operator",
     "origin_agent_run_id",
+    "origin_evaluator_agent_run_id",
+    "origin_evaluator_review_id",
     "origin_review_id",
     "priority",
     "queue_item_id",
     "required_terms",
+    "refinement_attempt",
+    "refinement_source",
     "source_pack_request",
     "validation_gap",
+    "why_this_query_exists",
 }
 
 

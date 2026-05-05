@@ -1595,6 +1595,39 @@ class AgentFindingEscalationResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ResearchFollowupRefinementRequest(StrictBaseModel):
+    lead_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    review_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    verdicts: list[AgentRunReviewVerdict] = Field(default_factory=lambda: ["bad", "needs_followup"], max_length=4)
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    limit: int = Field(default=25, ge=1, le=200)
+    max_queries_per_review: int = Field(default=4, ge=1, le=20)
+    dry_run: bool = False
+    operator: str = "command_center_operator"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_followup_refinement_request(self) -> "ResearchFollowupRefinementRequest":
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        self.operator = self.operator.strip() or "command_center_operator"
+        return self
+
+
+class ResearchFollowupRefinementResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    agent_name: str = "research_followup_refinement_agent"
+    agent_version: str = "v1"
+    dry_run: bool = False
+    scanned_count: int = Field(default=0, ge=0)
+    lead_count: int = Field(default=0, ge=0)
+    query_count: int = Field(default=0, ge=0)
+    source_queries_created: int = Field(default=0, ge=0)
+    source_queries: list[SourceQuery] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ValidationGapSourceQuery(StrictBaseModel):
     query_id: UUID = Field(default_factory=uuid4)
     lane: ValidationGapEvidenceLane

@@ -25,6 +25,7 @@ from .contracts import (
     AgentPerformanceReportRequest,
     AgentRunReviewRecord,
     CommandCenterRequest,
+    ResearchFollowupRefinementRequest,
     ResearchFollowupLoopRequest,
     ResearchBriefQualityReportRequest,
     ValidationAutopilotRequest,
@@ -476,6 +477,34 @@ def run_research_followup_loop_payload(
     return result.model_dump(mode="json")
 
 
+def refine_research_followup_payload(
+    service: HSAResearchService,
+    lead_id: str,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create refined source queries from latest evaluator feedback for one lead."""
+
+    payload = payload or {}
+    result = service.refine_research_followups(
+        ResearchFollowupRefinementRequest(
+            lead_ids=[UUID(lead_id)],
+            review_ids=[UUID(review_id) for review_id in _payload_string_list(payload.get("review_ids") or payload.get("review_id"))],
+            verdicts=_payload_string_list(payload.get("verdicts") or payload.get("verdict")) or ["bad", "needs_followup"],
+            source_keys=_payload_string_list(payload.get("source_keys") or payload.get("source_key")),
+            limit=max(1, min(int(payload.get("limit") or 25), 200)),
+            max_queries_per_review=max(1, min(int(payload.get("max_queries_per_review") or 4), 20)),
+            dry_run=_payload_bool(payload.get("dry_run", False)),
+            operator=str(payload.get("operator") or "command_center_operator").strip(),
+            metadata={
+                "command_center": {
+                    "operator": str(payload.get("operator") or "command_center_operator").strip(),
+                }
+            },
+        )
+    )
+    return result.model_dump(mode="json")
+
+
 def build_action_items_payload(
     service: HSAResearchService,
     params: Mapping[str, list[str]] | None = None,
@@ -554,6 +583,15 @@ def build_action_items_payload(
         actions = ["promote_lead", "mark_followup", "demote_lead"]
         if lead.origin_review_id and (lead.metadata or {}).get("created_by") == "agent_finding_escalation_agent":
             actions = ["run_followup_search", "reevaluate_followup", *actions]
+            last_loop = (lead.metadata or {}).get("research_followup_loop") or {}
+            if (
+                lead.status == "followup"
+                and (
+                    last_loop.get("verdict") in {"bad", "needs_followup"}
+                    or ((last_loop.get("evidence_fit") or {}).get("fit") in {"weak", "partial"})
+                )
+            ):
+                actions = ["create_refined_queries", *actions]
         items.append(
             {
                 "item_id": str(lead.lead_id),
@@ -1105,6 +1143,13 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
                     self._send_json(run_research_followup_loop_payload(service_factory(), parts[2], payload))
                 except RuntimeError as exc:
                     self._send_error(HTTPStatus.CONFLICT, str(exc))
+                except (json.JSONDecodeError, ValueError) as exc:
+                    self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "research-leads"] and parts[3] == "refine-followup":
+                try:
+                    payload = self._read_json_body()
+                    self._send_json(refine_research_followup_payload(service_factory(), parts[2], payload))
                 except (json.JSONDecodeError, ValueError) as exc:
                     self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
                 return

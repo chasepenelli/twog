@@ -31,6 +31,7 @@ from .contracts import (
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
+    ResearchFollowupRefinementRequest,
     ResearchFollowupResolverRequest,
     ResearchFollowupLoopRequest,
     ResearchLeadCollectRequest,
@@ -894,6 +895,30 @@ def main() -> None:
     agent_findings_escalate.add_argument("--no-source-queries", action="store_true", help="Do not create SourceQuery rows")
     agent_findings_escalate.add_argument("--dry-run", action="store_true", help="Return planned work without persisting")
     agent_findings_escalate.add_argument("--operator", default="cli_operator", help="Operator identity recorded in metadata")
+
+    refine_followups = subparsers.add_parser(
+        "refine-research-followups",
+        help="Create refined validation-gap SourceQuery rows from evaluator follow-up feedback",
+    )
+    refine_followups.add_argument("--lead-id", action="append", default=[], help="Specific research lead ID")
+    refine_followups.add_argument("--review-id", action="append", default=[], help="Specific evaluator review ID")
+    refine_followups.add_argument(
+        "--verdict",
+        action="append",
+        default=[],
+        choices=["bad", "needs_followup", "unclear", "useful"],
+        help="Evaluator verdict to refine; defaults to bad and needs_followup",
+    )
+    refine_followups.add_argument("--source", action="append", default=[], help="Override target source key")
+    refine_followups.add_argument("--limit", type=int, default=25, help="Maximum reviews to inspect")
+    refine_followups.add_argument(
+        "--max-queries-per-review",
+        type=int,
+        default=4,
+        help="Maximum refined SourceQuery rows per evaluator review",
+    )
+    refine_followups.add_argument("--dry-run", action="store_true", help="Return planned queries without persisting")
+    refine_followups.add_argument("--operator", default="cli_operator", help="Operator identity recorded in metadata")
 
     evaluate_research_brief = subparsers.add_parser(
         "evaluate-research-brief",
@@ -1860,6 +1885,19 @@ def main() -> None:
                 source_keys=args.source,
                 create_research_leads=not args.no_research_leads,
                 create_source_queries=not args.no_source_queries,
+                dry_run=args.dry_run,
+                operator=args.operator,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "refine-research-followups":
+        output = HSAResearchService(repo).refine_research_followups(
+            ResearchFollowupRefinementRequest(
+                lead_ids=[UUID(value) for value in args.lead_id],
+                review_ids=[UUID(value) for value in args.review_id],
+                verdicts=args.verdict or ["bad", "needs_followup"],
+                source_keys=args.source,
+                limit=args.limit,
+                max_queries_per_review=args.max_queries_per_review,
                 dry_run=args.dry_run,
                 operator=args.operator,
             )

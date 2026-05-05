@@ -68,6 +68,8 @@ from .contracts import (
     ResearchBriefPlaygroundPack,
     ResearchBriefRequest,
     ResearchBriefResult,
+    ResearchFollowupRefinementRequest,
+    ResearchFollowupRefinementResult,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
     ResearchChunkSearchResults,
@@ -166,6 +168,12 @@ from .research_followup_resolver import (
     RESEARCH_FOLLOWUP_RESOLVER_AGENT_VERSION,
     resolve_research_followup_leads,
     summarize_research_followup_resolver,
+)
+from .research_followup_refinement import (
+    RESEARCH_FOLLOWUP_REFINEMENT_AGENT_NAME,
+    RESEARCH_FOLLOWUP_REFINEMENT_AGENT_VERSION,
+    refine_research_followups,
+    summarize_research_followup_refinement,
 )
 from .validation_gap_source_pack import (
     VALIDATION_GAP_SOURCE_PACK_AGENT_NAME,
@@ -2604,6 +2612,20 @@ class HSAResearchService:
             execute=lambda: escalate_agent_findings(self.repository, request),
             metadata=request.metadata,
             summarize=summarize_agent_finding_escalation,
+        )
+
+    def refine_research_followups(
+        self,
+        request: ResearchFollowupRefinementRequest,
+    ) -> ResearchFollowupRefinementResult:
+        return AgentRunner(self.repository).run(
+            agent_name=RESEARCH_FOLLOWUP_REFINEMENT_AGENT_NAME,
+            agent_version=RESEARCH_FOLLOWUP_REFINEMENT_AGENT_VERSION,
+            model_profile="deterministic_refinement",
+            input_payload={"request": request.model_dump(mode="json")},
+            execute=lambda: refine_research_followups(self.repository, request),
+            metadata=request.metadata,
+            summarize=summarize_research_followup_refinement,
         )
 
     def get_candidate(self, request: CandidateDossierRequest) -> CandidateDossier | None:

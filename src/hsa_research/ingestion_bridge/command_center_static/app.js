@@ -363,6 +363,9 @@ function renderActionButtons(item) {
     if (action === "run_followup_search") {
       return actionButton("research-followup-loop", item.item_id, "Run search", "search");
     }
+    if (action === "create_refined_queries") {
+      return actionButton("refine-followup", item.item_id, "Create refined queries");
+    }
     if (action === "reevaluate_followup") {
       return actionButton("research-followup-loop", item.item_id, "Re-evaluate", "evaluate", !validationDispatchReady());
     }
@@ -1008,6 +1011,10 @@ async function handleQueueAction(event) {
       const result = await runResearchFollowupLoop(id, status);
       showToast(followupLoopToast(result, status));
     }
+    if (action === "refine-followup") {
+      const result = await refineResearchFollowup(id);
+      showToast(`Created ${result.source_queries_created || 0} refined source quer${(result.source_queries_created || 0) === 1 ? "y" : "ies"}.`);
+    }
     await Promise.all([
       refreshCommandCenter(),
       refreshActionItems(),
@@ -1033,6 +1040,14 @@ async function runResearchFollowupLoop(leadId, mode) {
     max_queries: 10,
     followup_lane: "agent_evaluator_followup",
     model_profile: "agent_performance_evaluator",
+    operator: $("operatorName").value.trim() || "command_center_operator",
+  });
+}
+
+async function refineResearchFollowup(leadId) {
+  return postJson(`/api/research-leads/${encodeURIComponent(leadId)}/refine-followup`, {
+    dry_run: false,
+    max_queries_per_review: 4,
     operator: $("operatorName").value.trim() || "command_center_operator",
   });
 }
