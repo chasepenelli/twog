@@ -7752,6 +7752,11 @@ def test_research_followup_loop_queues_identifier_followups_and_records_claims(m
     monkeypatch.setattr(validation_gap_ingest, "LocalIngestionPipeline", FakeValidationPipeline)
     monkeypatch.setattr(source_followup, "LocalIngestionPipeline", FakeSourceFollowupPipeline)
 
+    def fail_source_wide_enrichment(repository, source_keys, ingest_result):
+        raise AssertionError("research follow-up loop should use run-scoped claim extraction")
+
+    monkeypatch.setattr(source_followup, "_refresh_entity_claim_layers", fail_source_wide_enrichment)
+
     result = service.run_research_followup_loop(
         ResearchFollowupLoopRequest(
             lead_id=lead.lead_id,

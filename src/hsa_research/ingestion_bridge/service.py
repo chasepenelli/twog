@@ -2415,7 +2415,7 @@ class HSAResearchService:
                         statuses=["queued", "approved"],
                         limit=request.max_identifier_followups,
                         approved_by=request.operator,
-                        run_claim_extraction=True,
+                        run_claim_extraction=False,
                         dry_run=False,
                         metadata={"research_followup_loop": True, **request.metadata},
                     )
