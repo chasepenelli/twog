@@ -11,6 +11,7 @@ from hsa_research.ingestion_bridge import dagster_assets as dagster_asset_module
 from hsa_research.ingestion_bridge import cli as cli_module
 from hsa_research.ingestion_bridge import command_center_web
 from hsa_research.ingestion_bridge import entity_resolution
+from hsa_research.ingestion_bridge import evidence_fit
 from hsa_research.ingestion_bridge import source_query_params
 from hsa_research.ingestion_bridge import storage, structured_orchestration
 from hsa_research.ingestion_bridge.contracts import (
@@ -104,6 +105,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ValidationAssayContext,
     ValidationAutopilotRequest,
     ValidationGapSourceIngestRequest,
+    ValidationGapSourceIngestResult,
     ValidationGapSourcePackRequest,
     ValidationGapSourcePackResult,
     ValidationGapSourceQuery,
@@ -640,6 +642,11 @@ def test_agent_finding_escalation_contracts_validate_allowed_values():
 def test_evidence_fit_assessment_contracts_validate_allowed_values():
     assessment = EvidenceFitAssessment(
         fit="strong",
+        target_safety_fit="strong",
+        disease_directness_fit="partial",
+        actionability="strong",
+        transfer_risk="moderate",
+        overall_fit="strong",
         matched_terms=["sorafenib", "sorafenib"],
         missing_terms=[],
         required_terms=["sorafenib", "canine/dog/veterinary"],
@@ -651,13 +658,117 @@ def test_evidence_fit_assessment_contracts_validate_allowed_values():
     )
 
     assert assessment.fit == "strong"
+    assert assessment.target_safety_fit == "strong"
+    assert assessment.disease_directness_fit == "partial"
+    assert assessment.actionability == "strong"
+    assert assessment.transfer_risk == "moderate"
+    assert assessment.overall_fit == "strong"
     assert assessment.matched_terms == ["sorafenib"]
     assert assessment.source_keys == ["pubmed"]
 
     with pytest.raises(ValidationError):
         EvidenceFitAssessment(fit="great")
     with pytest.raises(ValidationError):
+        EvidenceFitAssessment(transfer_risk="maybe")
+    with pytest.raises(ValidationError):
         EvidenceFitAssessment(matched_required_count=2, total_required_count=1)
+
+
+def test_evidence_fit_splits_translational_target_support_from_direct_disease_fit(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "evidence-fit-rubric.sqlite3", seed=False)
+    fetch_run_id = repo.create_fetch_run("europe_pmc", "pd1-translational-support")
+    raw_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="europe_pmc",
+            source_record_id="33110170",
+            content_hash="pd1-translational-support",
+            raw_payload={"pmid": "33110170"},
+        ),
+        fetch_run_id=fetch_run_id,
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type=ResearchObjectType.PUBLICATION,
+            title="A pilot clinical study of the therapeutic antibody against canine PD-1",
+            abstract=(
+                "CA-4F12-E6 is an anti-canine PD-1 therapeutic antibody evaluated in dogs "
+                "with advanced spontaneous cancers. The pilot study reports safety, toxicity, "
+                "and immune checkpoint inhibitor tolerability."
+            ),
+            source_key="europe_pmc",
+            dedupe_key="pmid:33110170",
+            identifiers={"pmid": "33110170"},
+            raw_record_id=raw_id,
+        ),
+        raw_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "CA-4F12-E6 anti-canine PD-1 therapy was evaluated for safety and toxicity "
+                "in canine advanced spontaneous cancer patients as an immune checkpoint inhibitor."
+            ),
+            content_hash="pd1-translational-support-chunk",
+        )
+    )
+    lead = ResearchLeadRecord(
+        title="Safety signal: CA-4F12-E6 anti-PD-1 evidence for canine hemangiosarcoma",
+        status="followup",
+        topic_tags=["ca-4f12-e6", "anti-pd-1", "canine", "hemangiosarcoma", "safety"],
+    )
+    query = SourceQuery(
+        source_key="europe_pmc",
+        query_name="pd1-translational-support",
+        query_text="anti-canine pd-1 ca-4f12-e6 safety",
+        query_params={
+            "required_terms": [
+                "ca-4f12-e6",
+                "anti-pd-1",
+                "pd-1",
+                "canine",
+                "hemangiosarcoma",
+                "safety",
+                "checkpoint inhibitor",
+            ]
+        },
+        track="validation_gap",
+    )
+    ingest_result = ValidationGapSourceIngestResult(
+        dry_run=False,
+        source_keys=["europe_pmc"],
+        query_count=1,
+        attempted_query_count=1,
+        completed_query_count=1,
+        raw_records=1,
+        research_objects=1,
+        document_chunks=1,
+        source_queries=[query],
+        results=[
+            IngestionResult(
+                source_key="europe_pmc",
+                query_name="pd1-translational-support",
+                query_text=query.query_text,
+                fetch_run_id=fetch_run_id,
+                raw_records=1,
+                research_objects=1,
+                document_chunks=1,
+                status=RunStatus.COMPLETED,
+            )
+        ],
+    )
+
+    assessment = evidence_fit.assess_research_followup_ingest_evidence_fit(repo, lead, ingest_result)
+
+    assert assessment.fit == "strong"
+    assert assessment.overall_fit == "strong"
+    assert assessment.target_safety_fit == "strong"
+    assert assessment.disease_directness_fit == "partial"
+    assert assessment.actionability == "strong"
+    assert assessment.transfer_risk == "moderate"
+    assert "hemangiosarcoma/angiosarcoma" in assessment.missing_terms
 
 
 def test_agent_finding_escalation_creates_research_lead_and_source_queries(tmp_path):

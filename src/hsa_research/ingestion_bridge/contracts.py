@@ -307,6 +307,7 @@ ValidationGapEvidenceLane = Literal[
     "general_evidence",
 ]
 EvidenceFitLevel = Literal["weak", "partial", "strong"]
+EvidenceTransferRiskLevel = Literal["low", "moderate", "high", "unknown"]
 
 ResearchBriefEvaluationReadiness = Literal[
     "ready_for_hypothesis_review",
@@ -1800,6 +1801,11 @@ class ValidationGapSourceIngestResult(StrictBaseModel):
 
 class EvidenceFitAssessment(StrictBaseModel):
     fit: EvidenceFitLevel = "weak"
+    target_safety_fit: EvidenceFitLevel = "weak"
+    disease_directness_fit: EvidenceFitLevel = "weak"
+    actionability: EvidenceFitLevel = "weak"
+    transfer_risk: EvidenceTransferRiskLevel = "unknown"
+    overall_fit: EvidenceFitLevel = "weak"
     matched_terms: list[str] = Field(default_factory=list, max_length=50)
     missing_terms: list[str] = Field(default_factory=list, max_length=50)
     required_terms: list[str] = Field(default_factory=list, max_length=50)

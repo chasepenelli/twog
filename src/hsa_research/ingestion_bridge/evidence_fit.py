@@ -18,6 +18,34 @@ from .contracts import (
 from .repository import ResearchRepository
 
 
+_TARGET_MECHANISM_LABELS = {
+    "ca-4f12-e6",
+    "anti-pd-1",
+    "pd-1",
+    "pd-l1",
+    "sorafenib",
+    "toceranib",
+    "pazopanib",
+    "propranolol",
+    "doxorubicin",
+    "paclitaxel",
+    "sirolimus/rapamycin",
+    "imatinib",
+    "sunitinib",
+    "trametinib",
+    "checkpoint inhibitor",
+    "caninized antibody",
+}
+_SAFETY_ACTION_LABELS = {
+    "maximum tolerated dose/dlt/safety",
+    "pkpd",
+    "clinical response/survival",
+    "assay protocol",
+}
+_SPECIES_LABEL = "canine/dog/veterinary"
+_DISEASE_LABEL = "hemangiosarcoma/angiosarcoma"
+
+
 def assess_research_followup_ingest_evidence_fit(
     repository: ResearchRepository,
     lead: ResearchLeadRecord,
@@ -244,7 +272,18 @@ def _assess_chunks(
     total_required = len(requirements)
     matched_required = len(matched)
     ratio = matched_required / total_required if total_required else 0.0
-    if total_required and ratio >= 0.75 and not critical_missing:
+    dimension_scores = _evidence_dimension_scores(matched, haystack)
+    if (
+        dimension_scores["target_safety_fit"] == "strong"
+        and dimension_scores["actionability"] == "strong"
+        and dimension_scores["disease_directness_fit"] in {"strong", "partial"}
+    ):
+        fit = "strong"
+        reason = (
+            "Retrieved evidence provides strong target-safety support with explicit disease-directness "
+            "and transfer-risk labels."
+        )
+    elif total_required and ratio >= 0.75 and not critical_missing:
         fit = "strong"
         reason = "Retrieved evidence matches the critical follow-up concepts."
     elif matched_required and ratio >= 0.4 and not critical_missing:
@@ -256,6 +295,11 @@ def _assess_chunks(
 
     return EvidenceFitAssessment(
         fit=fit,
+        target_safety_fit=dimension_scores["target_safety_fit"],
+        disease_directness_fit=dimension_scores["disease_directness_fit"],
+        actionability=dimension_scores["actionability"],
+        transfer_risk=dimension_scores["transfer_risk"],
+        overall_fit=fit,
         matched_terms=matched,
         missing_terms=missing,
         required_terms=[group["label"] for group in requirements],
@@ -265,6 +309,56 @@ def _assess_chunks(
         chunk_count=len(chunks) or fallback_chunk_count,
         reason=reason,
     )
+
+
+def _evidence_dimension_scores(matched: list[str], haystack: str) -> dict[str, str]:
+    matched_set = set(matched)
+    target_present = bool(matched_set & _TARGET_MECHANISM_LABELS)
+    safety_present = "maximum tolerated dose/dlt/safety" in matched_set
+    actionable_present = bool(matched_set & _SAFETY_ACTION_LABELS)
+    species_present = _SPECIES_LABEL in matched_set
+    disease_present = _DISEASE_LABEL in matched_set
+    oncology_present = any(
+        _evidence_text_contains(haystack, term)
+        for term in ("cancer", "tumor", "tumour", "neoplasm", "sarcoma")
+    )
+
+    if target_present and safety_present and species_present:
+        target_safety_fit = "strong"
+    elif target_present and (safety_present or species_present):
+        target_safety_fit = "partial"
+    else:
+        target_safety_fit = "weak"
+
+    if disease_present and species_present:
+        disease_directness_fit = "strong"
+    elif disease_present or (species_present and oncology_present):
+        disease_directness_fit = "partial"
+    else:
+        disease_directness_fit = "weak"
+
+    if target_present and actionable_present:
+        actionability = "strong"
+    elif target_present or actionable_present:
+        actionability = "partial"
+    else:
+        actionability = "weak"
+
+    if target_safety_fit == "strong" and disease_directness_fit == "strong":
+        transfer_risk = "low"
+    elif target_safety_fit in {"strong", "partial"} and disease_directness_fit in {"strong", "partial"}:
+        transfer_risk = "moderate"
+    elif target_safety_fit in {"strong", "partial"} or disease_directness_fit in {"strong", "partial"}:
+        transfer_risk = "high"
+    else:
+        transfer_risk = "unknown"
+
+    return {
+        "target_safety_fit": target_safety_fit,
+        "disease_directness_fit": disease_directness_fit,
+        "actionability": actionability,
+        "transfer_risk": transfer_risk,
+    }
 
 
 def _chunks_for_fetch_runs(
