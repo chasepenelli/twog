@@ -125,6 +125,23 @@ def research_followup_requirement_groups(
     groups: list[dict[str, Any]] = []
 
     concept_groups = [
+        ("ca-4f12-e6", ["ca-4f12-e6", "ca 4f12 e6"], True),
+        (
+            "anti-pd-1",
+            [
+                "anti-pd-1",
+                "anti pd-1",
+                "anti pd 1",
+                "pd-1 blockade",
+                "pd-1 inhibitor",
+                "pd1 inhibitor",
+                "pd-1 antibody",
+                "pd1 antibody",
+            ],
+            True,
+        ),
+        ("pd-1", ["pd-1", "pd1", "programmed death 1", "programmed cell death protein 1"], True),
+        ("pd-l1", ["pd-l1", "pdl1", "programmed death ligand 1"], True),
         ("sorafenib", ["sorafenib", "nexavar"], True),
         ("toceranib", ["toceranib", "palladia"], True),
         ("pazopanib", ["pazopanib"], True),

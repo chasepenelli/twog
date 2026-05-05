@@ -4405,6 +4405,84 @@ def test_research_followup_resolver_uses_stored_durable_chunks_before_promotion(
     assert updated.suggested_sources == ["pubmed"]
 
 
+def test_research_followup_resolver_blocks_promotion_when_candidate_terms_are_missing(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-followup-resolver-candidate-gate.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="pubmed:canine-hsa-safety",
+            content_hash="pubmed-canine-hsa-safety-raw",
+            raw_payload={"title": "Canine HSA safety study"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type=ResearchObjectType.PUBLICATION,
+            title="Canine hemangiosarcoma safety study",
+            abstract="Canine hemangiosarcoma safety and tolerability data.",
+            source_key="pubmed",
+            dedupe_key="pubmed:canine-hsa-safety",
+            raw_record_id=raw_record_id,
+        ),
+        raw_record_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="Canine hemangiosarcoma safety and tolerability data without checkpoint inhibitor evidence.",
+            content_hash="pubmed-canine-hsa-safety-chunk",
+        )
+    )
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Safety signal: Anti-PD-1 CA-4F12-E6 safety data in canine HSA",
+            lead_type="linked_article",
+            status="followup",
+            source_key="validation_agent",
+            origin_source_key="validation_agent",
+            topic_tags=["canine", "hemangiosarcoma", "safety"],
+        )
+    )
+    fetch_run_id = repo.create_fetch_run("pubmed", "candidate-gate")
+    repo.upsert_source_followup(
+        SourceFollowupQueueItem(
+            source_key="pubmed",
+            identifier_type="pmid",
+            identifier="123456",
+            status="ingested",
+            metadata={
+                "research_lead_id": str(lead.lead_id),
+                "last_ingestion_report": {
+                    "research_objects": 1,
+                    "document_chunks": 1,
+                    "fetch_run_id": str(fetch_run_id),
+                },
+            },
+        )
+    )
+
+    result = service.resolve_research_followups(
+        ResearchFollowupResolverRequest(
+            lead_ids=[lead.lead_id],
+            ingest_source_followups=False,
+            search_missing_identifiers=False,
+        )
+    )
+    updated = repo.get_research_lead(lead.lead_id)
+    evidence_fit = result.lead_results[0].metadata["evidence_fit"]
+
+    assert result.promoted_leads == 0
+    assert result.kept_in_followup == 1
+    assert evidence_fit["fit"] == "weak"
+    assert "anti-pd-1" in evidence_fit["missing_terms"]
+    assert "ca-4f12-e6" in evidence_fit["missing_terms"]
+    assert updated is not None
+    assert updated.status == "followup"
+
+
 def test_research_followup_resolver_keeps_unresolved_lead_in_followup(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "research-followup-resolver-manual.sqlite3", seed=False)
     service = HSAResearchService(repo)
