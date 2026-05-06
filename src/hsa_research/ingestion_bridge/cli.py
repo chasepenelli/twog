@@ -37,6 +37,7 @@ from .contracts import (
     ResearchFollowupLoopRequest,
     ResearchHuntTaskRunRequest,
     ResearchHuntQueueReportRequest,
+    ResearchHuntQueueMaintenanceRequest,
     ResearchLeadCollectRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
@@ -1238,6 +1239,24 @@ def main() -> None:
     research_hunt_queue_report.add_argument("--no-tasks", action="store_true", help="Omit task rows from the report.")
     research_hunt_queue_report.add_argument("--no-suppressed", action="store_true", help="Omit suppressed task rows from the report.")
 
+    research_hunt_queue_maintenance = subparsers.add_parser(
+        "research-hunt-queue-maintenance",
+        help="Dry-run or apply safe research hunt queue cleanup.",
+    )
+    research_hunt_queue_maintenance.add_argument("--lead-id", action="append", default=[], help="Research lead ID; repeat for multiple.")
+    research_hunt_queue_maintenance.add_argument("--lead-status", action="append", default=[], help="Lead status filter. Defaults to active hunt statuses.")
+    research_hunt_queue_maintenance.add_argument("--source", action="append", default=[], help="Source key filter.")
+    research_hunt_queue_maintenance.add_argument(
+        "--reason",
+        action="append",
+        default=[],
+        help="Maintenance reason to allow; repeat. Defaults to all safe reasons.",
+    )
+    research_hunt_queue_maintenance.add_argument("--stale-after-hours", type=int, default=72)
+    research_hunt_queue_maintenance.add_argument("--limit", type=int, default=50)
+    research_hunt_queue_maintenance.add_argument("--apply", action="store_true", help="Apply suppressions. Without this flag the command is a dry run.")
+    research_hunt_queue_maintenance.add_argument("--operator", default="cli_operator")
+
     model_review_summary = subparsers.add_parser(
         "model-review-summary",
         help="Print compact model-review summaries from persisted agent runs",
@@ -2192,6 +2211,23 @@ def main() -> None:
                 stale_after_hours=args.stale_after_hours,
                 include_tasks=not args.no_tasks,
                 include_suppressed=not args.no_suppressed,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "research-hunt-queue-maintenance":
+        output = HSAResearchService(repo).maintain_research_hunt_queue(
+            ResearchHuntQueueMaintenanceRequest(
+                lead_ids=[UUID(value) for value in args.lead_id],
+                lead_statuses=args.lead_status or ["new", "watching", "followup", "queued"],
+                source_keys=args.source,
+                reasons=args.reason or [
+                    "stale_broad_or_passive",
+                    "duplicate_broad_family",
+                    "passive_monitoring_note",
+                ],
+                stale_after_hours=args.stale_after_hours,
+                limit=args.limit,
+                dry_run=not args.apply,
+                operator=args.operator,
             )
         ).model_dump(mode="json")
     elif args.command == "model-review-summary":

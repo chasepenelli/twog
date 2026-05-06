@@ -87,6 +87,9 @@ from .contracts import (
     ResearchHuntQueueReportResult,
     ResearchHuntLeadQueueRow,
     ResearchHuntTaskQueueRow,
+    ResearchHuntQueueMaintenanceRequest,
+    ResearchHuntQueueMaintenanceResult,
+    ResearchHuntQueueMaintenanceItem,
     ResearchLeadCollectRequest,
     ResearchLeadCollectResult,
     ResearchLeadRecord,
@@ -3189,6 +3192,167 @@ class HSAResearchService:
             tasks=task_rows,
         )
 
+    def maintain_research_hunt_queue(
+        self,
+        request: ResearchHuntQueueMaintenanceRequest,
+    ) -> ResearchHuntQueueMaintenanceResult:
+        report = self.build_research_hunt_queue_report(
+            ResearchHuntQueueReportRequest(
+                lead_ids=request.lead_ids,
+                lead_statuses=request.lead_statuses,
+                source_keys=request.source_keys,
+                limit=1000,
+                task_limit=2000,
+                stale_after_hours=request.stale_after_hours,
+                include_tasks=True,
+                include_suppressed=False,
+            )
+        )
+        allowed_reasons = set(request.reasons)
+        candidates: list[ResearchHuntQueueMaintenanceItem] = []
+        skipped: list[dict[str, Any]] = []
+        seen_open_family_keys: set[tuple[UUID, str, str]] = set()
+        tasks_by_lead: dict[UUID, list[ResearchHuntTaskQueueRow]] = {}
+        for task in report.tasks:
+            tasks_by_lead.setdefault(task.lead_id, []).append(task)
+
+        for lead in report.leads:
+            for task in tasks_by_lead.get(lead.lead_id, []):
+                if task.status != "open":
+                    continue
+                reason = _research_hunt_maintenance_suppression_reason(
+                    task,
+                    seen_open_family_keys=seen_open_family_keys,
+                    allowed_reasons=allowed_reasons,
+                )
+                if reason is None:
+                    skipped.append(
+                        {
+                            "lead_id": str(task.lead_id),
+                            "task_id": task.task_id,
+                            "task_type": task.task_type,
+                            "task_class": task.task_class,
+                            "reason": "outside_maintenance_scope",
+                        }
+                    )
+                    continue
+                candidates.append(
+                    ResearchHuntQueueMaintenanceItem(
+                        lead_id=task.lead_id,
+                        task_id=task.task_id or "",
+                        task_type=task.task_type,
+                        task_class=task.task_class,
+                        action=task.action,
+                        previous_status=task.status,
+                        suppression_reason=reason,  # type: ignore[arg-type]
+                        identity_key=task.identity_key,
+                        family_key=task.family_key,
+                        age_hours=task.age_hours,
+                        dry_run=request.dry_run,
+                    )
+                )
+                if len(candidates) >= request.limit:
+                    break
+            if len(candidates) >= request.limit:
+                break
+
+        errors: list[str] = []
+        updated_lead_ids: set[UUID] = set()
+        applied_items: list[ResearchHuntQueueMaintenanceItem] = []
+        if not request.dry_run:
+            now = datetime.now(UTC).isoformat()
+            candidates_by_lead: dict[UUID, list[ResearchHuntQueueMaintenanceItem]] = {}
+            for item in candidates:
+                candidates_by_lead.setdefault(item.lead_id, []).append(item)
+            for lead_id, lead_items in candidates_by_lead.items():
+                lead = self.repository.get_research_lead(lead_id)
+                if lead is None:
+                    errors.append(f"lead not found during maintenance: {lead_id}")
+                    continue
+                state = dict(lead.metadata.get("research_hunt") or {})
+                tasks = [dict(task) for task in state.get("tasks", []) if isinstance(task, dict)]
+                suppressed_tasks = [
+                    dict(task)
+                    for task in state.get("suppressed_tasks", [])
+                    if isinstance(task, dict)
+                ]
+                item_by_task_id = {item.task_id: item for item in lead_items}
+                remaining_tasks: list[dict[str, Any]] = []
+                moved_tasks: list[dict[str, Any]] = []
+                for task in tasks:
+                    task_id = str(task.get("task_id") or "")
+                    item = item_by_task_id.get(task_id)
+                    if item is None:
+                        remaining_tasks.append(task)
+                        continue
+                    moved = dict(task)
+                    moved["status"] = "suppressed"
+                    moved["suppression_reason"] = item.suppression_reason
+                    moved["suppressed_at"] = now
+                    moved["updated_at"] = now
+                    moved["maintenance"] = {
+                        "operator": request.operator,
+                        "dagster_run_id": request.dagster_run_id,
+                        "previous_status": item.previous_status,
+                        "reason": item.suppression_reason,
+                        **request.metadata,
+                    }
+                    moved_tasks.append(moved)
+                    applied_items.append(item.model_copy(update={"dry_run": False}))
+                if not moved_tasks:
+                    continue
+                suppressed_history = [*suppressed_tasks, *moved_tasks][-200:]
+                best_signal = state.get("best_signal") if isinstance(state.get("best_signal"), dict) else None
+                signal_status = "supported" if _research_hunt_signal_score(best_signal) >= 80 else "developing"
+                open_tasks = [task for task in remaining_tasks if task.get("status") == "open"]
+                control_status = _research_hunt_control_status_from_state(
+                    remaining_tasks,
+                    best_signal=best_signal,
+                    has_hunt_state=True,
+                )
+                state.update(
+                    {
+                        "tasks": remaining_tasks,
+                        "suppressed_tasks": suppressed_history,
+                        "suppressed_task_count": len(suppressed_history),
+                        "open_task_count": len(open_tasks),
+                        "signal_status": signal_status,
+                        "coverage_status": _research_hunt_coverage_status_from_control(
+                            control_status,
+                            signal_status=signal_status,
+                        ),
+                        "control_status": control_status,
+                        "last_updated_at": now,
+                        "last_maintenance": {
+                            "action": request.action,
+                            "operator": request.operator,
+                            "dry_run": False,
+                            "candidate_count": len(lead_items),
+                            "suppressed_count": len(moved_tasks),
+                            "dagster_run_id": request.dagster_run_id,
+                            "updated_at": now,
+                            **request.metadata,
+                        },
+                    }
+                )
+                updated = self.update_research_lead(lead_id, metadata={"research_hunt": state})
+                if updated is None:
+                    errors.append(f"lead disappeared during maintenance update: {lead_id}")
+                    continue
+                updated_lead_ids.add(lead_id)
+
+        return ResearchHuntQueueMaintenanceResult(
+            action=request.action,
+            dry_run=request.dry_run,
+            candidate_count=len(candidates),
+            suppressed_count=0 if request.dry_run else len(applied_items),
+            updated_lead_count=0 if request.dry_run else len(updated_lead_ids),
+            skipped_count=len(skipped),
+            items=candidates if request.dry_run else applied_items,
+            skipped=skipped,
+            errors=errors,
+        )
+
     def update_research_lead(
         self,
         lead_id: UUID,
@@ -4389,6 +4553,42 @@ def _research_hunt_lead_control_status(
     return "idle"
 
 
+def _research_hunt_control_status_from_state(
+    tasks: list[dict[str, Any]],
+    *,
+    best_signal: dict[str, Any] | None,
+    has_hunt_state: bool,
+) -> str:
+    rows = [
+        _research_hunt_task_queue_row(
+            ResearchLeadRecord(title="control-status-placeholder"),
+            task,
+            stale_after_hours=72,
+        )
+        for task in tasks
+    ]
+    open_rows = [row for row in rows if row.status == "open"]
+    failed_rows = [row for row in rows if row.status == "failed"]
+    return _research_hunt_lead_control_status(
+        has_hunt_state=has_hunt_state,
+        best_signal_score=_research_hunt_signal_score(best_signal),
+        open_concrete_count=sum(1 for row in open_rows if row.task_class == "concrete"),
+        open_broad_count=sum(1 for row in open_rows if row.task_class == "broad"),
+        open_passive_count=sum(1 for row in open_rows if row.task_class == "passive"),
+        failed_count=len(failed_rows),
+    )
+
+
+def _research_hunt_coverage_status_from_control(control_status: str, *, signal_status: str) -> str:
+    if control_status == "hunting":
+        return "hunting"
+    if control_status in {"ready_for_synthesis", "watching"} and signal_status == "supported":
+        return "supported"
+    if control_status == "blocked":
+        return "blocked"
+    return "insufficient"
+
+
 def _research_hunt_lead_recommended_action(control_status: str) -> str:
     return {
         "ready_for_synthesis": "queue_synthesis",
@@ -4398,6 +4598,32 @@ def _research_hunt_lead_recommended_action(control_status: str) -> str:
         "idle": "no_action",
         "no_hunt_state": "no_hunt_state",
     }.get(control_status, "inspect_lead")
+
+
+def _research_hunt_maintenance_suppression_reason(
+    task: ResearchHuntTaskQueueRow,
+    *,
+    seen_open_family_keys: set[tuple[UUID, str, str]],
+    allowed_reasons: set[str],
+) -> str | None:
+    family_key = task.family_key or task.identity_key or task.action
+    family_scope = (task.lead_id, task.task_type, family_key)
+    duplicate_broad = task.task_class == "broad" and family_scope in seen_open_family_keys
+    if task.status == "open" and task.task_class == "broad":
+        seen_open_family_keys.add(family_scope)
+    if task.status != "open":
+        return None
+    if task.task_class == "passive" and "passive_monitoring_note" in allowed_reasons:
+        return "passive_monitoring_note"
+    if duplicate_broad and "duplicate_broad_family" in allowed_reasons:
+        return "duplicate_broad_family"
+    if (
+        task.stale
+        and task.task_class in {"broad", "passive"}
+        and "stale_broad_or_passive" in allowed_reasons
+    ):
+        return "stale_broad_or_passive"
+    return None
 
 
 def _research_hunt_task_evidence_refs(lead: ResearchLeadRecord, task: dict[str, Any]) -> list[str]:

@@ -2050,6 +2050,74 @@ class ResearchHuntQueueReportResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+ResearchHuntQueueMaintenanceAction = Literal["suppress"]
+ResearchHuntQueueMaintenanceReason = Literal[
+    "stale_broad_or_passive",
+    "duplicate_broad_family",
+    "passive_monitoring_note",
+]
+
+
+class ResearchHuntQueueMaintenanceRequest(StrictBaseModel):
+    action: ResearchHuntQueueMaintenanceAction = "suppress"
+    lead_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    lead_statuses: list[ResearchLeadStatus] = Field(
+        default_factory=lambda: ["new", "watching", "followup", "queued"],
+        max_length=10,
+    )
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    reasons: list[ResearchHuntQueueMaintenanceReason] = Field(
+        default_factory=lambda: [
+            "stale_broad_or_passive",
+            "duplicate_broad_family",
+            "passive_monitoring_note",
+        ],
+        max_length=10,
+    )
+    stale_after_hours: int = Field(default=72, ge=1, le=24 * 90)
+    limit: int = Field(default=50, ge=1, le=500)
+    dry_run: bool = True
+    operator: str = "research_hunt_queue_maintenance"
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_hunt_queue_maintenance_request(self) -> "ResearchHuntQueueMaintenanceRequest":
+        self.lead_statuses = _dedupe_strings(self.lead_statuses)
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        self.reasons = _dedupe_strings(self.reasons)
+        self.operator = self.operator.strip() or "research_hunt_queue_maintenance"
+        return self
+
+
+class ResearchHuntQueueMaintenanceItem(StrictBaseModel):
+    lead_id: UUID
+    task_id: str
+    task_type: str
+    task_class: ResearchHuntTaskClass
+    action: str
+    previous_status: str
+    new_status: str = "suppressed"
+    suppression_reason: ResearchHuntQueueMaintenanceReason
+    identity_key: str | None = None
+    family_key: str | None = None
+    age_hours: float | None = None
+    dry_run: bool = True
+
+
+class ResearchHuntQueueMaintenanceResult(StrictBaseModel):
+    action: ResearchHuntQueueMaintenanceAction = "suppress"
+    dry_run: bool = True
+    candidate_count: int = Field(default=0, ge=0)
+    suppressed_count: int = Field(default=0, ge=0)
+    updated_lead_count: int = Field(default=0, ge=0)
+    skipped_count: int = Field(default=0, ge=0)
+    items: list[ResearchHuntQueueMaintenanceItem] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class SourceScoutRequest(StrictBaseModel):
     focus: Literal["all", "scholarly", "canine", "omics", "chemistry", "structure", "safety"] = "all"
     max_phase: int = Field(default=3, ge=1, le=5)

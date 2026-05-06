@@ -77,6 +77,9 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchHuntQueueReportResult,
     ResearchHuntLeadQueueRow,
     ResearchHuntTaskQueueRow,
+    ResearchHuntQueueMaintenanceRequest,
+    ResearchHuntQueueMaintenanceResult,
+    ResearchHuntQueueMaintenanceItem,
     ResearchFollowupRefinementRequest,
     ResearchFollowupResolverRequest,
     ResearchFollowupResolverResult,
@@ -1742,6 +1745,68 @@ def test_dagster_research_hunt_queue_asset_uses_injected_repository(monkeypatch)
     assert calls == ["build_repository"]
     assert result.value["executable_task_count"] == 1
     assert result.metadata["executable_task_count"].value == 1
+
+
+def test_dagster_research_hunt_queue_maintenance_asset_uses_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+    lead_id = uuid4()
+    task_id = uuid4()
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    class FakeService:
+        def __init__(self, repository):
+            assert repository is sentinel_repository
+
+        def maintain_research_hunt_queue(self, request):
+            assert isinstance(request, ResearchHuntQueueMaintenanceRequest)
+            assert request.lead_ids == [lead_id]
+            assert request.dagster_run_id == "dagster-hunt-maintenance-test"
+            assert request.dry_run is False
+            return ResearchHuntQueueMaintenanceResult(
+                dry_run=False,
+                candidate_count=1,
+                suppressed_count=1,
+                updated_lead_count=1,
+                items=[
+                    ResearchHuntQueueMaintenanceItem(
+                        lead_id=lead_id,
+                        task_id=str(task_id),
+                        task_type="research_followup",
+                        task_class="passive",
+                        action="Monitor future publications.",
+                        previous_status="open",
+                        suppression_reason="passive_monitoring_note",
+                        dry_run=False,
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
+
+    result = dagster_asset_module.research_hunt_queue_maintenance_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "lead_ids": [str(lead_id)],
+                "lead_statuses": ["watching"],
+                "source_keys": [],
+                "reasons": ["passive_monitoring_note"],
+                "stale_after_hours": 72,
+                "limit": 10,
+                "dry_run": False,
+            },
+            run_id="dagster-hunt-maintenance-test",
+        ),
+        FakeRepositoryResource(),
+    )
+
+    assert calls == ["build_repository"]
+    assert result.value["suppressed_count"] == 1
+    assert result.metadata["suppressed_count"].value == 1
 
 
 def test_dagster_research_brief_evaluation_asset_uses_injected_repository(monkeypatch):
@@ -8726,6 +8791,147 @@ def test_research_hunt_queue_report_marks_supported_lead_ready_for_synthesis():
     assert report.ready_for_synthesis_count == 1
     assert report.leads[0].control_status == "ready_for_synthesis"
     assert report.leads[0].recommended_action == "queue_synthesis"
+
+
+def test_research_hunt_queue_maintenance_dry_run_does_not_mutate():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    now = datetime.now(UTC)
+    stale_task_id = uuid4()
+    passive_task_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Hunt queue maintenance dry run",
+            status="watching",
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "hunting",
+                    "best_signal": {
+                        "score": 90,
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 4, "total_required_count": 4},
+                    },
+                    "tasks": [
+                        {
+                            "task_id": str(stale_task_id),
+                            "status": "open",
+                            "task_type": "broaden_query",
+                            "action": "Search stale PubMed source coverage.",
+                            "priority": 40,
+                            "created_at": (now - timedelta(hours=96)).isoformat(),
+                        },
+                        {
+                            "task_id": str(passive_task_id),
+                            "status": "open",
+                            "task_type": "research_followup",
+                            "action": "Monitor future publications for this lead.",
+                            "priority": 60,
+                            "created_at": now.isoformat(),
+                        },
+                    ],
+                    "suppressed_tasks": [],
+                }
+            },
+        )
+    )
+
+    result = service.maintain_research_hunt_queue(
+        ResearchHuntQueueMaintenanceRequest(lead_ids=[lead.lead_id], dry_run=True, stale_after_hours=72)
+    )
+    updated = repo.get_research_lead(lead.lead_id)
+
+    assert result.candidate_count == 2
+    assert result.suppressed_count == 0
+    assert {item.suppression_reason for item in result.items} == {
+        "stale_broad_or_passive",
+        "passive_monitoring_note",
+    }
+    assert [task["status"] for task in updated.metadata["research_hunt"]["tasks"]] == ["open", "open"]
+    assert updated.metadata["research_hunt"]["suppressed_tasks"] == []
+
+
+def test_research_hunt_queue_maintenance_suppresses_safe_tasks_and_recalculates_state():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    now = datetime.now(UTC)
+    keep_task_id = uuid4()
+    duplicate_task_id = uuid4()
+    stale_task_id = uuid4()
+    passive_task_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Hunt queue maintenance apply",
+            status="watching",
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "hunting",
+                    "best_signal": {
+                        "score": 95,
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 4, "total_required_count": 4},
+                    },
+                    "tasks": [
+                        {
+                            "task_id": str(keep_task_id),
+                            "status": "open",
+                            "task_type": "research_followup",
+                            "action": "Review NCT02979899 trial design for human angiosarcoma VEGFR parallels.",
+                            "priority": 60,
+                            "created_at": now.isoformat(),
+                        },
+                        {
+                            "task_id": str(duplicate_task_id),
+                            "status": "open",
+                            "task_type": "research_followup",
+                            "action": "Examine NCT02979899 for human angiosarcoma VEGFR outcome data.",
+                            "priority": 60,
+                            "created_at": now.isoformat(),
+                        },
+                        {
+                            "task_id": str(stale_task_id),
+                            "status": "open",
+                            "task_type": "broaden_query",
+                            "action": "Search stale PubMed source coverage.",
+                            "priority": 40,
+                            "created_at": (now - timedelta(hours=96)).isoformat(),
+                        },
+                        {
+                            "task_id": str(passive_task_id),
+                            "status": "open",
+                            "task_type": "research_followup",
+                            "action": "Monitor future publications for this lead.",
+                            "priority": 60,
+                            "created_at": now.isoformat(),
+                        },
+                    ],
+                    "suppressed_tasks": [],
+                }
+            },
+        )
+    )
+
+    result = service.maintain_research_hunt_queue(
+        ResearchHuntQueueMaintenanceRequest(lead_ids=[lead.lead_id], dry_run=False, stale_after_hours=72)
+    )
+    updated = repo.get_research_lead(lead.lead_id)
+    hunt_state = updated.metadata["research_hunt"]
+    remaining_task_ids = {task["task_id"] for task in hunt_state["tasks"]}
+    suppression_reasons = {task["suppression_reason"] for task in hunt_state["suppressed_tasks"]}
+
+    assert result.candidate_count == 3
+    assert result.suppressed_count == 3
+    assert result.updated_lead_count == 1
+    assert remaining_task_ids == {str(keep_task_id)}
+    assert suppression_reasons == {
+        "duplicate_broad_family",
+        "stale_broad_or_passive",
+        "passive_monitoring_note",
+    }
+    assert hunt_state["open_task_count"] == 1
+    assert hunt_state["control_status"] == "ready_for_synthesis"
+    assert hunt_state["coverage_status"] == "supported"
 
 
 def test_research_followup_loop_evidence_fit_prefers_run_scoped_chunks(monkeypatch, tmp_path):

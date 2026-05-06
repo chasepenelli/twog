@@ -32,6 +32,7 @@ from .contracts import (
     ResearchBriefRequest,
     ResearchFollowupResolverRequest,
     ResearchHuntQueueReportRequest,
+    ResearchHuntQueueMaintenanceRequest,
     ResearchLeadCollectRequest,
     ResearchObject,
     SourceFollowupIngestRequest,
@@ -411,6 +412,18 @@ _RESEARCH_HUNT_TASK_TABLE_COLUMNS = (
     "age_hours",
     "action",
 )
+_RESEARCH_HUNT_MAINTENANCE_TABLE_COLUMNS = (
+    "lead_id",
+    "task_id",
+    "task_type",
+    "task_class",
+    "previous_status",
+    "new_status",
+    "suppression_reason",
+    "age_hours",
+    "dry_run",
+    "action",
+)
 _RESEARCH_FOLLOWUP_RESOLVER_TABLE_COLUMNS = (
     "lead_id",
     "status_before",
@@ -728,6 +741,20 @@ if dg is not None:
             "control_status_counts": dg.MetadataValue.json(report.get("control_status_counts", {})),
             "lead_table": _metadata_table(report.get("leads", []), _RESEARCH_HUNT_LEAD_TABLE_COLUMNS),
             "task_table": _metadata_table(report.get("tasks", []), _RESEARCH_HUNT_TASK_TABLE_COLUMNS),
+        }
+
+    def _research_hunt_queue_maintenance_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "action": report.get("action"),
+            "dry_run": bool(report.get("dry_run", True)),
+            "candidate_count": dg.MetadataValue.int(int(report.get("candidate_count") or 0)),
+            "suppressed_count": dg.MetadataValue.int(int(report.get("suppressed_count") or 0)),
+            "updated_lead_count": dg.MetadataValue.int(int(report.get("updated_lead_count") or 0)),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count") or 0)),
+            "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
+            "items": _metadata_table(report.get("items", []), _RESEARCH_HUNT_MAINTENANCE_TABLE_COLUMNS),
+            "skipped": dg.MetadataValue.json(report.get("skipped", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
         }
 
     def _agent_performance_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -2564,6 +2591,65 @@ if dg is not None:
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_research_hunt_queue_report_metadata(report))
+
+    @dg.asset(
+        group_name="control_panel",
+        config_schema={
+            "lead_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Optional research lead ids to clean.",
+            ),
+            "lead_statuses": dg.Field(
+                [str],
+                default_value=["new", "watching", "followup", "queued"],
+                description="Research lead statuses to scan.",
+            ),
+            "source_keys": dg.Field(
+                [str],
+                default_value=[],
+                description="Optional source key scope.",
+            ),
+            "reasons": dg.Field(
+                [str],
+                default_value=[
+                    "stale_broad_or_passive",
+                    "duplicate_broad_family",
+                    "passive_monitoring_note",
+                ],
+                description="Safe maintenance reasons to apply.",
+            ),
+            "stale_after_hours": dg.Field(int, default_value=72, description="Age threshold for stale open tasks."),
+            "limit": dg.Field(int, default_value=50, description="Maximum tasks to suppress."),
+            "dry_run": dg.Field(bool, default_value=True, description="Preview changes without mutating leads."),
+        },
+    )
+    def research_hunt_queue_maintenance_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Dry-run or apply safe research hunt queue cleanup."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).maintain_research_hunt_queue(
+            ResearchHuntQueueMaintenanceRequest(
+                lead_ids=[UUID(value) for value in config["lead_ids"]],
+                lead_statuses=config["lead_statuses"],
+                source_keys=config["source_keys"],
+                reasons=config["reasons"],
+                stale_after_hours=config["stale_after_hours"],
+                limit=config["limit"],
+                dry_run=config["dry_run"],
+                operator="dagster",
+                dagster_run_id=context.run_id,
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_research_hunt_queue_maintenance_metadata(report))
 
     @dg.asset(group_name="agent_ops")
     def full_text_ops_agent_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
@@ -5448,6 +5534,7 @@ if dg is not None:
         source_health_report,
         command_center_report,
         research_hunt_queue_report,
+        research_hunt_queue_maintenance_report,
         full_text_ops_agent_report,
         agent_performance_report,
         agent_performance_evaluation_report,
@@ -5567,6 +5654,10 @@ if dg is not None:
     research_hunt_queue_report_job = dg.define_asset_job(
         "research_hunt_queue_report_job",
         selection=dg.AssetSelection.assets(research_hunt_queue_report),
+    )
+    research_hunt_queue_maintenance_job = dg.define_asset_job(
+        "research_hunt_queue_maintenance_job",
+        selection=dg.AssetSelection.assets(research_hunt_queue_maintenance_report),
     )
     full_text_ops_agent_job = dg.define_asset_job(
         "full_text_ops_agent_job",
@@ -5922,6 +6013,7 @@ if dg is not None:
             source_health_report_job,
             command_center_job,
             research_hunt_queue_report_job,
+            research_hunt_queue_maintenance_job,
             full_text_ops_agent_job,
             agent_performance_report_job,
             agent_performance_evaluation_job,
@@ -6010,6 +6102,7 @@ else:
     source_health_report_job = None
     command_center_job = None
     research_hunt_queue_report_job = None
+    research_hunt_queue_maintenance_job = None
     full_text_ops_agent_job = None
     agent_performance_report_job = None
     agent_performance_evaluation_job = None
