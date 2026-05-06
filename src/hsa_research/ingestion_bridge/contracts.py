@@ -1052,6 +1052,56 @@ class ResearchBriefQueueBatchResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ResearchHuntSynthesisQueueRequest(StrictBaseModel):
+    lead_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    lead_statuses: list[ResearchLeadStatus] = Field(
+        default_factory=lambda: ["new", "watching", "followup"],
+        max_length=10,
+    )
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    limit: int = Field(default=10, ge=1, le=100)
+    disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
+    priority: int = Field(default=40, ge=0, le=1000)
+    max_chunks_per_perspective: int = Field(default=10, ge=1, le=25)
+    max_claims: int = Field(default=20, ge=0, le=50)
+    max_chunk_chars: int = Field(default=2200, ge=500, le=12000)
+    brief_style: Literal["technical", "operator", "substack", "vet_partner"] = "technical"
+    model_profile: str = "research_brief"
+    review_mode: Literal[
+        "external_required",
+        "openrouter_required",
+        "openrouter_compare",
+        "deterministic_only",
+    ] = "openrouter_required"
+    review_models: list[str] = Field(default_factory=list, max_length=10)
+    dry_run: bool = True
+    transition_leads: bool = True
+    operator: str = "research_hunt_synthesis_queue"
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_hunt_synthesis_queue_request(self) -> "ResearchHuntSynthesisQueueRequest":
+        self.lead_statuses = _dedupe_strings(self.lead_statuses)
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        self.review_models = _dedupe_strings(self.review_models)
+        self.operator = self.operator.strip() or "research_hunt_synthesis_queue"
+        return self
+
+
+class ResearchHuntSynthesisQueueResult(StrictBaseModel):
+    dry_run: bool = True
+    candidate_count: int = Field(default=0, ge=0)
+    queued_count: int = Field(default=0, ge=0)
+    preexisting_count: int = Field(default=0, ge=0)
+    updated_lead_count: int = Field(default=0, ge=0)
+    skipped_count: int = Field(default=0, ge=0)
+    queue_items: list[ResearchBriefQueueItem] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class CommandCenterRequest(StrictBaseModel):
     source_keys: list[str] = Field(default_factory=list, max_length=50)
     include_source_health: bool = True

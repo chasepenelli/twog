@@ -33,6 +33,7 @@ from .contracts import (
     ResearchFollowupResolverRequest,
     ResearchHuntQueueReportRequest,
     ResearchHuntQueueMaintenanceRequest,
+    ResearchHuntSynthesisQueueRequest,
     ResearchLeadCollectRequest,
     ResearchObject,
     SourceFollowupIngestRequest,
@@ -1235,6 +1236,37 @@ if dg is not None:
             "source_health_count": dg.MetadataValue.int(int(report.get("source_health_count", 0))),
             "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0))),
             "skipped": dg.MetadataValue.json(report.get("skipped", [])),
+            "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "queue_items": _metadata_table(queue_rows, _RESEARCH_BRIEF_QUEUE_TABLE_COLUMNS),
+        }
+
+    def _research_hunt_synthesis_queue_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        queue_rows = [
+            {
+                "queue_item_id": item.get("queue_item_id"),
+                "status": item.get("status"),
+                "priority": item.get("priority"),
+                "topic": str(item.get("topic") or "")[:300],
+                "source_key": item.get("source_key"),
+                "brief_style": item.get("brief_style"),
+                "model_profile": item.get("model_profile"),
+                "review_mode": item.get("review_mode"),
+                "attempts": item.get("attempts"),
+                "last_brief_id": item.get("last_brief_id"),
+                "last_error": str(item.get("last_error") or "")[:300],
+                "created_at": item.get("created_at"),
+            }
+            for item in report.get("queue_items", [])
+        ]
+        return {
+            "dry_run": bool(report.get("dry_run", True)),
+            "candidate_count": dg.MetadataValue.int(int(report.get("candidate_count", 0))),
+            "queued_count": dg.MetadataValue.int(int(report.get("queued_count", 0))),
+            "preexisting_count": dg.MetadataValue.int(int(report.get("preexisting_count", 0))),
+            "updated_lead_count": dg.MetadataValue.int(int(report.get("updated_lead_count", 0))),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0))),
+            "skipped": dg.MetadataValue.json(report.get("skipped", [])[:50]),
             "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "queue_items": _metadata_table(queue_rows, _RESEARCH_BRIEF_QUEUE_TABLE_COLUMNS),
@@ -2650,6 +2682,91 @@ if dg is not None:
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_research_hunt_queue_maintenance_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "lead_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Optional ready research lead ids to queue.",
+            ),
+            "lead_statuses": dg.Field(
+                [str],
+                default_value=["new", "watching", "followup"],
+                description="Research lead statuses to scan.",
+            ),
+            "source_keys": dg.Field(
+                [str],
+                default_value=[],
+                description="Optional source key scope.",
+            ),
+            "limit": dg.Field(int, default_value=10, description="Maximum ready leads to queue."),
+            "disease_scope": dg.Field(
+                str,
+                default_value="canine hemangiosarcoma and human angiosarcoma",
+                description="Disease/scope guardrail for retrieval and synthesis.",
+            ),
+            "priority": dg.Field(int, default_value=40, description="Default queue priority."),
+            "max_chunks_per_perspective": dg.Field(
+                int,
+                default_value=10,
+                description="Maximum chunks to retrieve per perspective query.",
+            ),
+            "max_claims": dg.Field(int, default_value=20, description="Maximum claims to include."),
+            "max_chunk_chars": dg.Field(
+                int,
+                default_value=2200,
+                description="Maximum characters per cited chunk sent to the reviewer.",
+            ),
+            "brief_style": dg.Field(str, default_value="technical", description="Research brief style."),
+            "model_profile": dg.Field(str, default_value="research_brief", description="Logical model profile."),
+            "review_mode": dg.Field(str, default_value="openrouter_required", description="Review mode."),
+            "review_models": dg.Field(
+                [str],
+                default_value=[],
+                description="OpenRouter model ids for OpenRouter-backed review modes.",
+            ),
+            "dry_run": dg.Field(bool, default_value=True, description="Preview queueing without mutating records."),
+            "transition_leads": dg.Field(bool, default_value=True, description="Mark newly queued leads as queued."),
+        },
+    )
+    def research_hunt_synthesis_queue_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Queue ready research-hunt leads into the research brief synthesis lane."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).queue_ready_research_hunt_synthesis(
+            ResearchHuntSynthesisQueueRequest(
+                lead_ids=[UUID(value) for value in config["lead_ids"]],
+                lead_statuses=config["lead_statuses"],
+                source_keys=config["source_keys"],
+                limit=config["limit"],
+                disease_scope=config["disease_scope"],
+                priority=config["priority"],
+                max_chunks_per_perspective=config["max_chunks_per_perspective"],
+                max_claims=config["max_claims"],
+                max_chunk_chars=config["max_chunk_chars"],
+                brief_style=config["brief_style"],
+                model_profile=config["model_profile"],
+                review_mode=config["review_mode"],
+                review_models=config["review_models"],
+                dry_run=config["dry_run"],
+                transition_leads=config["transition_leads"],
+                operator="dagster",
+                dagster_run_id=context.run_id,
+                metadata={"dagster_synthesis_queue_run_id": context.run_id},
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_research_hunt_synthesis_queue_metadata(report))
 
     @dg.asset(group_name="agent_ops")
     def full_text_ops_agent_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
@@ -5535,6 +5652,7 @@ if dg is not None:
         command_center_report,
         research_hunt_queue_report,
         research_hunt_queue_maintenance_report,
+        research_hunt_synthesis_queue_report,
         full_text_ops_agent_report,
         agent_performance_report,
         agent_performance_evaluation_report,
@@ -5658,6 +5776,10 @@ if dg is not None:
     research_hunt_queue_maintenance_job = dg.define_asset_job(
         "research_hunt_queue_maintenance_job",
         selection=dg.AssetSelection.assets(research_hunt_queue_maintenance_report),
+    )
+    research_hunt_synthesis_queue_job = dg.define_asset_job(
+        "research_hunt_synthesis_queue_job",
+        selection=dg.AssetSelection.assets(research_hunt_synthesis_queue_report),
     )
     full_text_ops_agent_job = dg.define_asset_job(
         "full_text_ops_agent_job",
@@ -6014,6 +6136,7 @@ if dg is not None:
             command_center_job,
             research_hunt_queue_report_job,
             research_hunt_queue_maintenance_job,
+            research_hunt_synthesis_queue_job,
             full_text_ops_agent_job,
             agent_performance_report_job,
             agent_performance_evaluation_job,
@@ -6103,6 +6226,7 @@ else:
     command_center_job = None
     research_hunt_queue_report_job = None
     research_hunt_queue_maintenance_job = None
+    research_hunt_synthesis_queue_job = None
     full_text_ops_agent_job = None
     agent_performance_report_job = None
     agent_performance_evaluation_job = None

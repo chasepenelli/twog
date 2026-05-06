@@ -68,6 +68,8 @@ from .contracts import (
     ResearchBriefQueueRequest,
     ResearchBriefQueueRunRequest,
     ResearchBriefQueueRunResult,
+    ResearchHuntSynthesisQueueRequest,
+    ResearchHuntSynthesisQueueResult,
     ResearchBriefRecord,
     ResearchBriefPlaygroundPack,
     ResearchBriefRequest,
@@ -1968,6 +1970,139 @@ class HSAResearchService:
             lead_count=lead_count,
             research_followup_count=research_followup_count,
             source_health_count=source_health_count,
+            skipped_count=len(skipped),
+            queue_items=queue_items,
+            skipped=skipped,
+            errors=errors,
+        )
+
+    def queue_ready_research_hunt_synthesis(
+        self,
+        request: ResearchHuntSynthesisQueueRequest,
+    ) -> ResearchHuntSynthesisQueueResult:
+        report = self.build_research_hunt_queue_report(
+            ResearchHuntQueueReportRequest(
+                lead_ids=request.lead_ids,
+                lead_statuses=request.lead_statuses,
+                source_keys=request.source_keys,
+                limit=1000 if not request.lead_ids else max(len(request.lead_ids), 1),
+                task_limit=2000,
+                include_tasks=True,
+                include_suppressed=True,
+            )
+        )
+        existing_by_identity_key = {
+            item.identity_key: item
+            for item in self.repository.list_research_brief_queue_items(limit=None)
+            if item.identity_key
+        }
+        queue_items: list[ResearchBriefQueueItem] = []
+        skipped: list[dict[str, Any]] = []
+        errors: list[str] = []
+        candidate_count = 0
+        queued_count = 0
+        preexisting_count = 0
+        updated_lead_count = 0
+
+        for lead_row in report.leads:
+            if candidate_count >= request.limit:
+                break
+            if lead_row.control_status != "ready_for_synthesis":
+                skipped.append(
+                    {
+                        "lead_id": str(lead_row.lead_id),
+                        "title": lead_row.title,
+                        "status": lead_row.status,
+                        "source_key": lead_row.source_key,
+                        "control_status": lead_row.control_status,
+                        "recommended_action": lead_row.recommended_action,
+                        "reason": "lead_not_ready_for_synthesis",
+                    }
+                )
+                continue
+
+            candidate_count += 1
+            lead = self.repository.get_research_lead(lead_row.lead_id)
+            if lead is None:
+                errors.append(f"lead {lead_row.lead_id}: not found")
+                continue
+
+            queue_request = _research_hunt_synthesis_queue_request_from_lead(lead, lead_row, request)
+            preview_item = ResearchBriefQueueItem(
+                topic=queue_request.topic,
+                disease_scope=queue_request.disease_scope,
+                source_key=queue_request.source_key,
+                priority=queue_request.priority,
+                max_chunks_per_perspective=queue_request.max_chunks_per_perspective,
+                max_claims=queue_request.max_claims,
+                max_chunk_chars=queue_request.max_chunk_chars,
+                brief_style=queue_request.brief_style,
+                model_profile=queue_request.model_profile,
+                review_mode=queue_request.review_mode,
+                review_models=queue_request.review_models,
+                metadata=queue_request.metadata,
+            )
+            existing = existing_by_identity_key.get(preview_item.identity_key or "")
+            if existing is not None:
+                preexisting_count += 1
+                queue_items.append(existing)
+                if not request.dry_run and request.transition_leads:
+                    updated = self.repository.update_research_lead(
+                        lead.lead_id,
+                        status="queued" if existing.status in {"queued", "running"} else None,
+                        metadata={
+                            "research_hunt_synthesis_queue": {
+                                "queue_item_id": str(existing.queue_item_id),
+                                "topic": existing.topic,
+                                "preexisting": True,
+                                "queue_status": existing.status,
+                                "operator": request.operator,
+                                "dagster_run_id": request.dagster_run_id,
+                                "queued_at": datetime.now(UTC).isoformat(),
+                            }
+                        },
+                    )
+                    if updated is not None:
+                        updated_lead_count += 1
+                continue
+
+            if request.dry_run:
+                queue_items.append(preview_item)
+                continue
+
+            try:
+                queue_item = self.queue_research_brief(queue_request)
+                queued_count += 1
+                queue_items.append(queue_item)
+                if queue_item.identity_key:
+                    existing_by_identity_key[queue_item.identity_key] = queue_item
+                if request.transition_leads:
+                    updated = self.repository.update_research_lead(
+                        lead.lead_id,
+                        status="queued",
+                        metadata={
+                            "research_hunt_synthesis_queue": {
+                                "queue_item_id": str(queue_item.queue_item_id),
+                                "topic": queue_item.topic,
+                                "preexisting": False,
+                                "queue_status": queue_item.status,
+                                "operator": request.operator,
+                                "dagster_run_id": request.dagster_run_id,
+                                "queued_at": datetime.now(UTC).isoformat(),
+                            }
+                        },
+                    )
+                    if updated is not None:
+                        updated_lead_count += 1
+            except Exception as exc:  # pragma: no cover - defensive service boundary
+                errors.append(f"lead {lead.lead_id}: {exc}")
+
+        return ResearchHuntSynthesisQueueResult(
+            dry_run=request.dry_run,
+            candidate_count=candidate_count,
+            queued_count=queued_count,
+            preexisting_count=preexisting_count,
+            updated_lead_count=updated_lead_count,
             skipped_count=len(skipped),
             queue_items=queue_items,
             skipped=skipped,
@@ -4291,6 +4426,62 @@ def _research_brief_topic_from_lead(lead: ResearchLeadRecord) -> str:
     if lead.topic_tags:
         parts.append(f"Tags: {', '.join(lead.topic_tags[:8])}")
     return " | ".join(parts)[:1000]
+
+
+def _research_hunt_synthesis_queue_request_from_lead(
+    lead: ResearchLeadRecord,
+    lead_row: ResearchHuntLeadQueueRow,
+    request: ResearchHuntSynthesisQueueRequest,
+) -> ResearchBriefQueueRequest:
+    state = lead.metadata.get("research_hunt") if isinstance(lead.metadata, dict) else None
+    state = state if isinstance(state, dict) else {}
+    best_signal = state.get("best_signal") if isinstance(state.get("best_signal"), dict) else {}
+    return ResearchBriefQueueRequest(
+        topic=_research_brief_topic_from_lead(lead),
+        disease_scope=request.disease_scope,
+        source_key=_research_brief_source_key_from_lead(lead),
+        priority=min(request.priority, lead.priority),
+        max_chunks_per_perspective=request.max_chunks_per_perspective,
+        max_claims=request.max_claims,
+        max_chunk_chars=request.max_chunk_chars,
+        brief_style=request.brief_style,
+        model_profile=request.model_profile,
+        review_mode=request.review_mode,
+        review_models=request.review_models,
+        metadata={
+            **request.metadata,
+            "research_hunt_synthesis_queue": {
+                "origin": "research_hunt_ready_lead",
+                "lead_id": str(lead.lead_id),
+                "lead_type": lead.lead_type,
+                "lead_status": lead.status,
+                "control_status": lead_row.control_status,
+                "recommended_action": lead_row.recommended_action,
+                "source_key": lead_row.source_key,
+                "origin_source_key": lead.origin_source_key,
+                "origin_record_id": lead.origin_record_id,
+                "origin_agent_run_id": str(lead.origin_agent_run_id) if lead.origin_agent_run_id else None,
+                "signal_status": lead_row.signal_status,
+                "coverage_status": lead_row.coverage_status,
+                "best_signal_score": lead_row.best_signal_score,
+                "open_task_count": lead_row.open_task_count,
+                "open_concrete_count": lead_row.open_concrete_count,
+                "open_broad_count": lead_row.open_broad_count,
+                "open_passive_count": lead_row.open_passive_count,
+                "suppressed_task_count": lead_row.suppressed_task_count,
+                "completed_task_count": lead_row.completed_task_count,
+                "failed_task_count": lead_row.failed_task_count,
+                "best_signal": best_signal,
+                "reason": lead.reason,
+                "evidence_refs": lead.evidence_refs,
+                "topic_tags": lead.topic_tags,
+                "suggested_sources": lead.suggested_sources,
+                "operator": request.operator,
+                "dagster_run_id": request.dagster_run_id,
+                "dry_run": request.dry_run,
+            },
+        },
+    )
 
 
 _RESEARCH_HUNT_CHUNK_REF_RE = re.compile(r"chunk:([0-9a-fA-F-]{36})")

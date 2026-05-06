@@ -80,6 +80,8 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchHuntQueueMaintenanceRequest,
     ResearchHuntQueueMaintenanceResult,
     ResearchHuntQueueMaintenanceItem,
+    ResearchHuntSynthesisQueueRequest,
+    ResearchHuntSynthesisQueueResult,
     ResearchFollowupRefinementRequest,
     ResearchFollowupResolverRequest,
     ResearchFollowupResolverResult,
@@ -1807,6 +1809,72 @@ def test_dagster_research_hunt_queue_maintenance_asset_uses_injected_repository(
     assert calls == ["build_repository"]
     assert result.value["suppressed_count"] == 1
     assert result.metadata["suppressed_count"].value == 1
+
+
+def test_dagster_research_hunt_synthesis_queue_asset_uses_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+    lead_id = uuid4()
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    class FakeService:
+        def __init__(self, repository):
+            assert repository is sentinel_repository
+
+        def queue_ready_research_hunt_synthesis(self, request):
+            assert isinstance(request, ResearchHuntSynthesisQueueRequest)
+            assert request.lead_ids == [lead_id]
+            assert request.dry_run is False
+            assert request.dagster_run_id == "dagster-hunt-synthesis-test"
+            assert request.review_models == ["anthropic/claude-sonnet-4.5"]
+            return ResearchHuntSynthesisQueueResult(
+                dry_run=False,
+                candidate_count=1,
+                queued_count=1,
+                updated_lead_count=1,
+                queue_items=[
+                    ResearchBriefQueueItem(
+                        topic="Review research lead: Supported lead",
+                        source_key="pubmed",
+                        priority=20,
+                        review_models=["anthropic/claude-sonnet-4.5"],
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
+
+    result = dagster_asset_module.research_hunt_synthesis_queue_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "lead_ids": [str(lead_id)],
+                "lead_statuses": ["watching"],
+                "source_keys": ["pubmed"],
+                "limit": 10,
+                "disease_scope": "canine hemangiosarcoma and human angiosarcoma",
+                "priority": 40,
+                "max_chunks_per_perspective": 10,
+                "max_claims": 20,
+                "max_chunk_chars": 2200,
+                "brief_style": "technical",
+                "model_profile": "research_brief",
+                "review_mode": "openrouter_required",
+                "review_models": ["anthropic/claude-sonnet-4.5"],
+                "dry_run": False,
+                "transition_leads": True,
+            },
+            run_id="dagster-hunt-synthesis-test",
+        ),
+        FakeRepositoryResource(),
+    )
+
+    assert calls == ["build_repository"]
+    assert result.value["queued_count"] == 1
+    assert result.metadata["queued_count"].value == 1
 
 
 def test_dagster_research_brief_evaluation_asset_uses_injected_repository(monkeypatch):
@@ -8793,6 +8861,203 @@ def test_research_hunt_queue_report_marks_supported_lead_ready_for_synthesis():
     assert report.leads[0].recommended_action == "queue_synthesis"
 
 
+def test_queue_ready_research_hunt_synthesis_dry_run_does_not_mutate():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Supported VEGFR lead",
+            status="watching",
+            priority=15,
+            source_key="pubmed",
+            topic_tags=["VEGFR", "angiosarcoma"],
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "supported",
+                    "best_signal": {
+                        "verdict": "useful",
+                        "summary": "Durable signal across canine and human evidence.",
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 4, "total_required_count": 4},
+                    },
+                    "tasks": [
+                        {
+                            "task_id": str(uuid4()),
+                            "identity_key": "broaden_query:optional",
+                            "status": "open",
+                            "task_type": "broaden_query",
+                            "action": "Search optional comparator evidence.",
+                            "created_at": datetime.now(UTC).isoformat(),
+                        }
+                    ],
+                }
+            },
+        )
+    )
+
+    result = service.queue_ready_research_hunt_synthesis(
+        ResearchHuntSynthesisQueueRequest(lead_ids=[lead.lead_id], dry_run=True, review_models=["anthropic/claude-sonnet-4.5"])
+    )
+    updated_lead = repo.get_research_lead(lead.lead_id)
+
+    assert result.dry_run is True
+    assert result.candidate_count == 1
+    assert result.queued_count == 0
+    assert result.preexisting_count == 0
+    assert len(result.queue_items) == 1
+    assert result.queue_items[0].status == "queued"
+    assert result.queue_items[0].metadata["research_hunt_synthesis_queue"]["lead_id"] == str(lead.lead_id)
+    assert repo.list_research_brief_queue_items(limit=None) == []
+    assert updated_lead is not None
+    assert updated_lead.status == "watching"
+
+
+def test_queue_ready_research_hunt_synthesis_apply_queues_and_transitions_lead():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Supported PI3K lead",
+            status="watching",
+            priority=12,
+            source_key="europe_pmc",
+            reason="The hunt found strong translational PI3K evidence.",
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "supported",
+                    "best_signal": {
+                        "verdict": "useful",
+                        "summary": "Strong durable evidence.",
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 4, "total_required_count": 4},
+                    },
+                    "tasks": [],
+                }
+            },
+        )
+    )
+
+    result = service.queue_ready_research_hunt_synthesis(
+        ResearchHuntSynthesisQueueRequest(
+            lead_ids=[lead.lead_id],
+            dry_run=False,
+            priority=40,
+            review_models=["anthropic/claude-sonnet-4.5"],
+        )
+    )
+    persisted_items = repo.list_research_brief_queue_items(limit=None)
+    updated_lead = repo.get_research_lead(lead.lead_id)
+
+    assert result.candidate_count == 1
+    assert result.queued_count == 1
+    assert result.preexisting_count == 0
+    assert len(persisted_items) == 1
+    assert persisted_items[0].priority == 12
+    assert persisted_items[0].review_mode == "openrouter_required"
+    assert persisted_items[0].review_models == ["anthropic/claude-sonnet-4.5"]
+    assert persisted_items[0].metadata["research_hunt_synthesis_queue"]["control_status"] == "ready_for_synthesis"
+    assert updated_lead is not None
+    assert updated_lead.status == "queued"
+    assert updated_lead.metadata["research_hunt_synthesis_queue"]["queue_item_id"] == str(persisted_items[0].queue_item_id)
+
+
+def test_queue_ready_research_hunt_synthesis_skips_non_ready_lead():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Lead still requiring claim extraction",
+            status="watching",
+            priority=10,
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "best_signal": {
+                        "verdict": "useful",
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 4, "total_required_count": 4},
+                    },
+                    "tasks": [
+                        {
+                            "task_id": str(uuid4()),
+                            "identity_key": "claim_extract:pending",
+                            "status": "open",
+                            "task_type": "claim_extract",
+                            "action": "Extract claims from the new article.",
+                            "created_at": datetime.now(UTC).isoformat(),
+                        }
+                    ],
+                }
+            },
+        )
+    )
+
+    result = service.queue_ready_research_hunt_synthesis(
+        ResearchHuntSynthesisQueueRequest(lead_ids=[lead.lead_id], dry_run=False)
+    )
+
+    assert result.candidate_count == 0
+    assert result.queued_count == 0
+    assert result.skipped_count == 1
+    assert result.skipped[0]["control_status"] == "hunting"
+    assert repo.list_research_brief_queue_items(limit=None) == []
+
+
+def test_queue_ready_research_hunt_synthesis_dedupes_preexisting_queue_item():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Supported mTOR lead",
+            status="watching",
+            priority=20,
+            source_key="pubmed",
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "supported",
+                    "best_signal": {
+                        "verdict": "useful",
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 4, "total_required_count": 4},
+                    },
+                    "tasks": [],
+                }
+            },
+        )
+    )
+    existing = service.queue_research_brief(
+        ResearchBriefQueueRequest(
+            topic="Review research lead: Supported mTOR lead",
+            source_key="pubmed",
+            priority=20,
+            max_chunks_per_perspective=10,
+            max_claims=20,
+            max_chunk_chars=2200,
+            review_models=["anthropic/claude-sonnet-4.5"],
+        )
+    )
+
+    result = service.queue_ready_research_hunt_synthesis(
+        ResearchHuntSynthesisQueueRequest(
+            lead_ids=[lead.lead_id],
+            dry_run=False,
+            review_models=["anthropic/claude-sonnet-4.5"],
+        )
+    )
+    updated_lead = repo.get_research_lead(lead.lead_id)
+
+    assert result.candidate_count == 1
+    assert result.queued_count == 0
+    assert result.preexisting_count == 1
+    assert len(repo.list_research_brief_queue_items(limit=None)) == 1
+    assert result.queue_items[0].queue_item_id == existing.queue_item_id
+    assert updated_lead is not None
+    assert updated_lead.status == "queued"
+    assert updated_lead.metadata["research_hunt_synthesis_queue"]["preexisting"] is True
+
+
 def test_research_hunt_queue_maintenance_dry_run_does_not_mutate():
     repo = InMemoryResearchRepository()
     service = HSAResearchService(repo)
@@ -14792,6 +15057,7 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.validation_autopilot_job is not None
     assert dagster_asset_module.research_brief_queue_job is not None
     assert dagster_asset_module.research_brief_queue_batch_job is not None
+    assert dagster_asset_module.research_hunt_synthesis_queue_job is not None
     assert dagster_asset_module.research_brief_queue_seed_job is not None
     assert dagster_asset_module.research_brief_queue_runner_job is not None
     assert dagster_asset_module.research_brief_queue_maintenance_job is not None

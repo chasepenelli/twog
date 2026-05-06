@@ -38,6 +38,7 @@ from .contracts import (
     ResearchHuntTaskRunRequest,
     ResearchHuntQueueReportRequest,
     ResearchHuntQueueMaintenanceRequest,
+    ResearchHuntSynthesisQueueRequest,
     ResearchLeadCollectRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
@@ -1257,6 +1258,49 @@ def main() -> None:
     research_hunt_queue_maintenance.add_argument("--apply", action="store_true", help="Apply suppressions. Without this flag the command is a dry run.")
     research_hunt_queue_maintenance.add_argument("--operator", default="cli_operator")
 
+    queue_ready_hunt_synthesis = subparsers.add_parser(
+        "queue-ready-research-hunt-synthesis",
+        help="Queue ready research-hunt leads into the research brief synthesis lane.",
+    )
+    queue_ready_hunt_synthesis.add_argument("--lead-id", action="append", default=[], help="Research lead ID; repeat for multiple.")
+    queue_ready_hunt_synthesis.add_argument("--lead-status", action="append", default=[], help="Lead status filter. Defaults to active hunt statuses.")
+    queue_ready_hunt_synthesis.add_argument("--source", action="append", default=[], help="Source key filter.")
+    queue_ready_hunt_synthesis.add_argument("--limit", type=int, default=10, help="Maximum ready leads to queue.")
+    queue_ready_hunt_synthesis.add_argument(
+        "--disease-scope",
+        default="canine hemangiosarcoma and human angiosarcoma",
+        help="Disease/scope guardrail for retrieval and synthesis.",
+    )
+    queue_ready_hunt_synthesis.add_argument("--priority", type=int, default=40, help="Default queue priority.")
+    queue_ready_hunt_synthesis.add_argument("--max-chunks", type=int, default=10, help="Chunks per perspective search.")
+    queue_ready_hunt_synthesis.add_argument("--max-claims", type=int, default=20, help="Claims to include.")
+    queue_ready_hunt_synthesis.add_argument(
+        "--max-chunk-chars",
+        type=int,
+        default=2200,
+        help="Maximum chars per cited chunk.",
+    )
+    queue_ready_hunt_synthesis.add_argument(
+        "--brief-style",
+        choices=("technical", "operator", "substack", "vet_partner"),
+        default="technical",
+    )
+    queue_ready_hunt_synthesis.add_argument("--model-profile", default="research_brief", help="Logical model profile.")
+    queue_ready_hunt_synthesis.add_argument(
+        "--review-mode",
+        choices=("external_required", "openrouter_required", "openrouter_compare", "deterministic_only"),
+        default="openrouter_required",
+    )
+    queue_ready_hunt_synthesis.add_argument(
+        "--review-model",
+        action="append",
+        default=[],
+        help="OpenRouter model id; repeat to compare multiple models.",
+    )
+    queue_ready_hunt_synthesis.add_argument("--apply", action="store_true", help="Persist queue items. Without this flag the command is a dry run.")
+    queue_ready_hunt_synthesis.add_argument("--no-transition-leads", action="store_true", help="Do not mark queued leads as queued.")
+    queue_ready_hunt_synthesis.add_argument("--operator", default="cli_operator", help="Operator identity recorded in metadata.")
+
     model_review_summary = subparsers.add_parser(
         "model-review-summary",
         help="Print compact model-review summaries from persisted agent runs",
@@ -2227,6 +2271,27 @@ def main() -> None:
                 stale_after_hours=args.stale_after_hours,
                 limit=args.limit,
                 dry_run=not args.apply,
+                operator=args.operator,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "queue-ready-research-hunt-synthesis":
+        output = HSAResearchService(repo).queue_ready_research_hunt_synthesis(
+            ResearchHuntSynthesisQueueRequest(
+                lead_ids=[UUID(value) for value in args.lead_id],
+                lead_statuses=args.lead_status or ["new", "watching", "followup"],
+                source_keys=args.source,
+                limit=args.limit,
+                disease_scope=args.disease_scope,
+                priority=args.priority,
+                max_chunks_per_perspective=args.max_chunks,
+                max_claims=args.max_claims,
+                max_chunk_chars=args.max_chunk_chars,
+                brief_style=args.brief_style,
+                model_profile=args.model_profile,
+                review_mode=args.review_mode,
+                review_models=args.review_model,
+                dry_run=not args.apply,
+                transition_leads=not args.no_transition_leads,
                 operator=args.operator,
             )
         ).model_dump(mode="json")
