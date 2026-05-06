@@ -1895,10 +1895,62 @@ class ResearchFollowupLoopResult(StrictBaseModel):
     claims_written: int = Field(default=0, ge=0)
     evidence_fit: EvidenceFitAssessment | None = None
     latest_evaluator_verdict: AgentRunReviewVerdict | None = None
+    signal_status: str | None = None
+    coverage_status: str | None = None
+    best_signal: dict[str, Any] | None = None
+    hunt_tasks_created: int = Field(default=0, ge=0)
+    hunt_tasks: list[dict[str, Any]] = Field(default_factory=list)
     estimated_cost_usd: float = Field(default=0.0, ge=0.0)
     actual_cost_usd: float = Field(default=0.0, ge=0.0)
     status_transitions: list[dict[str, Any]] = Field(default_factory=list)
     claim_extraction_errors: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ResearchHuntTaskRunRequest(StrictBaseModel):
+    lead_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    task_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    task_types: list[str] = Field(default_factory=list, max_length=25)
+    statuses: list[str] = Field(default_factory=lambda: ["open"], max_length=10)
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    limit: int = Field(default=5, ge=1, le=50)
+    claim_chunk_limit: int = Field(default=25, ge=1, le=100)
+    dry_run: bool = True
+    evaluate: bool = True
+    force_live_search: bool = True
+    search_limit_per_source: int = Field(default=1, ge=1, le=25)
+    model_profile: str = "agent_performance_evaluator"
+    review_models: list[str] = Field(default_factory=list, max_length=10)
+    operator: str = "research_hunt_executor"
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_hunt_task_run_request(self) -> "ResearchHuntTaskRunRequest":
+        self.task_types = _dedupe_lower_tokens(self.task_types)
+        self.statuses = _dedupe_strings(self.statuses)
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        self.review_models = _dedupe_strings(self.review_models)
+        self.model_profile = self.model_profile.strip() or "agent_performance_evaluator"
+        self.operator = self.operator.strip() or "research_hunt_executor"
+        return self
+
+
+class ResearchHuntTaskRunResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    agent_name: str = "research_hunt_task_executor_agent"
+    agent_version: str = "v1"
+    dry_run: bool = True
+    scanned_count: int = Field(default=0, ge=0)
+    selected_count: int = Field(default=0, ge=0)
+    completed_count: int = Field(default=0, ge=0)
+    failed_count: int = Field(default=0, ge=0)
+    skipped_count: int = Field(default=0, ge=0)
+    claim_chunks_seen: int = Field(default=0, ge=0)
+    claims_written: int = Field(default=0, ge=0)
+    loop_runs: int = Field(default=0, ge=0)
+    items: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

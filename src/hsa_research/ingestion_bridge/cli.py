@@ -35,6 +35,7 @@ from .contracts import (
     ResearchFollowupRefinementRequest,
     ResearchFollowupResolverRequest,
     ResearchFollowupLoopRequest,
+    ResearchHuntTaskRunRequest,
     ResearchLeadCollectRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
@@ -1202,6 +1203,25 @@ def main() -> None:
     research_followup_loop.add_argument("--estimated-evaluator-cost-usd", type=float, default=0.03)
     research_followup_loop.add_argument("--operator", default="cli_operator")
 
+    research_hunt_tasks = subparsers.add_parser(
+        "research-hunt-tasks",
+        help="Execute open research hunt tasks from lead metadata.",
+    )
+    research_hunt_tasks.add_argument("--lead-id", action="append", default=[], help="Research lead ID; repeat for multiple.")
+    research_hunt_tasks.add_argument("--task-id", action="append", default=[], help="Specific hunt task ID; repeat for multiple.")
+    research_hunt_tasks.add_argument("--task-type", action="append", default=[], help="Task type filter, e.g. claim_extract.")
+    research_hunt_tasks.add_argument("--status", action="append", default=[], help="Task status filter. Defaults to open.")
+    research_hunt_tasks.add_argument("--source", action="append", default=[], help="Source key override for resolver-style tasks.")
+    research_hunt_tasks.add_argument("--limit", type=int, default=5)
+    research_hunt_tasks.add_argument("--claim-chunk-limit", type=int, default=25)
+    research_hunt_tasks.add_argument("--apply", action="store_true", help="Apply task execution. Without this flag the command is a dry run.")
+    research_hunt_tasks.add_argument("--no-evaluate", action="store_true")
+    research_hunt_tasks.add_argument("--no-force-live-search", action="store_true")
+    research_hunt_tasks.add_argument("--search-limit-per-source", type=int, default=1)
+    research_hunt_tasks.add_argument("--model-profile", default="agent_performance_evaluator")
+    research_hunt_tasks.add_argument("--review-model", action="append", default=[])
+    research_hunt_tasks.add_argument("--operator", default="cli_operator")
+
     model_review_summary = subparsers.add_parser(
         "model-review-summary",
         help="Print compact model-review summaries from persisted agent runs",
@@ -2121,6 +2141,25 @@ def main() -> None:
                 model_profile=args.model_profile,
                 review_models=args.review_model,
                 estimated_evaluator_cost_usd=args.estimated_evaluator_cost_usd,
+                operator=args.operator,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "research-hunt-tasks":
+        output = HSAResearchService(repo).run_research_hunt_tasks(
+            ResearchHuntTaskRunRequest(
+                lead_ids=[UUID(value) for value in args.lead_id],
+                task_ids=[UUID(value) for value in args.task_id],
+                task_types=args.task_type,
+                statuses=args.status or ["open"],
+                source_keys=args.source,
+                limit=args.limit,
+                claim_chunk_limit=args.claim_chunk_limit,
+                dry_run=not args.apply,
+                evaluate=not args.no_evaluate,
+                force_live_search=not args.no_force_live_search,
+                search_limit_per_source=args.search_limit_per_source,
+                model_profile=args.model_profile,
+                review_models=args.review_model,
                 operator=args.operator,
             )
         ).model_dump(mode="json")

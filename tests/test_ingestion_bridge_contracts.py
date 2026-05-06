@@ -72,6 +72,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchFollowupLeadResult,
     ResearchFollowupLoopRequest,
     ResearchFollowupLoopResult,
+    ResearchHuntTaskRunRequest,
     ResearchFollowupRefinementRequest,
     ResearchFollowupResolverRequest,
     ResearchFollowupResolverResult,
@@ -7909,6 +7910,426 @@ def test_research_followup_loop_keeps_weak_evidence_in_followup(monkeypatch):
     assert [transition["to"] for transition in result.status_transitions] == ["queued", "followup"]
     assert updated.status == "followup"
     assert updated.metadata["research_followup_loop"]["evidence_fit"]["fit"] == "weak"
+
+
+def test_research_followup_loop_keeps_supported_signal_hunting_after_no_result(monkeypatch):
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    origin_review_id = uuid4()
+    origin_agent_run_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Evaluator follow-up: sorafenib canine DLT",
+            status="followup",
+            priority=5,
+            origin_review_id=origin_review_id,
+            origin_agent_run_id=origin_agent_run_id,
+            suggested_sources=["pubmed"],
+            metadata={"created_by": "agent_finding_escalation_agent"},
+        )
+    )
+    repo.upsert_source_query(
+        SourceQuery(
+            source_key="pubmed",
+            query_name="agent_eval_sorafenib",
+            query_text="sorafenib canine maximum tolerated dose",
+            query_params={
+                "followup_lane": "agent_evaluator_followup",
+                "origin_review_id": str(origin_review_id),
+                "origin_agent_run_id": str(origin_agent_run_id),
+            },
+            track="validation_gap",
+        )
+    )
+    ingest_calls = 0
+
+    class FakePipeline:
+        def __init__(self, repository):
+            self.repository = repository
+
+        def ingest_query(self, query, limit, persist_query=True):
+            nonlocal ingest_calls
+            ingest_calls += 1
+            if ingest_calls == 1:
+                research_object = ResearchObject(
+                    object_type="publication",
+                    title="Sorafenib dose-limiting toxicity in dogs",
+                    abstract="Canine sorafenib maximum tolerated dose and dose-limiting toxicity data.",
+                    source_key=query.source_key,
+                    dedupe_key=f"{query.source_key}:{query.query_name}:strong",
+                )
+                self.repository.research_objects[research_object.id] = research_object
+                for index in range(2):
+                    chunk = DocumentChunk(
+                        research_object_id=research_object.id,
+                        chunk_index=index,
+                        section_label="abstract",
+                        text_content=(
+                            "Sorafenib was evaluated in canine patients with safety, tolerability, "
+                            "maximum tolerated dose, and dose-limiting toxicity endpoints."
+                        ),
+                        content_hash=f"{query.source_key}:{query.query_name}:strong:{index}",
+                    )
+                    self.repository.document_chunks[chunk.id] = chunk
+                return IngestionResult(
+                    source_key=query.source_key,
+                    query_name=query.query_name,
+                    query_text=query.query_text,
+                    fetch_run_id=uuid4(),
+                    raw_records=1,
+                    research_objects=1,
+                    document_chunks=2,
+                    status=RunStatus.COMPLETED,
+                )
+            return IngestionResult(
+                source_key=query.source_key,
+                query_name=query.query_name,
+                query_text=query.query_text,
+                fetch_run_id=uuid4(),
+                status=RunStatus.COMPLETED,
+            )
+
+    monkeypatch.setattr(validation_gap_ingest, "LocalIngestionPipeline", FakePipeline)
+
+    first_result = service.run_research_followup_loop(
+        ResearchFollowupLoopRequest(
+            lead_id=lead.lead_id,
+            dry_run=False,
+            ingest=True,
+            resolve=False,
+            evaluate=False,
+            operator="operator",
+        )
+    )
+    second_result = service.run_research_followup_loop(
+        ResearchFollowupLoopRequest(
+            lead_id=lead.lead_id,
+            dry_run=False,
+            ingest=True,
+            resolve=False,
+            evaluate=False,
+            operator="operator",
+        )
+    )
+    updated = repo.get_research_lead(lead.lead_id)
+    hunt_state = updated.metadata["research_hunt"]
+
+    assert first_result.lead_status_after == "watching"
+    assert first_result.signal_status == "supported"
+    assert first_result.coverage_status == "supported"
+    assert first_result.best_signal is not None
+    assert second_result.document_chunks == 0
+    assert second_result.evidence_fit is not None
+    assert second_result.evidence_fit.fit == "weak"
+    assert second_result.lead_status_after == "watching"
+    assert second_result.signal_status == "supported"
+    assert second_result.coverage_status == "hunting"
+    assert second_result.best_signal == first_result.best_signal
+    assert second_result.hunt_tasks_created == 1
+    assert second_result.hunt_tasks[0]["task_type"] == "broaden_query"
+    assert updated.status == "watching"
+    assert hunt_state["signal_status"] == "supported"
+    assert hunt_state["coverage_status"] == "hunting"
+    assert hunt_state["open_task_count"] == 1
+    assert hunt_state["tasks"][0]["reason"] == "no_result_after_supported_signal"
+
+
+def test_research_followup_loop_evaluator_followups_create_hunt_tasks(monkeypatch):
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    origin_review_id = uuid4()
+    origin_agent_run_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Evaluator follow-up: sorafenib canine HSA safety",
+            status="followup",
+            priority=5,
+            origin_review_id=origin_review_id,
+            origin_agent_run_id=origin_agent_run_id,
+            suggested_sources=["pubmed"],
+            topic_tags=["sorafenib", "canine", "hemangiosarcoma", "safety"],
+            metadata={"created_by": "agent_finding_escalation_agent"},
+        )
+    )
+    repo.upsert_source_query(
+        SourceQuery(
+            source_key="pubmed",
+            query_name="agent_eval_sorafenib_hsa",
+            query_text="sorafenib canine hemangiosarcoma safety",
+            query_params={
+                "followup_lane": "agent_evaluator_followup",
+                "origin_review_id": str(origin_review_id),
+                "origin_agent_run_id": str(origin_agent_run_id),
+            },
+            track="validation_gap",
+        )
+    )
+
+    class FakePipeline:
+        def __init__(self, repository):
+            self.repository = repository
+
+        def ingest_query(self, query, limit, persist_query=True):
+            research_object = ResearchObject(
+                object_type="publication",
+                title="Canine hemangiosarcoma safety case series",
+                abstract=(
+                    "Canine hemangiosarcoma cases reported toxicity, safety, tolerability, "
+                    "and dose-limiting endpoints without the requested therapy detail."
+                ),
+                source_key=query.source_key,
+                dedupe_key=f"{query.source_key}:{query.query_name}:weak",
+            )
+            self.repository.research_objects[research_object.id] = research_object
+            chunk = DocumentChunk(
+                research_object_id=research_object.id,
+                chunk_index=0,
+                section_label="abstract",
+                text_content=(
+                    "Canine hemangiosarcoma safety toxicity tolerability dose-limiting "
+                    "evidence needs therapy-specific follow-up."
+                ),
+                content_hash=f"{query.source_key}:{query.query_name}:weak",
+            )
+            self.repository.document_chunks[chunk.id] = chunk
+            return IngestionResult(
+                source_key=query.source_key,
+                query_name=query.query_name,
+                query_text=query.query_text,
+                fetch_run_id=uuid4(),
+                raw_records=1,
+                research_objects=1,
+                document_chunks=1,
+                status=RunStatus.COMPLETED,
+            )
+
+    resolver_agent_run_id = uuid4()
+    evaluator_agent_run_id = uuid4()
+    resolver_evidence_fit = EvidenceFitAssessment(
+        fit="strong",
+        target_safety_fit="strong",
+        disease_directness_fit="strong",
+        actionability="strong",
+        transfer_risk="low",
+        overall_fit="strong",
+        matched_terms=[
+            "sorafenib",
+            "canine/dog/veterinary",
+            "hemangiosarcoma/angiosarcoma",
+            "maximum tolerated dose/dlt/safety",
+        ],
+        required_terms=[
+            "sorafenib",
+            "canine/dog/veterinary",
+            "hemangiosarcoma/angiosarcoma",
+            "maximum tolerated dose/dlt/safety",
+        ],
+        matched_required_count=4,
+        total_required_count=4,
+        source_keys=["pubmed"],
+        chunk_count=4,
+        reason="Resolver-inspected evidence matched the specific therapy, disease, species, and safety terms.",
+    )
+
+    def fake_resolve_research_followups(request):
+        return ResearchFollowupResolverResult(
+            agent_run_id=resolver_agent_run_id,
+            leads_seen=1,
+            durable_source_searches=1,
+            evidence_inspections=1,
+            lead_results=[
+                ResearchFollowupLeadResult(
+                    lead_id=lead.lead_id,
+                    title=lead.title,
+                    status_before="watching",
+                    status_after="watching",
+                    actions=["searched_durable_sources"],
+                    evidence_refs=["pmid:33110170", "doi:10.1038/s41598-020-75533-4"],
+                    durable_source_keys=["pubmed"],
+                    metadata={"evidence_fit": resolver_evidence_fit.model_dump(mode="json")},
+                )
+            ],
+        )
+
+    def fake_run_agent_performance_evaluation(request):
+        return AgentPerformanceEvaluationResult(
+            agent_run_id=evaluator_agent_run_id,
+            reviewed_only=False,
+            scanned_count=1,
+            candidate_count=1,
+            evaluated_count=1,
+            review_created_count=1,
+            evaluations=[
+                {
+                    "agent_run_id": str(resolver_agent_run_id),
+                    "verdict": "needs_followup",
+                    "confidence": 0.88,
+                    "recommended_followup_actions": [
+                        "Chase citations for PMID 33110170.",
+                        "Run claim extraction on adverse event grading.",
+                    ],
+                }
+            ],
+        )
+
+    monkeypatch.setattr(validation_gap_ingest, "LocalIngestionPipeline", FakePipeline)
+    monkeypatch.setattr(service, "resolve_research_followups", fake_resolve_research_followups)
+    monkeypatch.setattr(service, "run_agent_performance_evaluation", fake_run_agent_performance_evaluation)
+
+    result = service.run_research_followup_loop(
+        ResearchFollowupLoopRequest(
+            lead_id=lead.lead_id,
+            dry_run=False,
+            ingest=True,
+            resolve=True,
+            evaluate=True,
+            operator="operator",
+        )
+    )
+    updated = repo.get_research_lead(lead.lead_id)
+    hunt_state = updated.metadata["research_hunt"]
+    task_types = {task["task_type"] for task in hunt_state["tasks"]}
+
+    assert result.evidence_fit is not None
+    assert result.evidence_fit.fit == "weak"
+    assert result.latest_evaluator_verdict == "needs_followup"
+    assert result.lead_status_after == "watching"
+    assert result.signal_status == "supported"
+    assert result.coverage_status == "hunting"
+    assert result.hunt_tasks_created == 2
+    assert task_types == {"citation_chase", "claim_extract"}
+    assert updated.status == "watching"
+    assert hunt_state["best_signal"]["verdict"] == "needs_followup"
+    assert hunt_state["best_signal"]["evidence_fit"]["fit"] == "strong"
+    assert hunt_state["best_signal"]["score"] >= 80
+    assert hunt_state["best_signal"]["evidence_refs"] == ["pmid:33110170", "doi:10.1038/s41598-020-75533-4"]
+
+
+def test_research_hunt_task_executor_extracts_claims_and_closes_task(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-hunt-task-executor.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    research_object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Propranolol and VEGF in canine hemangiosarcoma",
+            abstract="Canine hemangiosarcoma studies discuss propranolol with VEGF and angiogenesis.",
+            source_key="pubmed",
+            dedupe_key="pubmed:propranolol-hsa",
+        )
+    )
+    chunk = repo.upsert_document_chunk(DocumentChunk(
+        research_object_id=research_object_id,
+        chunk_index=0,
+        section_label="abstract",
+        text_content="Canine hemangiosarcoma studies discuss propranolol with VEGF and angiogenesis.",
+        content_hash="pubmed:propranolol-hsa:chunk",
+    ))
+    task_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Hunt task: extract propranolol HSA claims",
+            status="watching",
+            suggested_sources=["pubmed"],
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "hunting",
+                    "open_task_count": 1,
+                    "best_signal": {
+                        "score": 100,
+                        "evidence_refs": [f"chunk:{chunk.id}", f"research_object:{research_object_id}"],
+                        "evidence_fit": {
+                            "fit": "strong",
+                            "matched_required_count": 4,
+                            "total_required_count": 4,
+                        },
+                    },
+                    "tasks": [
+                        {
+                            "task_id": str(task_id),
+                            "identity_key": "claim_extract:test",
+                            "status": "open",
+                            "task_type": "claim_extract",
+                            "action": f"Run claim extraction on chunk:{chunk.id}.",
+                            "priority": 20,
+                            "source_keys": ["pubmed"],
+                            "created_at": datetime.now(UTC).isoformat(),
+                            "updated_at": datetime.now(UTC).isoformat(),
+                        }
+                    ],
+                }
+            },
+        )
+    )
+
+    result = service.run_research_hunt_tasks(
+        ResearchHuntTaskRunRequest(
+            lead_ids=[lead.lead_id],
+            task_types=["claim_extract"],
+            dry_run=False,
+            operator="operator",
+        )
+    )
+    updated = repo.get_research_lead(lead.lead_id)
+    hunt_state = updated.metadata["research_hunt"]
+    claims = repo.search_claims(
+        ClaimSearchRequest(query="propranolol", species="canine", min_confidence=0.1, include_drafts=True)
+    )
+
+    assert result.agent_run_id is not None
+    assert result.selected_count == 1
+    assert result.completed_count == 1
+    assert result.claim_chunks_seen == 1
+    assert result.claims_written >= 1
+    assert claims
+    assert hunt_state["coverage_status"] == "supported"
+    assert hunt_state["open_task_count"] == 0
+    assert hunt_state["tasks"][0]["status"] == "completed"
+    assert hunt_state["tasks"][0]["last_execution"]["claims_written"] >= 1
+
+
+def test_research_hunt_task_executor_dry_run_does_not_mutate():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    task_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Hunt task: dry run",
+            status="watching",
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "hunting",
+                    "open_task_count": 1,
+                    "best_signal": {"score": 100, "evidence_refs": [], "evidence_fit": {"fit": "strong"}},
+                    "tasks": [
+                        {
+                            "task_id": str(task_id),
+                            "status": "open",
+                            "task_type": "claim_extract",
+                            "action": "Run claim extraction.",
+                            "priority": 20,
+                        }
+                    ],
+                }
+            },
+        )
+    )
+
+    result = service.run_research_hunt_tasks(
+        ResearchHuntTaskRunRequest(
+            lead_ids=[lead.lead_id],
+            dry_run=True,
+            operator="operator",
+        )
+    )
+    updated = repo.get_research_lead(lead.lead_id)
+
+    assert result.selected_count == 1
+    assert result.skipped_count == 1
+    assert updated.metadata["research_hunt"]["tasks"][0]["status"] == "open"
 
 
 def test_research_followup_loop_evidence_fit_prefers_run_scoped_chunks(monkeypatch, tmp_path):

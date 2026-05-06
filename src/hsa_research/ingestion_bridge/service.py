@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import hashlib
 import os
+import re
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -80,6 +81,8 @@ from .contracts import (
     ResearchFollowupResolverResult,
     ResearchFollowupLoopRequest,
     ResearchFollowupLoopResult,
+    ResearchHuntTaskRunRequest,
+    ResearchHuntTaskRunResult,
     ResearchLeadCollectRequest,
     ResearchLeadCollectResult,
     ResearchLeadRecord,
@@ -371,6 +374,9 @@ def _summarize_research_followup_loop(result: ResearchFollowupLoopResult) -> dic
         "claim_chunks_seen": result.claim_chunks_seen,
         "claims_extracted": result.claims_extracted,
         "claims_written": result.claims_written,
+        "signal_status": result.signal_status,
+        "coverage_status": result.coverage_status,
+        "hunt_tasks_created": result.hunt_tasks_created,
         "evidence_fit": evidence_fit.fit if evidence_fit else None,
         "target_safety_fit": evidence_fit.target_safety_fit if evidence_fit else None,
         "disease_directness_fit": evidence_fit.disease_directness_fit if evidence_fit else None,
@@ -381,6 +387,20 @@ def _summarize_research_followup_loop(result: ResearchFollowupLoopResult) -> dic
         "estimated_cost_usd": result.estimated_cost_usd,
         "actual_cost_usd": result.actual_cost_usd,
         "errors": len(result.errors),
+    }
+
+
+def _summarize_research_hunt_task_run(result: ResearchHuntTaskRunResult) -> dict[str, Any]:
+    return {
+        "dry_run": result.dry_run,
+        "scanned_count": result.scanned_count,
+        "selected_count": result.selected_count,
+        "completed_count": result.completed_count,
+        "failed_count": result.failed_count,
+        "skipped_count": result.skipped_count,
+        "claim_chunks_seen": result.claim_chunks_seen,
+        "claims_written": result.claims_written,
+        "loop_runs": result.loop_runs,
     }
 
 
@@ -2368,6 +2388,116 @@ class HSAResearchService:
             summarize=_summarize_research_followup_loop,
         )
 
+    def run_research_hunt_tasks(
+        self,
+        request: ResearchHuntTaskRunRequest,
+    ) -> ResearchHuntTaskRunResult:
+        return AgentRunner(self.repository).run(
+            agent_name="research_hunt_task_executor_agent",
+            agent_version="v1",
+            model_profile=request.model_profile,
+            input_payload=request.model_dump(mode="json"),
+            dagster_run_id=request.dagster_run_id,
+            metadata=request.metadata,
+            execute=lambda: self._execute_research_hunt_tasks(request),
+            summarize=_summarize_research_hunt_task_run,
+        )
+
+    def _execute_research_hunt_tasks(
+        self,
+        request: ResearchHuntTaskRunRequest,
+    ) -> ResearchHuntTaskRunResult:
+        result = ResearchHuntTaskRunResult(dry_run=request.dry_run)
+        selected = _select_research_hunt_tasks(self.repository, request)
+        result.scanned_count = len(selected)
+        selected = selected[: request.limit]
+        result.selected_count = len(selected)
+        for lead, task in selected:
+            item = {
+                "lead_id": str(lead.lead_id),
+                "task_id": str(task.get("task_id") or ""),
+                "task_type": str(task.get("task_type") or "research_followup"),
+                "action": str(task.get("action") or ""),
+                "status_before": str(task.get("status") or ""),
+            }
+            if request.dry_run:
+                item["status_after"] = item["status_before"]
+                item["planned"] = True
+                result.skipped_count += 1
+                result.items.append(item)
+                continue
+            try:
+                task_type = item["task_type"]
+                if task_type in {"claim_extract", "safety_extract", "full_text_extract"}:
+                    claim_result = self._execute_research_hunt_claim_task(lead, task, request)
+                    item["claim_extraction"] = claim_result.model_dump(mode="json")
+                    item["claim_chunks_seen"] = claim_result.chunks_seen
+                    item["claims_written"] = claim_result.claims_written
+                    result.claim_chunks_seen += claim_result.chunks_seen
+                    result.claims_written += claim_result.claims_written
+                    status_after = "completed" if claim_result.chunks_seen and not claim_result.errors else "failed"
+                    item["status_after"] = status_after
+                    if status_after == "completed":
+                        result.completed_count += 1
+                    else:
+                        result.failed_count += 1
+                        item["errors"] = claim_result.errors or ["No evidence chunks were available for claim extraction."]
+                else:
+                    task_source_keys = [
+                        str(source).strip().lower()
+                        for source in task.get("source_keys", [])
+                        if str(source).strip()
+                    ] if isinstance(task.get("source_keys"), list) else []
+                    loop_result = self.run_research_followup_loop(
+                        ResearchFollowupLoopRequest(
+                            lead_id=lead.lead_id,
+                            source_keys=request.source_keys or task_source_keys or lead.suggested_sources,
+                            ingest=False,
+                            resolve=True,
+                            evaluate=request.evaluate,
+                            dry_run=False,
+                            force_live_search=request.force_live_search,
+                            search_limit_per_source=request.search_limit_per_source,
+                            model_profile=request.model_profile,
+                            review_models=request.review_models,
+                            operator=request.operator,
+                            metadata={
+                                **request.metadata,
+                                "research_hunt_task_executor": True,
+                                "research_hunt_task_id": item["task_id"],
+                            },
+                        )
+                    )
+                    item["loop_result"] = _summarize_research_followup_loop(loop_result)
+                    item["loop_agent_run_id"] = str(loop_result.agent_run_id) if loop_result.agent_run_id else None
+                    result.loop_runs += 1
+                    status_after = "completed" if not loop_result.errors else "failed"
+                    item["status_after"] = status_after
+                    if status_after == "completed":
+                        result.completed_count += 1
+                    else:
+                        result.failed_count += 1
+                        item["errors"] = loop_result.errors
+                self._mark_research_hunt_task(
+                    lead.lead_id,
+                    item["task_id"],
+                    status=str(item["status_after"]),
+                    execution=item,
+                )
+            except Exception as exc:
+                item["status_after"] = "failed"
+                item["errors"] = [str(exc)]
+                result.failed_count += 1
+                result.errors.append(f"{item['task_id']}: {exc}")
+                self._mark_research_hunt_task(
+                    lead.lead_id,
+                    item["task_id"],
+                    status="failed",
+                    execution=item,
+                )
+            result.items.append(item)
+        return result
+
     def _execute_research_followup_loop(
         self,
         request: ResearchFollowupLoopRequest,
@@ -2461,7 +2591,18 @@ class HSAResearchService:
                 result.claim_extraction_errors = claim_result.errors
                 result.errors.extend(f"claim_extraction: {error}" for error in claim_result.errors)
             if not request.dry_run:
-                next_status = "watching" if evidence_fit.fit == "strong" else "followup"
+                self._update_research_hunt_state(
+                    result,
+                    request,
+                    verdict=None,
+                    followup_actions=[],
+                )
+            if not request.dry_run:
+                next_status = (
+                    "watching"
+                    if evidence_fit.fit == "strong" or _research_hunt_has_supported_signal(result)
+                    else "followup"
+                )
                 self._transition_research_followup_lead(
                     result,
                     request.lead_id,
@@ -2486,6 +2627,9 @@ class HSAResearchService:
                         "claim_chunks_seen": result.claim_chunks_seen,
                         "claims_extracted": result.claims_extracted,
                         "claims_written": result.claims_written,
+                        "signal_status": result.signal_status,
+                        "coverage_status": result.coverage_status,
+                        "hunt_tasks_created": result.hunt_tasks_created,
                         "claim_extraction_errors": result.claim_extraction_errors[:10],
                         "evidence_fit": evidence_fit.model_dump(mode="json"),
                     },
@@ -2547,7 +2691,23 @@ class HSAResearchService:
                     verdict = str(evaluation_result.evaluations[0].get("verdict") or "")
                     if verdict in {"useful", "needs_followup", "bad", "unclear"}:
                         result.latest_evaluator_verdict = verdict  # type: ignore[assignment]
-                        next_status = "ingested" if verdict == "useful" else "watching" if verdict == "unclear" else "followup"
+                        followup_actions = _evaluation_followup_actions(evaluation_result)
+                        hunt_state = self._update_research_hunt_state(
+                            result,
+                            request,
+                            verdict=verdict,
+                            followup_actions=followup_actions,
+                        )
+                        has_supported_signal = _research_hunt_state_has_supported_signal(hunt_state)
+                        coverage_status = str(hunt_state.get("coverage_status") or "")
+                        if verdict == "useful":
+                            next_status = "watching" if coverage_status == "hunting" else "ingested"
+                        elif verdict == "unclear":
+                            next_status = "watching"
+                        elif verdict == "needs_followup" and has_supported_signal:
+                            next_status = "watching"
+                        else:
+                            next_status = "followup"
                         self._transition_research_followup_lead(
                             result,
                             request.lead_id,
@@ -2560,6 +2720,9 @@ class HSAResearchService:
                                 if evaluation_result.agent_run_id
                                 else None,
                                 "actual_cost_usd": result.actual_cost_usd,
+                                "signal_status": result.signal_status,
+                                "coverage_status": result.coverage_status,
+                                "hunt_tasks_created": result.hunt_tasks_created,
                             },
                         )
                 result.errors.extend(evaluation_result.errors)
@@ -2651,6 +2814,123 @@ class HSAResearchService:
         fetch_run_ids = _dedupe_uuids(fetch_run_ids)
         chunks = self.repository.list_document_chunks_for_fetch_runs(fetch_run_ids, limit=1000)
         return extract_claims_for_chunks(self.repository, chunks)
+
+    def _execute_research_hunt_claim_task(
+        self,
+        lead: ResearchLeadRecord,
+        task: dict[str, Any],
+        request: ResearchHuntTaskRunRequest,
+    ):
+        chunks = _research_hunt_task_evidence_chunks(self.repository, lead, task, limit=request.claim_chunk_limit)
+        return extract_claims_for_chunks(self.repository, chunks)
+
+    def _mark_research_hunt_task(
+        self,
+        lead_id: UUID,
+        task_id: str,
+        *,
+        status: str,
+        execution: dict[str, Any],
+    ) -> None:
+        lead = self.repository.get_research_lead(lead_id)
+        if lead is None:
+            return
+        state = dict(lead.metadata.get("research_hunt") or {})
+        tasks = [
+            dict(task)
+            for task in state.get("tasks", [])
+            if isinstance(task, dict)
+        ]
+        now = datetime.now(UTC).isoformat()
+        for task in tasks:
+            if str(task.get("task_id") or "") != task_id:
+                continue
+            task["status"] = status
+            task["updated_at"] = now
+            task["last_execution"] = execution
+            if status == "completed":
+                task["completed_at"] = now
+            if status == "failed":
+                task["failed_at"] = now
+        open_tasks = [task for task in tasks if task.get("status") == "open"]
+        best_signal = state.get("best_signal") if isinstance(state.get("best_signal"), dict) else None
+        signal_status = "supported" if _research_hunt_signal_score(best_signal) >= 80 else "developing"
+        state.update(
+            {
+                "tasks": tasks,
+                "open_task_count": len(open_tasks),
+                "signal_status": signal_status,
+                "coverage_status": "hunting" if open_tasks else "supported" if signal_status == "supported" else "insufficient",
+                "last_updated_at": now,
+            }
+        )
+        self.update_research_lead(lead_id, metadata={"research_hunt": state})
+
+    def _update_research_hunt_state(
+        self,
+        result: ResearchFollowupLoopResult,
+        request: ResearchFollowupLoopRequest,
+        *,
+        verdict: str | None,
+        followup_actions: list[str],
+    ) -> dict[str, Any]:
+        lead = self.repository.get_research_lead(request.lead_id)
+        if lead is None:
+            return {}
+
+        existing_state = dict(lead.metadata.get("research_hunt") or {})
+        existing_tasks = [
+            dict(task)
+            for task in existing_state.get("tasks", [])
+            if isinstance(task, dict)
+        ]
+        current_signal = _research_hunt_signal_candidate(result, verdict=verdict)
+        best_signal = existing_state.get("best_signal") if isinstance(existing_state.get("best_signal"), dict) else None
+        if current_signal and (
+            best_signal is None or _research_hunt_signal_score(current_signal) >= _research_hunt_signal_score(best_signal)
+        ):
+            best_signal = current_signal
+
+        new_tasks = _research_hunt_tasks_from_result(
+            lead,
+            result,
+            request,
+            verdict=verdict,
+            followup_actions=followup_actions,
+            has_best_signal=best_signal is not None,
+            existing_tasks=existing_tasks,
+        )
+        tasks = [*existing_tasks, *new_tasks][-100:]
+        open_tasks = [task for task in tasks if task.get("status") == "open"]
+        signal_status = "supported" if _research_hunt_signal_score(best_signal) >= 80 else "developing"
+        coverage_status = "hunting" if open_tasks else "supported" if signal_status == "supported" else "insufficient"
+        state = {
+            "version": "v1",
+            "signal_status": signal_status,
+            "coverage_status": coverage_status,
+            "best_signal": best_signal,
+            "tasks": tasks,
+            "open_task_count": len(open_tasks),
+            "last_updated_at": datetime.now(UTC).isoformat(),
+            "last_loop": {
+                "verdict": verdict,
+                "evidence_fit": result.evidence_fit.fit if result.evidence_fit else None,
+                "document_chunks": result.document_chunks,
+                "claims_written": result.claims_written,
+                "source_followups_linked": result.source_followups_linked,
+                "source_followups_pending": result.source_followups_pending,
+                "resolver_agent_run_id": str(result.resolver_agent_run_id) if result.resolver_agent_run_id else None,
+                "evaluator_agent_run_id": str(result.evaluator_agent_run_id) if result.evaluator_agent_run_id else None,
+            },
+        }
+        updated = self.update_research_lead(request.lead_id, metadata={"research_hunt": state})
+        applied_state = dict((updated.metadata.get("research_hunt") if updated else state) or state)
+        result.signal_status = str(applied_state.get("signal_status") or signal_status)
+        result.coverage_status = str(applied_state.get("coverage_status") or coverage_status)
+        result.best_signal = applied_state.get("best_signal") if isinstance(applied_state.get("best_signal"), dict) else None
+        result.hunt_tasks_created += len(new_tasks)
+        result.hunt_tasks = new_tasks
+        return applied_state
 
     def _count_pending_source_followups(self, followup_ids: list[UUID]) -> int:
         return sum(
@@ -3647,6 +3927,323 @@ def _research_brief_topic_from_lead(lead: ResearchLeadRecord) -> str:
     if lead.topic_tags:
         parts.append(f"Tags: {', '.join(lead.topic_tags[:8])}")
     return " | ".join(parts)[:1000]
+
+
+_RESEARCH_HUNT_CHUNK_REF_RE = re.compile(r"chunk:([0-9a-fA-F-]{36})")
+_RESEARCH_HUNT_OBJECT_REF_RE = re.compile(r"research_object:([0-9a-fA-F-]{36})")
+
+
+def _select_research_hunt_tasks(
+    repository,
+    request: ResearchHuntTaskRunRequest,
+) -> list[tuple[ResearchLeadRecord, dict[str, Any]]]:
+    task_id_filter = {str(task_id) for task_id in request.task_ids}
+    task_type_filter = {task_type.casefold() for task_type in request.task_types}
+    status_filter = {status.casefold() for status in request.statuses}
+    lead_id_filter = set(request.lead_ids)
+    if lead_id_filter:
+        leads = [
+            lead
+            for lead_id in lead_id_filter
+            if (lead := repository.get_research_lead(lead_id)) is not None
+        ]
+    else:
+        leads = repository.list_research_leads(statuses=["watching", "followup", "new", "queued"], limit=None)
+
+    selected: list[tuple[ResearchLeadRecord, dict[str, Any]]] = []
+    for lead in leads:
+        state = lead.metadata.get("research_hunt") if isinstance(lead.metadata, dict) else None
+        if not isinstance(state, dict):
+            continue
+        for task in state.get("tasks", []):
+            if not isinstance(task, dict):
+                continue
+            task_id = str(task.get("task_id") or "")
+            task_type = str(task.get("task_type") or "research_followup").casefold()
+            status = str(task.get("status") or "").casefold()
+            if task_id_filter and task_id not in task_id_filter:
+                continue
+            if task_type_filter and task_type not in task_type_filter:
+                continue
+            if status_filter and status not in status_filter:
+                continue
+            selected.append((lead, dict(task)))
+    return sorted(
+        selected,
+        key=lambda item: (
+            int(item[1].get("priority") or 1000),
+            str(item[1].get("created_at") or ""),
+        ),
+    )
+
+
+def _research_hunt_task_evidence_chunks(
+    repository,
+    lead: ResearchLeadRecord,
+    task: dict[str, Any],
+    *,
+    limit: int,
+) -> list[DocumentChunk]:
+    refs = _research_hunt_task_evidence_refs(lead, task)
+    chunks: list[DocumentChunk] = []
+    seen: set[UUID] = set()
+    for ref in refs:
+        chunk_match = _RESEARCH_HUNT_CHUNK_REF_RE.search(ref)
+        if chunk_match:
+            chunk_id = UUID(chunk_match.group(1))
+            chunk = repository.get_document_chunk(chunk_id)
+            if chunk is not None and chunk.id not in seen:
+                seen.add(chunk.id)
+                chunks.append(chunk)
+        object_match = _RESEARCH_HUNT_OBJECT_REF_RE.search(ref)
+        if object_match:
+            object_id = UUID(object_match.group(1))
+            for chunk in repository.list_document_chunks(object_id=object_id, limit=limit):
+                if chunk.id in seen:
+                    continue
+                seen.add(chunk.id)
+                chunks.append(chunk)
+                if len(chunks) >= limit:
+                    return chunks
+        if len(chunks) >= limit:
+            break
+    return chunks[:limit]
+
+
+def _research_hunt_task_evidence_refs(lead: ResearchLeadRecord, task: dict[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for value in [task.get("action"), task.get("reason")]:
+        if isinstance(value, str):
+            refs.extend(match.group(0) for match in _RESEARCH_HUNT_CHUNK_REF_RE.finditer(value))
+            refs.extend(match.group(0) for match in _RESEARCH_HUNT_OBJECT_REF_RE.finditer(value))
+    raw_refs = task.get("evidence_refs")
+    if isinstance(raw_refs, list):
+        refs.extend(str(ref) for ref in raw_refs if str(ref).strip())
+    state = lead.metadata.get("research_hunt") if isinstance(lead.metadata, dict) else None
+    if isinstance(state, dict):
+        best_signal = state.get("best_signal") if isinstance(state.get("best_signal"), dict) else None
+        raw_signal_refs = best_signal.get("evidence_refs") if isinstance(best_signal, dict) else None
+        if isinstance(raw_signal_refs, list):
+            refs.extend(str(ref) for ref in raw_signal_refs if str(ref).strip())
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for ref in refs:
+        normalized = ref.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
+
+
+def _evaluation_followup_actions(result: AgentPerformanceEvaluationResult) -> list[str]:
+    actions: list[str] = []
+    for evaluation in result.evaluations:
+        raw_actions = evaluation.get("recommended_followup_actions", [])
+        if isinstance(raw_actions, list):
+            actions.extend(str(action).strip() for action in raw_actions if str(action).strip())
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for action in actions:
+        key = action.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(action)
+    return deduped
+
+
+def _research_hunt_signal_candidate(
+    result: ResearchFollowupLoopResult,
+    *,
+    verdict: str | None,
+) -> dict[str, Any] | None:
+    evidence_fit = _research_hunt_best_evidence_fit_payload(result)
+    if evidence_fit is None:
+        return None
+    if evidence_fit.get("fit") == "weak" and result.claims_written == 0 and verdict != "useful":
+        return None
+    evidence_refs: list[str] = []
+    if result.resolver_result and result.resolver_result.lead_results:
+        evidence_refs = result.resolver_result.lead_results[0].evidence_refs[:25]
+    signal = {
+        "captured_at": datetime.now(UTC).isoformat(),
+        "verdict": verdict,
+        "evidence_fit": evidence_fit,
+        "score": 0,
+        "document_chunks": result.document_chunks,
+        "claim_chunks_seen": result.claim_chunks_seen,
+        "claims_written": result.claims_written,
+        "source_followups_ingested": result.source_followups_ingested,
+        "source_followups_ingested_this_run": result.source_followups_ingested_this_run,
+        "source_followup_document_chunks": result.source_followup_document_chunks,
+        "resolver_agent_run_id": str(result.resolver_agent_run_id) if result.resolver_agent_run_id else None,
+        "evaluator_agent_run_id": str(result.evaluator_agent_run_id) if result.evaluator_agent_run_id else None,
+        "evidence_refs": evidence_refs,
+    }
+    signal["score"] = _research_hunt_signal_score(signal)
+    return signal
+
+
+def _research_hunt_best_evidence_fit_payload(result: ResearchFollowupLoopResult) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    if result.evidence_fit is not None:
+        candidates.append(result.evidence_fit.model_dump(mode="json"))
+    if result.resolver_result:
+        for lead_result in result.resolver_result.lead_results:
+            raw = lead_result.metadata.get("evidence_fit") if isinstance(lead_result.metadata, dict) else None
+            if isinstance(raw, dict):
+                candidates.append(raw)
+    if not candidates:
+        return None
+    return max(candidates, key=_research_hunt_evidence_fit_score)
+
+
+def _research_hunt_evidence_fit_score(evidence_fit: dict[str, Any]) -> int:
+    fit_score = {"weak": 0, "partial": 40, "strong": 75}.get(str(evidence_fit.get("fit") or "weak"), 0)
+    matched = int(evidence_fit.get("matched_required_count") or 0)
+    total = int(evidence_fit.get("total_required_count") or 0)
+    term_score = round(10 * matched / total) if total else 0
+    dimension_score = sum(
+        5
+        for key in ("target_safety_fit", "disease_directness_fit", "actionability")
+        if evidence_fit.get(key) == "strong"
+    )
+    return max(0, min(100, fit_score + term_score + dimension_score))
+
+
+def _research_hunt_signal_score(signal: dict[str, Any] | None) -> int:
+    if not signal:
+        return 0
+    evidence_fit = signal.get("evidence_fit") if isinstance(signal.get("evidence_fit"), dict) else {}
+    fit_score = {"weak": 0, "partial": 40, "strong": 75}.get(str(evidence_fit.get("fit") or "weak"), 0)
+    matched = int(evidence_fit.get("matched_required_count") or 0)
+    total = int(evidence_fit.get("total_required_count") or 0)
+    term_score = round(10 * matched / total) if total else 0
+    claim_score = min(10, int(signal.get("claims_written") or 0) // 25)
+    verdict_score = {"useful": 15, "needs_followup": 5, "unclear": 2, "bad": -15}.get(
+        str(signal.get("verdict") or ""),
+        0,
+    )
+    return max(0, min(100, fit_score + term_score + claim_score + verdict_score))
+
+
+def _research_hunt_has_supported_signal(result: ResearchFollowupLoopResult) -> bool:
+    return _research_hunt_signal_score(result.best_signal) >= 80 or result.signal_status == "supported"
+
+
+def _research_hunt_state_has_supported_signal(state: dict[str, Any]) -> bool:
+    best_signal = state.get("best_signal") if isinstance(state.get("best_signal"), dict) else None
+    return _research_hunt_signal_score(best_signal) >= 80 or state.get("signal_status") == "supported"
+
+
+def _research_hunt_tasks_from_result(
+    lead: ResearchLeadRecord,
+    result: ResearchFollowupLoopResult,
+    request: ResearchFollowupLoopRequest,
+    *,
+    verdict: str | None,
+    followup_actions: list[str],
+    has_best_signal: bool,
+    existing_tasks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    created_at = datetime.now(UTC).isoformat()
+    raw_tasks: list[tuple[str, str, str]] = []
+    for action in followup_actions:
+        raw_tasks.append((_research_hunt_task_type(action), action, "evaluator_followup_action"))
+    if has_best_signal and result.evidence_fit and result.evidence_fit.fit == "weak" and result.document_chunks == 0:
+        raw_tasks.append(
+            (
+                "broaden_query",
+                "Broaden source coverage or query terms after a no-result follow-up run.",
+                "no_result_after_supported_signal",
+            )
+        )
+    if result.source_followups_pending:
+        raw_tasks.append(
+            (
+                "source_followup_ingest",
+                f"Process {result.source_followups_pending} pending source follow-up identifier(s).",
+                "pending_source_followups",
+            )
+        )
+    if result.document_chunks and request.run_claim_extraction is False:
+        raw_tasks.append(
+            (
+                "claim_extract",
+                "Run claim extraction on the retrieved follow-up chunks.",
+                "chunks_without_claim_extraction",
+            )
+        )
+    existing_keys = {
+        str(task.get("identity_key") or "")
+        for task in existing_tasks
+        if task.get("status") == "open"
+    }
+    tasks: list[dict[str, Any]] = []
+    for task_type, action, reason in raw_tasks:
+        normalized_action = " ".join(str(action).split()).lower()
+        identity_key = f"{task_type}:{normalized_action[:300]}"
+        if identity_key in existing_keys:
+            continue
+        existing_keys.add(identity_key)
+        task_id = uuid5(NAMESPACE_URL, f"research_hunt_task:{lead.lead_id}:{identity_key}")
+        tasks.append(
+            {
+                "task_id": str(task_id),
+                "identity_key": identity_key,
+                "status": "open",
+                "task_type": task_type,
+                "action": str(action),
+                "reason": reason,
+                "priority": _research_hunt_task_priority(task_type, verdict),
+                "lead_id": str(lead.lead_id),
+                "origin": "research_followup_loop",
+                "source_keys": request.source_keys or lead.suggested_sources,
+                "query_names": request.query_names,
+                "created_at": created_at,
+                "updated_at": created_at,
+                "resolver_agent_run_id": str(result.resolver_agent_run_id) if result.resolver_agent_run_id else None,
+                "evaluator_agent_run_id": str(result.evaluator_agent_run_id) if result.evaluator_agent_run_id else None,
+            }
+        )
+    return tasks
+
+
+def _research_hunt_task_type(action: str) -> str:
+    haystack = action.casefold()
+    if "citation" in haystack or "citing" in haystack or "cited" in haystack:
+        return "citation_chase"
+    if "query" in haystack or "search" in haystack or "coverage" in haystack or "newer" in haystack:
+        return "broaden_query"
+    if "source" in haystack or "pubmed" in haystack or "europe" in haystack or "semantic" in haystack:
+        return "add_source"
+    if "full text" in haystack or "full_text" in haystack or "parser" in haystack or "license" in haystack:
+        return "full_text_extract"
+    if "claim" in haystack or "extract" in haystack:
+        return "claim_extract"
+    if "adverse" in haystack or "safety" in haystack or "tox" in haystack:
+        return "safety_extract"
+    if "subgroup" in haystack or "hemangiosarcoma-specific" in haystack:
+        return "subgroup_extract"
+    return "research_followup"
+
+
+def _research_hunt_task_priority(task_type: str, verdict: str | None) -> int:
+    base = {
+        "source_followup_ingest": 10,
+        "claim_extract": 20,
+        "safety_extract": 25,
+        "subgroup_extract": 30,
+        "citation_chase": 35,
+        "broaden_query": 40,
+        "add_source": 45,
+        "full_text_extract": 50,
+        "research_followup": 60,
+    }.get(task_type, 60)
+    if verdict == "needs_followup":
+        return max(0, base - 5)
+    return base
 
 
 _NON_EVIDENCE_RESEARCH_LEAD_SOURCES = {
