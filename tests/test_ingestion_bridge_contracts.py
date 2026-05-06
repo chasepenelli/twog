@@ -8554,6 +8554,48 @@ def test_local_ingestion_sanitizes_validation_gap_query_params(monkeypatch, tmp_
     assert stored.query_params["validation_gap"] is True
 
 
+def test_local_ingestion_sanitizes_research_followup_query_params(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-followup-local-ingest.sqlite3", seed=False)
+    calls = []
+
+    class FakeHarvester:
+        def fetch(self, query_text, limit=25, **params):
+            calls.append((query_text, limit, params))
+            return []
+
+    monkeypatch.setattr(local_ingest_module, "get_harvester", lambda source_key: FakeHarvester())
+
+    result = LocalIngestionPipeline(repo).ingest_query(
+        SourceQuery(
+            source_key="openalex",
+            query_name="research_followup_openalex",
+            query_text="toceranib canine hemangiosarcoma",
+            query_params={
+                "comparative_policy": "enabled",
+                "include_human_angiosarcoma": True,
+                "require_policy_match": False,
+                "filter": "from_publication_date:2015-01-01",
+            },
+            track="research_followup",
+        ),
+        limit=1,
+        persist_query=False,
+    )
+
+    assert result.status == RunStatus.COMPLETED
+    assert calls == [
+        (
+            "toceranib canine hemangiosarcoma",
+            1,
+            {
+                "comparative_policy": "enabled",
+                "require_policy_match": False,
+                "filter": "from_publication_date:2015-01-01",
+            },
+        )
+    ]
+
+
 def test_validation_planning_blocks_when_evaluation_is_not_ready(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "validation-planning-blocked.sqlite3", seed=False)
     brief = repo.upsert_research_brief(

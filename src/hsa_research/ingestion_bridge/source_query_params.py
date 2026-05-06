@@ -140,6 +140,7 @@ _SOURCE_QUERY_PARAM_ALLOWLISTS: dict[str, set[str]] = {
 _INTERNAL_QUERY_PARAM_KEYS = {
     "evidence_refs",
     "followup_lane",
+    "include_human_angiosarcoma",
     "lane",
     "lead_id",
     "operator",
@@ -161,7 +162,7 @@ _INTERNAL_QUERY_PARAM_KEYS = {
 def with_source_safe_query_params(query: SourceQuery) -> SourceQuery:
     """Return a query whose params are safe to pass to the external source API."""
 
-    if query.track != "validation_gap":
+    if query.track not in {"validation_gap", "research_followup"}:
         return query
     safe_params = source_safe_query_params(query)
     if safe_params == query.query_params:
