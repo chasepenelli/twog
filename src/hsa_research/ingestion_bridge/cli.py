@@ -27,6 +27,7 @@ from .contracts import (
     FullTextOpsRequest,
     PubMedIdentifierRepairRequest,
     ResearchBriefEvaluationRequest,
+    ResearchBriefFollowupQueueRequest,
     ResearchBriefQueueBatchRequest,
     ResearchBriefQueueMaintenanceRequest,
     ResearchBriefQueueRequest,
@@ -976,6 +977,34 @@ def main() -> None:
         help="Optional pass/fail quality-bar filter",
     )
     research_brief_evaluations.add_argument("--limit", type=int, default=50, help="Maximum evaluations to return")
+
+    queue_research_brief_followups = subparsers.add_parser(
+        "queue-research-brief-followups",
+        help="Create durable follow-up research leads from weak research brief evaluations",
+    )
+    queue_research_brief_followups.add_argument("--brief-id", action="append", default=[], help="Specific brief ID")
+    queue_research_brief_followups.add_argument(
+        "--evaluation-id",
+        action="append",
+        default=[],
+        help="Specific research brief evaluation ID",
+    )
+    queue_research_brief_followups.add_argument("--status", default=None, help="Brief status filter")
+    queue_research_brief_followups.add_argument("--source", default=None, help="Optional source key filter")
+    queue_research_brief_followups.add_argument("--topic-query", default=None, help="Case-insensitive topic/scope filter")
+    queue_research_brief_followups.add_argument("--limit", type=int, default=50, help="Maximum briefs to inspect")
+    queue_research_brief_followups.add_argument(
+        "--max-limitations-per-brief",
+        type=int,
+        default=20,
+        help="Maximum follow-up leads to create per brief",
+    )
+    queue_research_brief_followups.add_argument(
+        "--no-evaluations",
+        action="store_true",
+        help="Use only brief-level limitations, not latest evaluation feedback",
+    )
+    queue_research_brief_followups.add_argument("--dry-run", action="store_true", help="Preview without persisting")
 
     plan_validation = subparsers.add_parser(
         "plan-validation",
@@ -2046,6 +2075,20 @@ def main() -> None:
                     limit=args.limit,
                 )
             ]
+    elif args.command == "queue-research-brief-followups":
+        output = HSAResearchService(repo).queue_research_brief_followups(
+            ResearchBriefFollowupQueueRequest(
+                brief_ids=[UUID(value) for value in args.brief_id],
+                evaluation_ids=[UUID(value) for value in args.evaluation_id],
+                status=args.status,
+                source_key=args.source,
+                topic_query=args.topic_query,
+                limit=args.limit,
+                include_evaluations=not args.no_evaluations,
+                max_limitations_per_brief=args.max_limitations_per_brief,
+                dry_run=args.dry_run,
+            )
+        ).model_dump(mode="json")
     elif args.command == "plan-validation":
         output = HSAResearchService(repo).plan_validation(
             ValidationPlanRequest(

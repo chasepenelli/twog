@@ -1018,12 +1018,6 @@ class HSAResearchService:
         self,
         request: ResearchBriefFollowupQueueRequest,
     ) -> ResearchBriefFollowupQueueResult:
-        briefs = self.repository.list_research_briefs(
-            status=request.status,
-            source_key=request.source_key,
-            topic_query=request.topic_query,
-            limit=request.limit,
-        )
         existing_identity_keys = {
             lead.identity_key
             for lead in self.repository.list_research_leads(limit=None)
@@ -1037,20 +1031,65 @@ class HSAResearchService:
         queued_count = 0
         existing_count = 0
 
-        for brief in briefs:
-            try:
-                latest_evaluation = None
-                if request.include_evaluations:
-                    evaluations = self.repository.list_research_brief_evaluations(
-                        brief_id=brief.brief_id,
-                        limit=1,
-                    )
-                    latest_evaluation = evaluations[0] if evaluations else None
-                row = _research_brief_quality_row(brief, latest_evaluation)
-                if row.quality_status != "needs_followup_research":
+        brief_candidates: list[tuple[ResearchBriefRecord, ResearchBriefEvaluationRecord | None]] = []
+        if request.evaluation_ids:
+            for evaluation_id in request.evaluation_ids:
+                evaluation = self.repository.get_research_brief_evaluation(evaluation_id)
+                if evaluation is None:
+                    errors.append(f"evaluation {evaluation_id}: not found")
+                    continue
+                brief = self.repository.get_research_brief(evaluation.brief_id)
+                if brief is None:
+                    errors.append(f"brief {evaluation.brief_id}: not found for evaluation {evaluation_id}")
+                    continue
+                if not _research_brief_matches_followup_filters(brief, request):
                     skipped.append(
                         {
                             "brief_id": str(brief.brief_id),
+                            "evaluation_id": str(evaluation_id),
+                            "reason": "brief_filtered_out",
+                        }
+                    )
+                    continue
+                brief_candidates.append((brief, evaluation))
+        elif request.brief_ids:
+            for brief_id in request.brief_ids:
+                brief = self.repository.get_research_brief(brief_id)
+                if brief is None:
+                    errors.append(f"brief {brief_id}: not found")
+                    continue
+                if not _research_brief_matches_followup_filters(brief, request):
+                    skipped.append({"brief_id": str(brief_id), "reason": "brief_filtered_out"})
+                    continue
+                latest_evaluation = (
+                    _latest_research_brief_evaluation(self.repository, brief)
+                    if request.include_evaluations
+                    else None
+                )
+                brief_candidates.append((brief, latest_evaluation))
+        else:
+            briefs = self.repository.list_research_briefs(
+                status=request.status,
+                source_key=request.source_key,
+                topic_query=request.topic_query,
+                limit=request.limit,
+            )
+            for brief in briefs:
+                latest_evaluation = (
+                    _latest_research_brief_evaluation(self.repository, brief)
+                    if request.include_evaluations
+                    else None
+                )
+                brief_candidates.append((brief, latest_evaluation))
+
+        for brief, latest_evaluation in brief_candidates[: request.limit]:
+            try:
+                row = _research_brief_quality_row(brief, latest_evaluation)
+                if row.quality_status not in _RESEARCH_BRIEF_FOLLOWUP_QUALITY_STATUSES:
+                    skipped.append(
+                        {
+                            "brief_id": str(brief.brief_id),
+                            "evaluation_id": str(latest_evaluation.evaluation_id) if latest_evaluation else None,
                             "quality_status": row.quality_status,
                             "reason": "brief_does_not_need_followup_research",
                         }
@@ -1061,6 +1100,7 @@ class HSAResearchService:
                 leads = _research_brief_followup_leads_from_brief(
                     brief,
                     row,
+                    evaluation=latest_evaluation,
                     max_limitations=request.max_limitations_per_brief,
                 )
                 if not leads:
@@ -3988,12 +4028,103 @@ def _research_brief_record_error_counts(brief: ResearchBriefRecord) -> tuple[int
     return hard_error_count, evidence_limitation_count
 
 
+_RESEARCH_BRIEF_FOLLOWUP_QUALITY_STATUSES = {
+    "needs_followup_research",
+    "needs_more_evidence",
+    "needs_human_review",
+}
+_RESEARCH_BRIEF_EVALUATION_FOLLOWUP_KINDS = {
+    "citation_dedupe_repair",
+    "citation_provenance_repair",
+    "focused_evidence_acquisition",
+}
+
+
+def _latest_research_brief_evaluation(
+    repository: ResearchRepository,
+    brief: ResearchBriefRecord,
+) -> ResearchBriefEvaluationRecord | None:
+    evaluations = repository.list_research_brief_evaluations(brief_id=brief.brief_id, limit=1)
+    return evaluations[0] if evaluations else None
+
+
+def _research_brief_matches_followup_filters(
+    brief: ResearchBriefRecord,
+    request: ResearchBriefFollowupQueueRequest,
+) -> bool:
+    if request.status is not None and brief.status != request.status:
+        return False
+    if request.source_key is not None and brief.source_key != request.source_key:
+        return False
+    if request.topic_query:
+        query = request.topic_query.lower()
+        if query not in brief.topic.lower() and query not in brief.disease_scope.lower():
+            return False
+    return True
+
+
 def _research_brief_followup_leads_from_brief(
     brief: ResearchBriefRecord,
     row: ResearchBriefQualityRow,
     *,
+    evaluation: ResearchBriefEvaluationRecord | None = None,
     max_limitations: int,
 ) -> list[ResearchLeadRecord]:
+    if evaluation is not None:
+        grouped_feedback = _research_brief_evaluation_followup_groups(evaluation)
+        if grouped_feedback:
+            leads = []
+            for followup_kind, feedback_items in list(grouped_feedback.items())[:max_limitations]:
+                digest = hashlib.sha1(
+                    "\n".join(item["text"].lower() for item in feedback_items).encode("utf-8")
+                ).hexdigest()[:12]
+                reason = " ".join(item["text"] for item in feedback_items)[:1000]
+                leads.append(
+                    ResearchLeadRecord(
+                        identity_key=f"research_lead:brief_eval_followup:{brief.brief_id}:{followup_kind}:{digest}",
+                        title=_research_brief_evaluation_followup_title(brief, followup_kind),
+                        lead_type="unknown",
+                        status="followup",
+                        priority=_research_brief_evaluation_followup_priority(followup_kind),
+                        source_key=brief.source_key,
+                        origin_source_key="research_brief_quality",
+                        origin_record_id=str(brief.brief_id),
+                        origin_agent_run_id=evaluation.agent_run_id or brief.agent_run_id,
+                        reason=reason,
+                        summary=_research_brief_evaluation_followup_summary(followup_kind),
+                        evidence_refs=[
+                            f"research_brief:{brief.brief_id}",
+                            f"research_brief_evaluation:{evaluation.evaluation_id}",
+                        ],
+                        suggested_sources=_research_brief_evaluation_followup_sources(followup_kind, brief),
+                        topic_tags=[
+                            "research_brief",
+                            "evaluation_followup",
+                            followup_kind,
+                            brief.source_key or "",
+                            brief.disease_scope,
+                        ],
+                        metadata={
+                            "research_followup_queue": {
+                                "origin": "research_brief_evaluation",
+                                "brief_id": str(brief.brief_id),
+                                "evaluation_id": str(evaluation.evaluation_id),
+                                "agent_run_id": str(evaluation.agent_run_id) if evaluation.agent_run_id else None,
+                                "topic": brief.topic,
+                                "source_key": brief.source_key,
+                                "quality_status": row.quality_status,
+                                "readiness": evaluation.readiness,
+                                "overall_score": evaluation.overall_score,
+                                "passes_quality_bar": evaluation.passes_quality_bar,
+                                "followup_kind": followup_kind,
+                                "feedback_items": feedback_items,
+                                "requires_manual_research": False,
+                            }
+                        },
+                    )
+                )
+            return leads
+
     limitations = _research_brief_record_evidence_limitations(brief)[:max_limitations]
     leads: list[ResearchLeadRecord] = []
     for limitation in limitations:
@@ -4051,6 +4182,129 @@ def _research_brief_record_evidence_limitations(brief: ResearchBriefRecord) -> l
         errors = _as_text_list(result_payload.get("errors", []))
         _, limitations = split_research_brief_errors(errors)
     return _dedupe_texts(limitations)
+
+
+def _research_brief_evaluation_followup_groups(
+    evaluation: ResearchBriefEvaluationRecord,
+) -> dict[str, list[dict[str, str]]]:
+    payload = evaluation.result_payload or {}
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    candidates: list[tuple[str, str]] = []
+    candidates.extend(("weakness", item) for item in _as_text_list(payload.get("weaknesses", [])))
+    candidates.extend(("recommendation", item) for item in _as_text_list(payload.get("recommendations", [])))
+    candidates.extend(("notable_risk", item) for item in _as_text_list(evidence.get("notable_risks", [])))
+
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for source, text in candidates:
+        followup_kind = _research_brief_evaluation_followup_kind(text)
+        if followup_kind not in _RESEARCH_BRIEF_EVALUATION_FOLLOWUP_KINDS:
+            continue
+        grouped.setdefault(followup_kind, []).append({"source": source, "text": text})
+    return grouped
+
+
+def _research_brief_evaluation_followup_kind(text: str) -> str:
+    normalized = text.lower()
+    if any(term in normalized for term in ("duplicate", "dedupe", "deduplication")) and "citation" in normalized:
+        return "citation_dedupe_repair"
+    if any(
+        term in normalized
+        for term in (
+            "provenance",
+            "doi",
+            "pmid",
+            "pmcid",
+            "publication year",
+            "citation metadata",
+            "independent verification",
+            "claim verification",
+            "recency assessment",
+        )
+    ):
+        return "citation_provenance_repair"
+    if (
+        any(term in normalized for term in ("toceranib", "vegfr", "vegfr-2", "vegf"))
+        and any(
+            term in normalized
+            for term in (
+                "monotherapy",
+                "canine splenic",
+                "splenic hsa",
+                "survival",
+                "response",
+                "clinical",
+                "evidence-acquisition",
+                "evidence acquisition",
+            )
+        )
+    ):
+        return "focused_evidence_acquisition"
+    return "other"
+
+
+def _research_brief_evaluation_followup_title(
+    brief: ResearchBriefRecord,
+    followup_kind: str,
+) -> str:
+    if followup_kind == "citation_dedupe_repair":
+        prefix = "Repair duplicate citations"
+    elif followup_kind == "citation_provenance_repair":
+        prefix = "Strengthen citation provenance"
+    elif followup_kind == "focused_evidence_acquisition":
+        return "Find toceranib/VEGFR inhibitor monotherapy outcomes in canine splenic HSA"
+    else:
+        prefix = "Follow up research brief evaluation"
+    return f"{prefix}: {brief.topic}"[:240]
+
+
+def _research_brief_evaluation_followup_summary(followup_kind: str) -> str:
+    if followup_kind == "citation_dedupe_repair":
+        return (
+            "Repair duplicate or inflated citations before downstream coverage scoring. "
+            "Confirm unique source objects and citation-to-claim mapping."
+        )
+    if followup_kind == "citation_provenance_repair":
+        return (
+            "Strengthen provenance by finding PMID, DOI, PMCID, publication year, and source URLs "
+            "for cited evidence before promotion."
+        )
+    if followup_kind == "focused_evidence_acquisition":
+        return (
+            "Run focused evidence acquisition for toceranib or VEGFR inhibitor monotherapy clinical "
+            "outcomes in canine splenic hemangiosarcoma."
+        )
+    return "Follow up evaluator feedback before promoting this brief."
+
+
+def _research_brief_evaluation_followup_priority(followup_kind: str) -> int:
+    return {
+        "focused_evidence_acquisition": 15,
+        "citation_provenance_repair": 20,
+        "citation_dedupe_repair": 25,
+    }.get(followup_kind, 35)
+
+
+def _research_brief_evaluation_followup_sources(
+    followup_kind: str,
+    brief: ResearchBriefRecord,
+) -> list[str]:
+    if followup_kind == "focused_evidence_acquisition":
+        return ["pubmed", "europe_pmc", "openalex", "clinicaltrials_gov", "crossref"]
+    if followup_kind in {"citation_dedupe_repair", "citation_provenance_repair"}:
+        return _dedupe_source_keys([brief.source_key or "", "pubmed", "crossref", "europe_pmc", "openalex"])
+    return _dedupe_source_keys([brief.source_key or ""])
+
+
+def _dedupe_source_keys(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value).strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        deduped.append(normalized)
+        seen.add(normalized)
+    return deduped
 
 
 def _as_text_list(value: Any) -> list[str]:

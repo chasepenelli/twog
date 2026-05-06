@@ -2104,6 +2104,8 @@ def test_dagster_research_brief_followup_queue_asset_uses_injected_repository(mo
     result = dagster_asset_module.research_brief_followup_queue_report.node_def.compute_fn.decorated_fn(
         SimpleNamespace(
             op_config={
+                "brief_ids": [],
+                "evaluation_ids": [],
                 "limit": 10,
                 "include_evaluations": True,
                 "max_limitations_per_brief": 20,
@@ -4058,6 +4060,7 @@ def test_research_brief_followup_queue_contracts_validate():
     )
 
     assert ResearchBriefFollowupQueueRequest(limit=25).max_limitations_per_brief == 20
+    assert ResearchBriefFollowupQueueRequest(brief_ids=[lead.lead_id, lead.lead_id]).brief_ids == [lead.lead_id]
     assert result.followup_leads[0].status == "followup"
     with pytest.raises(ValueError):
         ResearchBriefFollowupQueueRequest(max_limitations_per_brief=0)
@@ -4259,6 +4262,82 @@ def test_research_brief_followup_queue_creates_idempotent_followup_leads(tmp_pat
     assert {lead.origin_record_id for lead in leads} == {str(brief.brief_id)}
     assert all(f"research_brief:{brief.brief_id}" in lead.evidence_refs for lead in leads)
     assert all(lead.metadata["research_followup_queue"]["origin"] == "research_brief_quality" for lead in leads)
+
+
+def test_research_brief_followup_queue_routes_failed_evaluation_feedback(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-eval-followup-queue.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            agent_run_id=uuid4(),
+            topic="Toceranib monotherapy in canine splenic HSA",
+            disease_scope="canine hemangiosarcoma and human angiosarcoma",
+            source_key="pubmed",
+            status="completed",
+            review_mode="openrouter_required",
+            final_brief="Stored synthesis [C1].",
+            citation_count=4,
+            finding_count=3,
+            hypothesis_count=1,
+            result_payload={"errors": []},
+        )
+    )
+    evaluation = repo.upsert_research_brief_evaluation(
+        ResearchBriefEvaluationRecord(
+            brief_id=brief.brief_id,
+            agent_run_id=uuid4(),
+            topic=brief.topic,
+            source_key="pubmed",
+            overall_score=0.78,
+            passes_quality_bar=False,
+            readiness="needs_human_review",
+            result_payload={
+                "weaknesses": [
+                    "C2 and C3 are duplicate citations and inflate apparent citation coverage.",
+                    "No citation metadata (DOI, PMID, year) is available, making claim verification impossible.",
+                ],
+                "recommendations": [
+                    "Create a focused evidence-acquisition plan for toceranib monotherapy cohorts in canine splenic HSA.",
+                    "Require retrieval of at least one citation with PMID or DOI before promotion.",
+                ],
+                "evidence": {
+                    "notable_risks": [
+                        "Toceranib is a multi-kinase inhibitor; do not conflate it with selective VEGFR-2 blockade.",
+                    ]
+                },
+            },
+        )
+    )
+
+    result = service.queue_research_brief_followups(
+        ResearchBriefFollowupQueueRequest(evaluation_ids=[evaluation.evaluation_id], max_limitations_per_brief=10)
+    )
+    rerun = service.queue_research_brief_followups(
+        ResearchBriefFollowupQueueRequest(evaluation_ids=[evaluation.evaluation_id], max_limitations_per_brief=10)
+    )
+    leads = repo.list_research_leads(status="followup", limit=10)
+    followup_kinds = {
+        lead.metadata["research_followup_queue"]["followup_kind"]
+        for lead in leads
+    }
+
+    assert result.candidate_brief_count == 1
+    assert result.queued_count == 3
+    assert rerun.queued_count == 0
+    assert rerun.existing_count == 3
+    assert followup_kinds == {
+        "citation_dedupe_repair",
+        "citation_provenance_repair",
+        "focused_evidence_acquisition",
+    }
+    focused = next(
+        lead
+        for lead in leads
+        if lead.metadata["research_followup_queue"]["followup_kind"] == "focused_evidence_acquisition"
+    )
+    assert "pubmed" in focused.suggested_sources
+    assert "clinicaltrials_gov" in focused.suggested_sources
+    assert f"research_brief_evaluation:{evaluation.evaluation_id}" in focused.evidence_refs
 
 
 def test_validation_plan_repository_roundtrip_sqlite_and_memory(tmp_path):

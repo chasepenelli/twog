@@ -3092,6 +3092,16 @@ if dg is not None:
     @dg.asset(
         group_name="ai_research",
         config_schema={
+            "brief_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Optional specific brief IDs to inspect.",
+            ),
+            "evaluation_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Optional specific research brief evaluation IDs to route.",
+            ),
             "status": dg.Field(
                 str,
                 is_required=False,
@@ -3410,12 +3420,16 @@ if dg is not None:
     ) -> dg.MaterializeResult:
         """Queue evidence-limited research briefs into the follow-up research lane."""
 
+        from uuid import UUID
+
         from .service import HSAResearchService
 
         config = context.op_config
         repository = research_repository.build_repository()
         report = HSAResearchService(repository).queue_research_brief_followups(
             ResearchBriefFollowupQueueRequest(
+                brief_ids=[UUID(value) for value in config["brief_ids"]],
+                evaluation_ids=[UUID(value) for value in config["evaluation_ids"]],
                 status=config.get("status"),
                 source_key=config.get("source_key"),
                 topic_query=config.get("topic_query"),

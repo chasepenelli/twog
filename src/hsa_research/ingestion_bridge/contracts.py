@@ -1384,6 +1384,8 @@ class ResearchBriefQualityReportResult(StrictBaseModel):
 
 
 class ResearchBriefFollowupQueueRequest(StrictBaseModel):
+    brief_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    evaluation_ids: list[UUID] = Field(default_factory=list, max_length=100)
     status: ResearchBriefStatus | None = None
     source_key: str | None = None
     topic_query: str | None = None
@@ -1391,6 +1393,12 @@ class ResearchBriefFollowupQueueRequest(StrictBaseModel):
     include_evaluations: bool = True
     max_limitations_per_brief: int = Field(default=20, ge=1, le=50)
     dry_run: bool = False
+
+    @model_validator(mode="after")
+    def normalize_research_brief_followup_queue_request(self) -> "ResearchBriefFollowupQueueRequest":
+        self.brief_ids = list(dict.fromkeys(self.brief_ids))
+        self.evaluation_ids = list(dict.fromkeys(self.evaluation_ids))
+        return self
 
 
 class ResearchBriefFollowupQueueResult(StrictBaseModel):
