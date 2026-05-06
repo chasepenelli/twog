@@ -5176,6 +5176,34 @@ def test_research_followup_resolver_preserves_hyphenated_therapy_query_terms():
     assert " anti " not in f" {query} "
 
 
+def test_research_followup_resolver_removes_operational_words_from_query():
+    lead = ResearchLeadRecord(
+        title="Find toceranib/VEGFR inhibitor monotherapy outcomes in canine splenic HSA",
+        summary=(
+            "Run focused evidence acquisition for toceranib or VEGFR inhibitor monotherapy "
+            "clinical outcomes in canine splenic hemangiosarcoma."
+        ),
+        reason="Create a focused evidence-acquisition plan before promotion.",
+        lead_type="unknown",
+        status="watching",
+        source_key="pubmed",
+        topic_tags=["research_brief", "evaluation_followup", "focused_evidence_acquisition"],
+    )
+
+    query = research_followup_resolver._lead_search_query(lead, max_terms=12)
+
+    assert "toceranib" in query
+    assert "vegfr" in query
+    assert "monotherapy" in query
+    assert "clinical" in query
+    assert "canine" in query
+    assert "hemangiosarcoma" in query
+    assert " run " not in f" {query} "
+    assert " focused " not in f" {query} "
+    assert " acquisition " not in f" {query} "
+    assert " promotion " not in f" {query} "
+
+
 def test_research_followup_resolver_force_live_search_refreshes_existing_evidence(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "research-followup-resolver-force-live.sqlite3", seed=False)
     service = HSAResearchService(repo)
