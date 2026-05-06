@@ -83,6 +83,10 @@ from .contracts import (
     ResearchFollowupLoopResult,
     ResearchHuntTaskRunRequest,
     ResearchHuntTaskRunResult,
+    ResearchHuntQueueReportRequest,
+    ResearchHuntQueueReportResult,
+    ResearchHuntLeadQueueRow,
+    ResearchHuntTaskQueueRow,
     ResearchLeadCollectRequest,
     ResearchLeadCollectResult,
     ResearchLeadRecord,
@@ -3036,6 +3040,155 @@ class HSAResearchService:
             limit=limit,
         )
 
+    def build_research_hunt_queue_report(
+        self,
+        request: ResearchHuntQueueReportRequest,
+    ) -> ResearchHuntQueueReportResult:
+        lead_id_filter = set(request.lead_ids)
+        if lead_id_filter:
+            leads = [
+                lead
+                for lead_id in lead_id_filter
+                if (lead := self.repository.get_research_lead(lead_id)) is not None
+            ]
+        else:
+            leads = self.repository.list_research_leads(statuses=request.lead_statuses, limit=None)
+        if request.source_keys:
+            source_keys = set(request.source_keys)
+            leads = [
+                lead
+                for lead in leads
+                if (
+                    (lead.source_key and lead.source_key in source_keys)
+                    or (lead.origin_source_key and lead.origin_source_key in source_keys)
+                    or bool(source_keys.intersection(lead.suggested_sources))
+                )
+            ]
+        scanned_lead_count = len(leads)
+        leads = sorted(leads, key=lambda lead: (lead.priority, lead.created_at))[: request.limit]
+
+        lead_rows: list[ResearchHuntLeadQueueRow] = []
+        task_rows: list[ResearchHuntTaskQueueRow] = []
+        all_task_rows: list[ResearchHuntTaskQueueRow] = []
+        status_counts: Counter[str] = Counter()
+        task_class_counts: Counter[str] = Counter()
+        control_status_counts: Counter[str] = Counter()
+
+        for lead in leads:
+            state = lead.metadata.get("research_hunt") if isinstance(lead.metadata, dict) else None
+            if not isinstance(state, dict):
+                lead_row = ResearchHuntLeadQueueRow(
+                    lead_id=lead.lead_id,
+                    title=lead.title,
+                    status=lead.status,
+                    source_key=lead.source_key or lead.origin_source_key,
+                    priority=lead.priority,
+                    control_status="no_hunt_state",
+                    recommended_action="no_hunt_state",
+                )
+                lead_rows.append(lead_row)
+                control_status_counts[lead_row.control_status] += 1
+                continue
+
+            tasks = [dict(task) for task in state.get("tasks", []) if isinstance(task, dict)]
+            suppressed_tasks = [
+                dict(task)
+                for task in state.get("suppressed_tasks", [])
+                if isinstance(task, dict)
+            ] if request.include_suppressed else []
+            lead_task_rows: list[ResearchHuntTaskQueueRow] = []
+            if request.include_tasks:
+                for task in tasks:
+                    row = _research_hunt_task_queue_row(
+                        lead,
+                        task,
+                        stale_after_hours=request.stale_after_hours,
+                    )
+                    lead_task_rows.append(row)
+                    all_task_rows.append(row)
+                for task in suppressed_tasks:
+                    row = _research_hunt_task_queue_row(
+                        lead,
+                        task,
+                        stale_after_hours=request.stale_after_hours,
+                    )
+                    lead_task_rows.append(row)
+                    all_task_rows.append(row)
+
+            open_rows = [row for row in lead_task_rows if row.status == "open"]
+            failed_rows = [row for row in lead_task_rows if row.status == "failed"]
+            completed_rows = [row for row in lead_task_rows if row.status == "completed"]
+            suppressed_rows = [row for row in lead_task_rows if row.status == "suppressed"]
+            open_concrete_rows = [row for row in open_rows if row.task_class == "concrete"]
+            open_broad_rows = [row for row in open_rows if row.task_class == "broad"]
+            open_passive_rows = [row for row in open_rows if row.task_class == "passive"]
+            stale_rows = [row for row in open_rows if row.stale]
+            best_signal = state.get("best_signal") if isinstance(state.get("best_signal"), dict) else None
+            best_signal_score = _research_hunt_signal_score(best_signal)
+            control_status = _research_hunt_lead_control_status(
+                has_hunt_state=True,
+                best_signal_score=best_signal_score,
+                open_concrete_count=len(open_concrete_rows),
+                open_broad_count=len(open_broad_rows),
+                open_passive_count=len(open_passive_rows),
+                failed_count=len(failed_rows),
+            )
+            lead_row = ResearchHuntLeadQueueRow(
+                lead_id=lead.lead_id,
+                title=lead.title,
+                status=lead.status,
+                source_key=lead.source_key or lead.origin_source_key,
+                priority=lead.priority,
+                signal_status=state.get("signal_status"),
+                coverage_status=state.get("coverage_status"),
+                control_status=control_status,
+                open_task_count=len(open_rows),
+                open_concrete_count=len(open_concrete_rows),
+                open_broad_count=len(open_broad_rows),
+                open_passive_count=len(open_passive_rows),
+                blocked_task_count=len(failed_rows),
+                stale_task_count=len(stale_rows),
+                suppressed_task_count=len(suppressed_rows),
+                completed_task_count=len(completed_rows),
+                failed_task_count=len(failed_rows),
+                best_signal_score=best_signal_score,
+                recommended_action=_research_hunt_lead_recommended_action(control_status),
+            )
+            lead_rows.append(lead_row)
+            control_status_counts[lead_row.control_status] += 1
+
+        for row in all_task_rows:
+            status_counts[row.status] += 1
+            task_class_counts[row.task_class] += 1
+        task_rows = sorted(
+            all_task_rows,
+            key=lambda row: (
+                0 if row.runnable_by_default else 1,
+                _research_hunt_task_status_rank(row.status),
+                row.priority if row.priority is not None else 1000,
+                row.age_hours if row.age_hours is not None else 0,
+            ),
+        )[: request.task_limit]
+
+        return ResearchHuntQueueReportResult(
+            scanned_lead_count=scanned_lead_count,
+            lead_count=len(lead_rows),
+            executable_task_count=sum(1 for row in all_task_rows if row.runnable_by_default),
+            broad_task_count=sum(1 for row in all_task_rows if row.status == "open" and row.task_class == "broad"),
+            passive_task_count=sum(1 for row in all_task_rows if row.status == "open" and row.task_class == "passive"),
+            stale_task_count=sum(1 for row in all_task_rows if row.stale),
+            suppressed_task_count=sum(1 for row in all_task_rows if row.status == "suppressed"),
+            blocked_lead_count=control_status_counts["blocked"],
+            ready_for_synthesis_count=control_status_counts["ready_for_synthesis"],
+            watching_count=control_status_counts["watching"],
+            hunting_count=control_status_counts["hunting"],
+            status_counts=dict(status_counts),
+            task_class_counts=dict(task_class_counts),
+            control_status_counts=dict(control_status_counts),
+            leads=lead_rows,
+            tasks=task_rows,
+        )
+
     def update_research_lead(
         self,
         lead_id: UUID,
@@ -4120,6 +4273,131 @@ def _research_hunt_task_evidence_chunks(
         if len(chunks) >= limit:
             break
     return chunks[:limit]
+
+
+def _research_hunt_task_queue_row(
+    lead: ResearchLeadRecord,
+    task: dict[str, Any],
+    *,
+    stale_after_hours: int,
+) -> ResearchHuntTaskQueueRow:
+    task_type = str(task.get("task_type") or "research_followup")
+    action = str(task.get("action") or "")
+    status = str(task.get("status") or "open")
+    task_class = _research_hunt_task_class(task_type, action)
+    age_hours = _research_hunt_task_age_hours(task)
+    stale = bool(status == "open" and age_hours is not None and age_hours >= stale_after_hours)
+    runnable_by_default = bool(status == "open" and task_class == "concrete")
+    return ResearchHuntTaskQueueRow(
+        lead_id=lead.lead_id,
+        task_id=str(task.get("task_id") or "") or None,
+        task_type=task_type,
+        task_class=task_class,  # type: ignore[arg-type]
+        status=status,
+        priority=int(task["priority"]) if str(task.get("priority") or "").isdigit() else None,
+        action=action,
+        reason=str(task.get("reason") or "") or None,
+        identity_key=str(task.get("identity_key") or "") or _research_hunt_task_identity_key(task_type, action),
+        family_key=str(task.get("family_key") or "") or _research_hunt_task_family_key(task_type, action),
+        suppression_reason=str(task.get("suppression_reason") or "") or None,
+        age_hours=age_hours,
+        stale=stale,
+        runnable_by_default=runnable_by_default,
+        recommended_action=_research_hunt_task_recommended_action(
+            status=status,
+            task_class=task_class,
+            stale=stale,
+        ),
+    )
+
+
+def _research_hunt_task_class(task_type: str, action: str) -> str:
+    if _research_hunt_is_passive_action(action):
+        return "passive"
+    if _research_hunt_is_concrete_task_type(task_type):
+        return "concrete"
+    if _research_hunt_is_broad_task_type(task_type):
+        return "broad"
+    return "unknown"
+
+
+def _research_hunt_task_age_hours(task: dict[str, Any]) -> float | None:
+    raw_timestamp = task.get("created_at") or task.get("updated_at")
+    if not raw_timestamp:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw_timestamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    age = datetime.now(UTC) - parsed.astimezone(UTC)
+    return round(max(0.0, age.total_seconds() / 3600), 2)
+
+
+def _research_hunt_task_recommended_action(
+    *,
+    status: str,
+    task_class: str,
+    stale: bool,
+) -> str:
+    if status == "suppressed":
+        return "keep_suppressed"
+    if status == "failed":
+        return "inspect_failed_task"
+    if status != "open":
+        return "no_action"
+    if stale and task_class in {"broad", "passive"}:
+        return "suppress_or_archive"
+    if task_class == "concrete":
+        return "run_research_hunt_tasks"
+    if task_class == "broad":
+        return "explicit_review_required"
+    if task_class == "passive":
+        return "convert_to_monitoring_note"
+    return "inspect_task"
+
+
+def _research_hunt_task_status_rank(status: str) -> int:
+    return {
+        "open": 0,
+        "failed": 1,
+        "suppressed": 2,
+        "completed": 3,
+    }.get(status, 4)
+
+
+def _research_hunt_lead_control_status(
+    *,
+    has_hunt_state: bool,
+    best_signal_score: int,
+    open_concrete_count: int,
+    open_broad_count: int,
+    open_passive_count: int,
+    failed_count: int,
+) -> str:
+    if not has_hunt_state:
+        return "no_hunt_state"
+    if failed_count and not open_concrete_count and best_signal_score < 80:
+        return "blocked"
+    if open_concrete_count:
+        return "hunting"
+    if best_signal_score >= 80:
+        return "ready_for_synthesis"
+    if open_broad_count or open_passive_count:
+        return "watching"
+    return "idle"
+
+
+def _research_hunt_lead_recommended_action(control_status: str) -> str:
+    return {
+        "ready_for_synthesis": "queue_synthesis",
+        "hunting": "run_concrete_hunt_tasks",
+        "watching": "review_optional_broad_tasks",
+        "blocked": "inspect_blocked_hunt",
+        "idle": "no_action",
+        "no_hunt_state": "no_hunt_state",
+    }.get(control_status, "inspect_lead")
 
 
 def _research_hunt_task_evidence_refs(lead: ResearchLeadRecord, task: dict[str, Any]) -> list[str]:

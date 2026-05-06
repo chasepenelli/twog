@@ -73,6 +73,10 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchFollowupLoopRequest,
     ResearchFollowupLoopResult,
     ResearchHuntTaskRunRequest,
+    ResearchHuntQueueReportRequest,
+    ResearchHuntQueueReportResult,
+    ResearchHuntLeadQueueRow,
+    ResearchHuntTaskQueueRow,
     ResearchFollowupRefinementRequest,
     ResearchFollowupResolverRequest,
     ResearchFollowupResolverResult,
@@ -1662,6 +1666,82 @@ def test_dagster_full_text_ops_asset_uses_injected_repository(monkeypatch):
     assert calls == ["build_repository"]
     assert result.value["agent_name"] == "full_text_ops_agent"
     assert result.metadata["action_count"] == 1
+
+
+def test_dagster_research_hunt_queue_asset_uses_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+    lead_id = uuid4()
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    class FakeService:
+        def __init__(self, repository):
+            assert repository is sentinel_repository
+
+        def build_research_hunt_queue_report(self, request):
+            assert isinstance(request, ResearchHuntQueueReportRequest)
+            assert request.lead_ids == [lead_id]
+            assert request.stale_after_hours == 24
+            return ResearchHuntQueueReportResult(
+                scanned_lead_count=1,
+                lead_count=1,
+                executable_task_count=1,
+                hunting_count=1,
+                status_counts={"open": 1},
+                task_class_counts={"concrete": 1},
+                control_status_counts={"hunting": 1},
+                leads=[
+                    ResearchHuntLeadQueueRow(
+                        lead_id=lead_id,
+                        title="Hunt queue",
+                        status="watching",
+                        priority=5,
+                        control_status="hunting",
+                        open_task_count=1,
+                        open_concrete_count=1,
+                        recommended_action="run_concrete_hunt_tasks",
+                    )
+                ],
+                tasks=[
+                    ResearchHuntTaskQueueRow(
+                        lead_id=lead_id,
+                        task_id=str(uuid4()),
+                        task_type="claim_extract",
+                        task_class="concrete",
+                        status="open",
+                        priority=20,
+                        action="Run claim extraction.",
+                        runnable_by_default=True,
+                        recommended_action="run_research_hunt_tasks",
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
+
+    result = dagster_asset_module.research_hunt_queue_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "lead_ids": [str(lead_id)],
+                "lead_statuses": ["watching"],
+                "source_keys": [],
+                "limit": 10,
+                "task_limit": 10,
+                "stale_after_hours": 24,
+                "include_tasks": True,
+                "include_suppressed": True,
+            }
+        ),
+        FakeRepositoryResource(),
+    )
+
+    assert calls == ["build_repository"]
+    assert result.value["executable_task_count"] == 1
+    assert result.metadata["executable_task_count"].value == 1
 
 
 def test_dagster_research_brief_evaluation_asset_uses_injected_repository(monkeypatch):
@@ -8513,6 +8593,139 @@ def test_research_hunt_completed_tasks_block_duplicate_recreation():
     assert hunt_state["open_task_count"] == 0
     assert hunt_state["coverage_status"] == "supported"
     assert hunt_state["suppressed_tasks"][0]["suppression_reason"] == "duplicate_existing_task"
+
+
+def test_research_hunt_queue_report_classifies_tasks_and_actions():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    now = datetime.now(UTC)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Hunt queue report lead",
+            status="watching",
+            priority=5,
+            suggested_sources=["pubmed"],
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "hunting",
+                    "best_signal": {
+                        "score": 95,
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 4, "total_required_count": 4},
+                    },
+                    "tasks": [
+                        {
+                            "task_id": str(uuid4()),
+                            "identity_key": "claim_extract:pmid:26062540",
+                            "status": "open",
+                            "task_type": "claim_extract",
+                            "action": "Run claim extraction on PMID 26062540.",
+                            "priority": 20,
+                            "created_at": (now - timedelta(hours=1)).isoformat(),
+                        },
+                        {
+                            "task_id": str(uuid4()),
+                            "identity_key": "broaden_query:human-angiosarcoma-vegfr2",
+                            "status": "open",
+                            "task_type": "broaden_query",
+                            "action": "Search additional human angiosarcoma VEGFR-2 toxicity data.",
+                            "priority": 40,
+                            "created_at": (now - timedelta(hours=96)).isoformat(),
+                        },
+                        {
+                            "task_id": str(uuid4()),
+                            "identity_key": "research_followup:monitor",
+                            "status": "open",
+                            "task_type": "research_followup",
+                            "action": "Monitor future publications for this topic.",
+                            "priority": 60,
+                            "created_at": (now - timedelta(hours=2)).isoformat(),
+                        },
+                        {
+                            "task_id": str(uuid4()),
+                            "identity_key": "claim_extract:done",
+                            "status": "completed",
+                            "task_type": "claim_extract",
+                            "action": "Run claim extraction on prior chunks.",
+                            "priority": 20,
+                            "created_at": (now - timedelta(hours=2)).isoformat(),
+                        },
+                    ],
+                    "suppressed_tasks": [
+                        {
+                            "task_id": str(uuid4()),
+                            "identity_key": "broaden_query:duplicate",
+                            "status": "suppressed",
+                            "task_type": "broaden_query",
+                            "action": "Search additional human angiosarcoma VEGFR-2 toxicity data.",
+                            "suppression_reason": "broad_family_already_seen",
+                            "created_at": (now - timedelta(hours=1)).isoformat(),
+                        }
+                    ],
+                }
+            },
+        )
+    )
+
+    report = service.build_research_hunt_queue_report(
+        ResearchHuntQueueReportRequest(lead_ids=[lead.lead_id], stale_after_hours=72)
+    )
+    task_by_identity = {task.identity_key: task for task in report.tasks}
+
+    assert report.lead_count == 1
+    assert report.executable_task_count == 1
+    assert report.broad_task_count == 1
+    assert report.passive_task_count == 1
+    assert report.stale_task_count == 1
+    assert report.suppressed_task_count == 1
+    assert report.hunting_count == 1
+    assert report.leads[0].control_status == "hunting"
+    assert report.leads[0].recommended_action == "run_concrete_hunt_tasks"
+    assert task_by_identity["claim_extract:pmid:26062540"].runnable_by_default is True
+    assert task_by_identity["broaden_query:human-angiosarcoma-vegfr2"].recommended_action == "suppress_or_archive"
+    assert task_by_identity["research_followup:monitor"].task_class == "passive"
+    assert task_by_identity["broaden_query:duplicate"].recommended_action == "keep_suppressed"
+
+
+def test_research_hunt_queue_report_marks_supported_lead_ready_for_synthesis():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Supported lead with optional broad work",
+            status="watching",
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "hunting",
+                    "best_signal": {
+                        "score": 90,
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 4, "total_required_count": 4},
+                    },
+                    "tasks": [
+                        {
+                            "task_id": str(uuid4()),
+                            "identity_key": "broaden_query:optional",
+                            "status": "open",
+                            "task_type": "broaden_query",
+                            "action": "Search optional human angiosarcoma VEGFR-2 data.",
+                            "priority": 40,
+                            "created_at": datetime.now(UTC).isoformat(),
+                        }
+                    ],
+                }
+            },
+        )
+    )
+
+    report = service.build_research_hunt_queue_report(ResearchHuntQueueReportRequest(lead_ids=[lead.lead_id]))
+
+    assert report.executable_task_count == 0
+    assert report.ready_for_synthesis_count == 1
+    assert report.leads[0].control_status == "ready_for_synthesis"
+    assert report.leads[0].recommended_action == "queue_synthesis"
 
 
 def test_research_followup_loop_evidence_fit_prefers_run_scoped_chunks(monkeypatch, tmp_path):

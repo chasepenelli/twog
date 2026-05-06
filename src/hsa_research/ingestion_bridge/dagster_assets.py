@@ -31,6 +31,7 @@ from .contracts import (
     ResearchBriefQueueRunRequest,
     ResearchBriefRequest,
     ResearchFollowupResolverRequest,
+    ResearchHuntQueueReportRequest,
     ResearchLeadCollectRequest,
     ResearchObject,
     SourceFollowupIngestRequest,
@@ -383,6 +384,33 @@ _RESEARCH_LEAD_TABLE_COLUMNS = (
     "suggested_sources",
     "reason",
 )
+_RESEARCH_HUNT_LEAD_TABLE_COLUMNS = (
+    "lead_id",
+    "status",
+    "control_status",
+    "open_concrete_count",
+    "open_broad_count",
+    "open_passive_count",
+    "stale_task_count",
+    "suppressed_task_count",
+    "best_signal_score",
+    "recommended_action",
+    "title",
+)
+_RESEARCH_HUNT_TASK_TABLE_COLUMNS = (
+    "lead_id",
+    "task_id",
+    "task_type",
+    "task_class",
+    "status",
+    "priority",
+    "stale",
+    "runnable_by_default",
+    "recommended_action",
+    "suppression_reason",
+    "age_hours",
+    "action",
+)
 _RESEARCH_FOLLOWUP_RESOLVER_TABLE_COLUMNS = (
     "lead_id",
     "status_before",
@@ -678,6 +706,28 @@ if dg is not None:
                 recommendation_rows,
                 _COMMAND_CENTER_RECOMMENDATION_TABLE_COLUMNS,
             ),
+        }
+
+    def _research_hunt_queue_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "lead_count": dg.MetadataValue.int(int(report.get("lead_count") or 0)),
+            "scanned_lead_count": dg.MetadataValue.int(int(report.get("scanned_lead_count") or 0)),
+            "executable_task_count": dg.MetadataValue.int(int(report.get("executable_task_count") or 0)),
+            "broad_task_count": dg.MetadataValue.int(int(report.get("broad_task_count") or 0)),
+            "passive_task_count": dg.MetadataValue.int(int(report.get("passive_task_count") or 0)),
+            "stale_task_count": dg.MetadataValue.int(int(report.get("stale_task_count") or 0)),
+            "suppressed_task_count": dg.MetadataValue.int(int(report.get("suppressed_task_count") or 0)),
+            "blocked_lead_count": dg.MetadataValue.int(int(report.get("blocked_lead_count") or 0)),
+            "ready_for_synthesis_count": dg.MetadataValue.int(
+                int(report.get("ready_for_synthesis_count") or 0)
+            ),
+            "hunting_count": dg.MetadataValue.int(int(report.get("hunting_count") or 0)),
+            "watching_count": dg.MetadataValue.int(int(report.get("watching_count") or 0)),
+            "status_counts": dg.MetadataValue.json(report.get("status_counts", {})),
+            "task_class_counts": dg.MetadataValue.json(report.get("task_class_counts", {})),
+            "control_status_counts": dg.MetadataValue.json(report.get("control_status_counts", {})),
+            "lead_table": _metadata_table(report.get("leads", []), _RESEARCH_HUNT_LEAD_TABLE_COLUMNS),
+            "task_table": _metadata_table(report.get("tasks", []), _RESEARCH_HUNT_TASK_TABLE_COLUMNS),
         }
 
     def _agent_performance_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -2463,6 +2513,57 @@ if dg is not None:
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_command_center_report_metadata(report))
+
+    @dg.asset(
+        group_name="control_panel",
+        config_schema={
+            "lead_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Optional research lead ids to inspect.",
+            ),
+            "lead_statuses": dg.Field(
+                [str],
+                default_value=["new", "watching", "followup", "queued"],
+                description="Research lead statuses to scan.",
+            ),
+            "source_keys": dg.Field(
+                [str],
+                default_value=[],
+                description="Optional source key scope.",
+            ),
+            "limit": dg.Field(int, default_value=100, description="Maximum leads to include."),
+            "task_limit": dg.Field(int, default_value=250, description="Maximum task rows to include."),
+            "stale_after_hours": dg.Field(int, default_value=72, description="Age threshold for stale open tasks."),
+            "include_tasks": dg.Field(bool, default_value=True, description="Include task-level rows."),
+            "include_suppressed": dg.Field(bool, default_value=True, description="Include suppressed task rows."),
+        },
+    )
+    def research_hunt_queue_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Read-only control report for research hunt queue hygiene."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_research_hunt_queue_report(
+            ResearchHuntQueueReportRequest(
+                lead_ids=[UUID(value) for value in config["lead_ids"]],
+                lead_statuses=config["lead_statuses"],
+                source_keys=config["source_keys"],
+                limit=config["limit"],
+                task_limit=config["task_limit"],
+                stale_after_hours=config["stale_after_hours"],
+                include_tasks=config["include_tasks"],
+                include_suppressed=config["include_suppressed"],
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_research_hunt_queue_report_metadata(report))
 
     @dg.asset(group_name="agent_ops")
     def full_text_ops_agent_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
@@ -5346,6 +5447,7 @@ if dg is not None:
         structured_source_count_report,
         source_health_report,
         command_center_report,
+        research_hunt_queue_report,
         full_text_ops_agent_report,
         agent_performance_report,
         agent_performance_evaluation_report,
@@ -5461,6 +5563,10 @@ if dg is not None:
     command_center_job = dg.define_asset_job(
         "command_center_job",
         selection=dg.AssetSelection.assets(command_center_report),
+    )
+    research_hunt_queue_report_job = dg.define_asset_job(
+        "research_hunt_queue_report_job",
+        selection=dg.AssetSelection.assets(research_hunt_queue_report),
     )
     full_text_ops_agent_job = dg.define_asset_job(
         "full_text_ops_agent_job",
@@ -5815,6 +5921,7 @@ if dg is not None:
             structured_source_count_report_job,
             source_health_report_job,
             command_center_job,
+            research_hunt_queue_report_job,
             full_text_ops_agent_job,
             agent_performance_report_job,
             agent_performance_evaluation_job,
@@ -5902,6 +6009,7 @@ else:
     structured_source_count_report_job = None
     source_health_report_job = None
     command_center_job = None
+    research_hunt_queue_report_job = None
     full_text_ops_agent_job = None
     agent_performance_report_job = None
     agent_performance_evaluation_job = None

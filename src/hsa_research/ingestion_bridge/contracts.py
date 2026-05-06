@@ -1959,6 +1959,97 @@ class ResearchHuntTaskRunResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+ResearchHuntTaskClass = Literal["concrete", "broad", "passive", "unknown"]
+ResearchHuntControlStatus = Literal[
+    "ready_for_synthesis",
+    "hunting",
+    "watching",
+    "blocked",
+    "idle",
+    "no_hunt_state",
+]
+
+
+class ResearchHuntQueueReportRequest(StrictBaseModel):
+    lead_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    lead_statuses: list[ResearchLeadStatus] = Field(
+        default_factory=lambda: ["new", "watching", "followup", "queued"],
+        max_length=10,
+    )
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    limit: int = Field(default=100, ge=1, le=1000)
+    task_limit: int = Field(default=250, ge=1, le=2000)
+    stale_after_hours: int = Field(default=72, ge=1, le=24 * 90)
+    include_tasks: bool = True
+    include_suppressed: bool = True
+
+    @model_validator(mode="after")
+    def normalize_research_hunt_queue_report_request(self) -> "ResearchHuntQueueReportRequest":
+        self.lead_statuses = _dedupe_strings(self.lead_statuses)
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        return self
+
+
+class ResearchHuntTaskQueueRow(StrictBaseModel):
+    lead_id: UUID
+    task_id: str | None = None
+    task_type: str
+    task_class: ResearchHuntTaskClass
+    status: str
+    priority: int | None = None
+    action: str
+    reason: str | None = None
+    identity_key: str | None = None
+    family_key: str | None = None
+    suppression_reason: str | None = None
+    age_hours: float | None = None
+    stale: bool = False
+    runnable_by_default: bool = False
+    recommended_action: str
+
+
+class ResearchHuntLeadQueueRow(StrictBaseModel):
+    lead_id: UUID
+    title: str | None = None
+    status: ResearchLeadStatus
+    source_key: str | None = None
+    priority: int
+    signal_status: str | None = None
+    coverage_status: str | None = None
+    control_status: ResearchHuntControlStatus
+    open_task_count: int = Field(default=0, ge=0)
+    open_concrete_count: int = Field(default=0, ge=0)
+    open_broad_count: int = Field(default=0, ge=0)
+    open_passive_count: int = Field(default=0, ge=0)
+    blocked_task_count: int = Field(default=0, ge=0)
+    stale_task_count: int = Field(default=0, ge=0)
+    suppressed_task_count: int = Field(default=0, ge=0)
+    completed_task_count: int = Field(default=0, ge=0)
+    failed_task_count: int = Field(default=0, ge=0)
+    best_signal_score: int = Field(default=0, ge=0, le=100)
+    recommended_action: str
+
+
+class ResearchHuntQueueReportResult(StrictBaseModel):
+    scanned_lead_count: int = Field(default=0, ge=0)
+    lead_count: int = Field(default=0, ge=0)
+    executable_task_count: int = Field(default=0, ge=0)
+    broad_task_count: int = Field(default=0, ge=0)
+    passive_task_count: int = Field(default=0, ge=0)
+    stale_task_count: int = Field(default=0, ge=0)
+    suppressed_task_count: int = Field(default=0, ge=0)
+    blocked_lead_count: int = Field(default=0, ge=0)
+    ready_for_synthesis_count: int = Field(default=0, ge=0)
+    watching_count: int = Field(default=0, ge=0)
+    hunting_count: int = Field(default=0, ge=0)
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    task_class_counts: dict[str, int] = Field(default_factory=dict)
+    control_status_counts: dict[str, int] = Field(default_factory=dict)
+    leads: list[ResearchHuntLeadQueueRow] = Field(default_factory=list)
+    tasks: list[ResearchHuntTaskQueueRow] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class SourceScoutRequest(StrictBaseModel):
     focus: Literal["all", "scholarly", "canine", "omics", "chemistry", "structure", "safety"] = "all"
     max_phase: int = Field(default=3, ge=1, le=5)

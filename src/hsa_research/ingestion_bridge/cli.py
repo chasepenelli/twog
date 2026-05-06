@@ -36,6 +36,7 @@ from .contracts import (
     ResearchFollowupResolverRequest,
     ResearchFollowupLoopRequest,
     ResearchHuntTaskRunRequest,
+    ResearchHuntQueueReportRequest,
     ResearchLeadCollectRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
@@ -1224,6 +1225,19 @@ def main() -> None:
     research_hunt_tasks.add_argument("--review-model", action="append", default=[])
     research_hunt_tasks.add_argument("--operator", default="cli_operator")
 
+    research_hunt_queue_report = subparsers.add_parser(
+        "research-hunt-queue-report",
+        help="Build a read-only research hunt queue control report.",
+    )
+    research_hunt_queue_report.add_argument("--lead-id", action="append", default=[], help="Research lead ID; repeat for multiple.")
+    research_hunt_queue_report.add_argument("--lead-status", action="append", default=[], help="Lead status filter. Defaults to active hunt statuses.")
+    research_hunt_queue_report.add_argument("--source", action="append", default=[], help="Source key filter.")
+    research_hunt_queue_report.add_argument("--limit", type=int, default=100)
+    research_hunt_queue_report.add_argument("--task-limit", type=int, default=250)
+    research_hunt_queue_report.add_argument("--stale-after-hours", type=int, default=72)
+    research_hunt_queue_report.add_argument("--no-tasks", action="store_true", help="Omit task rows from the report.")
+    research_hunt_queue_report.add_argument("--no-suppressed", action="store_true", help="Omit suppressed task rows from the report.")
+
     model_review_summary = subparsers.add_parser(
         "model-review-summary",
         help="Print compact model-review summaries from persisted agent runs",
@@ -2165,6 +2179,19 @@ def main() -> None:
                 model_profile=args.model_profile,
                 review_models=args.review_model,
                 operator=args.operator,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "research-hunt-queue-report":
+        output = HSAResearchService(repo).build_research_hunt_queue_report(
+            ResearchHuntQueueReportRequest(
+                lead_ids=[UUID(value) for value in args.lead_id],
+                lead_statuses=args.lead_status or ["new", "watching", "followup", "queued"],
+                source_keys=args.source,
+                limit=args.limit,
+                task_limit=args.task_limit,
+                stale_after_hours=args.stale_after_hours,
+                include_tasks=not args.no_tasks,
+                include_suppressed=not args.no_suppressed,
             )
         ).model_dump(mode="json")
     elif args.command == "model-review-summary":
