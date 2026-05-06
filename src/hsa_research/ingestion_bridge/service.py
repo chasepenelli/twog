@@ -2412,6 +2412,7 @@ class HSAResearchService:
         result.scanned_count = len(selected)
         selected = selected[: request.limit]
         result.selected_count = len(selected)
+        extraction_cache: dict[tuple[str, ...], tuple[str, Any]] = {}
         for lead, task in selected:
             item = {
                 "lead_id": str(lead.lead_id),
@@ -2429,7 +2430,38 @@ class HSAResearchService:
             try:
                 task_type = item["task_type"]
                 if task_type in {"claim_extract", "safety_extract", "full_text_extract"}:
-                    claim_result = self._execute_research_hunt_claim_task(lead, task, request)
+                    chunks = _research_hunt_task_evidence_chunks(
+                        self.repository,
+                        lead,
+                        task,
+                        limit=request.claim_chunk_limit,
+                    )
+                    chunk_key = tuple(str(chunk.id) for chunk in chunks)
+                    cached = extraction_cache.get(chunk_key) if chunk_key else None
+                    if cached is not None:
+                        reused_from_task_id, claim_result = cached
+                        item["reused_claim_extraction_from_task_id"] = reused_from_task_id
+                        item["claim_extraction"] = claim_result.model_dump(mode="json")
+                        item["claim_chunks_seen"] = 0
+                        item["claims_written"] = 0
+                        status_after = "completed" if claim_result.chunks_seen and not claim_result.errors else "failed"
+                        item["status_after"] = status_after
+                        if status_after == "completed":
+                            result.completed_count += 1
+                        else:
+                            result.failed_count += 1
+                            item["errors"] = claim_result.errors or ["No evidence chunks were available for claim extraction."]
+                        self._mark_research_hunt_task(
+                            lead.lead_id,
+                            item["task_id"],
+                            status=str(item["status_after"]),
+                            execution=item,
+                        )
+                        result.items.append(item)
+                        continue
+                    claim_result = extract_claims_for_chunks(self.repository, chunks)
+                    if chunk_key:
+                        extraction_cache[chunk_key] = (item["task_id"], claim_result)
                     item["claim_extraction"] = claim_result.model_dump(mode="json")
                     item["claim_chunks_seen"] = claim_result.chunks_seen
                     item["claims_written"] = claim_result.claims_written

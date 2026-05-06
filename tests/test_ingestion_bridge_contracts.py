@@ -8225,6 +8225,7 @@ def test_research_hunt_task_executor_extracts_claims_and_closes_task(tmp_path):
         content_hash="pubmed:propranolol-hsa:chunk",
     ))
     task_id = uuid4()
+    duplicate_task_id = uuid4()
     lead = repo.upsert_research_lead(
         ResearchLeadRecord(
             title="Hunt task: extract propranolol HSA claims",
@@ -8256,6 +8257,17 @@ def test_research_hunt_task_executor_extracts_claims_and_closes_task(tmp_path):
                             "source_keys": ["pubmed"],
                             "created_at": datetime.now(UTC).isoformat(),
                             "updated_at": datetime.now(UTC).isoformat(),
+                        },
+                        {
+                            "task_id": str(duplicate_task_id),
+                            "identity_key": "safety_extract:test",
+                            "status": "open",
+                            "task_type": "safety_extract",
+                            "action": f"Review safety details from chunk:{chunk.id}.",
+                            "priority": 21,
+                            "source_keys": ["pubmed"],
+                            "created_at": datetime.now(UTC).isoformat(),
+                            "updated_at": datetime.now(UTC).isoformat(),
                         }
                     ],
                 }
@@ -8266,7 +8278,7 @@ def test_research_hunt_task_executor_extracts_claims_and_closes_task(tmp_path):
     result = service.run_research_hunt_tasks(
         ResearchHuntTaskRunRequest(
             lead_ids=[lead.lead_id],
-            task_types=["claim_extract"],
+            task_types=["claim_extract", "safety_extract"],
             dry_run=False,
             operator="operator",
         )
@@ -8278,15 +8290,18 @@ def test_research_hunt_task_executor_extracts_claims_and_closes_task(tmp_path):
     )
 
     assert result.agent_run_id is not None
-    assert result.selected_count == 1
-    assert result.completed_count == 1
+    assert result.selected_count == 2
+    assert result.completed_count == 2
     assert result.claim_chunks_seen == 1
     assert result.claims_written >= 1
     assert claims
     assert hunt_state["coverage_status"] == "supported"
     assert hunt_state["open_task_count"] == 0
     assert hunt_state["tasks"][0]["status"] == "completed"
+    assert hunt_state["tasks"][1]["status"] == "completed"
     assert hunt_state["tasks"][0]["last_execution"]["claims_written"] >= 1
+    assert hunt_state["tasks"][1]["last_execution"]["reused_claim_extraction_from_task_id"] == str(task_id)
+    assert hunt_state["tasks"][1]["last_execution"]["claims_written"] == 0
 
 
 def test_research_hunt_task_executor_dry_run_does_not_mutate():
