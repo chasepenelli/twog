@@ -1830,7 +1830,7 @@ def test_dagster_research_hunt_synthesis_queue_asset_uses_injected_repository(mo
             assert request.lead_ids == [lead_id]
             assert request.dry_run is False
             assert request.dagster_run_id == "dagster-hunt-synthesis-test"
-            assert request.review_models == ["anthropic/claude-sonnet-4.5"]
+            assert request.review_models == ["anthropic/claude-sonnet-4.6"]
             return ResearchHuntSynthesisQueueResult(
                 dry_run=False,
                 candidate_count=1,
@@ -1841,7 +1841,7 @@ def test_dagster_research_hunt_synthesis_queue_asset_uses_injected_repository(mo
                         topic="Review research lead: Supported lead",
                         source_key="pubmed",
                         priority=20,
-                        review_models=["anthropic/claude-sonnet-4.5"],
+                        review_models=["anthropic/claude-sonnet-4.6"],
                     )
                 ],
             )
@@ -1863,7 +1863,7 @@ def test_dagster_research_hunt_synthesis_queue_asset_uses_injected_repository(mo
                 "brief_style": "technical",
                 "model_profile": "research_brief",
                 "review_mode": "openrouter_required",
-                "review_models": ["anthropic/claude-sonnet-4.5"],
+                "review_models": ["anthropic/claude-sonnet-4.6"],
                 "dry_run": False,
                 "transition_leads": True,
             },
@@ -3031,7 +3031,7 @@ def test_full_text_ops_openrouter_compare_records_each_model(monkeypatch, tmp_pa
             partition_date="2026-04-27",
             full_text_report=partition_report,
             review_mode="openrouter_compare",
-            review_models=["openai/gpt-5.1", "anthropic/claude-sonnet-4.5"],
+            review_models=["openai/gpt-5.1", "anthropic/claude-sonnet-4.6"],
         )
     )
 
@@ -3039,7 +3039,7 @@ def test_full_text_ops_openrouter_compare_records_each_model(monkeypatch, tmp_pa
     assert result.evidence["selected_model"] == "openai/gpt-5.1"
     assert [review["model_name"] for review in result.evidence["model_reviews"]] == [
         "openai/gpt-5.1",
-        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-sonnet-4.6",
     ]
     assert all(review["status"] == "completed" for review in result.evidence["model_reviews"])
 
@@ -3080,7 +3080,7 @@ def test_full_text_ops_openrouter_compare_persists_model_failures(monkeypatch, t
             partition_date="2026-04-27",
             full_text_report=partition_report,
             review_mode="openrouter_compare",
-            review_models=["openai/gpt-5.1", "anthropic/claude-sonnet-4.5"],
+            review_models=["openai/gpt-5.1", "anthropic/claude-sonnet-4.6"],
         )
     )
 
@@ -8897,7 +8897,7 @@ def test_queue_ready_research_hunt_synthesis_dry_run_does_not_mutate():
     )
 
     result = service.queue_ready_research_hunt_synthesis(
-        ResearchHuntSynthesisQueueRequest(lead_ids=[lead.lead_id], dry_run=True, review_models=["anthropic/claude-sonnet-4.5"])
+        ResearchHuntSynthesisQueueRequest(lead_ids=[lead.lead_id], dry_run=True, review_models=["anthropic/claude-sonnet-4.6"])
     )
     updated_lead = repo.get_research_lead(lead.lead_id)
 
@@ -8944,7 +8944,7 @@ def test_queue_ready_research_hunt_synthesis_apply_queues_and_transitions_lead()
             lead_ids=[lead.lead_id],
             dry_run=False,
             priority=40,
-            review_models=["anthropic/claude-sonnet-4.5"],
+            review_models=["anthropic/claude-sonnet-4.6"],
         )
     )
     persisted_items = repo.list_research_brief_queue_items(limit=None)
@@ -8956,7 +8956,7 @@ def test_queue_ready_research_hunt_synthesis_apply_queues_and_transitions_lead()
     assert len(persisted_items) == 1
     assert persisted_items[0].priority == 12
     assert persisted_items[0].review_mode == "openrouter_required"
-    assert persisted_items[0].review_models == ["anthropic/claude-sonnet-4.5"]
+    assert persisted_items[0].review_models == ["anthropic/claude-sonnet-4.6"]
     assert persisted_items[0].metadata["research_hunt_synthesis_queue"]["control_status"] == "ready_for_synthesis"
     assert updated_lead is not None
     assert updated_lead.status == "queued"
@@ -9035,7 +9035,7 @@ def test_queue_ready_research_hunt_synthesis_dedupes_preexisting_queue_item():
             max_chunks_per_perspective=10,
             max_claims=20,
             max_chunk_chars=2200,
-            review_models=["anthropic/claude-sonnet-4.5"],
+            review_models=["anthropic/claude-sonnet-4.6"],
         )
     )
 
@@ -9043,7 +9043,7 @@ def test_queue_ready_research_hunt_synthesis_dedupes_preexisting_queue_item():
         ResearchHuntSynthesisQueueRequest(
             lead_ids=[lead.lead_id],
             dry_run=False,
-            review_models=["anthropic/claude-sonnet-4.5"],
+            review_models=["anthropic/claude-sonnet-4.6"],
         )
     )
     updated_lead = repo.get_research_lead(lead.lead_id)
