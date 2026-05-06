@@ -564,6 +564,7 @@ class ResearchFollowupResolverRequest(StrictBaseModel):
     statuses: list[ResearchLeadStatus] = Field(default_factory=lambda: ["followup"], max_length=10)
     source_keys: list[str] = Field(default_factory=list, max_length=50)
     search_source_keys: list[str] = Field(default_factory=list, max_length=20)
+    search_query_text: str | None = Field(default=None, max_length=500)
     limit: int = Field(default=25, ge=1, le=200)
     ingest_source_followups: bool = True
     search_missing_identifiers: bool = True
@@ -579,6 +580,12 @@ class ResearchFollowupResolverRequest(StrictBaseModel):
     approved_by: str | None = None
     dagster_run_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_followup_resolver_request(self) -> "ResearchFollowupResolverRequest":
+        if self.search_query_text is not None:
+            self.search_query_text = re.sub(r"\s+", " ", self.search_query_text).strip() or None
+        return self
 
 
 class ResearchFollowupLeadResult(StrictBaseModel):
@@ -1890,6 +1897,7 @@ class ResearchFollowupLoopRequest(StrictBaseModel):
     followup_lane: str = "agent_evaluator_followup"
     source_keys: list[str] = Field(default_factory=list, max_length=25)
     query_names: list[str] = Field(default_factory=list, max_length=100)
+    search_query_text: str | None = Field(default=None, max_length=500)
     limit_per_query: int = Field(default=2, ge=1, le=100)
     max_queries: int = Field(default=10, ge=1, le=100)
     ingest: bool = True
@@ -1915,6 +1923,8 @@ class ResearchFollowupLoopRequest(StrictBaseModel):
         self.source_keys = _dedupe_lower_tokens(self.source_keys)
         self.query_names = _normalized_unique_strings(self.query_names)
         self.followup_lane = self.followup_lane.strip() or "agent_evaluator_followup"
+        if self.search_query_text is not None:
+            self.search_query_text = re.sub(r"\s+", " ", self.search_query_text).strip() or None
         self.review_models = _dedupe_strings(self.review_models)
         self.operator = self.operator.strip() or "command_center_operator"
         return self

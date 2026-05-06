@@ -1216,6 +1216,7 @@ def main() -> None:
     research_followup_loop.add_argument("--lead-id", required=True, help="Research lead ID")
     research_followup_loop.add_argument("--source", action="append", default=[], help="Source key to ingest; repeat for multiple.")
     research_followup_loop.add_argument("--query-name", action="append", default=[], help="Specific query name; repeat for multiple.")
+    research_followup_loop.add_argument("--search-query-text", default=None, help="Optional resolver live-search query override.")
     research_followup_loop.add_argument("--followup-lane", default="agent_evaluator_followup")
     research_followup_loop.add_argument("--limit-per-query", type=int, default=2)
     research_followup_loop.add_argument("--max-queries", type=int, default=10)
@@ -2247,6 +2248,7 @@ def main() -> None:
                 followup_lane=args.followup_lane,
                 source_keys=args.source,
                 query_names=args.query_name,
+                search_query_text=args.search_query_text,
                 limit_per_query=args.limit_per_query,
                 max_queries=args.max_queries,
                 ingest=not args.no_ingest,

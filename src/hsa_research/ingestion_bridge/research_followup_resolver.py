@@ -47,6 +47,10 @@ _OBJECT_TYPE_BY_SOURCE = {
 }
 _NON_EVIDENCE_SOURCES = {"x_linked_article", "x_topic", "x_topic_monitor"}
 _TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]*[a-z0-9]", re.I)
+_DOI_PATTERN = re.compile(r"\b10\.\d{4,9}/[^\s,;)\]]+", re.I)
+_NCT_PATTERN = re.compile(r"\bNCT\d{8}\b", re.I)
+_PMCID_PATTERN = re.compile(r"\bPMC\d+\b", re.I)
+_PMID_PATTERN = re.compile(r"\bPMID[:\s]*(\d+)\b", re.I)
 _QUERY_STOPWORDS = {
     "about",
     "acquire",
@@ -329,7 +333,7 @@ def _resolve_one_lead(
                     "action": "would_force_live_search" if search_forced else "would_search_durable_sources",
                     "force_live_search": request.force_live_search,
                     "evidence_refs_before_search": len(_dedupe_strings(evidence_refs)),
-                    "query": _lead_search_query(lead, max_terms=request.max_search_terms),
+                    "query": _resolver_search_query(lead, request),
                     "source_keys": _search_source_keys(request),
                     "dry_run": True,
                 }
@@ -612,7 +616,7 @@ def _stored_chunk_evidence(
     lead: ResearchLeadRecord,
     request: ResearchFollowupResolverRequest,
 ) -> tuple[list[str], list[str]]:
-    query = _lead_search_query(lead, max_terms=request.max_search_terms)
+    query = _resolver_search_query(lead, request)
     refs: list[str] = []
     sources: list[str] = []
     for source_key in _search_source_keys(request):
@@ -645,7 +649,7 @@ def _search_durable_sources(
     request: ResearchFollowupResolverRequest,
 ) -> dict[str, Any]:
     pipeline = LocalIngestionPipeline(repository)  # type: ignore[arg-type]
-    query_text = _lead_search_query(lead, max_terms=request.max_search_terms)
+    query_text = _resolver_search_query(lead, request)
     reports = []
     errors = []
     for source_key in _search_source_keys(request):
@@ -757,6 +761,31 @@ def _lead_search_query(lead: ResearchLeadRecord, *, max_terms: int) -> str:
         if len(tokens) >= max_terms:
             return " ".join(tokens)
     return " ".join(tokens) or "canine hemangiosarcoma human angiosarcoma"
+
+
+def _resolver_search_query(lead: ResearchLeadRecord, request: ResearchFollowupResolverRequest) -> str:
+    if request.search_query_text:
+        normalized = _normalize_search_query_text(request.search_query_text, max_terms=request.max_search_terms)
+        if normalized:
+            return normalized
+    return _lead_search_query(lead, max_terms=request.max_search_terms)
+
+
+def _normalize_search_query_text(query_text: str, *, max_terms: int) -> str:
+    references: list[str] = []
+    references.extend(match.group(0).rstrip(".").casefold() for match in _DOI_PATTERN.finditer(query_text))
+    references.extend(match.group(0).upper() for match in _NCT_PATTERN.finditer(query_text))
+    references.extend(match.group(0).upper() for match in _PMCID_PATTERN.finditer(query_text))
+    references.extend(match.group(1) for match in _PMID_PATTERN.finditer(query_text))
+
+    scrubbed = _DOI_PATTERN.sub(" ", query_text)
+    scrubbed = _NCT_PATTERN.sub(" ", scrubbed)
+    scrubbed = _PMCID_PATTERN.sub(" ", scrubbed)
+    scrubbed = _PMID_PATTERN.sub(" ", scrubbed)
+    tokens: list[str] = []
+    seen = set(references)
+    _extend_query_tokens(tokens, seen, [scrubbed], max_terms=max_terms, skip_stopwords=True)
+    return " ".join([*references, *tokens[:max_terms]]).strip()
 
 
 def _lead_query_expansion_text(context_text: str) -> str:

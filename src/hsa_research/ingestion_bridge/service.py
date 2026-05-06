@@ -2612,7 +2612,19 @@ class HSAResearchService:
                 continue
             try:
                 task_type = item["task_type"]
-                if task_type in {"claim_extract", "safety_extract", "full_text_extract"}:
+                if task_type == "source_followup_ingest":
+                    source_followup_result = self._execute_research_hunt_source_followup_task(lead, task, request)
+                    item["source_followup"] = source_followup_result
+                    status_after = "completed" if source_followup_result["candidate_count"] and not source_followup_result["errors"] else "failed"
+                    item["status_after"] = status_after
+                    if status_after == "completed":
+                        result.completed_count += 1
+                    else:
+                        result.failed_count += 1
+                        item["errors"] = source_followup_result["errors"] or [
+                            "No source follow-up candidates were available for ingestion."
+                        ]
+                elif task_type in {"claim_extract", "safety_extract", "full_text_extract"}:
                     chunks = _research_hunt_task_evidence_chunks(
                         self.repository,
                         lead,
@@ -2658,15 +2670,12 @@ class HSAResearchService:
                         result.failed_count += 1
                         item["errors"] = claim_result.errors or ["No evidence chunks were available for claim extraction."]
                 else:
-                    task_source_keys = [
-                        str(source).strip().lower()
-                        for source in task.get("source_keys", [])
-                        if str(source).strip()
-                    ] if isinstance(task.get("source_keys"), list) else []
+                    task_source_keys = _research_hunt_task_source_keys(lead, task, request)
                     loop_result = self.run_research_followup_loop(
                         ResearchFollowupLoopRequest(
                             lead_id=lead.lead_id,
-                            source_keys=request.source_keys or task_source_keys or lead.suggested_sources,
+                            source_keys=task_source_keys,
+                            search_query_text=_research_hunt_task_search_query(lead, task),
                             ingest=False,
                             resolve=True,
                             evaluate=request.evaluate,
@@ -2860,6 +2869,7 @@ class HSAResearchService:
                         lead_ids=[request.lead_id],
                         statuses=["queued", "watching", "followup", "new"],
                         search_source_keys=source_keys,
+                        search_query_text=request.search_query_text,
                         limit=1,
                         ingest_source_followups=True,
                         search_missing_identifiers=True,
@@ -3040,6 +3050,68 @@ class HSAResearchService:
     ):
         chunks = _research_hunt_task_evidence_chunks(self.repository, lead, task, limit=request.claim_chunk_limit)
         return extract_claims_for_chunks(self.repository, chunks)
+
+    def _execute_research_hunt_source_followup_task(
+        self,
+        lead: ResearchLeadRecord,
+        task: dict[str, Any],
+        request: ResearchHuntTaskRunRequest,
+    ) -> dict[str, Any]:
+        candidates = _research_hunt_source_followup_items_for_task(self.repository, lead, task, request)
+        existing_by_identity_key = {
+            item.identity_key: item
+            for item in self.repository.list_source_followups(limit=None)
+            if item.identity_key
+        }
+        queued: list[SourceFollowupQueueItem] = []
+        preexisting: list[SourceFollowupQueueItem] = []
+        errors: list[str] = []
+        for candidate in candidates:
+            if not candidate.identity_key:
+                continue
+            existing = existing_by_identity_key.get(candidate.identity_key)
+            if existing is not None:
+                preexisting.append(existing)
+                continue
+            persisted = self.repository.upsert_source_followup(candidate)
+            existing_by_identity_key[persisted.identity_key] = persisted
+            queued.append(persisted)
+
+        ingestable_ids = [
+            item.followup_id
+            for item in [*queued, *preexisting]
+            if item.status in {"queued", "approved"}
+        ]
+        ingest_result = None
+        if ingestable_ids:
+            source_followup_result = self.ingest_source_followups(
+                SourceFollowupIngestRequest(
+                    followup_ids=ingestable_ids[: request.claim_chunk_limit],
+                    statuses=["queued", "approved"],
+                    limit=min(len(ingestable_ids), request.claim_chunk_limit),
+                    approved_by=request.operator,
+                    run_claim_extraction=False,
+                    dry_run=False,
+                    metadata={
+                        **request.metadata,
+                        "research_hunt_task_executor": True,
+                        "research_hunt_task_id": str(task.get("task_id") or ""),
+                        "research_lead_id": str(lead.lead_id),
+                    },
+                )
+            )
+            ingest_result = source_followup_result.model_dump(mode="json")
+            errors.extend(source_followup_result.errors)
+
+        return {
+            "candidate_count": len(candidates),
+            "queued_count": len(queued),
+            "preexisting_count": len(preexisting),
+            "ingestable_count": len(ingestable_ids),
+            "followup_ids": [str(item.followup_id) for item in [*queued, *preexisting]],
+            "ingest_result": ingest_result,
+            "errors": errors,
+        }
 
     def _mark_research_hunt_task(
         self,
@@ -4965,6 +5037,195 @@ def _research_hunt_task_recommended_action(
     if task_class == "passive":
         return "convert_to_monitoring_note"
     return "inspect_task"
+
+
+def _research_hunt_task_source_keys(
+    lead: ResearchLeadRecord,
+    task: dict[str, Any],
+    request: ResearchHuntTaskRunRequest,
+) -> list[str]:
+    if request.source_keys:
+        return request.source_keys
+
+    action = _research_hunt_normalize_action_text(str(task.get("action") or ""))
+    source_keys: list[str] = []
+    source_aliases = [
+        ("clinicaltrials_gov", ("clinicaltrials.gov", "clinicaltrials", "clinical trial", "nct")),
+        ("europe_pmc", ("europe_pmc", "europe pmc", "europepmc")),
+        ("pubmed", ("pubmed", "pmid")),
+        ("pmc_oa", ("pmc_oa", "pmcid", "full_text")),
+        ("unpaywall", ("unpaywall", "open access")),
+        ("crossref", ("crossref", "doi")),
+        ("openalex", ("openalex",)),
+    ]
+    for source_key, aliases in source_aliases:
+        if any(alias in action for alias in aliases):
+            source_keys.append(source_key)
+
+    if "full_text" in action:
+        source_keys.extend(["pubmed", "europe_pmc", "pmc_oa", "unpaywall", "crossref"])
+    if not source_keys and isinstance(task.get("source_keys"), list):
+        source_keys.extend(str(source).strip().lower() for source in task.get("source_keys", []) if str(source).strip())
+    if not source_keys:
+        source_keys.extend(lead.suggested_sources)
+    return _dedupe_sequence(source_keys)
+
+
+def _research_hunt_task_search_query(
+    lead: ResearchLeadRecord,
+    task: dict[str, Any],
+) -> str | None:
+    action = str(task.get("action") or "")
+    refs = _research_hunt_action_identifier_refs(action)
+    if refs:
+        return " ".join(ref.partition(":")[2] for ref in refs if ref.partition(":")[2])
+
+    context = _research_hunt_normalize_action_text(
+        " ".join(
+            [
+                action,
+                lead.title or "",
+                lead.summary or "",
+                lead.reason or "",
+                " ".join(lead.topic_tags),
+            ]
+        )
+    )
+    priority_terms = [
+        ("toceranib", ("toceranib", "palladia")),
+        ("vegfr", ("vegfr", "vegfr2", "kdr")),
+        ("inhibitor", ("inhibitor", "inhibitors", "inhibition")),
+        ("monotherapy", ("monotherapy",)),
+        ("maintenance", ("maintenance",)),
+        ("doxorubicin", ("doxorubicin",)),
+        ("canine", ("canine", "dog", "dogs", "veterinary")),
+        ("splenic", ("splenic", "spleen")),
+        ("hemangiosarcoma", ("hemangiosarcoma", "hsa")),
+        ("angiosarcoma", ("angiosarcoma",)),
+        ("clinical", ("clinical",)),
+        ("trial", ("trial", "trials")),
+        ("response", ("response", "responses")),
+        ("survival", ("survival", "progression-free")),
+        ("safety", ("safety",)),
+        ("toxicity", ("toxicity", "toxicities", "hepatotoxicity")),
+        ("adverse", ("adverse",)),
+    ]
+    terms: list[str] = []
+    for canonical, aliases in priority_terms:
+        if any(alias in context for alias in aliases):
+            terms.append(canonical)
+    if not terms:
+        tokens = [
+            token
+            for token in re.findall(r"[a-z0-9]+", context)
+            if len(token) > 2 and token not in _RESEARCH_HUNT_STOPWORDS
+        ][:12]
+        terms.extend(tokens)
+    return " ".join(_dedupe_sequence(terms)) or None
+
+
+def _research_hunt_source_followup_items_for_task(
+    repository: ResearchRepository,
+    lead: ResearchLeadRecord,
+    task: dict[str, Any],
+    request: ResearchHuntTaskRunRequest,
+) -> list[SourceFollowupQueueItem]:
+    items: list[SourceFollowupQueueItem] = []
+    action = str(task.get("action") or "")
+    for ref in _research_hunt_action_identifier_refs(action):
+        identifier_type, _, identifier = ref.partition(":")
+        items.extend(
+            _research_hunt_source_followup_items_for_identifier(
+                lead,
+                identifier_type=identifier_type,
+                identifier=identifier,
+                task=task,
+                request=request,
+            )
+        )
+
+    object_ids: set[UUID] = set()
+    for ref in _research_hunt_task_evidence_refs(lead, task):
+        ref_type, _, ref_id = ref.partition(":")
+        if ref_type not in {"chunk", "research_object"}:
+            continue
+        try:
+            parsed_id = UUID(ref_id)
+        except ValueError:
+            continue
+        if ref_type == "chunk":
+            chunk = repository.get_document_chunk(parsed_id)
+            if chunk is not None:
+                object_ids.add(chunk.research_object_id)
+        elif ref_type == "research_object":
+            object_ids.add(parsed_id)
+
+    loop_request = ResearchFollowupLoopRequest(
+        lead_id=lead.lead_id,
+        followup_lane="research_hunt_source_followup",
+        max_identifier_followups=min(max(1, request.claim_chunk_limit), 50),
+        operator=request.operator,
+        metadata=request.metadata,
+    )
+    for object_id in object_ids:
+        obj = repository.get_research_object(object_id)
+        if obj is None:
+            continue
+        items.extend(_source_followup_items_for_research_object(lead, obj, loop_request))
+
+    deduped: list[SourceFollowupQueueItem] = []
+    seen: set[str] = set()
+    for item in items:
+        if not item.identity_key or item.identity_key in seen:
+            continue
+        seen.add(item.identity_key)
+        deduped.append(item)
+    return deduped[: request.claim_chunk_limit]
+
+
+def _research_hunt_source_followup_items_for_identifier(
+    lead: ResearchLeadRecord,
+    *,
+    identifier_type: str,
+    identifier: str,
+    task: dict[str, Any],
+    request: ResearchHuntTaskRunRequest,
+) -> list[SourceFollowupQueueItem]:
+    identifier_type = identifier_type.strip().lower()
+    identifier = identifier.strip()
+    if not identifier:
+        return []
+    source_keys_by_identifier = {
+        "doi": ["unpaywall", "crossref"],
+        "pmid": ["pubmed"],
+        "pmcid": ["pmc_oa"],
+        "nct": ["clinicaltrials_gov"],
+    }
+    source_keys = source_keys_by_identifier.get(identifier_type, [])
+    items: list[SourceFollowupQueueItem] = []
+    for source_key in source_keys:
+        items.append(
+            SourceFollowupQueueItem(
+                source_key=source_key,
+                identifier_type=identifier_type,  # type: ignore[arg-type]
+                identifier=identifier,
+                url=_source_followup_url(identifier_type, identifier, fallback=lead.url),
+                title=lead.title,
+                origin_source_key=lead.origin_source_key or lead.source_key,
+                origin_review_id=lead.origin_review_id,
+                origin_artifact_id=lead.origin_artifact_id,
+                origin_agent_run_id=lead.origin_agent_run_id,
+                reason="Research hunt task requested source follow-up ingestion.",
+                priority=10,
+                metadata={
+                    "research_hunt_task_executor": True,
+                    "research_hunt_task_id": str(task.get("task_id") or ""),
+                    "research_lead_id": str(lead.lead_id),
+                    "operator": request.operator,
+                },
+            )
+        )
+    return items
 
 
 def _research_hunt_task_status_rank(status: str) -> int:

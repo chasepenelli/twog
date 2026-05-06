@@ -97,6 +97,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ScrapeReviewRequest,
     ScrapeSourceProfile,
     SourceFollowupIngestRequest,
+    SourceFollowupIngestResult,
     SourceFollowupQueueItem,
     SourceFollowupQueueRequest,
     SourceQuery,
@@ -5205,6 +5206,23 @@ def test_research_followup_resolver_removes_operational_words_from_query():
     assert " the " not in f" {query} "
 
 
+def test_research_followup_resolver_normalizes_search_query_override():
+    lead = ResearchLeadRecord(
+        title="Fallback title that should not dominate query override",
+        lead_type="unknown",
+        status="watching",
+        source_key="pubmed",
+    )
+    request = ResearchFollowupResolverRequest(
+        search_query_text="Run focused THE toceranib canine hemangiosarcoma VEGFR monotherapy query",
+        max_search_terms=8,
+    )
+
+    query = research_followup_resolver._resolver_search_query(lead, request)
+
+    assert query == "toceranib canine hemangiosarcoma vegfr monotherapy query"
+
+
 def test_research_followup_resolver_force_live_search_refreshes_existing_evidence(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "research-followup-resolver-force-live.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -8723,6 +8741,153 @@ def test_research_hunt_task_executor_skips_broad_tasks_by_default():
     assert default_result.items[0]["task_id"] == str(concrete_task_id)
     assert explicit_result.selected_count == 1
     assert explicit_result.items[0]["task_id"] == str(broad_task_id)
+
+
+def test_research_hunt_broad_task_passes_action_query_and_source_override(monkeypatch):
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    task_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Find toceranib/VEGFR inhibitor monotherapy outcomes in canine splenic HSA",
+            status="watching",
+            suggested_sources=["pubmed", "europe_pmc", "openalex", "clinicaltrials_gov", "crossref"],
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "hunting",
+                    "open_task_count": 1,
+                    "best_signal": {"score": 100, "evidence_refs": [], "evidence_fit": {"fit": "strong"}},
+                    "tasks": [
+                        {
+                            "task_id": str(task_id),
+                            "identity_key": "broaden_query:clinicaltrials",
+                            "status": "open",
+                            "task_type": "broaden_query",
+                            "action": (
+                                "run_a_targeted_clinicaltrials.gov_search_for_"
+                                "'toceranib_hemangiosarcoma'_and_'angiosarcoma_vegfr_inhibitor'"
+                            ),
+                            "source_keys": ["pubmed", "europe_pmc", "openalex", "clinicaltrials_gov", "crossref"],
+                            "priority": 35,
+                        }
+                    ],
+                }
+            },
+        )
+    )
+    captured: dict[str, ResearchFollowupLoopRequest] = {}
+
+    def fake_loop(self, request):
+        captured["request"] = request
+        return ResearchFollowupLoopResult(lead_id=request.lead_id, dry_run=False)
+
+    monkeypatch.setattr(HSAResearchService, "run_research_followup_loop", fake_loop)
+
+    result = service.run_research_hunt_tasks(
+        ResearchHuntTaskRunRequest(lead_ids=[lead.lead_id], task_ids=[task_id], dry_run=False, evaluate=False)
+    )
+
+    assert result.completed_count == 1
+    assert captured["request"].source_keys == ["clinicaltrials_gov"]
+    assert captured["request"].search_query_text is not None
+    assert "toceranib" in captured["request"].search_query_text
+    assert "hemangiosarcoma" in captured["request"].search_query_text
+    assert "vegfr" in captured["request"].search_query_text
+    assert "inhibitor" in captured["request"].search_query_text
+
+
+def test_research_hunt_source_followup_task_queues_identifier_followups(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-hunt-source-followups.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    fetch_run_id = uuid4()
+    raw_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="26062540",
+            content_hash="toceranib-maintenance-raw",
+            raw_payload={"pmid": "26062540"},
+        ),
+        fetch_run_id=fetch_run_id,
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type=ResearchObjectType.PUBLICATION,
+            title="Maintenance therapy with toceranib following doxorubicin-based chemotherapy",
+            abstract="Canine splenic hemangiosarcoma maintenance therapy with toceranib.",
+            source_key="pubmed",
+            dedupe_key="pmid:26062540",
+            identifiers={"pmid": "26062540", "pmcid": "PMC3837095", "doi": "10.1186/s12917-015-0446-1"},
+            raw_record_id=raw_id,
+        ),
+        raw_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="title_abstract",
+            text_content="Toceranib maintenance therapy in canine splenic hemangiosarcoma.",
+            content_hash="toceranib-maintenance-chunk",
+        )
+    )
+    task_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Find toceranib/VEGFR inhibitor monotherapy outcomes in canine splenic HSA",
+            status="watching",
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "hunting",
+                    "open_task_count": 1,
+                    "best_signal": {
+                        "score": 100,
+                        "evidence_refs": [f"research_object:{object_id}"],
+                        "evidence_fit": {"fit": "strong"},
+                    },
+                    "tasks": [
+                        {
+                            "task_id": str(task_id),
+                            "identity_key": "source_followup_ingest:pmcid",
+                            "status": "open",
+                            "task_type": "source_followup_ingest",
+                            "action": "Queue source follow-up ingestion for PMCIDs present in retrieved records.",
+                            "priority": 10,
+                        }
+                    ],
+                }
+            },
+        )
+    )
+    captured: dict[str, SourceFollowupIngestRequest] = {}
+
+    def fake_ingest(self, request):
+        captured["request"] = request
+        return SourceFollowupIngestResult(
+            queue_items_seen=len(request.followup_ids),
+            attempted=len(request.followup_ids),
+            ingested=len(request.followup_ids),
+            document_chunks=2,
+        )
+
+    monkeypatch.setattr(HSAResearchService, "ingest_source_followups", fake_ingest)
+
+    result = service.run_research_hunt_tasks(
+        ResearchHuntTaskRunRequest(lead_ids=[lead.lead_id], task_ids=[task_id], dry_run=False, evaluate=False)
+    )
+    queued = repo.list_source_followups(limit=None)
+    queued_identities = {item.identity_key for item in queued}
+
+    assert result.completed_count == 1
+    assert result.items[0]["source_followup"]["queued_count"] == 4
+    assert len(captured["request"].followup_ids) == 4
+    assert "pubmed:pmid:26062540" in queued_identities
+    assert "pmc_oa:pmcid:pmc3837095" in queued_identities
+    assert "crossref:doi:10.1186/s12917-015-0446-1" in queued_identities
+    assert "unpaywall:doi:10.1186/s12917-015-0446-1" in queued_identities
 
 
 def test_research_hunt_broad_parent_suppresses_broad_fanout_but_keeps_concrete_tasks():
