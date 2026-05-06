@@ -377,6 +377,7 @@ def _summarize_research_followup_loop(result: ResearchFollowupLoopResult) -> dic
         "signal_status": result.signal_status,
         "coverage_status": result.coverage_status,
         "hunt_tasks_created": result.hunt_tasks_created,
+        "hunt_tasks_suppressed": result.hunt_tasks_suppressed,
         "evidence_fit": evidence_fit.fit if evidence_fit else None,
         "target_safety_fit": evidence_fit.target_safety_fit if evidence_fit else None,
         "disease_directness_fit": evidence_fit.disease_directness_fit if evidence_fit else None,
@@ -2497,6 +2498,8 @@ class HSAResearchService:
                                 **request.metadata,
                                 "research_hunt_task_executor": True,
                                 "research_hunt_task_id": item["task_id"],
+                                "research_hunt_parent_task_type": task_type,
+                                "research_hunt_allow_broad_task_fanout": request.allow_broad_task_fanout,
                             },
                         )
                     )
@@ -2923,7 +2926,7 @@ class HSAResearchService:
         ):
             best_signal = current_signal
 
-        new_tasks = _research_hunt_tasks_from_result(
+        new_tasks, suppressed_tasks = _research_hunt_tasks_from_result(
             lead,
             result,
             request,
@@ -2932,6 +2935,12 @@ class HSAResearchService:
             has_best_signal=best_signal is not None,
             existing_tasks=existing_tasks,
         )
+        existing_suppressed_tasks = [
+            dict(task)
+            for task in existing_state.get("suppressed_tasks", [])
+            if isinstance(task, dict)
+        ]
+        suppressed_history = [*existing_suppressed_tasks, *suppressed_tasks][-200:]
         tasks = [*existing_tasks, *new_tasks][-100:]
         open_tasks = [task for task in tasks if task.get("status") == "open"]
         signal_status = "supported" if _research_hunt_signal_score(best_signal) >= 80 else "developing"
@@ -2943,6 +2952,8 @@ class HSAResearchService:
             "best_signal": best_signal,
             "tasks": tasks,
             "open_task_count": len(open_tasks),
+            "suppressed_tasks": suppressed_history,
+            "suppressed_task_count": len(suppressed_history),
             "last_updated_at": datetime.now(UTC).isoformat(),
             "last_loop": {
                 "verdict": verdict,
@@ -2951,6 +2962,8 @@ class HSAResearchService:
                 "claims_written": result.claims_written,
                 "source_followups_linked": result.source_followups_linked,
                 "source_followups_pending": result.source_followups_pending,
+                "hunt_tasks_created": len(new_tasks),
+                "hunt_tasks_suppressed": len(suppressed_tasks),
                 "resolver_agent_run_id": str(result.resolver_agent_run_id) if result.resolver_agent_run_id else None,
                 "evaluator_agent_run_id": str(result.evaluator_agent_run_id) if result.evaluator_agent_run_id else None,
             },
@@ -2961,7 +2974,9 @@ class HSAResearchService:
         result.coverage_status = str(applied_state.get("coverage_status") or coverage_status)
         result.best_signal = applied_state.get("best_signal") if isinstance(applied_state.get("best_signal"), dict) else None
         result.hunt_tasks_created += len(new_tasks)
+        result.hunt_tasks_suppressed += len(suppressed_tasks)
         result.hunt_tasks = new_tasks
+        result.suppressed_hunt_tasks = suppressed_tasks
         return applied_state
 
     def _count_pending_source_followups(self, followup_ids: list[UUID]) -> int:
@@ -3963,6 +3978,61 @@ def _research_brief_topic_from_lead(lead: ResearchLeadRecord) -> str:
 
 _RESEARCH_HUNT_CHUNK_REF_RE = re.compile(r"chunk:([0-9a-fA-F-]{36})")
 _RESEARCH_HUNT_OBJECT_REF_RE = re.compile(r"research_object:([0-9a-fA-F-]{36})")
+_RESEARCH_HUNT_PMID_RE = re.compile(r"\bpmid[:\s]*(\d+)\b", re.IGNORECASE)
+_RESEARCH_HUNT_PMCID_RE = re.compile(r"\bpmcid[:\s]*(PMC\d+)\b", re.IGNORECASE)
+_RESEARCH_HUNT_DOI_RE = re.compile(r"\bdoi[:\s]*(10\.[^\s,;)\]]+)", re.IGNORECASE)
+_RESEARCH_HUNT_NCT_RE = re.compile(r"\b(NCT\d{8})\b", re.IGNORECASE)
+
+_RESEARCH_HUNT_BROAD_TASK_TYPES = {"broaden_query", "add_source", "research_followup", "citation_chase"}
+_RESEARCH_HUNT_CONCRETE_TASK_TYPES = {
+    "source_followup_ingest",
+    "claim_extract",
+    "safety_extract",
+    "full_text_extract",
+    "subgroup_extract",
+}
+_RESEARCH_HUNT_PASSIVE_ACTION_RE = re.compile(
+    r"\b("
+    r"monitor|watch|when new|future publication|new publications|manual review|human review|"
+    r"document caveat|document as caveat|track future|periodic|revisit later|keep observing"
+    r")\b",
+    re.IGNORECASE,
+)
+_RESEARCH_HUNT_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "can",
+    "check",
+    "complete",
+    "consider",
+    "data",
+    "for",
+    "from",
+    "if",
+    "in",
+    "into",
+    "investigate",
+    "more",
+    "new",
+    "of",
+    "on",
+    "or",
+    "review",
+    "run",
+    "search",
+    "specific",
+    "the",
+    "to",
+    "verify",
+    "whether",
+    "with",
+}
 
 
 def _select_research_hunt_tasks(
@@ -3973,6 +4043,7 @@ def _select_research_hunt_tasks(
     task_type_filter = {task_type.casefold() for task_type in request.task_types}
     status_filter = {status.casefold() for status in request.statuses}
     lead_id_filter = set(request.lead_ids)
+    explicit_task_filter = bool(task_id_filter or task_type_filter)
     if lead_id_filter:
         leads = [
             lead
@@ -3998,6 +4069,15 @@ def _select_research_hunt_tasks(
             if task_type_filter and task_type not in task_type_filter:
                 continue
             if status_filter and status not in status_filter:
+                continue
+            action = str(task.get("action") or "")
+            if _research_hunt_is_passive_action(action) and not task_id_filter:
+                continue
+            if (
+                _research_hunt_is_broad_task_type(task_type)
+                and not request.include_broad_tasks
+                and not explicit_task_filter
+            ):
                 continue
             selected.append((lead, dict(task)))
     return sorted(
@@ -4178,7 +4258,7 @@ def _research_hunt_tasks_from_result(
     followup_actions: list[str],
     has_best_signal: bool,
     existing_tasks: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     created_at = datetime.now(UTC).isoformat()
     raw_tasks: list[tuple[str, str, str]] = []
     for action in followup_actions:
@@ -4207,23 +4287,77 @@ def _research_hunt_tasks_from_result(
                 "chunks_without_claim_extraction",
             )
         )
-    existing_keys = {
+    existing_keys: set[str] = {
         str(task.get("identity_key") or "")
         for task in existing_tasks
-        if task.get("status") == "open"
+        if str(task.get("identity_key") or "")
     }
+    existing_family_counts = Counter(
+        str(task.get("family_key") or _research_hunt_task_family_key(
+            str(task.get("task_type") or "research_followup"),
+            str(task.get("action") or ""),
+        ))
+        for task in existing_tasks
+        if str(task.get("family_key") or task.get("action") or "")
+    )
+    parent_task_id = str(request.metadata.get("research_hunt_task_id") or "")
+    parent_task_type = str(request.metadata.get("research_hunt_parent_task_type") or "")
+    if parent_task_id and not parent_task_type:
+        for task in existing_tasks:
+            if str(task.get("task_id") or "") == parent_task_id:
+                parent_task_type = str(task.get("task_type") or "")
+                break
+    parent_is_broad = _research_hunt_is_broad_task_type(parent_task_type)
+    allow_broad_fanout = bool(request.metadata.get("research_hunt_allow_broad_task_fanout") is True)
+    no_new_evidence = _research_hunt_loop_has_no_new_evidence(result)
     tasks: list[dict[str, Any]] = []
+    suppressed_tasks: list[dict[str, Any]] = []
     for task_type, action, reason in raw_tasks:
-        normalized_action = " ".join(str(action).split()).lower()
-        identity_key = f"{task_type}:{normalized_action[:300]}"
+        task_type = str(task_type or "research_followup")
+        action = str(action)
+        identity_key = _research_hunt_task_identity_key(task_type, action)
+        family_key = _research_hunt_task_family_key(task_type, action)
+        suppression_reason: str | None = None
+        if _research_hunt_is_passive_action(action):
+            suppression_reason = "passive_or_monitoring_guidance"
+        elif identity_key in existing_keys:
+            suppression_reason = "duplicate_existing_task"
+        elif (
+            _research_hunt_is_broad_task_type(task_type)
+            and parent_is_broad
+            and no_new_evidence
+            and not allow_broad_fanout
+        ):
+            suppression_reason = "broad_child_fanout_without_new_evidence"
+        elif _research_hunt_is_broad_task_type(task_type) and existing_family_counts[family_key] >= 1:
+            suppression_reason = "broad_family_already_seen"
+        if suppression_reason:
+            suppressed_tasks.append(
+                _research_hunt_suppressed_task_payload(
+                    lead,
+                    task_type=task_type,
+                    action=action,
+                    reason=reason,
+                    suppression_reason=suppression_reason,
+                    identity_key=identity_key,
+                    family_key=family_key,
+                    created_at=created_at,
+                    result=result,
+                )
+            )
+            existing_keys.add(identity_key)
+            existing_family_counts[family_key] += 1
+            continue
         if identity_key in existing_keys:
             continue
         existing_keys.add(identity_key)
+        existing_family_counts[family_key] += 1
         task_id = uuid5(NAMESPACE_URL, f"research_hunt_task:{lead.lead_id}:{identity_key}")
         tasks.append(
             {
                 "task_id": str(task_id),
                 "identity_key": identity_key,
+                "family_key": family_key,
                 "status": "open",
                 "task_type": task_type,
                 "action": str(action),
@@ -4239,19 +4373,183 @@ def _research_hunt_tasks_from_result(
                 "evaluator_agent_run_id": str(result.evaluator_agent_run_id) if result.evaluator_agent_run_id else None,
             }
         )
-    return tasks
+    return tasks, suppressed_tasks
+
+
+def _research_hunt_suppressed_task_payload(
+    lead: ResearchLeadRecord,
+    *,
+    task_type: str,
+    action: str,
+    reason: str,
+    suppression_reason: str,
+    identity_key: str,
+    family_key: str,
+    created_at: str,
+    result: ResearchFollowupLoopResult,
+) -> dict[str, Any]:
+    task_id = uuid5(NAMESPACE_URL, f"research_hunt_task_suppressed:{lead.lead_id}:{identity_key}:{suppression_reason}")
+    return {
+        "task_id": str(task_id),
+        "identity_key": identity_key,
+        "family_key": family_key,
+        "status": "suppressed",
+        "task_type": task_type,
+        "action": action,
+        "reason": reason,
+        "suppression_reason": suppression_reason,
+        "lead_id": str(lead.lead_id),
+        "origin": "research_followup_loop",
+        "created_at": created_at,
+        "updated_at": created_at,
+        "resolver_agent_run_id": str(result.resolver_agent_run_id) if result.resolver_agent_run_id else None,
+        "evaluator_agent_run_id": str(result.evaluator_agent_run_id) if result.evaluator_agent_run_id else None,
+    }
+
+
+def _research_hunt_loop_has_no_new_evidence(result: ResearchFollowupLoopResult) -> bool:
+    return (
+        result.raw_records == 0
+        and result.research_objects == 0
+        and result.document_chunks == 0
+        and result.source_followups_ingested_this_run == 0
+        and result.source_followup_document_chunks == 0
+        and result.claims_written == 0
+    )
+
+
+def _research_hunt_is_broad_task_type(task_type: str) -> bool:
+    normalized = str(task_type or "").casefold()
+    return normalized in _RESEARCH_HUNT_BROAD_TASK_TYPES
+
+
+def _research_hunt_is_concrete_task_type(task_type: str) -> bool:
+    normalized = str(task_type or "").casefold()
+    return normalized in _RESEARCH_HUNT_CONCRETE_TASK_TYPES
+
+
+def _research_hunt_is_passive_action(action: str) -> bool:
+    normalized = " ".join(str(action or "").replace("_", " ").split()).casefold()
+    return bool(_RESEARCH_HUNT_PASSIVE_ACTION_RE.search(normalized))
+
+
+def _research_hunt_task_identity_key(task_type: str, action: str) -> str:
+    refs = _research_hunt_action_identifier_refs(action)
+    if refs:
+        return f"{task_type}:{'|'.join(refs)[:260]}"
+    if not _research_hunt_is_broad_task_type(task_type):
+        normalized = _research_hunt_normalize_action_text(action)
+        tokens = [
+            token
+            for token in re.findall(r"[a-z0-9]+", normalized)
+            if len(token) > 1 and token not in _RESEARCH_HUNT_STOPWORDS
+        ][:24]
+        return f"{task_type}:{'-'.join(tokens)[:260] or 'general'}"
+    return f"{task_type}:{_research_hunt_task_family_key(task_type, action)[:260]}"
+
+
+def _research_hunt_task_family_key(task_type: str, action: str) -> str:
+    normalized = _research_hunt_normalize_action_text(action)
+    refs = _research_hunt_action_identifier_refs(action)
+    terms = _research_hunt_family_terms(normalized)
+    if refs:
+        terms.extend(refs)
+    if not terms:
+        terms = [
+            token
+            for token in re.findall(r"[a-z0-9]+", normalized)
+            if len(token) > 2 and token not in _RESEARCH_HUNT_STOPWORDS
+        ][:12]
+    family = "|".join(_dedupe_sequence(terms)) or "general"
+    broadness = "broad" if _research_hunt_is_broad_task_type(task_type) else "concrete"
+    return f"{broadness}:{task_type}:{family}"
+
+
+def _research_hunt_action_identifier_refs(action: str) -> list[str]:
+    refs: list[str] = []
+    refs.extend(f"chunk:{match.group(1).lower()}" for match in _RESEARCH_HUNT_CHUNK_REF_RE.finditer(action))
+    refs.extend(f"research_object:{match.group(1).lower()}" for match in _RESEARCH_HUNT_OBJECT_REF_RE.finditer(action))
+    refs.extend(f"pmid:{match.group(1)}" for match in _RESEARCH_HUNT_PMID_RE.finditer(action))
+    refs.extend(f"pmcid:{match.group(1).upper()}" for match in _RESEARCH_HUNT_PMCID_RE.finditer(action))
+    refs.extend(f"doi:{match.group(1).rstrip('.').casefold()}" for match in _RESEARCH_HUNT_DOI_RE.finditer(action))
+    refs.extend(f"nct:{match.group(1).upper()}" for match in _RESEARCH_HUNT_NCT_RE.finditer(action))
+    return _dedupe_sequence(refs)
+
+
+def _research_hunt_normalize_action_text(action: str) -> str:
+    normalized = str(action or "").replace("_", " ").casefold()
+    replacements = {
+        "vegfr-2": "vegfr2",
+        "vegfr 2": "vegfr2",
+        "vascular endothelial growth factor receptor 2": "vegfr2",
+        "pmc oa": "pmc_oa",
+        "pmc-oa": "pmc_oa",
+        "full text": "full_text",
+        "full-text": "full_text",
+        "source follow-up": "source_followup",
+        "source followup": "source_followup",
+        "human angiosarcoma": "human_angiosarcoma",
+        "canine hemangiosarcoma": "canine_hemangiosarcoma",
+        "dog hemangiosarcoma": "canine_hemangiosarcoma",
+        "hemangiosarcoma": "hemangiosarcoma",
+        "clinical response": "clinical_response",
+    }
+    for old, new in replacements.items():
+        normalized = normalized.replace(old, new)
+    return " ".join(normalized.split())
+
+
+def _research_hunt_family_terms(normalized_action: str) -> list[str]:
+    terms: list[str] = []
+    aliases = [
+        ("toceranib", ("toceranib", "palladia")),
+        ("sorafenib", ("sorafenib",)),
+        ("propranolol", ("propranolol",)),
+        ("vegfr2", ("vegfr2", "kdr")),
+        ("human_angiosarcoma", ("human_angiosarcoma",)),
+        ("canine_hemangiosarcoma", ("canine_hemangiosarcoma", "hemangiosarcoma")),
+        ("safety", ("safety", "toxicity", "adverse", "tolerability")),
+        ("clinical_response", ("clinical_response", "survival", "response")),
+        ("full_text", ("full_text", "parser", "license", "pmc_oa")),
+        ("source_followup", ("source_followup", "identifier")),
+        ("clinical_trial", ("clinicaltrials", "nct")),
+        ("openalex", ("openalex",)),
+        ("pubmed", ("pubmed", "pmid")),
+        ("europe_pmc", ("europe pmc", "europepmc")),
+    ]
+    for canonical, variants in aliases:
+        if any(variant in normalized_action for variant in variants):
+            terms.append(canonical)
+    return terms
+
+
+def _dedupe_sequence(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
 
 
 def _research_hunt_task_type(action: str) -> str:
     haystack = action.casefold()
+    if (
+        ("source follow-up" in haystack or "source followup" in haystack or "source_followup" in haystack)
+        and ("process" in haystack or "ingest" in haystack or "queue" in haystack)
+    ):
+        return "source_followup_ingest"
+    if "full text" in haystack or "full_text" in haystack or "parser" in haystack or "license" in haystack:
+        return "full_text_extract"
     if "citation" in haystack or "citing" in haystack or "cited" in haystack:
         return "citation_chase"
     if "query" in haystack or "search" in haystack or "coverage" in haystack or "newer" in haystack:
         return "broaden_query"
     if "source" in haystack or "pubmed" in haystack or "europe" in haystack or "semantic" in haystack:
         return "add_source"
-    if "full text" in haystack or "full_text" in haystack or "parser" in haystack or "license" in haystack:
-        return "full_text_extract"
     if "claim" in haystack or "extract" in haystack:
         return "claim_extract"
     if "adverse" in haystack or "safety" in haystack or "tox" in haystack:

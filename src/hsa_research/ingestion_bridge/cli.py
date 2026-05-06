@@ -1217,6 +1217,8 @@ def main() -> None:
     research_hunt_tasks.add_argument("--apply", action="store_true", help="Apply task execution. Without this flag the command is a dry run.")
     research_hunt_tasks.add_argument("--no-evaluate", action="store_true")
     research_hunt_tasks.add_argument("--no-force-live-search", action="store_true")
+    research_hunt_tasks.add_argument("--include-broad-tasks", action="store_true", help="Include broad/meta hunt tasks when no explicit broad task type or task ID is provided.")
+    research_hunt_tasks.add_argument("--allow-broad-task-fanout", action="store_true", help="Allow broad/meta tasks to create additional broad/meta tasks.")
     research_hunt_tasks.add_argument("--search-limit-per-source", type=int, default=1)
     research_hunt_tasks.add_argument("--model-profile", default="agent_performance_evaluator")
     research_hunt_tasks.add_argument("--review-model", action="append", default=[])
@@ -2157,6 +2159,8 @@ def main() -> None:
                 dry_run=not args.apply,
                 evaluate=not args.no_evaluate,
                 force_live_search=not args.no_force_live_search,
+                include_broad_tasks=args.include_broad_tasks,
+                allow_broad_task_fanout=args.allow_broad_task_fanout,
                 search_limit_per_source=args.search_limit_per_source,
                 model_profile=args.model_profile,
                 review_models=args.review_model,

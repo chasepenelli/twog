@@ -8347,6 +8347,174 @@ def test_research_hunt_task_executor_dry_run_does_not_mutate():
     assert updated.metadata["research_hunt"]["tasks"][0]["status"] == "open"
 
 
+def test_research_hunt_task_executor_skips_broad_tasks_by_default():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    broad_task_id = uuid4()
+    concrete_task_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Hunt task: default selection guard",
+            status="watching",
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "hunting",
+                    "open_task_count": 2,
+                    "best_signal": {"score": 100, "evidence_refs": [], "evidence_fit": {"fit": "strong"}},
+                    "tasks": [
+                        {
+                            "task_id": str(broad_task_id),
+                            "identity_key": "broaden_query:human-angiosarcoma-vegfr2",
+                            "status": "open",
+                            "task_type": "broaden_query",
+                            "action": "Search additional human angiosarcoma VEGFR-2 safety data.",
+                            "priority": 40,
+                        },
+                        {
+                            "task_id": str(concrete_task_id),
+                            "identity_key": "claim_extract:pmid:26062540",
+                            "status": "open",
+                            "task_type": "claim_extract",
+                            "action": "Run claim extraction on PMID 26062540.",
+                            "priority": 20,
+                        },
+                    ],
+                }
+            },
+        )
+    )
+
+    default_result = service.run_research_hunt_tasks(
+        ResearchHuntTaskRunRequest(lead_ids=[lead.lead_id], dry_run=True, operator="operator")
+    )
+    explicit_result = service.run_research_hunt_tasks(
+        ResearchHuntTaskRunRequest(
+            lead_ids=[lead.lead_id],
+            task_types=["broaden_query"],
+            dry_run=True,
+            operator="operator",
+        )
+    )
+
+    assert default_result.selected_count == 1
+    assert default_result.items[0]["task_id"] == str(concrete_task_id)
+    assert explicit_result.selected_count == 1
+    assert explicit_result.items[0]["task_id"] == str(broad_task_id)
+
+
+def test_research_hunt_broad_parent_suppresses_broad_fanout_but_keeps_concrete_tasks():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    parent_task_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Hunt task: broad fanout guard",
+            status="watching",
+            suggested_sources=["pubmed"],
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "hunting",
+                    "open_task_count": 1,
+                    "best_signal": {
+                        "score": 95,
+                        "evidence_refs": ["pmid:26062540"],
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 4, "total_required_count": 4},
+                    },
+                    "tasks": [
+                        {
+                            "task_id": str(parent_task_id),
+                            "identity_key": "broaden_query:human-angiosarcoma-vegfr2",
+                            "status": "open",
+                            "task_type": "broaden_query",
+                            "action": "Search human angiosarcoma VEGFR-2 toceranib safety data.",
+                            "priority": 40,
+                        }
+                    ],
+                }
+            },
+        )
+    )
+    loop_result = ResearchFollowupLoopResult(lead_id=lead.lead_id, dry_run=False)
+
+    hunt_state = service._update_research_hunt_state(
+        loop_result,
+        ResearchFollowupLoopRequest(
+            lead_id=lead.lead_id,
+            dry_run=False,
+            metadata={
+                "research_hunt_task_id": str(parent_task_id),
+                "research_hunt_parent_task_type": "broaden_query",
+            },
+        ),
+        verdict="needs_followup",
+        followup_actions=[
+            "Consider additional searches for human angiosarcoma VEGFR-2 toceranib toxicity data.",
+            "Run claim extraction on PMID 26062540.",
+        ],
+    )
+
+    assert loop_result.hunt_tasks_created == 1
+    assert loop_result.hunt_tasks_suppressed == 1
+    assert loop_result.hunt_tasks[0]["task_type"] == "claim_extract"
+    assert hunt_state["suppressed_task_count"] == 1
+    assert hunt_state["suppressed_tasks"][0]["suppression_reason"] == "broad_child_fanout_without_new_evidence"
+
+
+def test_research_hunt_completed_tasks_block_duplicate_recreation():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    action = "Run claim extraction on PMID 26062540."
+    identity_key = service_module._research_hunt_task_identity_key("claim_extract", action)
+    completed_task_id = uuid4()
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Hunt task: completed duplicate guard",
+            status="watching",
+            metadata={
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "supported",
+                    "open_task_count": 0,
+                    "best_signal": {
+                        "score": 95,
+                        "evidence_refs": ["pmid:26062540"],
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 4, "total_required_count": 4},
+                    },
+                    "tasks": [
+                        {
+                            "task_id": str(completed_task_id),
+                            "identity_key": identity_key,
+                            "status": "completed",
+                            "task_type": "claim_extract",
+                            "action": action,
+                            "priority": 20,
+                        }
+                    ],
+                }
+            },
+        )
+    )
+    loop_result = ResearchFollowupLoopResult(lead_id=lead.lead_id, dry_run=False)
+
+    hunt_state = service._update_research_hunt_state(
+        loop_result,
+        ResearchFollowupLoopRequest(lead_id=lead.lead_id, dry_run=False),
+        verdict="needs_followup",
+        followup_actions=[action],
+    )
+
+    assert loop_result.hunt_tasks_created == 0
+    assert loop_result.hunt_tasks_suppressed == 1
+    assert hunt_state["open_task_count"] == 0
+    assert hunt_state["coverage_status"] == "supported"
+    assert hunt_state["suppressed_tasks"][0]["suppression_reason"] == "duplicate_existing_task"
+
+
 def test_research_followup_loop_evidence_fit_prefers_run_scoped_chunks(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "followup-run-scoped.sqlite3", seed=False)
     service = HSAResearchService(repo)

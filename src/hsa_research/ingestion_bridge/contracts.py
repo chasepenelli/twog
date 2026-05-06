@@ -1899,7 +1899,9 @@ class ResearchFollowupLoopResult(StrictBaseModel):
     coverage_status: str | None = None
     best_signal: dict[str, Any] | None = None
     hunt_tasks_created: int = Field(default=0, ge=0)
+    hunt_tasks_suppressed: int = Field(default=0, ge=0)
     hunt_tasks: list[dict[str, Any]] = Field(default_factory=list)
+    suppressed_hunt_tasks: list[dict[str, Any]] = Field(default_factory=list)
     estimated_cost_usd: float = Field(default=0.0, ge=0.0)
     actual_cost_usd: float = Field(default=0.0, ge=0.0)
     status_transitions: list[dict[str, Any]] = Field(default_factory=list)
@@ -1919,6 +1921,8 @@ class ResearchHuntTaskRunRequest(StrictBaseModel):
     dry_run: bool = True
     evaluate: bool = True
     force_live_search: bool = True
+    include_broad_tasks: bool = False
+    allow_broad_task_fanout: bool = False
     search_limit_per_source: int = Field(default=1, ge=1, le=25)
     model_profile: str = "agent_performance_evaluator"
     review_models: list[str] = Field(default_factory=list, max_length=10)
