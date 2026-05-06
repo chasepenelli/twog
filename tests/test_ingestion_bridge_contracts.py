@@ -5202,6 +5202,7 @@ def test_research_followup_resolver_removes_operational_words_from_query():
     assert " focused " not in f" {query} "
     assert " acquisition " not in f" {query} "
     assert " promotion " not in f" {query} "
+    assert " the " not in f" {query} "
 
 
 def test_research_followup_resolver_force_live_search_refreshes_existing_evidence(monkeypatch, tmp_path):

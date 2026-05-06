@@ -64,6 +64,7 @@ _QUERY_STOPWORDS = {
     "duplicate",
     "duplicates",
     "any",
+    "and",
     "data",
     "evidence",
     "evaluation",
@@ -89,7 +90,10 @@ _QUERY_STOPWORDS = {
     "signal",
     "source",
     "strengthen",
+    "the",
+    "this",
     "verification",
+    "with",
 }
 _KNOWN_QUERY_TERM_PATTERNS: tuple[tuple[str, str], ...] = (
     ("ca-4f12-e6", r"\bca[- ]?4f12[- ]?e6\b"),
