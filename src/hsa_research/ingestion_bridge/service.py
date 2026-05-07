@@ -4565,16 +4565,17 @@ def _validation_packet_plan_for_candidate(
 ) -> ValidationPlanRecord | None:
     if request.plan_id:
         return repository.get_validation_plan(request.plan_id)
-    plans: list[ValidationPlanRecord] = []
+    direct_plans: list[ValidationPlanRecord] = []
     if candidate.evaluation_id:
-        plans.extend(repository.list_validation_plans(evaluation_id=candidate.evaluation_id, limit=None))
+        direct_plans.extend(repository.list_validation_plans(evaluation_id=candidate.evaluation_id, limit=None))
     if candidate.brief_id:
-        plans.extend(repository.list_validation_plans(brief_id=candidate.brief_id, limit=None))
+        direct_plans.extend(repository.list_validation_plans(brief_id=candidate.brief_id, limit=None))
+    exact_link_candidates: list[ValidationPlanRecord] = [*direct_plans]
     if candidate.therapy_idea_id or candidate.committee_run_id:
-        plans.extend(repository.list_validation_plans(limit=None))
+        exact_link_candidates.extend(repository.list_validation_plans(limit=None))
     seen: set[UUID] = set()
     deduped: list[ValidationPlanRecord] = []
-    for plan in plans:
+    for plan in exact_link_candidates:
         if plan.plan_id in seen:
             continue
         seen.add(plan.plan_id)
@@ -4589,7 +4590,10 @@ def _validation_packet_plan_for_candidate(
         for plan in deduped:
             if _payload_contains_identifier(plan.metadata, target) or _payload_contains_identifier(plan.result_payload, target):
                 return plan
-    return deduped[0] if deduped else None
+    if candidate.source_type == "research_brief_hypothesis" and direct_plans:
+        direct_plans.sort(key=lambda plan: plan.created_at, reverse=True)
+        return direct_plans[0]
+    return None
 
 
 def _validation_packet_queue_items(

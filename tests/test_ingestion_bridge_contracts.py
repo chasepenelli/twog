@@ -592,6 +592,30 @@ def test_validation_packets_build_from_ready_therapy_idea(tmp_path):
             score=0.78,
         )
     )
+    repo.upsert_validation_plan(
+        ValidationPlanRecord(
+            brief_id=brief.brief_id,
+            evaluation_id=evaluation.evaluation_id,
+            topic="Different validation lane for the same evaluated brief",
+            status="ready_for_review",
+            readiness="ready_for_expert_review",
+            task_count=1,
+            result_payload={
+                "tasks": [
+                    ValidationPlanTask(
+                        task_type="expert_review",
+                        title="Unrelated plan task",
+                        objective="Review a separate non-therapy-idea hypothesis.",
+                        rationale="This plan lacks therapy_idea_id linkage and must not attach to the packet.",
+                        validation_request=ValidationRequest(
+                            validation_type="expert_review",
+                            objective="Review a separate non-therapy-idea hypothesis.",
+                        ),
+                    ).model_dump(mode="json")
+                ]
+            },
+        )
+    )
 
     result = service.build_validation_packets(
         ValidationPacketRequest(therapy_idea_id=idea.idea_id, limit=1)
@@ -604,6 +628,8 @@ def test_validation_packets_build_from_ready_therapy_idea(tmp_path):
     assert packet.therapy_idea_id == idea.idea_id
     assert packet.status == "ready_for_review"
     assert packet.readiness == "ready_for_validation_plan"
+    assert packet.validation_plan is None
+    assert packet.queue_items == []
     assert packet.validation_tasks
     assert packet.matched_tools
     assert "human_approval_required" in packet.dispatch_blockers
