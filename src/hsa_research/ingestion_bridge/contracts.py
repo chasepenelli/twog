@@ -3898,6 +3898,8 @@ class ResearchProgramRecord(StrictBaseModel):
 
 class ResearchProgramReviewRequest(StrictBaseModel):
     program_id: UUID | None = None
+    brief_ids: list[UUID] = Field(default_factory=list, max_length=25)
+    evaluation_ids: list[UUID] = Field(default_factory=list, max_length=25)
     thesis_topic: str = Field(
         default="vascular injury / coagulation / angiogenesis ecology in canine HSA and human angiosarcoma",
         min_length=3,
@@ -3928,6 +3930,8 @@ class ResearchProgramReviewRequest(StrictBaseModel):
             self.topic_query = self.topic_query.strip() or None
         if self.source_key:
             self.source_key = self.source_key.strip().lower() or None
+        self.brief_ids = list(dict.fromkeys(self.brief_ids))
+        self.evaluation_ids = list(dict.fromkeys(self.evaluation_ids))
         self.review_models = _dedupe_strings(self.review_models)
         self.model_profile = self.model_profile.strip() or "research_program_board"
         return self

@@ -717,6 +717,19 @@ def main() -> None:
     )
     research_program_board.add_argument("--query", default=None, help="Evidence/packet search query")
     research_program_board.add_argument("--source", default=None, help="Optional source key filter")
+    research_program_board.add_argument("--program-id", default=None, help="Existing research program ID to review/update")
+    research_program_board.add_argument(
+        "--brief-id",
+        action="append",
+        default=[],
+        help="Research brief ID to pass directly to the board; repeatable",
+    )
+    research_program_board.add_argument(
+        "--evaluation-id",
+        action="append",
+        default=[],
+        help="Research brief evaluation ID to pass directly to the board; repeatable",
+    )
     research_program_board.add_argument("--max-packets", type=int, default=5, help="Maximum validation packets to include")
     research_program_board.add_argument("--max-chunks", type=int, default=20, help="Maximum evidence chunks to include")
     research_program_board.add_argument("--max-programs", type=int, default=1, help="Maximum programs to return")
@@ -2098,6 +2111,9 @@ def main() -> None:
     elif args.command == "research-program-board":
         output = HSAResearchService(repo).run_research_program_board(
             ResearchProgramReviewRequest(
+                program_id=UUID(args.program_id) if args.program_id else None,
+                brief_ids=[UUID(value) for value in args.brief_id],
+                evaluation_ids=[UUID(value) for value in args.evaluation_id],
                 thesis_topic=args.topic,
                 disease_scope=args.disease_scope,
                 topic_query=args.query,

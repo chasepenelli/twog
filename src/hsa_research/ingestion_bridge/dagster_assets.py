@@ -3562,6 +3562,9 @@ if dg is not None:
             "disease_scope": dg.Field(str, default_value="canine hemangiosarcoma and human angiosarcoma"),
             "topic_query": dg.Field(str, is_required=False),
             "source_key": dg.Field(str, is_required=False),
+            "program_id": dg.Field(str, is_required=False),
+            "brief_ids": dg.Field([str], default_value=[]),
+            "evaluation_ids": dg.Field([str], default_value=[]),
             "max_packets": dg.Field(int, default_value=5),
             "max_chunks": dg.Field(int, default_value=20),
             "max_programs": dg.Field(int, default_value=1),
@@ -3584,6 +3587,9 @@ if dg is not None:
         repository = research_repository.build_repository()
         report = HSAResearchService(repository).run_research_program_board(
             ResearchProgramReviewRequest(
+                program_id=UUID(config["program_id"]) if config.get("program_id") else None,
+                brief_ids=[UUID(value) for value in config.get("brief_ids", [])],
+                evaluation_ids=[UUID(value) for value in config.get("evaluation_ids", [])],
                 thesis_topic=config.get("thesis_topic"),
                 disease_scope=config.get("disease_scope"),
                 topic_query=config.get("topic_query"),

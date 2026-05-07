@@ -83,12 +83,15 @@ def _build_evidence_payload(
 ) -> dict[str, Any]:
     query = request.topic_query or request.thesis_topic
     chunks = _select_evidence_chunks(repository, request, query)
+    existing_program = repository.get_research_program(request.program_id) if request.program_id else None
     return {
         "thesis_topic": request.thesis_topic,
         "disease_scope": request.disease_scope,
         "topic_query": query,
         "source_key": request.source_key,
         "max_evidence_loops": request.max_evidence_loops,
+        "existing_program": _existing_program_payload(existing_program) if existing_program else None,
+        "evaluated_briefs": _evaluated_brief_payloads(repository, request),
         "validation_packets": [
             _packet_payload(packet, index)
             for index, packet in enumerate(validation_packets[: request.max_packets], start=1)
@@ -97,6 +100,126 @@ def _build_evidence_payload(
             _chunk_payload(repository, chunk, index, request.max_chunk_chars)
             for index, chunk in enumerate(chunks[: request.max_chunks], start=1)
         ],
+    }
+
+
+def _existing_program_payload(program: ResearchProgramRecord) -> dict[str, Any]:
+    return {
+        "program_id": str(program.program_id),
+        "title": program.title,
+        "thesis": program.thesis,
+        "status": program.status,
+        "gate_decision": program.gate_decision,
+        "evidence_loop_count": program.evidence_loop_count,
+        "max_evidence_loops": program.max_evidence_loops,
+        "confidence_score": program.confidence_score,
+        "decisive_questions": [
+            {
+                "question_id": str(question.question_id),
+                "question": question.question,
+                "rationale": question.rationale,
+                "metric_plan": question.metric_plan,
+                "tool_hints": question.tool_hints,
+                "evidence_refs": question.evidence_refs,
+            }
+            for question in program.decisive_questions
+        ],
+        "evidence_tasks": [
+            {
+                "task_id": str(task.task_id),
+                "title": task.title,
+                "objective": task.objective,
+                "task_type": task.task_type,
+                "status": task.status,
+                "source_keys": task.source_keys,
+                "tool_hints": task.tool_hints,
+                "metrics": task.metrics,
+                "pass_values": task.pass_values,
+                "fail_values": task.fail_values,
+                "evidence_refs": task.evidence_refs,
+            }
+            for task in program.evidence_tasks
+        ],
+        "review_summary": program.review_summary,
+        "metadata": {
+            key: value
+            for key, value in program.metadata.items()
+            if key in {"latest_evidence_loop", "review_mode", "model_name", "requested_model"}
+        },
+    }
+
+
+def _evaluated_brief_payloads(
+    repository: ResearchRepository,
+    request: ResearchProgramReviewRequest,
+) -> list[dict[str, Any]]:
+    pairs: list[tuple[Any, Any | None]] = []
+    seen_briefs: set[str] = set()
+
+    for evaluation_id in request.evaluation_ids:
+        evaluation = repository.get_research_brief_evaluation(evaluation_id)
+        if evaluation is None:
+            continue
+        brief = repository.get_research_brief(evaluation.brief_id)
+        if brief is None:
+            continue
+        seen_briefs.add(str(brief.brief_id))
+        pairs.append((brief, evaluation))
+
+    for brief_id in request.brief_ids:
+        if str(brief_id) in seen_briefs:
+            continue
+        brief = repository.get_research_brief(brief_id)
+        if brief is None:
+            continue
+        evaluation = None
+        evaluations = repository.list_research_brief_evaluations(brief_id=brief.brief_id, limit=1)
+        if evaluations:
+            evaluation = evaluations[0]
+        seen_briefs.add(str(brief.brief_id))
+        pairs.append((brief, evaluation))
+
+    return [
+        _evaluated_brief_payload(brief, evaluation, index)
+        for index, (brief, evaluation) in enumerate(pairs[:25], start=1)
+    ]
+
+
+def _evaluated_brief_payload(brief: Any, evaluation: Any | None, index: int) -> dict[str, Any]:
+    result_payload = brief.result_payload if isinstance(brief.result_payload, Mapping) else {}
+    summary = brief.summary if isinstance(brief.summary, Mapping) else {}
+    evaluation_payload = evaluation.result_payload if evaluation and isinstance(evaluation.result_payload, Mapping) else {}
+    return {
+        "ref": f"evaluated_brief:{index}",
+        "brief_id": str(brief.brief_id),
+        "evaluation_id": str(evaluation.evaluation_id) if evaluation else None,
+        "topic": brief.topic,
+        "status": brief.status,
+        "citation_count": brief.citation_count,
+        "hypothesis_count": brief.hypothesis_count,
+        "evidence_limitation_count": brief.evidence_limitation_count,
+        "hard_error_count": brief.hard_error_count,
+        "final_brief_excerpt": brief.final_brief[:3000],
+        "ranked_hypotheses": result_payload.get("ranked_hypotheses", [])[:8],
+        "unresolved_questions": result_payload.get("unresolved_questions", [])[:12],
+        "evidence_limitations": result_payload.get("evidence_limitations", [])[:12],
+        "citations": result_payload.get("citations", [])[:20],
+        "summary": summary,
+        "evaluation": (
+            {
+                "overall_score": evaluation.overall_score,
+                "passes_quality_bar": evaluation.passes_quality_bar,
+                "readiness": evaluation.readiness,
+                "summary": evaluation.summary,
+                "strengths": evaluation_payload.get("strengths", []),
+                "weaknesses": evaluation_payload.get("weaknesses", []),
+                "recommendations": evaluation_payload.get("recommendations", []),
+                "evidence": evaluation_payload.get("evidence", {}),
+                "errors": evaluation.errors,
+            }
+            if evaluation
+            else None
+        ),
     }
 
 
@@ -369,8 +492,10 @@ def _program_from_payload(
     gate = _gate_decision(raw.get("gate_decision"))
     status = _status_from_gate(raw.get("status"), gate)
     model_metadata = review.get("metadata") if isinstance(review.get("metadata"), Mapping) else {}
+    existing_program = evidence.get("existing_program") if isinstance(evidence.get("existing_program"), Mapping) else {}
+    existing_loop_count = existing_program.get("evidence_loop_count", 0)
     return ResearchProgramRecord(
-        program_id=_program_id(title, thesis),
+        program_id=request.program_id or _program_id(title, thesis),
         title=title,
         thesis=thesis,
         disease_model=str(raw.get("disease_model") or "No disease model supplied.").strip(),
@@ -399,7 +524,7 @@ def _program_from_payload(
         failure_risk_score=_score(raw, "failure_risk_score", 0.5),
         confidence_score=_score(raw, "confidence_score", 0.5),
         max_evidence_loops=request.max_evidence_loops,
-        evidence_loop_count=min(int(raw.get("evidence_loop_count") or 0), request.max_evidence_loops),
+        evidence_loop_count=min(int(raw.get("evidence_loop_count") or existing_loop_count or 0), request.max_evidence_loops),
         source_query=evidence.get("topic_query"),
         source_packet_ids=[
             packet.get("packet_id") for packet in evidence.get("validation_packets", []) if packet.get("packet_id")
@@ -421,10 +546,11 @@ def _review_payload(request: ResearchProgramReviewRequest, evidence: Mapping[str
     return {
         "instructions": [
             "Return JSON only.",
-            "Use only supplied evidence refs.",
+            "Use only supplied evidence refs, including evaluated_brief refs when supplied.",
             "Generate finite research programs, not open-ended idea lists.",
             "Each program must have 2 to 4 decisive questions.",
             "Each program must include stop criteria and a gate decision.",
+            "Use evaluated brief scores, quality-bar failures, and evaluator weaknesses when deciding whether to promote, narrow, or request one final bounded evidence pass.",
             "Do not recommend validation dispatch or treatment use.",
         ],
         "response_contract": _response_contract(),
@@ -451,7 +577,7 @@ def _response_contract() -> dict[str, Any]:
                         "tool_hints": ["string"],
                         "confidence_increase_criteria": ["string"],
                         "confidence_decrease_criteria": ["string"],
-                        "evidence_refs": ["packet:1 or chunk:1"],
+                        "evidence_refs": ["packet:1, chunk:1, or evaluated_brief:1"],
                     }
                 ],
                 "evidence_tasks": [
@@ -464,7 +590,7 @@ def _response_contract() -> dict[str, Any]:
                         "metrics": ["string"],
                         "pass_values": ["string"],
                         "fail_values": ["string"],
-                        "evidence_refs": ["packet:1 or chunk:1"],
+                        "evidence_refs": ["packet:1, chunk:1, or evaluated_brief:1"],
                     }
                 ],
                 "metric_plan": ["string"],
@@ -484,7 +610,7 @@ def _response_contract() -> dict[str, Any]:
                 "failure_risk_score": 0.0,
                 "confidence_score": 0.0,
                 "review_summary": "string",
-                "evidence_refs": ["packet:1 or chunk:1"],
+                "evidence_refs": ["packet:1, chunk:1, or evaluated_brief:1"],
                 "errors": ["string"],
             }
         ],
@@ -570,6 +696,7 @@ def _load_json_object(text: str) -> dict[str, Any]:
 def _available_refs(evidence: Mapping[str, Any]) -> list[str]:
     refs = [str(packet.get("ref")) for packet in evidence.get("validation_packets", []) if packet.get("ref")]
     refs.extend(str(chunk.get("ref")) for chunk in evidence.get("evidence_chunks", []) if chunk.get("ref"))
+    refs.extend(str(brief.get("ref")) for brief in evidence.get("evaluated_briefs", []) if brief.get("ref"))
     return refs
 
 
@@ -653,5 +780,9 @@ def _evidence_summary(evidence: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "packet_count": len(evidence.get("validation_packets") or []),
         "evidence_chunk_count": len(evidence.get("evidence_chunks") or []),
+        "evaluated_brief_count": len(evidence.get("evaluated_briefs") or []),
+        "existing_program_id": (evidence.get("existing_program") or {}).get("program_id")
+        if isinstance(evidence.get("existing_program"), Mapping)
+        else None,
         "refs": _available_refs(evidence)[:25],
     }

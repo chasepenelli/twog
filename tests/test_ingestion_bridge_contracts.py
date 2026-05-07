@@ -1014,6 +1014,9 @@ def test_research_program_board_deterministic_run_persists_bounded_program(tmp_p
 
 def test_research_program_board_openrouter_success_records_model_and_program(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "research-program-board-openrouter.sqlite3", seed=False)
+    existing_program = repo.upsert_research_program(
+        _research_program_fixture().model_copy(update={"evidence_loop_count": 1})
+    )
     raw_record_id = repo.upsert_raw_record(
         RawSourceRecord(
             source_key="pubmed",
@@ -1042,9 +1045,44 @@ def test_research_program_board_openrouter_success_records_model_and_program(mon
             content_hash="program-openrouter-chunk",
         )
     )
+    brief = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            topic="vascular ecology evidence loop brief",
+            status="completed",
+            final_brief="Two lanes passed quality, but safety and metastatic ecology need primary evidence [C1].",
+            citation_count=1,
+            hypothesis_count=1,
+            evidence_limitation_count=1,
+            result_payload={
+                "ranked_hypotheses": [{"title": "vascular ecology", "citations": ["C1"]}],
+                "evidence_limitations": ["Safety monitoring evidence remains indirect."],
+                "citations": [{"citation_id": "C1", "title": "Vascular program source"}],
+            },
+        )
+    )
+    evaluation = repo.upsert_research_brief_evaluation(
+        ResearchBriefEvaluationRecord(
+            brief_id=brief.brief_id,
+            topic=brief.topic,
+            overall_score=0.71,
+            passes_quality_bar=False,
+            readiness="needs_more_evidence",
+            summary={"verdict": "not ready"},
+            result_payload={
+                "weaknesses": ["Needs primary safety evidence."],
+                "recommendations": ["Run one final bounded evidence pass."],
+            },
+        )
+    )
 
     def fake_review_model(model_name, review_payload):
         assert model_name == "test/opus"
+        evidence_payload = review_payload["evidence_payload"]
+        assert evidence_payload["existing_program"]["program_id"] == str(existing_program.program_id)
+        assert evidence_payload["existing_program"]["evidence_loop_count"] == 1
+        assert evidence_payload["evaluated_briefs"][0]["brief_id"] == str(brief.brief_id)
+        assert evidence_payload["evaluated_briefs"][0]["evaluation_id"] == str(evaluation.evaluation_id)
+        assert evidence_payload["evaluated_briefs"][0]["evaluation"]["passes_quality_bar"] is False
         return {
             "text": json.dumps(
                 {
@@ -1061,13 +1099,13 @@ def test_research_program_board_openrouter_success_records_model_and_program(mon
                                     "question": "Does coagulation biology affect HSA outcome?",
                                     "metric_plan": ["direct evidence count"],
                                     "tool_hints": ["literature_review"],
-                                    "evidence_refs": ["chunk:1"],
+                                    "evidence_refs": ["evaluated_brief:1", "chunk:1"],
                                 },
                                 {
                                     "question": "Can KDR/VEGF biomarkers gate the program?",
                                     "metric_plan": ["pathway activity"],
                                     "tool_hints": ["omics_expression_review"],
-                                    "evidence_refs": ["chunk:1"],
+                                    "evidence_refs": ["evaluated_brief:1"],
                                 },
                             ],
                             "evidence_tasks": [
@@ -1080,7 +1118,7 @@ def test_research_program_board_openrouter_success_records_model_and_program(mon
                                     "metrics": ["unique source count"],
                                     "pass_values": ["three sources"],
                                     "fail_values": ["no direct evidence"],
-                                    "evidence_refs": ["chunk:1"],
+                                    "evidence_refs": ["evaluated_brief:1"],
                                 }
                             ],
                             "metric_plan": ["biological plausibility"],
@@ -1098,7 +1136,7 @@ def test_research_program_board_openrouter_success_records_model_and_program(mon
                             "failure_risk_score": 0.35,
                             "confidence_score": 0.73,
                             "review_summary": "Program is ready to spawn therapy ideas.",
-                            "evidence_refs": ["chunk:1"],
+                            "evidence_refs": ["evaluated_brief:1", "chunk:1"],
                         }
                     ],
                     "errors": [],
@@ -1115,6 +1153,8 @@ def test_research_program_board_openrouter_success_records_model_and_program(mon
 
     result = HSAResearchService(repo).run_research_program_board(
         ResearchProgramReviewRequest(
+            program_id=existing_program.program_id,
+            evaluation_ids=[evaluation.evaluation_id],
             review_mode="openrouter_required",
             review_models=["test/opus"],
             max_packets=0,
@@ -1123,8 +1163,12 @@ def test_research_program_board_openrouter_success_records_model_and_program(mon
     )
 
     assert result.persisted_count == 1
+    assert result.programs[0].program_id == existing_program.program_id
+    assert result.programs[0].evidence_loop_count == 1
+    assert result.programs[0].evidence_refs[0] == "evaluated_brief:1"
     assert result.programs[0].metadata["requested_model"] == "test/opus"
     assert result.programs[0].metadata["model_name"] == "resolved/opus"
+    assert result.programs[0].metadata["evidence"]["evaluated_brief_count"] == 1
     assert repo.list_research_programs(gate_decision="ready_for_therapy_ideas", limit=10)
 
 
