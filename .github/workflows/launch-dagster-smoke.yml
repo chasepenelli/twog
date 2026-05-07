@@ -379,8 +379,144 @@ jobs:
           echo "Dagster run URL: $run_url"
           timeout "${DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS}s" uv run dagster-cloud run status "$DAGSTER_CLOUD_RUN_ID" \
             --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
-            --organization "$DAGSTER_CLOUD_ORGANIZATION" \
-            --deployment "$DAGSTER_CLOUD_DEPLOYMENT" || true
+                --organization "$DAGSTER_CLOUD_ORGANIZATION" \
+                --deployment "$DAGSTER_CLOUD_DEPLOYMENT" || true
+        shell: bash
+
+      - name: Print hosted research program summary
+        if: ${{ always() && (inputs.job == 'research_program_board_job' || inputs.job == 'research_program_library_job') }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          from uuid import UUID
+
+          from hsa_research.ingestion_bridge.contracts import ResearchProgramBoardRequest
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          def _parse_uuid(value: str | None) -> UUID | None:
+              return UUID(value) if value else None
+
+          raw_config = os.getenv("DAGSTER_CLOUD_CONFIG_JSON") or "{}"
+          try:
+              config = json.loads(raw_config)
+          except json.JSONDecodeError:
+              config = {}
+          ops = config.get("ops") or {}
+          report_config = (
+              (ops.get("research_program_board_report") or {}).get("config")
+              or (ops.get("research_program_library_report") or {}).get("config")
+              or {}
+          )
+
+          thesis_query = (
+              report_config.get("thesis_query")
+              or report_config.get("topic_query")
+              or report_config.get("thesis_topic")
+          )
+          service = HSAResearchService(build_research_repository())
+          report = service.list_research_programs(
+              ResearchProgramBoardRequest(
+                  program_id=_parse_uuid(report_config.get("program_id")),
+                  status=report_config.get("status"),
+                  gate_decision=report_config.get("gate_decision"),
+                  thesis_query=thesis_query,
+                  limit=int(report_config.get("limit") or report_config.get("max_programs") or 5),
+              )
+          )
+
+          rows = []
+          for program in report.programs:
+              rows.append(
+                  {
+                      "program_id": str(program.program_id),
+                      "agent_run_id": str(program.agent_run_id) if program.agent_run_id else None,
+                      "title": program.title,
+                      "status": program.status,
+                      "gate_decision": program.gate_decision,
+                      "confidence_score": program.confidence_score,
+                      "biological_plausibility_score": program.biological_plausibility_score,
+                      "cross_species_support_score": program.cross_species_support_score,
+                      "evidence_density_score": program.evidence_density_score,
+                      "novelty_score": program.novelty_score,
+                      "testability_score": program.testability_score,
+                      "therapeutic_leverage_score": program.therapeutic_leverage_score,
+                      "failure_risk_score": program.failure_risk_score,
+                      "evidence_loop_count": program.evidence_loop_count,
+                      "max_evidence_loops": program.max_evidence_loops,
+                      "therapy_families": program.therapy_families,
+                      "modality_families": program.modality_families,
+                      "downstream_therapy_opportunities": program.downstream_therapy_opportunities,
+                      "metric_plan": program.metric_plan,
+                      "recommended_tools": program.recommended_tools,
+                      "stop_criteria": program.stop_criteria,
+                      "confidence_increase_criteria": program.confidence_increase_criteria,
+                      "confidence_decrease_criteria": program.confidence_decrease_criteria,
+                      "review_summary": program.review_summary,
+                      "thesis": program.thesis,
+                      "disease_model": program.disease_model,
+                      "decisive_questions": [
+                          {
+                              "question": question.question,
+                              "rationale": question.rationale,
+                              "metric_plan": question.metric_plan,
+                              "confidence_increase_criteria": question.confidence_increase_criteria,
+                              "confidence_decrease_criteria": question.confidence_decrease_criteria,
+                              "tool_hints": question.tool_hints,
+                          }
+                          for question in program.decisive_questions
+                      ],
+                      "evidence_tasks": [
+                          {
+                              "task_type": task.task_type,
+                              "title": task.title,
+                              "objective": task.objective,
+                              "source_keys": task.source_keys,
+                              "tool_hints": task.tool_hints,
+                              "metrics": task.metrics,
+                              "pass_values": task.pass_values,
+                              "fail_values": task.fail_values,
+                              "priority": task.priority,
+                              "status": task.status,
+                          }
+                          for task in program.evidence_tasks
+                      ],
+                      "errors": program.errors,
+                      "updated_at": program.updated_at.isoformat(),
+                  }
+              )
+
+          payload = {
+              "dagster_run_id": os.getenv("DAGSTER_CLOUD_RUN_ID"),
+              "program_count": report.program_count,
+              "status_counts": report.status_counts,
+              "gate_counts": report.gate_counts,
+              "programs": rows,
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Research program summary\n")
+                  summary.write(f"- Programs sampled: `{payload['program_count']}`\n")
+                  summary.write(f"- Status counts: `{payload['status_counts']}`\n")
+                  summary.write(f"- Gate counts: `{payload['gate_counts']}`\n")
+                  for row in rows[:5]:
+                      summary.write(
+                          f"- `{row['gate_decision']}` `{row['program_id']}`: "
+                          f"{row['title']} "
+                          f"(confidence={row['confidence_score']}, loops={row['evidence_loop_count']}/{row['max_evidence_loops']})\n"
+                      )
+                      if row["decisive_questions"]:
+                          summary.write(f"  - Q: {row['decisive_questions'][0]['question']}\n")
+                      if row["evidence_tasks"]:
+                          summary.write(f"  - Task: {row['evidence_tasks'][0]['title']}\n")
+                      if row["stop_criteria"]:
+                          summary.write(f"  - Stop: {row['stop_criteria'][0]}\n")
+          PY
         shell: bash
 
       - name: Print hosted validation gap completion summary
