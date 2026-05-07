@@ -25,10 +25,14 @@ from .contracts import (
     AgentPerformanceReportRequest,
     AgentRunReviewRecord,
     CommandCenterRequest,
+    HypothesisPromotionReportRequest,
     ResearchFollowupRefinementRequest,
     ResearchFollowupLoopRequest,
     ResearchBriefQualityReportRequest,
+    TherapyIdeaLibraryRequest,
     ValidationAutopilotRequest,
+    ValidationToolCatalogRequest,
+    ValidationToolMatchRequest,
 )
 from .service import HSAResearchService
 from .validation_agents import DEFAULT_VALIDATION_AGENT_MODEL
@@ -147,6 +151,19 @@ def list_ideas_payload(
     limit = _int_param(params, "limit", 100)
 
     records = _collect_idea_records(service)
+    durable_ideas = service.list_therapy_ideas(
+        TherapyIdeaLibraryRequest(
+            source_brief_id=_uuid_param(params, "brief_id"),
+            source_evaluation_id=_uuid_param(params, "evaluation_id"),
+            topic_query=_str_param(params, "query"),
+            limit=limit,
+        )
+    ).ideas
+    records_by_key = {f"{record.get('kind')}:{record.get('idea_id')}": record for record in records}
+    for record in durable_ideas:
+        payload = _command_center_therapy_idea_record(record.model_dump(mode="json"))
+        records_by_key[f"therapy_idea:{payload['idea_id']}"] = payload
+    records = list(records_by_key.values())
     if kind:
         records = [record for record in records if record["kind"] == kind]
     if source_key:
@@ -195,6 +212,60 @@ def list_ideas_payload(
         "validation_status_counts": dict(sorted(validation_status_counts.items())),
         "items": visible,
     }
+
+
+def validation_tool_catalog_payload(
+    service: HSAResearchService,
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    params = params or {}
+    request = ValidationToolCatalogRequest(
+        category=_str_param(params, "category"),  # type: ignore[arg-type]
+        runner_status=_str_param(params, "runner_status"),  # type: ignore[arg-type]
+        validation_type=_str_param(params, "validation_type"),
+        task_type=_str_param(params, "task_type"),
+        query=_str_param(params, "query"),
+        limit=_int_param(params, "limit", 50),
+    )
+    return service.list_validation_tool_catalog(request).model_dump(mode="json")
+
+
+def match_validation_tool_payload(
+    service: HSAResearchService,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = payload or {}
+    request = ValidationToolMatchRequest(
+        validation_type=str(payload.get("validation_type") or "").strip() or None,
+        task_type=str(payload.get("task_type") or "").strip() or None,
+        objective=str(payload.get("objective") or "").strip() or None,
+        candidate_name=str(payload.get("candidate_name") or "").strip() or None,
+        target_name=str(payload.get("target_name") or "").strip() or None,
+        species=_payload_string_list(payload.get("species")),
+        required_inputs=_payload_string_list(payload.get("required_inputs")),
+        runner_status=str(payload.get("runner_status") or "recommend_only").strip(),  # type: ignore[arg-type]
+        limit=int(payload.get("limit") or 5),
+    )
+    return service.match_validation_tools(request).model_dump(mode="json")
+
+
+def hypothesis_promotion_payload(
+    service: HSAResearchService,
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    params = params or {}
+    request = HypothesisPromotionReportRequest(
+        brief_id=_uuid_param(params, "brief_id"),
+        evaluation_id=_uuid_param(params, "evaluation_id"),
+        therapy_idea_id=_uuid_param(params, "therapy_idea_id"),
+        topic_query=_str_param(params, "query"),
+        source_key=_str_param(params, "source"),
+        include_blocked=_bool_param(params, "include_blocked", True),
+        include_ready_for_committee=_bool_param(params, "include_ready_for_committee", True),
+        include_ready_for_validation=_bool_param(params, "include_ready_for_validation", True),
+        limit=_int_param(params, "limit", 50),
+    )
+    return service.build_hypothesis_promotion_report(request).model_dump(mode="json")
 
 
 def list_research_briefs_payload(
@@ -906,6 +977,43 @@ def _command_center_research_brief(row: dict[str, Any], brief: Any | None) -> di
     }
 
 
+def _command_center_therapy_idea_record(record: dict[str, Any]) -> dict[str, Any]:
+    idea = record.get("idea") or {}
+    validation_items = []
+    return {
+        "idea_id": str(record.get("therapy_idea_id") or idea.get("idea_id")),
+        "kind": "therapy_idea",
+        "title": idea.get("title") or "Untitled therapy idea",
+        "hypothesis": idea.get("hypothesis") or "",
+        "rationale": idea.get("rationale") or "",
+        "candidate_therapies": _string_list(record.get("candidate_therapies") or idea.get("candidate_therapies")),
+        "targets": _string_list(record.get("targets") or idea.get("targets")),
+        "biomarkers": _string_list(record.get("biomarkers") or idea.get("biomarkers")),
+        "mechanism": idea.get("mechanism"),
+        "evidence_refs": _string_list(record.get("evidence_refs") or idea.get("evidence_refs")),
+        "evidence_strength": idea.get("evidence_strength") or "unknown",
+        "translational_path": idea.get("translational_path"),
+        "risks": _string_list(record.get("risks") or idea.get("risks")),
+        "next_experiments": _string_list(record.get("next_experiments") or idea.get("next_experiments")),
+        "priority_score": record.get("score") if record.get("score") is not None else idea.get("priority_score"),
+        "status": record.get("status") or "proposed",
+        "promotion_state": record.get("promotion_state"),
+        "source_key": record.get("source_key"),
+        "topic": record.get("topic"),
+        "disease_scope": record.get("disease_scope"),
+        "origin_agent_run_id": record.get("agent_run_id"),
+        "committee_run_id": record.get("committee_run_id"),
+        "brief_id": record.get("source_brief_id"),
+        "evaluation_id": record.get("source_evaluation_id"),
+        "model_profile": (record.get("promotion_metadata") or {}).get("model_profile"),
+        "review_mode": (record.get("promotion_metadata") or {}).get("review_mode"),
+        "created_at": record.get("created_at"),
+        "validation_status_counts": _count_by(validation_items, "status"),
+        "validation_items": validation_items,
+        "metadata": record.get("metadata") or {},
+    }
+
+
 def _command_center_agent_run_detail(run: Any) -> dict[str, Any]:
     duration_seconds: float | None = None
     if run.completed_at is not None:
@@ -1075,6 +1183,12 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
             if parsed.path == "/api/agent-performance":
                 self._send_json(agent_performance_payload(service_factory(), parse_qs(parsed.query)))
                 return
+            if parsed.path == "/api/validation-tool-catalog":
+                self._send_json(validation_tool_catalog_payload(service_factory(), parse_qs(parsed.query)))
+                return
+            if parsed.path == "/api/hypothesis-promotion":
+                self._send_json(hypothesis_promotion_payload(service_factory(), parse_qs(parsed.query)))
+                return
             parts = [part for part in PurePosixPath(parsed.path).parts if part != "/"]
             if len(parts) == 3 and parts[:2] == ["api", "agent-runs"]:
                 try:
@@ -1126,6 +1240,13 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
                     self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
                 except RuntimeError as exc:
                     self._send_error(HTTPStatus.CONFLICT, str(exc))
+                return
+            if parts == ["api", "validation-tool-catalog", "match"]:
+                try:
+                    payload = self._read_json_body()
+                    self._send_json(match_validation_tool_payload(service_factory(), payload))
+                except (json.JSONDecodeError, ValueError) as exc:
+                    self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
                 return
             if parts == ["api", "agent-findings", "escalate"]:
                 try:
@@ -1220,6 +1341,11 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
 def _str_param(params: Mapping[str, list[str]], key: str) -> str | None:
     values = [value.strip() for value in params.get(key, []) if value.strip()]
     return values[0] if values else None
+
+
+def _uuid_param(params: Mapping[str, list[str]], key: str) -> UUID | None:
+    value = _str_param(params, key)
+    return UUID(value) if value else None
 
 
 def _list_param(params: Mapping[str, list[str]], key: str) -> list[str]:

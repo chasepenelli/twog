@@ -178,7 +178,7 @@ class ResearchBriefAgent:
             errors.append(f"research lead lookup failed: {exc}")
 
         return ResearchBriefEvidenceBundle(
-            citations=citations,
+            citations=_merge_citations(citations),
             claims=claims,
             research_leads=research_leads,
             search_queries=search_queries,
@@ -204,6 +204,8 @@ class ResearchBriefAgent:
                 "claim_count": len(evidence.claims),
                 "research_lead_count": len(evidence.research_leads),
                 "citation_count": len(citations),
+                "citation_duplicate_count": _citation_duplicate_count(citations),
+                "citation_dedupe_strategy": "doi_pmid_pmcid_nct_research_object_title",
                 "retrieval_strategy": "embedding_keyword_blended_perspective_rerank",
                 "search_query_count": sum(len(queries) for queries in evidence.search_queries.values()),
                 "mode": "manual_playground_prompt_pack",
@@ -233,21 +235,26 @@ class ResearchBriefAgent:
         *,
         evidence: ResearchBriefEvidenceBundle,
     ) -> ResearchBriefResult:
-        citations = _merge_citations(evidence.citations)
-        hypotheses = [
-            finding
-            for report in perspective_reports
-            if report.perspective == "translational_hypothesis"
-            for finding in report.findings
-        ][:5]
+        citations, citation_aliases = _merge_citations_with_aliases(evidence.citations)
+        normalized_reports = _remap_perspective_reports(perspective_reports, citation_aliases, citations)
+        hypotheses = _rank_synthesis_hypotheses(
+            [
+                finding
+                for report in normalized_reports
+                if report.perspective == "translational_hypothesis"
+                for finding in report.findings
+            ],
+            citations=citations,
+            request=request,
+        )[:5]
         unresolved = []
-        for report in perspective_reports:
+        for report in normalized_reports:
             for finding in report.findings:
                 unresolved.extend(finding.open_questions)
-        final_brief = _render_final_brief(request, perspective_reports, citations)
+        final_brief = _render_final_brief(request, normalized_reports, citations)
         hard_errors = [*evidence.errors]
         evidence_limitations: list[str] = []
-        for report in perspective_reports:
+        for report in normalized_reports:
             hard_errors.extend(report.errors)
             evidence_limitations.extend(report.evidence_limitations)
         hard_errors = _dedupe_strings(hard_errors)
@@ -255,14 +262,14 @@ class ResearchBriefAgent:
         return ResearchBriefResult(
             agent_run_ids=[
                 report.agent_run_id
-                for report in perspective_reports
+                for report in normalized_reports
                 if report.agent_run_id is not None
             ],
             topic=request.topic,
             disease_scope=request.disease_scope,
             brief_style=request.brief_style,
             model_profile=request.model_profile,
-            perspective_reports=list(perspective_reports),
+            perspective_reports=list(normalized_reports),
             final_brief=final_brief,
             ranked_hypotheses=hypotheses,
             unresolved_questions=_dedupe_strings(unresolved)[:12],
@@ -271,6 +278,8 @@ class ResearchBriefAgent:
                 "search_queries": evidence.search_queries,
                 "claim_count": len(evidence.claims),
                 "citation_count": len(citations),
+                "citation_duplicate_count": _citation_duplicate_count(citations),
+                "citation_dedupe_strategy": "doi_pmid_pmcid_nct_research_object_title",
                 "research_lead_count": len(evidence.research_leads),
                 "review_mode": request.review_mode,
                 "retrieval_strategy": "embedding_keyword_blended_perspective_rerank",
@@ -566,6 +575,9 @@ def _candidate_score(
     score += _term_bonus(haystack, focus_terms, weight=0.15, cap=0.45)
     score += _term_bonus(haystack, _PERSPECTIVE_SIGNAL_TERMS[perspective], weight=0.18, cap=0.9)
 
+    if perspective == "translational_hypothesis":
+        score += _term_bonus(haystack, _THERAPY_SIGNAL_TERMS, weight=0.22, cap=1.1)
+
     if perspective == "skeptic_validation":
         score += _term_bonus(haystack, _SKEPTIC_OUTCOME_TERMS, weight=0.28, cap=1.4)
         score += _term_bonus(haystack, _SKEPTIC_DRUG_TERMS, weight=0.22, cap=0.88)
@@ -671,6 +683,47 @@ _LOW_SIGNAL_SKEPTIC_TERMS = {
     "bioinformatic",
     "predicted target",
 }
+_THERAPY_SIGNAL_TERMS = {
+    "adjuvant",
+    "anti-pd-1",
+    "antiangiogenic",
+    "anti-angiogenic",
+    "antibody",
+    "bevacizumab",
+    "chemotherapy",
+    "clinical trial",
+    "combination",
+    "dose",
+    "dosing",
+    "doxorubicin",
+    "drug",
+    "efficacy",
+    "inhibitor",
+    "immunotherapy",
+    "maintenance",
+    "masitinib",
+    "median survival",
+    "monotherapy",
+    "mtor",
+    "outcome",
+    "paclitaxel",
+    "pazopanib",
+    "pd-1",
+    "pd1",
+    "propranolol",
+    "response",
+    "sorafenib",
+    "sunitinib",
+    "survival",
+    "targeted",
+    "therapy",
+    "therapeutic",
+    "toceranib",
+    "treatment",
+    "toxicity",
+    "vegf",
+    "vegfr",
+}
 
 
 def _term_bonus(haystack: str, terms: set[str], *, weight: float, cap: float) -> float:
@@ -700,23 +753,26 @@ def _append_citation_relevance(citation: ResearchBriefCitation, relevances: Sequ
                 if ":" in relevance
             }
         )
+        citation.metadata["relevance_refs"] = existing
 
 
 def _citation_from_search_result(
     *,
     citation_id: str,
-    result,
+    result: ResearchChunkSearchResult,
     relevance: str,
     max_chars: int,
 ) -> ResearchBriefCitation:
     chunk = result.chunk
     obj = result.research_object
     quote = _compact_text(chunk.text_content, max_chars=max_chars)
+    identifiers = _clean_identifier_map(obj.identifiers if obj else {})
+    source_key = obj.source_key if obj else None
     return ResearchBriefCitation(
         citation_id=citation_id,
         chunk_id=chunk.id,
         research_object_id=chunk.research_object_id,
-        source_key=obj.source_key if obj else chunk.source_key if hasattr(chunk, "source_key") else None,
+        source_key=source_key,
         title=obj.title if obj else None,
         source_url=obj.canonical_url if obj else None,
         section_label=chunk.section_label,
@@ -726,6 +782,29 @@ def _citation_from_search_result(
             "rank": result.rank,
             "score": result.score,
             "match_type": result.match_type,
+            "identifiers": identifiers,
+            "dedupe_key": obj.dedupe_key if obj else None,
+            "published_at": obj.published_at if obj else None,
+            "publication_year": obj.publication_year if obj else None,
+            "perspectives": sorted(
+                {
+                    item.split(":", 1)[0]
+                    for item in relevance.split("|")
+                    if ":" in item
+                }
+            ),
+            "relevance_refs": [item for item in relevance.split("|") if item],
+            "provenance": {
+                "citation_ids": [citation_id],
+                "chunk_ids": [str(chunk.id)],
+                "research_object_ids": [str(chunk.research_object_id)],
+                "source_keys": [source_key] if source_key else [],
+                "titles": [obj.title] if obj and obj.title else [],
+                "source_urls": [obj.canonical_url] if obj and obj.canonical_url else [],
+                "section_labels": [chunk.section_label] if chunk.section_label else [],
+                "dedupe_keys": [obj.dedupe_key] if obj and obj.dedupe_key else [],
+                "identifiers": identifiers,
+            },
         },
     )
 
@@ -1095,15 +1174,562 @@ def _citations_for_perspective(
 
 
 def _merge_citations(citations: Sequence[ResearchBriefCitation]) -> list[ResearchBriefCitation]:
-    seen: set[str] = set()
+    return _merge_citations_with_aliases(citations)[0]
+
+
+def _merge_citations_with_aliases(
+    citations: Sequence[ResearchBriefCitation],
+) -> tuple[list[ResearchBriefCitation], dict[str, str]]:
+    key_index: dict[str, ResearchBriefCitation] = {}
+    aliases: dict[str, str] = {}
     merged: list[ResearchBriefCitation] = []
     for citation in citations:
-        key = str(citation.chunk_id)
-        if key in seen:
+        prepared = citation.model_copy(deep=True)
+        identities = _citation_dedupe_identities(prepared)
+        _initialize_citation_merge_metadata(prepared, identities)
+        matched_key = next((key for key in identities if key in key_index), None)
+        if matched_key is not None:
+            primary = key_index[matched_key]
+            duplicate_dedupe = prepared.metadata.get("dedupe", {})
+            duplicate_dedupe = dict(duplicate_dedupe) if isinstance(duplicate_dedupe, Mapping) else {}
+            for citation_id in _append_unique_strings(
+                [prepared.citation_id],
+                _as_string_list(duplicate_dedupe.get("merged_citation_ids", [])),
+            ):
+                aliases[citation_id] = primary.citation_id
+            _merge_duplicate_citation(
+                primary,
+                prepared,
+                identities=identities,
+                matched_key=matched_key,
+            )
+            for key in identities:
+                key_index[key] = primary
             continue
-        seen.add(key)
-        merged.append(citation)
+
+        aliases[prepared.citation_id] = prepared.citation_id
+        for key in identities:
+            key_index[key] = prepared
+        merged.append(prepared)
+    return merged, aliases
+
+
+def _initialize_citation_merge_metadata(citation: ResearchBriefCitation, identities: Sequence[str]) -> None:
+    metadata = dict(citation.metadata)
+    existing_dedupe = metadata.get("dedupe", {})
+    existing_dedupe = dict(existing_dedupe) if isinstance(existing_dedupe, Mapping) else {}
+    identifiers = _citation_identifier_map(citation)
+    if identifiers:
+        metadata["identifiers"] = identifiers
+    relevance_refs = [value for value in str(citation.relevance or "").split("|") if value]
+    metadata["relevance_refs"] = _append_unique_strings(metadata.get("relevance_refs", []), relevance_refs)
+    metadata["perspectives"] = sorted(
+        {
+            relevance.split(":", 1)[0]
+            for relevance in metadata["relevance_refs"]
+            if ":" in relevance
+        }
+    )
+    metadata["provenance"] = _normalized_citation_provenance(citation, identifiers)
+    duplicate_ids = _append_unique_strings(existing_dedupe.get("duplicate_citation_ids", []), [])
+    metadata["dedupe"] = {
+        **existing_dedupe,
+        "primary_citation_id": citation.citation_id,
+        "dedupe_key": identities[0],
+        "dedupe_keys": _append_unique_strings(existing_dedupe.get("dedupe_keys", []), identities),
+        "duplicate_count": len(duplicate_ids),
+        "merged_citation_ids": _append_unique_strings(
+            existing_dedupe.get("merged_citation_ids", []),
+            [citation.citation_id],
+        ),
+        "duplicate_citation_ids": duplicate_ids,
+    }
+    metadata["duplicate_provenance"] = [
+        item
+        for item in metadata.get("duplicate_provenance", [])
+        if isinstance(item, Mapping)
+    ]
+    citation.metadata = metadata
+
+
+def _merge_duplicate_citation(
+    primary: ResearchBriefCitation,
+    duplicate: ResearchBriefCitation,
+    *,
+    identities: Sequence[str],
+    matched_key: str,
+) -> None:
+    _append_citation_relevance(
+        primary,
+        [value for value in str(duplicate.relevance or "").split("|") if value],
+    )
+    if not primary.title and duplicate.title:
+        primary.title = duplicate.title
+    if not primary.source_url and duplicate.source_url:
+        primary.source_url = duplicate.source_url
+    if not primary.section_label and duplicate.section_label:
+        primary.section_label = duplicate.section_label
+
+    metadata = dict(primary.metadata)
+    identifiers = _merge_identifier_maps(
+        _clean_identifier_map(metadata.get("identifiers", {})),
+        _citation_identifier_map(duplicate),
+    )
+    if identifiers:
+        metadata["identifiers"] = identifiers
+
+    dedupe = dict(metadata.get("dedupe", {}))
+    duplicate_dedupe = duplicate.metadata.get("dedupe", {})
+    duplicate_dedupe = dict(duplicate_dedupe) if isinstance(duplicate_dedupe, Mapping) else {}
+    duplicate_merged_ids = _append_unique_strings(
+        [duplicate.citation_id],
+        _as_string_list(duplicate_dedupe.get("merged_citation_ids", [])),
+    )
+    duplicate_duplicate_ids = _append_unique_strings(
+        [citation_id for citation_id in duplicate_merged_ids if citation_id != primary.citation_id],
+        _as_string_list(duplicate_dedupe.get("duplicate_citation_ids", [])),
+    )
+    dedupe["dedupe_keys"] = _append_unique_strings(
+        dedupe.get("dedupe_keys", []),
+        [*identities, *_as_string_list(duplicate_dedupe.get("dedupe_keys", []))],
+    )
+    dedupe["merged_citation_ids"] = _append_unique_strings(
+        dedupe.get("merged_citation_ids", []),
+        duplicate_merged_ids,
+    )
+    duplicate_ids = _append_unique_strings(
+        dedupe.get("duplicate_citation_ids", []),
+        duplicate_duplicate_ids,
+    )
+    dedupe["duplicate_citation_ids"] = duplicate_ids
+    dedupe["duplicate_count"] = len(duplicate_ids)
+    dedupe["duplicate_matches"] = [
+        *[
+            item
+            for item in dedupe.get("duplicate_matches", [])
+            if isinstance(item, Mapping)
+        ],
+        {"citation_id": duplicate.citation_id, "matched_key": matched_key},
+    ]
+    metadata["dedupe"] = dedupe
+    metadata["provenance"] = _merge_citation_provenance(
+        metadata.get("provenance", {}),
+        duplicate.metadata.get("provenance", {}),
+    )
+    metadata["duplicate_provenance"] = [
+        *[
+            item
+            for item in metadata.get("duplicate_provenance", [])
+            if isinstance(item, Mapping)
+        ],
+        *[
+            item
+            for item in duplicate.metadata.get("duplicate_provenance", [])
+            if isinstance(item, Mapping)
+        ],
+        _citation_provenance_entry(duplicate),
+    ]
+    primary.metadata = metadata
+
+
+def _remap_perspective_reports(
+    reports: Sequence[ResearchBriefPerspectiveReport],
+    citation_aliases: Mapping[str, str],
+    citations: Sequence[ResearchBriefCitation],
+) -> list[ResearchBriefPerspectiveReport]:
+    citation_by_id = {citation.citation_id: citation for citation in citations}
+    normalized_reports: list[ResearchBriefPerspectiveReport] = []
+    for report in reports:
+        findings: list[ResearchBriefFinding] = []
+        cited_ids: list[str] = []
+        for finding in report.findings:
+            mapped_citations = _canonical_citation_ids(
+                finding.citations,
+                citation_aliases,
+                citation_by_id,
+            )
+            if not mapped_citations:
+                continue
+            metadata = dict(finding.metadata)
+            if mapped_citations != finding.citations:
+                metadata["citation_aliases"] = {
+                    citation_id: citation_aliases.get(citation_id, citation_id)
+                    for citation_id in finding.citations
+                    if citation_aliases.get(citation_id, citation_id) in citation_by_id
+                }
+            findings.append(
+                finding.model_copy(
+                    update={"citations": mapped_citations, "metadata": metadata},
+                    deep=True,
+                )
+            )
+            cited_ids = _append_unique_strings(cited_ids, mapped_citations)
+
+        report_citation_ids: list[str] = []
+        for citation in report.citations:
+            canonical_id = citation_aliases.get(citation.citation_id, citation.citation_id)
+            if canonical_id in citation_by_id:
+                report_citation_ids = _append_unique_strings(report_citation_ids, [canonical_id])
+        report_citation_ids = _append_unique_strings(report_citation_ids, cited_ids)
+        normalized_reports.append(
+            report.model_copy(
+                update={
+                    "findings": findings,
+                    "citations": [citation_by_id[citation_id] for citation_id in report_citation_ids],
+                },
+                deep=True,
+            )
+        )
+    return normalized_reports
+
+
+def _canonical_citation_ids(
+    citation_ids: Sequence[str],
+    citation_aliases: Mapping[str, str],
+    citation_by_id: Mapping[str, ResearchBriefCitation],
+) -> list[str]:
+    canonical_ids: list[str] = []
+    for citation_id in citation_ids:
+        canonical_id = citation_aliases.get(citation_id, citation_id)
+        if canonical_id in citation_by_id:
+            canonical_ids = _append_unique_strings(canonical_ids, [canonical_id])
+    return canonical_ids
+
+
+def _rank_synthesis_hypotheses(
+    findings: Sequence[ResearchBriefFinding],
+    *,
+    citations: Sequence[ResearchBriefCitation],
+    request: ResearchBriefRequest,
+) -> list[ResearchBriefFinding]:
+    citation_by_id = {citation.citation_id: citation for citation in citations}
+    scored: list[tuple[float, int, int, ResearchBriefFinding, list[str]]] = []
+    for index, finding in enumerate(findings):
+        score, hits = _therapy_relevance_score(finding, citation_by_id, request)
+        strength_score = {"high": 3, "medium": 2, "low": 1, "unknown": 0}.get(
+            str(finding.evidence_strength),
+            0,
+        )
+        scored.append((score, strength_score, -index, finding, hits))
+
+    ranked: list[ResearchBriefFinding] = []
+    for rank, (score, _strength_score, _index, finding, hits) in enumerate(
+        sorted(scored, reverse=True),
+        start=1,
+    ):
+        metadata = dict(finding.metadata)
+        metadata["synthesis_rank"] = rank
+        metadata["therapy_relevance_score"] = round(score, 3)
+        if hits:
+            metadata["therapy_relevance_terms"] = hits[:12]
+        ranked.append(finding.model_copy(update={"metadata": metadata}, deep=True))
+    return ranked
+
+
+def _therapy_relevance_score(
+    finding: ResearchBriefFinding,
+    citation_by_id: Mapping[str, ResearchBriefCitation],
+    request: ResearchBriefRequest,
+) -> tuple[float, list[str]]:
+    citation_text = " ".join(
+        " ".join(
+            value
+            for value in (
+                citation.title or "",
+                citation.quote,
+                citation.relevance or "",
+            )
+            if value
+        )
+        for citation_id in finding.citations
+        if (citation := citation_by_id.get(citation_id)) is not None
+    )
+    haystack = " ".join(
+        [
+            finding.claim,
+            finding.reasoning,
+            " ".join(finding.open_questions),
+            citation_text,
+        ]
+    ).lower()
+    terms = _therapy_terms_for_request(request)
+    hits = sorted(term for term in terms if term in haystack)
+    score = min(len(hits) * 0.24, 2.4)
+    if finding.stance in {"opportunity", "supporting"}:
+        score += 0.2
+    if any(term in haystack for term in ("clinical", "trial", "survival", "response", "toxicity", "dose")):
+        score += 0.35
+    return score, hits
+
+
+def _therapy_terms_for_request(request: ResearchBriefRequest) -> set[str]:
+    stopwords = {
+        "angiosarcoma",
+        "canine",
+        "evidence",
+        "hemangiosarcoma",
+        "human",
+        "research",
+        "review",
+        "scope",
+        "with",
+    }
+    request_terms = {
+        term
+        for term in re.findall(r"[a-z0-9][a-z0-9+/-]{2,}", f"{request.topic} {request.disease_scope}".lower())
+        if term not in stopwords
+    }
+    return _THERAPY_SIGNAL_TERMS | request_terms
+
+
+def _citation_dedupe_identities(citation: ResearchBriefCitation) -> list[str]:
+    identifiers = _citation_identifier_map(citation)
+    identities: list[str] = []
+    for identifier_type in ("doi", "pmid", "pmcid", "nct_id"):
+        value = identifiers.get(identifier_type)
+        if value:
+            identities.append(f"{identifier_type}:{value.lower()}")
+    identities.append(f"research_object:{citation.research_object_id}")
+    title_key = _normalized_title_key(citation.title)
+    if title_key:
+        identities.append(f"title:{title_key}")
+    identities.append(f"chunk:{citation.chunk_id}")
+    return _append_unique_strings([], identities)
+
+
+def _citation_identifier_map(citation: ResearchBriefCitation) -> dict[str, str]:
+    metadata = citation.metadata if isinstance(citation.metadata, Mapping) else {}
+    provenance = metadata.get("provenance", {})
+    identifiers = _merge_identifier_maps(
+        _clean_identifier_map(metadata.get("identifiers", {})),
+        _clean_identifier_map(provenance.get("identifiers", {}) if isinstance(provenance, Mapping) else {}),
+    )
+    if citation.source_url:
+        identifiers = _merge_identifier_maps(identifiers, _identifiers_from_url(citation.source_url))
+    return identifiers
+
+
+def _clean_identifier_map(raw_identifiers: object) -> dict[str, str]:
+    if not isinstance(raw_identifiers, Mapping):
+        return {}
+    identifiers: dict[str, str] = {}
+    for raw_key, raw_value in raw_identifiers.items():
+        key = _normalize_identifier_key(str(raw_key))
+        if key is None or raw_value is None:
+            continue
+        value = _normalize_identifier_value(key, str(raw_value))
+        if value:
+            identifiers[key] = value
+    return identifiers
+
+
+def _normalize_identifier_key(key: str) -> str | None:
+    normalized = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+    aliases = {
+        "article_doi": "doi",
+        "clinical_trial_id": "nct_id",
+        "clinicaltrials_gov_id": "nct_id",
+        "doi_url": "doi",
+        "nct": "nct_id",
+        "nctid": "nct_id",
+        "pmc": "pmcid",
+        "pmc_id": "pmcid",
+        "pubmed": "pmid",
+        "pubmed_id": "pmid",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized in {"doi", "pmid", "pmcid", "nct_id"}:
+        return normalized
+    return normalized or None
+
+
+def _normalize_identifier_value(identifier_type: str, value: str) -> str | None:
+    cleaned = re.sub(r"\s+", " ", value).strip()
+    if not cleaned:
+        return None
+    if identifier_type == "doi":
+        return _normalize_doi(cleaned)
+    if identifier_type == "pmid":
+        return re.sub(r"^(?:pmid|pubmed)[:\s]+", "", cleaned, flags=re.I).strip().lower() or None
+    if identifier_type == "pmcid":
+        normalized = re.sub(r"^(?:pmcid|pmc)[:\s]+", "", cleaned, flags=re.I).strip()
+        if normalized and normalized.isdigit():
+            normalized = f"PMC{normalized}"
+        return normalized.upper() if normalized else None
+    if identifier_type == "nct_id":
+        match = re.search(r"NCT\d{8}", cleaned, flags=re.I)
+        return match.group(0).upper() if match else cleaned.upper()
+    return cleaned
+
+
+def _normalize_doi(value: str) -> str | None:
+    cleaned = value.strip()
+    cleaned = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"^(?:doi|https?://doi\.org)[:\s]+", "", cleaned, flags=re.I)
+    match = re.search(r"10\.\d{4,9}/\S+", cleaned, flags=re.I)
+    if match:
+        cleaned = match.group(0)
+    elif not re.match(r"^10\.\d{4,9}/", cleaned, flags=re.I):
+        return None
+    cleaned = cleaned.strip().strip(".,;)")
+    return cleaned.lower() if cleaned else None
+
+
+def _identifiers_from_url(source_url: str) -> dict[str, str]:
+    identifiers: dict[str, str] = {}
+    doi = _normalize_doi(source_url)
+    if doi:
+        identifiers["doi"] = doi
+    pmid_match = re.search(r"pubmed\.ncbi\.nlm\.nih\.gov/([^/?#]+)/?", source_url, flags=re.I)
+    if pmid_match:
+        pmid = _normalize_identifier_value("pmid", pmid_match.group(1))
+        if pmid:
+            identifiers["pmid"] = pmid
+    pmcid_match = re.search(r"/(PMC\d+)", source_url, flags=re.I)
+    if pmcid_match:
+        identifiers["pmcid"] = pmcid_match.group(1).upper()
+    nct_match = re.search(r"NCT\d{8}", source_url, flags=re.I)
+    if nct_match:
+        identifiers["nct_id"] = nct_match.group(0).upper()
+    return identifiers
+
+
+def _merge_identifier_maps(*identifier_maps: Mapping[str, str]) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for identifier_map in identifier_maps:
+        for key, value in _clean_identifier_map(identifier_map).items():
+            merged.setdefault(key, value)
     return merged
+
+
+def _normalized_title_key(title: str | None) -> str | None:
+    if not title:
+        return None
+    normalized = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    if len(normalized) < 16 or len(normalized.split()) < 3:
+        return None
+    return normalized
+
+
+def _normalized_citation_provenance(
+    citation: ResearchBriefCitation,
+    identifiers: Mapping[str, str],
+) -> dict[str, Any]:
+    existing = citation.metadata.get("provenance", {}) if isinstance(citation.metadata, Mapping) else {}
+    provenance = dict(existing) if isinstance(existing, Mapping) else {}
+    provenance["citation_ids"] = _append_unique_strings(
+        _as_string_list(provenance.get("citation_ids")),
+        [citation.citation_id],
+    )
+    provenance["chunk_ids"] = _append_unique_strings(
+        _as_string_list(provenance.get("chunk_ids")),
+        [str(citation.chunk_id)],
+    )
+    provenance["research_object_ids"] = _append_unique_strings(
+        _as_string_list(provenance.get("research_object_ids")),
+        [str(citation.research_object_id)],
+    )
+    provenance["source_keys"] = _append_unique_strings(
+        _as_string_list(provenance.get("source_keys")),
+        [citation.source_key] if citation.source_key else [],
+    )
+    provenance["titles"] = _append_unique_strings(
+        _as_string_list(provenance.get("titles")),
+        [citation.title] if citation.title else [],
+    )
+    provenance["source_urls"] = _append_unique_strings(
+        _as_string_list(provenance.get("source_urls")),
+        [citation.source_url] if citation.source_url else [],
+    )
+    provenance["section_labels"] = _append_unique_strings(
+        _as_string_list(provenance.get("section_labels")),
+        [citation.section_label] if citation.section_label else [],
+    )
+    provenance["dedupe_keys"] = _append_unique_strings(
+        _as_string_list(provenance.get("dedupe_keys")),
+        [str(citation.metadata.get("dedupe_key"))] if citation.metadata.get("dedupe_key") else [],
+    )
+    provenance["identifiers"] = _merge_identifier_maps(
+        _clean_identifier_map(provenance.get("identifiers", {})),
+        identifiers,
+    )
+    return provenance
+
+
+def _merge_citation_provenance(primary: object, duplicate: object) -> dict[str, Any]:
+    primary_map = dict(primary) if isinstance(primary, Mapping) else {}
+    duplicate_map = dict(duplicate) if isinstance(duplicate, Mapping) else {}
+    provenance = dict(primary_map)
+    for key in (
+        "citation_ids",
+        "chunk_ids",
+        "research_object_ids",
+        "source_keys",
+        "titles",
+        "source_urls",
+        "section_labels",
+        "dedupe_keys",
+    ):
+        provenance[key] = _append_unique_strings(
+            _as_string_list(primary_map.get(key)),
+            _as_string_list(duplicate_map.get(key)),
+        )
+    provenance["identifiers"] = _merge_identifier_maps(
+        _clean_identifier_map(primary_map.get("identifiers", {})),
+        _clean_identifier_map(duplicate_map.get("identifiers", {})),
+    )
+    return provenance
+
+
+def _citation_provenance_entry(citation: ResearchBriefCitation) -> dict[str, Any]:
+    entry = {
+        "citation_id": citation.citation_id,
+        "chunk_id": str(citation.chunk_id),
+        "research_object_id": str(citation.research_object_id),
+        "source_key": citation.source_key,
+        "title": citation.title,
+        "source_url": citation.source_url,
+        "section_label": citation.section_label,
+        "identifiers": _citation_identifier_map(citation),
+        "quote_preview": _compact_text(citation.quote, max_chars=240),
+    }
+    dedupe_key = citation.metadata.get("dedupe_key") if isinstance(citation.metadata, Mapping) else None
+    if dedupe_key:
+        entry["dedupe_key"] = dedupe_key
+    return {key: value for key, value in entry.items() if value not in (None, "", [], {})}
+
+
+def _citation_duplicate_count(citations: Sequence[ResearchBriefCitation]) -> int:
+    total = 0
+    for citation in citations:
+        dedupe = citation.metadata.get("dedupe", {}) if isinstance(citation.metadata, Mapping) else {}
+        if isinstance(dedupe, Mapping):
+            total += int(dedupe.get("duplicate_count") or 0)
+    return total
+
+
+def _append_unique_strings(existing: object, values: Sequence[object]) -> list[str]:
+    items = _as_string_list(existing)
+    seen = {item.lower(): item for item in items}
+    for value in values:
+        if value is None:
+            continue
+        item = str(value).strip()
+        if not item or item.lower() in seen:
+            continue
+        seen[item.lower()] = item
+        items.append(item)
+    return items
+
+
+def _as_string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
 
 
 def _render_final_brief(

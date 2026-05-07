@@ -7,6 +7,8 @@ const state = {
   researchLeads: null,
   researchBriefs: null,
   ideas: null,
+  promotion: null,
+  validationTools: null,
   agentRuns: null,
   agentPerformance: null,
 };
@@ -27,6 +29,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("ideaKind").addEventListener("change", refreshIdeas);
   $("ideaSource").addEventListener("change", refreshIdeas);
   $("ideaQuery").addEventListener("input", debounce(refreshIdeas, 250));
+  $("promotionQuery").addEventListener("input", debounce(refreshPromotion, 250));
+  $("toolQuery").addEventListener("input", debounce(refreshValidationTools, 250));
   $("agentName").addEventListener("change", refreshAgentRuns);
   $("agentStatus").addEventListener("change", refreshAgentRuns);
   $("agentSource").addEventListener("change", refreshAgentRuns);
@@ -56,6 +60,8 @@ async function refreshAll() {
       refreshResearchLeads(),
       refreshResearchBriefs(),
       refreshIdeas(),
+      refreshPromotion(),
+      refreshValidationTools(),
       refreshAgentRuns(),
       refreshAgentPerformance(),
     ]);
@@ -146,6 +152,26 @@ async function refreshIdeas() {
   const payload = await getJson(`/api/ideas?${params.toString()}`);
   state.ideas = payload;
   renderIdeas(payload);
+}
+
+async function refreshPromotion() {
+  const params = new URLSearchParams();
+  const query = $("promotionQuery").value.trim();
+  if (query) params.append("query", query);
+  params.append("limit", "100");
+  const payload = await getJson(`/api/hypothesis-promotion?${params.toString()}`);
+  state.promotion = payload;
+  renderPromotion(payload);
+}
+
+async function refreshValidationTools() {
+  const params = new URLSearchParams();
+  const query = $("toolQuery").value.trim();
+  if (query) params.append("query", query);
+  params.append("limit", "100");
+  const payload = await getJson(`/api/validation-tool-catalog?${params.toString()}`);
+  state.validationTools = payload;
+  renderValidationTools(payload);
 }
 
 async function refreshAgentRuns() {
@@ -724,6 +750,105 @@ function renderStatusCounts(counts) {
   const entries = Object.entries(counts);
   if (!entries.length) return `<p class="subtext">No validation queue records yet.</p>`;
   return `<div class="tag-row">${entries.map(([status, count]) => tag(`${status}: ${count}`, status)).join("")}</div>`;
+}
+
+function renderPromotion(payload) {
+  const states = Object.entries(payload.state_counts || {})
+    .map(([state, count]) => `${state}: ${count}`)
+    .join(" | ");
+  $("promotionSummary").textContent =
+    `${value(payload.candidate_count)} promotion candidates` + (states ? ` | ${states}` : "");
+  const items = payload.candidates || [];
+  if (!items.length) {
+    $("promotionList").innerHTML = `<div class="empty-state">No promotion candidates match the current filters.</div>`;
+    return;
+  }
+  $("promotionList").innerHTML = items.map(renderPromotionCard).join("");
+}
+
+function renderPromotionCard(item) {
+  const tools = (item.matched_tools || [])
+    .map((match) => (match.tool || {}).tool_key)
+    .filter(Boolean);
+  return `
+    <article class="idea-card">
+      <div class="idea-card-header">
+        <div class="title-cell">
+          <span class="work-lane">${escapeHtml(item.source_type || "candidate")}</span>
+          <strong>${escapeHtml(item.title || "Untitled candidate")}</strong>
+          <span class="subtext">${escapeHtml(item.hypothesis || "")}</span>
+        </div>
+        <div class="tag-row">
+          ${tag(item.promotion_state || "unknown", item.promotion_state || "info")}
+          ${tag(`score ${Math.round(Number(item.score || 0) * 100)}`, "info")}
+          ${item.recommended_job_name ? tag(item.recommended_job_name, "info") : ""}
+        </div>
+      </div>
+      <div class="idea-body compact">
+        <div><h3>Next Action</h3><p>${escapeHtml(item.recommended_next_action || "No next action recorded.")}</p></div>
+        <div><h3>Blockers</h3>${renderInlineList(item.blockers || [])}</div>
+      </div>
+      <div class="tag-row">
+        ${(item.candidate_therapies || []).slice(0, 5).map((label) => tag(label, "info")).join("")}
+        ${(item.targets || []).slice(0, 5).map((label) => tag(label, "info")).join("")}
+        ${tools.slice(0, 5).map((label) => tag(label, "info")).join("")}
+      </div>
+      <details>
+        <summary>Evidence and validation matches</summary>
+        <div class="detail-grid two-up">
+          <div><strong>Evidence Refs</strong>${renderInlineList(item.evidence_refs || [])}</div>
+          <div><strong>Risks</strong>${renderInlineList(item.risks || [])}</div>
+          <div><strong>Next Experiments</strong>${renderInlineList(item.next_experiments || [])}</div>
+          <div><strong>Matched Tools</strong>${renderInlineList(tools)}</div>
+        </div>
+      </details>
+    </article>
+  `;
+}
+
+function renderValidationTools(payload) {
+  const categories = Object.entries(payload.category_counts || {})
+    .map(([category, count]) => `${category}: ${count}`)
+    .join(" | ");
+  $("toolSummary").textContent =
+    `${value(payload.tool_count)} validation tools` + (categories ? ` | ${categories}` : "");
+  const items = payload.tools || [];
+  if (!items.length) {
+    $("toolList").innerHTML = `<div class="empty-state">No validation tools match the current filters.</div>`;
+    return;
+  }
+  $("toolList").innerHTML = items.map(renderValidationToolCard).join("");
+}
+
+function renderValidationToolCard(tool) {
+  return `
+    <article class="idea-card">
+      <div class="idea-card-header">
+        <div class="title-cell">
+          <span class="work-lane">${escapeHtml(tool.category || "validation")}</span>
+          <strong>${escapeHtml(tool.display_name || tool.tool_key || "Validation tool")}</strong>
+          <span class="subtext">${escapeHtml(tool.description || "")}</span>
+        </div>
+        <div class="tag-row">
+          ${tag(tool.runner_status || "recommend_only", "info")}
+          ${tag(tool.tool_hint || tool.tool_key || "tool", "info")}
+        </div>
+      </div>
+      <div class="idea-body compact">
+        <div><h3>Required Inputs</h3>${renderInlineList(tool.required_inputs || [])}</div>
+        <div><h3>Outputs</h3>${renderInlineList(tool.outputs || [])}</div>
+      </div>
+      <details>
+        <summary>Quality gates and dispatch blockers</summary>
+        <div class="detail-grid two-up">
+          <div><strong>Quality Gates</strong>${renderInlineList(tool.quality_gates || [])}</div>
+          <div><strong>Dispatch Blockers</strong>${renderInlineList(tool.dispatch_blockers || [])}</div>
+          <div><strong>Validation Types</strong>${renderInlineList(tool.compatible_validation_types || [])}</div>
+          <div><strong>Task Types</strong>${renderInlineList(tool.compatible_task_types || [])}</div>
+        </div>
+      </details>
+    </article>
+  `;
 }
 
 function ideaKindLabel(kind) {

@@ -50,6 +50,8 @@
         <button class="tab-button active" type="button" data-page="operationsPage">Operations</button>
         <button class="tab-button" type="button" data-page="briefsPage">Briefs</button>
         <button class="tab-button" type="button" data-page="ideasPage">Ideas</button>
+        <button class="tab-button" type="button" data-page="promotionPage">Promotion</button>
+        <button class="tab-button" type="button" data-page="toolsPage">Validation Tools</button>
         <button class="tab-button" type="button" data-page="agentsPage">Agents</button>
       </nav>
 
@@ -282,6 +284,44 @@
           </div>
           <div id="ideaSummary" class="summary-line">Loading idea records...</div>
           <div id="ideaList" class="idea-list"></div>
+        </section>
+      </section>
+
+      <section id="promotionPage" class="page-view">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Promotion Candidates</h2>
+              <p>Evaluated brief hypotheses and therapy ideas ready for committee review, validation planning, or evidence repair.</p>
+            </div>
+            <div class="filters">
+              <label>
+                <span>Search</span>
+                <input id="promotionQuery" type="search" placeholder="toceranib, VEGFR, omics">
+              </label>
+            </div>
+          </div>
+          <div id="promotionSummary" class="summary-line">Loading promotion candidates...</div>
+          <div id="promotionList" class="idea-list"></div>
+        </section>
+      </section>
+
+      <section id="toolsPage" class="page-view">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Validation Tool Catalog</h2>
+              <p>Recommend-only validation lanes, required inputs, quality gates, and dispatch blockers.</p>
+            </div>
+            <div class="filters">
+              <label>
+                <span>Search</span>
+                <input id="toolQuery" type="search" placeholder="omics, safety, assay">
+              </label>
+            </div>
+          </div>
+          <div id="toolSummary" class="summary-line">Loading validation tools...</div>
+          <div id="toolList" class="idea-list"></div>
         </section>
       </section>
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import re
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .agent_finding_escalation import AGENT_FINDING_LANE, AGENT_FINDING_TRACK
 from .contracts import (
@@ -15,6 +15,7 @@ from .contracts import (
     ResearchFollowupRefinementResult,
     ResearchLeadRecord,
     ResearchObjectType,
+    RunStatus,
     SourceQuery,
 )
 from .repository import ResearchRepository
@@ -150,9 +151,114 @@ def _select_candidates(
             current = latest_by_key.get(key)
             if current is None or review.created_at > current[0].created_at:
                 latest_by_key[key] = (review, run, lead)
+    for review, run, lead in _lead_only_candidates(repository, request, set(latest_by_key)):
+        latest_by_key[(lead.lead_id, review.agent_run_id)] = (review, run, lead)
     candidates = list(latest_by_key.values())
     candidates.sort(key=lambda item: (item[2].priority, item[0].created_at), reverse=False)
     return candidates[: request.limit]
+
+
+def _lead_only_candidates(
+    repository: ResearchRepository,
+    request: ResearchFollowupRefinementRequest,
+    existing_keys: set[tuple[UUID, UUID]],
+) -> list[tuple[AgentRunReviewRecord, AgentRunRecord, ResearchLeadRecord]]:
+    if request.review_ids:
+        return []
+    if request.lead_ids:
+        leads = [
+            lead
+            for lead_id in request.lead_ids
+            if (lead := repository.get_research_lead(lead_id)) is not None
+        ]
+    else:
+        leads = repository.list_research_leads(statuses=["followup"], limit=request.limit)
+
+    candidates: list[tuple[AgentRunReviewRecord, AgentRunRecord, ResearchLeadRecord]] = []
+    for lead in leads:
+        if not _lead_can_be_refined_without_review(lead):
+            continue
+        run = _synthetic_run_for_lead(repository, lead)
+        key = (lead.lead_id, run.agent_run_id)
+        if key in existing_keys:
+            continue
+        review = _synthetic_review_for_lead(lead, run)
+        if review.verdict not in set(request.verdicts):
+            continue
+        candidates.append((review, run, lead))
+    return candidates
+
+
+def _lead_can_be_refined_without_review(lead: ResearchLeadRecord) -> bool:
+    if lead.status != "followup":
+        return False
+    metadata = lead.metadata if isinstance(lead.metadata, Mapping) else {}
+    followup_meta = metadata.get("research_followup_queue")
+    if isinstance(followup_meta, Mapping):
+        return not bool(followup_meta.get("requires_manual_research"))
+    return lead.origin_source_key == "research_brief_quality"
+
+
+def _synthetic_run_for_lead(repository: ResearchRepository, lead: ResearchLeadRecord) -> AgentRunRecord:
+    if lead.origin_agent_run_id:
+        existing = repository.get_agent_run(lead.origin_agent_run_id)
+        if existing is not None:
+            return existing
+    run_id = lead.origin_agent_run_id or uuid5(NAMESPACE_URL, f"research-followup-refinement-run:{lead.lead_id}")
+    metadata = lead.metadata if isinstance(lead.metadata, Mapping) else {}
+    return AgentRunRecord(
+        agent_run_id=run_id,
+        agent_name=str(metadata.get("origin_agent_name") or "research_brief_quality_followup"),
+        agent_version="v1",
+        model_profile="deterministic_refinement",
+        status=RunStatus.COMPLETED,
+        source_key=lead.source_key,
+        output_payload={
+            "lead_results": [
+                {
+                    "lead_id": str(lead.lead_id),
+                    "title": lead.title,
+                    "durable_source_keys": lead.suggested_sources,
+                    "metadata": lead.metadata,
+                }
+            ]
+        },
+        summary={"lead_id": str(lead.lead_id), "origin_source_key": lead.origin_source_key},
+        metadata=lead.metadata,
+    )
+
+
+def _synthetic_review_for_lead(lead: ResearchLeadRecord, run: AgentRunRecord) -> AgentRunReviewRecord:
+    metadata = lead.metadata if isinstance(lead.metadata, Mapping) else {}
+    followup_meta = metadata.get("research_followup_queue") if isinstance(metadata, Mapping) else None
+    followup_meta = followup_meta if isinstance(followup_meta, Mapping) else {}
+    feedback_items = [
+        str(item.get("text") or "")
+        for item in followup_meta.get("feedback_items", [])
+        if isinstance(item, Mapping) and item.get("text")
+    ]
+    feedback_parts = [
+        lead.reason or "",
+        lead.summary or "",
+        str(followup_meta.get("topic") or ""),
+        *feedback_items,
+    ]
+    review_id = lead.origin_review_id or uuid5(NAMESPACE_URL, f"research-followup-refinement-review:{lead.lead_id}")
+    return AgentRunReviewRecord(
+        review_id=review_id,
+        agent_run_id=run.agent_run_id,
+        reviewer="research_brief_quality_followup",
+        reviewer_type="llm_evaluator",
+        verdict="needs_followup",
+        feedback=" ".join(part for part in feedback_parts if part).strip() or lead.title,
+        followup_actions=[part for part in feedback_parts if part],
+        metadata={
+            "synthetic_from_research_lead": True,
+            "lead_id": str(lead.lead_id),
+            "origin_source_key": lead.origin_source_key,
+            "followup_kind": followup_meta.get("followup_kind"),
+        },
+    )
 
 
 def _lead_ids_from_run(run: AgentRunRecord) -> list[UUID]:
@@ -181,20 +287,25 @@ def _query_specs_from_review(
     actions = review.followup_actions or []
     query_texts: list[tuple[str, str]] = []
     skipped: list[dict[str, Any]] = []
-    for action in actions:
-        queries, skip_reason = _queries_from_action(action)
-        if skip_reason:
-            skipped.append(
-                _skip(
-                    review,
-                    run,
-                    lead,
-                    skip_reason,
-                    {"action": _human_text(action)[:500]},
+    if _prefer_base_terms_for_lead(lead):
+        base_query = _lead_base_query(lead, base_terms)
+        if base_query:
+            query_texts.append((base_query, "lead_terms"))
+    else:
+        for action in actions:
+            queries, skip_reason = _queries_from_action(action)
+            if skip_reason:
+                skipped.append(
+                    _skip(
+                        review,
+                        run,
+                        lead,
+                        skip_reason,
+                        {"action": _human_text(action)[:500]},
+                    )
                 )
-            )
-        query_texts.extend((query, action) for query in queries)
-    if not query_texts and review.feedback:
+            query_texts.extend((query, action) for query in queries)
+    if not query_texts and review.feedback and not _prefer_base_terms_for_lead(lead):
         queries, skip_reason = _queries_from_action(review.feedback)
         if skip_reason:
             skipped.append(
@@ -205,10 +316,12 @@ def _query_specs_from_review(
                     skip_reason,
                     {"action": _human_text(review.feedback)[:500], "source": "evaluator_feedback"},
                 )
-            )
+        )
         query_texts.extend((query, "evaluator_feedback") for query in queries)
     if not query_texts:
-        query_texts.append((" ".join(base_terms[:10]), "lead_terms"))
+        base_query = _lead_base_query(lead, base_terms)
+        if base_query:
+            query_texts.append((base_query, "lead_terms"))
 
     specs: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -255,7 +368,39 @@ def _query_specs_from_review(
                 continue
             seen.add(key)
             specs.append((source_key, query_text, reason))
+    if not specs and query_texts:
+        base_query = _lead_base_query(lead, base_terms)
+        if base_query:
+            for source_key in source_keys:
+                key = (source_key, base_query.casefold())
+                if key in seen:
+                    continue
+                seen.add(key)
+                specs.append((source_key, base_query, "lead_terms"))
     return specs, skipped
+
+
+def _prefer_base_terms_for_lead(lead: ResearchLeadRecord) -> bool:
+    metadata = lead.metadata if isinstance(lead.metadata, Mapping) else {}
+    followup_meta = metadata.get("research_followup_queue")
+    followup_meta = followup_meta if isinstance(followup_meta, Mapping) else {}
+    followup_kind = str(followup_meta.get("followup_kind") or "")
+    return followup_kind in {"citation_dedupe_repair", "citation_provenance_repair"}
+
+
+def _lead_base_query(lead: ResearchLeadRecord, base_terms: list[str]) -> str:
+    if base_terms:
+        return " ".join(base_terms[:10])
+    return _clean_query(
+        " ".join(
+            [
+                lead.title or "",
+                lead.reason or "",
+                lead.summary or "",
+                " ".join(lead.topic_tags),
+            ]
+        )
+    )
 
 
 def _queries_from_action(action: str) -> tuple[list[str], str | None]:
@@ -319,6 +464,7 @@ def _base_terms(
                 lead.reason or "",
                 lead.summary or "",
                 " ".join(lead.topic_tags),
+                str(lead.metadata),
                 review.feedback or "",
                 " ".join(review.followup_actions),
                 str(run.summary),
@@ -332,7 +478,20 @@ def _base_terms(
         ("pd-1", ("pd-1", "pd1", "pdcd1", "cd279", "programmed death-1", "programmed death 1")),
         ("checkpoint inhibitor", ("checkpoint inhibitor", "immune checkpoint", "pd-1 blockade")),
         ("caninized antibody", ("caninized antibody", "caninised antibody", "canine antibody")),
+        ("mTOR", ("mtor", "rapamycin", "sirolimus", "everolimus", "temsirolimus", "rapalog")),
+        ("PIK3CA", ("pik3ca", "pi3k")),
+        ("TP53", ("tp53", "p53")),
+        ("PTEN", ("pten",)),
+        ("PLCG1", ("plcg1",)),
+        ("co-mutation", ("co-mutation", "comutation", "co mutation")),
+        ("VEGF", ("vegf", "vascular endothelial growth factor")),
+        ("VEGFR", ("vegfr", "vegfr-2", "vegfr2", "kdr", "flk-1")),
+        ("toceranib", ("toceranib", "palladia")),
+        ("pazopanib", ("pazopanib",)),
         ("sorafenib", ("sorafenib", "nexavar")),
+        ("doxorubicin", ("doxorubicin", "adriamycin")),
+        ("PSMA", ("psma", "folh1")),
+        ("PD-L1", ("pd-l1", "pdl1", "cd274", "programmed death-ligand 1")),
         ("canine", ("canine", "dog", "dogs", "veterinary")),
         ("maximum tolerated dose", ("maximum tolerated", "mtd")),
         ("dose limiting toxicity", ("dose limiting", "dlt")),

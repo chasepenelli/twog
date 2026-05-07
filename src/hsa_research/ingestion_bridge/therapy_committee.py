@@ -32,11 +32,12 @@ from .repository import ResearchRepository
 
 THERAPY_COMMITTEE_AGENT_NAME = "therapy_committee_chair_agent"
 THERAPY_COMMITTEE_AGENT_VERSION = "v1"
-DEFAULT_THERAPY_COMMITTEE_MODEL = "anthropic/claude-sonnet-4.6"
+DEFAULT_THERAPY_COMMITTEE_MODEL = "~anthropic/claude-opus-latest"
 THERAPY_COMMITTEE_PERSPECTIVES: tuple[TherapyCommitteePerspectiveName, ...] = (
     "target_biology",
     "drug_repurposing",
     "translational_clinical",
+    "peptide_specialist",
     "skeptic_risk",
 )
 
@@ -44,6 +45,7 @@ _PERSPECTIVE_AGENT_NAMES = {
     "target_biology": "target_biology_committee_agent",
     "drug_repurposing": "drug_repurposing_committee_agent",
     "translational_clinical": "translational_clinical_committee_agent",
+    "peptide_specialist": "peptide_specialist_committee_agent",
     "skeptic_risk": "skeptic_risk_committee_agent",
 }
 _TARGET_TERMS = (
@@ -92,6 +94,7 @@ Use only the supplied citation IDs and evidence. Do not invent papers, trial res
 Every idea must include at least one supplied citation ID in evidence_refs.
 Return strict JSON only with: summary, ideas, evidence_limitations, errors.
 Each idea requires: title, hypothesis, rationale, candidate_therapies, targets, biomarkers, mechanism, evidence_refs, evidence_strength, translational_path, risks, next_experiments, priority_score.
+Keep the JSON compact: summary under 120 words, each idea field under 80 words, and no markdown.
 Keep ideas recommend-only. Do not claim a cure is proven. Distinguish direct evidence from translational analog evidence."""
 
 
@@ -111,8 +114,10 @@ def run_therapy_committee(
         for limitation in report.evidence_limitations
     )
     return TherapyCommitteeResult(
-        topic=request.topic,
-        disease_scope=request.disease_scope,
+        topic=str(evidence.get("topic") or request.topic),
+        disease_scope=str(evidence.get("disease_scope") or request.disease_scope),
+        source_brief_id=evidence.get("source_brief_id"),
+        source_evaluation_id=evidence.get("source_evaluation_id"),
         model_profile=request.model_profile,
         review_mode=request.review_mode,
         reports=reports,
@@ -124,6 +129,11 @@ def run_therapy_committee(
             "research_lead_count": len(evidence["research_leads"]),
             "search_queries": evidence["search_queries"],
             "evidence_limitations": limitations,
+            "source_brief_id": str(evidence["source_brief_id"]) if evidence.get("source_brief_id") else None,
+            "source_evaluation_id": (
+                str(evidence["source_evaluation_id"]) if evidence.get("source_evaluation_id") else None
+            ),
+            "brief_evaluation": evidence.get("brief_evaluation"),
             "recommend_only": True,
         },
         errors=errors,
@@ -162,6 +172,9 @@ def _run_perspectives(
 
 
 def _build_evidence(repository: ResearchRepository, request: TherapyCommitteeRequest) -> dict[str, Any]:
+    if request.brief_id or request.evaluation_id:
+        return _build_evaluated_brief_evidence(repository, request)
+
     brief_request = ResearchBriefRequest(
         topic=request.topic,
         disease_scope=request.disease_scope,
@@ -179,7 +192,92 @@ def _build_evidence(repository: ResearchRepository, request: TherapyCommitteeReq
         "research_leads": [lead.model_dump(mode="json") for lead in evidence.research_leads],
         "search_queries": evidence.search_queries,
         "errors": evidence.errors,
+        "topic": request.topic,
+        "disease_scope": request.disease_scope,
+        "source_brief_id": None,
+        "source_evaluation_id": None,
+        "brief_evaluation": None,
     }
+
+
+def _build_evaluated_brief_evidence(
+    repository: ResearchRepository,
+    request: TherapyCommitteeRequest,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    evaluation = None
+    if request.evaluation_id:
+        evaluation = repository.get_research_brief_evaluation(request.evaluation_id)
+        if evaluation is None:
+            errors.append(f"Research brief evaluation not found: {request.evaluation_id}")
+    brief_id = request.brief_id or (evaluation.brief_id if evaluation else None)
+    brief = repository.get_research_brief(brief_id) if brief_id else None
+    if brief is None:
+        errors.append(f"Research brief not found: {brief_id}")
+        fallback = _build_evidence(
+            repository,
+            request.model_copy(update={"brief_id": None, "evaluation_id": None}),
+        )
+        fallback["errors"] = [*fallback.get("errors", []), *errors]
+        return fallback
+
+    payload = brief.result_payload or {}
+    citations = _citations_from_payload(payload)
+    if not citations:
+        errors.append("Selected research brief had no valid citations for committee review.")
+    brief_evaluation = None
+    if evaluation:
+        brief_evaluation = {
+            "evaluation_id": str(evaluation.evaluation_id),
+            "overall_score": evaluation.overall_score,
+            "passes_quality_bar": evaluation.passes_quality_bar,
+            "readiness": evaluation.readiness,
+            "summary": evaluation.summary,
+            "weaknesses": (evaluation.result_payload or {}).get("weaknesses", []),
+            "recommendations": (evaluation.result_payload or {}).get("recommendations", []),
+        }
+    claims = []
+    if request.max_claims > 0:
+        brief_request = ResearchBriefRequest(
+            topic=brief.topic,
+            disease_scope=brief.disease_scope,
+            source_key=request.source_key or brief.source_key,
+            max_chunks_per_perspective=1,
+            max_claims=request.max_claims,
+            max_chunk_chars=request.max_chunk_chars,
+            model_profile=request.model_profile,
+            review_mode="deterministic_only",
+        )
+        try:
+            evidence = ResearchBriefAgent(repository).build_evidence(brief_request)
+            claims = [claim.model_dump(mode="json") for claim in evidence.claims]
+        except Exception as exc:
+            errors.append(f"Could not refresh claim context for committee brief: {exc}")
+    return {
+        "citations": citations[: request.max_chunks_per_perspective * 4],
+        "claims": claims,
+        "research_leads": [],
+        "search_queries": {"source_brief_id": str(brief.brief_id)},
+        "errors": errors,
+        "topic": brief.topic,
+        "disease_scope": brief.disease_scope,
+        "source_brief_id": brief.brief_id,
+        "source_evaluation_id": evaluation.evaluation_id if evaluation else request.evaluation_id,
+        "brief_evaluation": brief_evaluation,
+        "brief_limitations": payload.get("evidence_limitations", []),
+    }
+
+
+def _citations_from_payload(payload: Mapping[str, Any]) -> list[ResearchBriefCitation]:
+    citations: list[ResearchBriefCitation] = []
+    for raw in payload.get("citations", []):
+        if not isinstance(raw, Mapping):
+            continue
+        try:
+            citations.append(ResearchBriefCitation.model_validate(dict(raw)))
+        except Exception:
+            continue
+    return citations
 
 
 def _run_perspective(
@@ -331,6 +429,44 @@ def _deterministic_perspective(
                 priority_score=0.66,
             )
         )
+    elif perspective == "peptide_specialist":
+        target = targets[0] if targets else "vascular tumor pathway target"
+        ideas.append(
+            TherapyIdea(
+                title=f"Peptide modality review for {target}",
+                hypothesis=(
+                    "Peptide, cyclic peptide, peptidomimetic, or vaccine-style modalities may be worth exploring "
+                    "only when target engagement, delivery, stability, and immunogenicity constraints are explicit."
+                ),
+                rationale=(
+                    "A peptide specialist should separate plausible peptide modality opportunities from ideas that "
+                    "are better served by small molecules, antibodies, or assay-only evidence gathering."
+                ),
+                candidate_therapies=["peptide modality concept"],
+                targets=targets[:5],
+                biomarkers=biomarkers[:5],
+                mechanism=(
+                    f"Review whether a peptide modality can engage {target}, survive protease exposure, reach the "
+                    "right compartment, and avoid unacceptable immune or formulation risk."
+                ),
+                evidence_refs=refs,
+                evidence_strength=_strength_from_refs(refs),
+                translational_path=(
+                    "Require sequence/modality identity, delivery route, stability assumptions, and immunogenicity "
+                    "risk review before peptide assay planning."
+                ),
+                risks=[
+                    "Peptide delivery and stability may be the dominant failure modes.",
+                    "Target engagement may require intracellular access or a geometry unsuitable for peptides.",
+                    "Immunogenicity and manufacturability can erase otherwise plausible biology.",
+                ],
+                next_experiments=[
+                    "Route peptide-like ideas to peptide specialist validation review before assay design.",
+                    "Collect sequence/modality, delivery route, and stability evidence before promotion.",
+                ],
+                priority_score=0.64 if targets else 0.5,
+            )
+        )
     else:
         ideas.append(
             TherapyIdea(
@@ -430,8 +566,8 @@ def _perspective_payload(
     evidence: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
-        "topic": request.topic,
-        "disease_scope": request.disease_scope,
+        "topic": evidence.get("topic") or request.topic,
+        "disease_scope": evidence.get("disease_scope") or request.disease_scope,
         "perspective": perspective,
         "perspective_mandate": _perspective_mandate(perspective),
         "citations": [
@@ -441,6 +577,12 @@ def _perspective_payload(
         "claims": evidence.get("claims", []),
         "research_leads": evidence.get("research_leads", []),
         "search_queries": evidence.get("search_queries", {}),
+        "source_brief_id": str(evidence["source_brief_id"]) if evidence.get("source_brief_id") else None,
+        "source_evaluation_id": (
+            str(evidence["source_evaluation_id"]) if evidence.get("source_evaluation_id") else None
+        ),
+        "brief_evaluation": evidence.get("brief_evaluation"),
+        "brief_limitations": evidence.get("brief_limitations", []),
         "max_ideas": request.max_ideas_per_perspective,
     }
 
@@ -450,6 +592,10 @@ def _perspective_mandate(perspective: TherapyCommitteePerspectiveName) -> str:
         "target_biology": "Find target/pathway vulnerabilities and biomarker-gated mechanisms.",
         "drug_repurposing": "Nominate repurposed or practical therapy candidates from evidence and bioactivity context.",
         "translational_clinical": "Separate canine evidence from human analog evidence and define clinical translation paths.",
+        "peptide_specialist": (
+            "Review peptide, cyclic peptide, peptidomimetic, and vaccine-style modality feasibility, delivery, "
+            "stability, target engagement, immunogenicity, and manufacturability."
+        ),
         "skeptic_risk": "Challenge weak ideas, identify negative evidence needs, and define failure criteria.",
     }[perspective]
 
@@ -461,7 +607,7 @@ def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) ->
     payload = {
         "model": model_name,
         "temperature": float(os.getenv("HSA_THERAPY_COMMITTEE_TEMPERATURE", "0.25")),
-        "max_tokens": int(os.getenv("HSA_THERAPY_COMMITTEE_MAX_TOKENS", "3500")),
+        "max_tokens": int(os.getenv("HSA_THERAPY_COMMITTEE_MAX_TOKENS", "7000")),
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
@@ -473,6 +619,8 @@ def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) ->
                             "Return JSON only.",
                             "Use only supplied citation IDs.",
                             "Make therapy ideas specific enough to become validation plans later.",
+                            "Keep the response compact enough to avoid truncation.",
+                            f"Return no more than {review_payload.get('max_ideas', 1)} idea(s).",
                         ],
                         "response_contract": _response_contract(),
                         "evidence_payload": review_payload,
@@ -519,6 +667,7 @@ def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) ->
             "requested_model": model_name,
             "request_id": response_payload.get("id"),
             "usage": response_payload.get("usage", {}),
+            "finish_reason": choices[0].get("finish_reason"),
         },
     }
 
@@ -536,7 +685,7 @@ def _openrouter_repair_json_model(
     payload = {
         "model": os.getenv("HSA_THERAPY_COMMITTEE_REPAIR_MODEL", model_name),
         "temperature": 0,
-        "max_tokens": int(os.getenv("HSA_THERAPY_COMMITTEE_REPAIR_MAX_TOKENS", "3500")),
+        "max_tokens": int(os.getenv("HSA_THERAPY_COMMITTEE_REPAIR_MAX_TOKENS", "7000")),
         "response_format": {"type": "json_object"},
         "messages": [
             {
@@ -555,6 +704,7 @@ def _openrouter_repair_json_model(
                             "Preserve supplied fields and values when possible.",
                             "The repaired object must match the response contract.",
                             "If an idea is incomplete, keep it but do not invent citation IDs.",
+                            "Condense overly long strings if needed so the repaired JSON is complete.",
                         ],
                         "parse_error": parse_error,
                         "response_contract": _response_contract(),
@@ -601,6 +751,7 @@ def _openrouter_repair_json_model(
         "requested_model": payload["model"],
         "request_id": response_payload.get("id"),
         "usage": response_payload.get("usage", {}),
+        "finish_reason": choices[0].get("finish_reason"),
         "json_repair_attempted": True,
         "json_parse_error": _compact_text(parse_error, max_chars=500),
     }

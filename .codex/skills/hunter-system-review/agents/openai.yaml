@@ -1,0 +1,6 @@
+interface:
+  display_name: "Hunter System Review"
+  short_description: "Critique and improve the research hunter loop"
+  default_prompt: "Use $hunter-system-review to critique the recent hunter loop and turn reviewer findings into concrete improvements."
+policy:
+  allow_implicit_invocation: true

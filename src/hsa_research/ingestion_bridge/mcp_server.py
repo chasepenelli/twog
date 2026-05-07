@@ -26,6 +26,7 @@ from .contracts import (
     EvidenceGapResolverRequest,
     FullTextTriageRequest,
     FullTextOpsRequest,
+    HypothesisPromotionReportRequest,
     HypothesisDraft,
     HypothesisProposalRequest,
     ModelProfile,
@@ -46,6 +47,7 @@ from .contracts import (
     SourceFollowupQueueRequest,
     TherapyCommitteeRequest,
     TherapyCommitteeValidationQueueRequest,
+    TherapyIdeaLibraryRequest,
     ValidationAutopilotRequest,
     ValidationGapSourceIngestRequest,
     ValidationGapSourcePackRequest,
@@ -53,6 +55,8 @@ from .contracts import (
     ValidationAssayContext,
     ValidationRequest,
     ValidationRequestQueueRequest,
+    ValidationToolCatalogRequest,
+    ValidationToolMatchRequest,
     XLinkedArticleReviewRequest,
     XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
@@ -208,6 +212,8 @@ def run_therapy_committee_tool(
     model_profile: str = "therapy_committee",
     review_mode: str = "openrouter_required",
     review_models: list[str] | None = None,
+    brief_id: str | None = None,
+    evaluation_id: str | None = None,
 ) -> dict:
     """Run the cited therapy ideation committee."""
 
@@ -222,8 +228,112 @@ def run_therapy_committee_tool(
         model_profile=model_profile,
         review_mode=review_mode,  # type: ignore[arg-type]
         review_models=review_models or [],
+        brief_id=UUID(brief_id) if brief_id else None,
+        evaluation_id=UUID(evaluation_id) if evaluation_id else None,
     )
     return get_service().run_therapy_committee(request).model_dump(mode="json")
+
+
+def validation_tool_catalog_report_tool(
+    category: str | None = None,
+    runner_status: str | None = None,
+    validation_type: str | None = None,
+    task_type: str | None = None,
+    query: str | None = None,
+    limit: int = 50,
+) -> dict:
+    """Return the recommend-only validation tool catalog."""
+
+    return get_service().list_validation_tool_catalog(
+        ValidationToolCatalogRequest(
+            category=category,  # type: ignore[arg-type]
+            runner_status=runner_status,  # type: ignore[arg-type]
+            validation_type=validation_type,
+            task_type=task_type,
+            query=query,
+            limit=limit,
+        )
+    ).model_dump(mode="json")
+
+
+def match_validation_tool_tool(
+    validation_type: str | None = None,
+    task_type: str | None = None,
+    objective: str | None = None,
+    candidate_name: str | None = None,
+    target_name: str | None = None,
+    species: list[str] | None = None,
+    required_inputs: list[str] | None = None,
+    runner_status: str | None = "recommend_only",
+    limit: int = 5,
+) -> dict:
+    """Match catalog tools to a validation objective."""
+
+    return get_service().match_validation_tools(
+        ValidationToolMatchRequest(
+            validation_type=validation_type,
+            task_type=task_type,
+            objective=objective,
+            candidate_name=candidate_name,
+            target_name=target_name,
+            species=species or [],
+            required_inputs=required_inputs or [],
+            runner_status=runner_status,  # type: ignore[arg-type]
+            limit=limit,
+        )
+    ).model_dump(mode="json")
+
+
+def therapy_idea_library_tool(
+    therapy_idea_id: str | None = None,
+    status: str | None = None,
+    source_brief_id: str | None = None,
+    source_evaluation_id: str | None = None,
+    committee_run_id: str | None = None,
+    topic_query: str | None = None,
+    limit: int = 50,
+) -> dict:
+    """Return persisted therapy ideas."""
+
+    return get_service().list_therapy_ideas(
+        TherapyIdeaLibraryRequest(
+            therapy_idea_id=UUID(therapy_idea_id) if therapy_idea_id else None,
+            status=status,  # type: ignore[arg-type]
+            source_brief_id=UUID(source_brief_id) if source_brief_id else None,
+            source_evaluation_id=UUID(source_evaluation_id) if source_evaluation_id else None,
+            committee_run_id=UUID(committee_run_id) if committee_run_id else None,
+            topic_query=topic_query,
+            limit=limit,
+        )
+    ).model_dump(mode="json")
+
+
+def hypothesis_promotion_report_tool(
+    brief_id: str | None = None,
+    evaluation_id: str | None = None,
+    therapy_idea_id: str | None = None,
+    topic_query: str | None = None,
+    source_key: str | None = None,
+    include_blocked: bool = True,
+    include_ready_for_committee: bool = True,
+    include_ready_for_validation: bool = True,
+    limit: int = 50,
+) -> dict:
+    """Return promotion candidates from evaluated briefs and therapy ideas."""
+
+    return get_service().build_hypothesis_promotion_report(
+        HypothesisPromotionReportRequest(
+            brief_id=UUID(brief_id) if brief_id else None,
+            evaluation_id=UUID(evaluation_id) if evaluation_id else None,
+            therapy_idea_id=UUID(therapy_idea_id) if therapy_idea_id else None,
+            topic_query=topic_query,
+            source_key=source_key,
+            include_blocked=include_blocked,
+            include_ready_for_committee=include_ready_for_committee,
+            include_ready_for_validation=include_ready_for_validation,
+            limit=limit,
+        )
+    ).model_dump(mode="json")
 
 
 def get_research_brief_tool(brief_id: str) -> dict:
@@ -1381,6 +1491,8 @@ if mcp is not None:
         model_profile: str = "therapy_committee",
         review_mode: str = "openrouter_required",
         review_models: list[str] | None = None,
+        brief_id: str | None = None,
+        evaluation_id: str | None = None,
     ) -> dict:
         """Run the cited therapy ideation committee."""
 
@@ -1395,6 +1507,102 @@ if mcp is not None:
             model_profile=model_profile,
             review_mode=review_mode,
             review_models=review_models,
+            brief_id=brief_id,
+            evaluation_id=evaluation_id,
+        )
+
+    @mcp.tool()
+    def validation_tool_catalog_report(
+        category: str | None = None,
+        runner_status: str | None = None,
+        validation_type: str | None = None,
+        task_type: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """Return the recommend-only validation tool catalog."""
+
+        return validation_tool_catalog_report_tool(
+            category=category,
+            runner_status=runner_status,
+            validation_type=validation_type,
+            task_type=task_type,
+            query=query,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def match_validation_tool(
+        validation_type: str | None = None,
+        task_type: str | None = None,
+        objective: str | None = None,
+        candidate_name: str | None = None,
+        target_name: str | None = None,
+        species: list[str] | None = None,
+        required_inputs: list[str] | None = None,
+        runner_status: str | None = "recommend_only",
+        limit: int = 5,
+    ) -> dict:
+        """Match catalog tools to a validation objective."""
+
+        return match_validation_tool_tool(
+            validation_type=validation_type,
+            task_type=task_type,
+            objective=objective,
+            candidate_name=candidate_name,
+            target_name=target_name,
+            species=species,
+            required_inputs=required_inputs,
+            runner_status=runner_status,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def therapy_idea_library(
+        therapy_idea_id: str | None = None,
+        status: str | None = None,
+        source_brief_id: str | None = None,
+        source_evaluation_id: str | None = None,
+        committee_run_id: str | None = None,
+        topic_query: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """Return persisted therapy ideas."""
+
+        return therapy_idea_library_tool(
+            therapy_idea_id=therapy_idea_id,
+            status=status,
+            source_brief_id=source_brief_id,
+            source_evaluation_id=source_evaluation_id,
+            committee_run_id=committee_run_id,
+            topic_query=topic_query,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def hypothesis_promotion_report(
+        brief_id: str | None = None,
+        evaluation_id: str | None = None,
+        therapy_idea_id: str | None = None,
+        topic_query: str | None = None,
+        source_key: str | None = None,
+        include_blocked: bool = True,
+        include_ready_for_committee: bool = True,
+        include_ready_for_validation: bool = True,
+        limit: int = 50,
+    ) -> dict:
+        """Return promotion candidates from evaluated briefs and therapy ideas."""
+
+        return hypothesis_promotion_report_tool(
+            brief_id=brief_id,
+            evaluation_id=evaluation_id,
+            therapy_idea_id=therapy_idea_id,
+            topic_query=topic_query,
+            source_key=source_key,
+            include_blocked=include_blocked,
+            include_ready_for_committee=include_ready_for_committee,
+            include_ready_for_validation=include_ready_for_validation,
+            limit=limit,
         )
 
     @mcp.tool()
@@ -2581,6 +2789,12 @@ if mcp is not None:
         """Fetch a persisted recommend-only validation plan as an MCP resource."""
 
         return get_validation_plan_tool(plan_id)
+
+    @mcp.resource("therapy-idea://{therapy_idea_id}")
+    def therapy_idea_resource(therapy_idea_id: str) -> dict:
+        """Fetch a persisted therapy idea as an MCP resource."""
+
+        return therapy_idea_library_tool(therapy_idea_id=therapy_idea_id)
 
     @mcp.resource("validation-request-queue://{queue_item_id}")
     def validation_request_queue_resource(queue_item_id: str) -> dict:

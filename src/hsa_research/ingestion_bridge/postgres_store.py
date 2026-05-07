@@ -44,6 +44,7 @@ from .contracts import (
     TextEmbedding,
     TextEmbeddingSearchRequest,
     TextEmbeddingSearchResult,
+    TherapyIdeaRecord,
     ValidationPlanRecord,
     ValidationRequest,
     ValidationRequestQueueItem,
@@ -1704,6 +1705,96 @@ class PostgresResearchRepository(ResearchRepository):
             for row in self._fetchall(sql, params)
         ]
 
+    def upsert_therapy_idea(self, record: TherapyIdeaRecord) -> TherapyIdeaRecord:
+        payload = record.model_dump(mode="json")
+        self._execute(
+            """
+            insert into therapy_ideas (
+              therapy_idea_id, committee_run_id, agent_run_id, source_brief_id,
+              source_evaluation_id, topic, source_key, status, promotion_state,
+              score, created_at, updated_at, payload
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict(therapy_idea_id) do update set
+              committee_run_id = excluded.committee_run_id,
+              agent_run_id = excluded.agent_run_id,
+              source_brief_id = excluded.source_brief_id,
+              source_evaluation_id = excluded.source_evaluation_id,
+              topic = excluded.topic,
+              source_key = excluded.source_key,
+              status = excluded.status,
+              promotion_state = excluded.promotion_state,
+              score = excluded.score,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(record.therapy_idea_id),
+                str(record.committee_run_id) if record.committee_run_id else None,
+                str(record.agent_run_id) if record.agent_run_id else None,
+                str(record.source_brief_id) if record.source_brief_id else None,
+                str(record.source_evaluation_id) if record.source_evaluation_id else None,
+                record.topic,
+                record.source_key,
+                record.status,
+                record.promotion_state,
+                record.score,
+                record.created_at,
+                record.updated_at,
+                self._json(payload),
+            ),
+        )
+        return record
+
+    def get_therapy_idea(self, therapy_idea_id: UUID) -> TherapyIdeaRecord | None:
+        row = self._fetchone(
+            "select payload from therapy_ideas where therapy_idea_id = %s",
+            (str(therapy_idea_id),),
+        )
+        if row is None:
+            return None
+        return TherapyIdeaRecord.model_validate(_payload(row))
+
+    def list_therapy_ideas(
+        self,
+        *,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        source_brief_id: UUID | None = None,
+        source_evaluation_id: UUID | None = None,
+        committee_run_id: UUID | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[TherapyIdeaRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        if statuses:
+            clauses.append("status = any(%s)")
+            params.append(statuses)
+        if source_brief_id:
+            clauses.append("source_brief_id = %s")
+            params.append(str(source_brief_id))
+        if source_evaluation_id:
+            clauses.append("source_evaluation_id = %s")
+            params.append(str(source_evaluation_id))
+        if committee_run_id:
+            clauses.append("committee_run_id = %s")
+            params.append(str(committee_run_id))
+        if topic_query:
+            clauses.append("topic ilike %s")
+            params.append(f"%{topic_query}%")
+        sql = "select payload from therapy_ideas"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by score desc, updated_at desc"
+        if limit is not None:
+            sql += " limit %s"
+            params.append(limit)
+        return [TherapyIdeaRecord.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
+
     def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:
         payload = record.model_dump(mode="json")
         self._execute(
@@ -3070,6 +3161,31 @@ class PostgresResearchRepository(ResearchRepository):
               on research_brief_evaluations(readiness, created_at desc);
             create index if not exists research_brief_evaluations_quality_idx
               on research_brief_evaluations(passes_quality_bar, overall_score desc);
+
+            create table if not exists therapy_ideas (
+              therapy_idea_id text primary key,
+              committee_run_id text,
+              agent_run_id text,
+              source_brief_id text,
+              source_evaluation_id text,
+              topic text not null,
+              source_key text,
+              status text not null,
+              promotion_state text,
+              score double precision not null default 0.5,
+              payload jsonb not null,
+              created_at timestamptz not null default now(),
+              updated_at timestamptz not null default now()
+            );
+
+            create index if not exists therapy_ideas_status_idx
+              on therapy_ideas(status, score desc, updated_at desc);
+            create index if not exists therapy_ideas_brief_idx
+              on therapy_ideas(source_brief_id, updated_at desc);
+            create index if not exists therapy_ideas_evaluation_idx
+              on therapy_ideas(source_evaluation_id, updated_at desc);
+            create index if not exists therapy_ideas_committee_idx
+              on therapy_ideas(committee_run_id, updated_at desc);
 
             create table if not exists validation_plans (
               plan_id text primary key,

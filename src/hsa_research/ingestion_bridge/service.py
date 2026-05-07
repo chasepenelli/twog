@@ -11,6 +11,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import hashlib
+import json
 import os
 import re
 from typing import Any
@@ -25,6 +26,7 @@ from .contracts import (
     AgentPerformanceReportResult,
     AgentRunRecord,
     AgentRunReviewRecord,
+    ArtifactHandle,
     AsyncRunHandle,
     BoltzRunRequest,
     CandidateDossier,
@@ -33,6 +35,7 @@ from .contracts import (
     ChunkContextResult,
     ClaimCurationRequest,
     ClaimCurationResult,
+    ClaimSearchResult,
     ClaimSearchRequest,
     ClaimSearchResults,
     CommandCenterRecommendation,
@@ -57,6 +60,10 @@ from .contracts import (
     ResearchBriefEvaluationResult,
     ResearchBriefFollowupQueueRequest,
     ResearchBriefFollowupQueueResult,
+    ResearchBriefFinding,
+    ResearchBriefOperatorDocRequest,
+    ResearchBriefOperatorDocResult,
+    ResearchBriefOperatorDocument,
     ResearchBriefQualityReportRequest,
     ResearchBriefQualityReportResult,
     ResearchBriefQualityRow,
@@ -70,6 +77,9 @@ from .contracts import (
     ResearchBriefQueueRunResult,
     ResearchHuntSynthesisQueueRequest,
     ResearchHuntSynthesisQueueResult,
+    ResearchHuntSynthesisDocument,
+    ResearchHuntSynthesisDocRequest,
+    ResearchHuntSynthesisDocResult,
     ResearchBriefRecord,
     ResearchBriefPlaygroundPack,
     ResearchBriefRequest,
@@ -108,11 +118,17 @@ from .contracts import (
     SourceFollowupQueueResult,
     SourceFollowupQueueItem,
     TextEmbeddingSearchRequest,
+    HypothesisPromotionCandidate,
+    HypothesisPromotionReportRequest,
+    HypothesisPromotionReportResult,
     TherapyCommitteeRequest,
     TherapyCommitteeResult,
     TherapyCommitteeValidationQueueRequest,
     TherapyCommitteeValidationQueueResult,
     TherapyIdea,
+    TherapyIdeaLibraryRequest,
+    TherapyIdeaLibraryResult,
+    TherapyIdeaRecord,
     ValidationAgentResult,
     ValidationAssayContext,
     ValidationAutopilotQueueRecord,
@@ -130,6 +146,10 @@ from .contracts import (
     ValidationRequestQueueItem,
     ValidationRequestQueueRequest,
     ValidationRequestQueueResult,
+    ValidationToolCatalogRequest,
+    ValidationToolCatalogResult,
+    ValidationToolMatchRequest,
+    ValidationToolMatchResult,
     XLinkedArticleReviewRequest,
     XLinkedArticleReviewResult,
     XTopicReviewRequest,
@@ -206,6 +226,7 @@ from .therapy_committee import (
     run_therapy_committee,
     summarize_therapy_committee,
 )
+from .validation_tool_catalog import build_validation_tool_catalog_report, match_validation_tools
 from .validation_planning import (
     VALIDATION_PLANNING_AGENT_NAME,
     VALIDATION_PLANNING_AGENT_VERSION,
@@ -270,7 +291,7 @@ DEFAULT_MODEL_PROFILES: dict[str, ModelProfile] = {
     "therapy_committee": ModelProfile(
         profile_key="therapy_committee",
         provider="other",
-        model_name="openrouter:~anthropic/claude-sonnet-latest",
+        model_name="openrouter:~anthropic/claude-opus-latest",
         purpose="Multi-perspective therapy ideation committee over cited evidence",
     ),
 }
@@ -314,6 +335,8 @@ def _validation_request_dispatch_blockers(request: ValidationRequest) -> list[st
         return []
 
     blockers: list[str] = []
+    if request.validation_type in {"boltz", "docking", "md"}:
+        blockers.append("live_compute_runner_not_enabled")
     if request.validation_type in {"boltz", "docking", "md", "homology"} and not request.target_name:
         blockers.append("target_name_required")
     if request.validation_type in {"docking", "admet", "safety"} and not (
@@ -334,6 +357,36 @@ def _validation_request_dispatch_blockers(request: ValidationRequest) -> list[st
         blockers.append("safety_context_required")
     if request.validation_type in {"docking", "boltz", "md", "homology", "omics"} and not context.model_system:
         blockers.append("model_system_required")
+    return _dedupe_quality_labels(blockers)
+
+
+def _catalog_dispatch_blockers_for_task(task: ValidationPlanTask) -> list[str]:
+    catalog = (task.metadata or {}).get("validation_tool_catalog")
+    if not isinstance(catalog, dict):
+        catalog = ((task.validation_request.metadata or {}).get("validation_tool_catalog") if task.validation_request else {})
+    if not isinstance(catalog, dict):
+        return []
+    blockers = [str(item) for item in catalog.get("dispatch_blockers", []) if str(item).strip()]
+    return _dedupe_quality_labels(blockers)
+
+
+def _validation_queue_dispatch_blockers_for_task(task: ValidationPlanTask) -> list[str]:
+    blockers = [*_catalog_dispatch_blockers_for_task(task)]
+    if task.requires_human_approval or (task.validation_request and task.validation_request.require_approval):
+        blockers.append("human_approval_required")
+    request_metadata = task.validation_request.metadata if task.validation_request else {}
+    catalog = (task.metadata or {}).get("validation_tool_catalog")
+    if not isinstance(catalog, dict):
+        catalog = request_metadata.get("validation_tool_catalog")
+    if not isinstance(catalog, dict):
+        catalog = {}
+    if (
+        (task.metadata or {}).get("recommend_only") is True
+        or request_metadata.get("recommend_only") is True
+        or catalog.get("recommend_only") is True
+        or catalog.get("runner_status") == "recommend_only"
+    ):
+        blockers.append("recommend_only_runner")
     return _dedupe_quality_labels(blockers)
 
 
@@ -710,7 +763,7 @@ class HSAResearchService:
         return ResearchBriefAgent(self.repository).build_playground_pack(request)
 
     def run_therapy_committee(self, request: TherapyCommitteeRequest) -> TherapyCommitteeResult:
-        return AgentRunner(self.repository).run(
+        result = AgentRunner(self.repository).run(
             agent_name=THERAPY_COMMITTEE_AGENT_NAME,
             agent_version=THERAPY_COMMITTEE_AGENT_VERSION,
             model_profile=request.model_profile,
@@ -720,6 +773,56 @@ class HSAResearchService:
             metadata=request.metadata,
             execute=lambda: run_therapy_committee(self.repository, request),
             summarize=summarize_therapy_committee,
+        )
+        for idea in result.ranked_ideas:
+            self.repository.upsert_therapy_idea(
+                _therapy_idea_record_from_result(idea, result, request)
+            )
+        return result
+
+    def list_validation_tool_catalog(
+        self,
+        request: ValidationToolCatalogRequest | None = None,
+    ) -> ValidationToolCatalogResult:
+        return build_validation_tool_catalog_report(request or ValidationToolCatalogRequest())
+
+    def match_validation_tools(self, request: ValidationToolMatchRequest) -> ValidationToolMatchResult:
+        return match_validation_tools(request)
+
+    def get_therapy_idea(self, therapy_idea_id: UUID) -> TherapyIdeaRecord | None:
+        return self.repository.get_therapy_idea(therapy_idea_id)
+
+    def list_therapy_ideas(
+        self,
+        request: TherapyIdeaLibraryRequest | None = None,
+    ) -> TherapyIdeaLibraryResult:
+        request = request or TherapyIdeaLibraryRequest()
+        if request.therapy_idea_id:
+            record = self.repository.get_therapy_idea(request.therapy_idea_id)
+            records = [record] if record else []
+        else:
+            records = self.repository.list_therapy_ideas(
+                status=request.status,
+                statuses=list(request.statuses) if request.statuses else None,
+                source_brief_id=request.source_brief_id,
+                source_evaluation_id=request.source_evaluation_id,
+                committee_run_id=request.committee_run_id,
+                topic_query=request.topic_query,
+                limit=request.limit,
+            )
+        return TherapyIdeaLibraryResult(
+            idea_count=len(records),
+            status_counts=dict(sorted(Counter(record.status for record in records).items())),
+            ideas=records,
+        )
+
+    def build_hypothesis_promotion_report(
+        self,
+        request: HypothesisPromotionReportRequest | None = None,
+    ) -> HypothesisPromotionReportResult:
+        return _build_hypothesis_promotion_report(
+            self.repository,
+            request or HypothesisPromotionReportRequest(),
         )
 
     def queue_therapy_committee_validation_requests(
@@ -926,6 +1029,64 @@ class HSAResearchService:
             limit=limit,
         )
 
+    def create_research_brief_operator_docs(
+        self,
+        request: ResearchBriefOperatorDocRequest,
+    ) -> ResearchBriefOperatorDocResult:
+        candidates: list[ResearchBriefRecord] = []
+        errors: list[str] = []
+        skipped: list[dict[str, Any]] = []
+        if request.brief_ids:
+            for brief_id in request.brief_ids:
+                brief = self.repository.get_research_brief(brief_id)
+                if brief is None:
+                    errors.append(f"brief {brief_id}: not found")
+                    continue
+                candidates.append(brief)
+        else:
+            candidates = self.repository.list_research_briefs(
+                status=request.status,
+                source_key=request.source_key,
+                topic_query=request.topic_query,
+                limit=request.limit,
+            )
+
+        documents: list[ResearchBriefOperatorDocument] = []
+        artifacts: list[ArtifactHandle] = []
+        for brief in candidates[: request.limit]:
+            if brief.status != "completed":
+                skipped.append(
+                    {
+                        "brief_id": str(brief.brief_id),
+                        "status": brief.status,
+                        "reason": "brief_not_completed",
+                    }
+                )
+                continue
+            try:
+                document, artifact = _research_brief_operator_doc_from_brief(
+                    self.repository,
+                    brief,
+                    request,
+                )
+                documents.append(document)
+                if artifact is not None:
+                    artifacts.append(artifact)
+            except Exception as exc:
+                errors.append(f"brief {brief.brief_id}: {exc}")
+
+        return ResearchBriefOperatorDocResult(
+            dry_run=request.dry_run,
+            candidate_count=len(candidates),
+            document_count=len(documents),
+            artifact_count=len(artifacts),
+            skipped_count=len(skipped),
+            documents=documents,
+            artifacts=artifacts,
+            skipped=skipped,
+            errors=errors,
+        )
+
     def evaluate_research_brief(self, request: ResearchBriefEvaluationRequest) -> ResearchBriefEvaluationResult:
         brief = _select_brief_for_evaluation(self.repository, request)
         if brief is None:
@@ -1085,7 +1246,7 @@ class HSAResearchService:
         for brief, latest_evaluation in brief_candidates[: request.limit]:
             try:
                 row = _research_brief_quality_row(brief, latest_evaluation)
-                if row.quality_status not in _RESEARCH_BRIEF_FOLLOWUP_QUALITY_STATUSES:
+                if not request.force and row.quality_status not in _RESEARCH_BRIEF_FOLLOWUP_QUALITY_STATUSES:
                     skipped.append(
                         {
                             "brief_id": str(brief.brief_id),
@@ -1200,7 +1361,7 @@ class HSAResearchService:
             plan_id=plan.plan_id,
             limit=None,
         )
-        existing_identity_keys = {item.identity_key for item in existing_items}
+        existing_by_identity = {item.identity_key: item for item in existing_items}
         candidate_task_count = 0
         queued_count = 0
         existing_count = 0
@@ -1241,6 +1402,7 @@ class HSAResearchService:
                 priority=task.priority,
                 requires_human_approval=task.requires_human_approval,
                 quality_gates=_validation_request_quality_gates(task.validation_request),
+                dispatch_blockers=_validation_queue_dispatch_blockers_for_task(task),
                 metadata={
                     **request.metadata,
                     "queued_from": "validation_plan",
@@ -1253,15 +1415,12 @@ class HSAResearchService:
                     "recommend_only": True,
                 },
             )
-            if queue_item.identity_key in existing_identity_keys:
+            if queue_item.identity_key in existing_by_identity:
                 existing_count += 1
-                queue_items.append(
-                    next(
-                        item
-                        for item in existing_items
-                        if item.identity_key == queue_item.identity_key
-                    )
-                )
+                if request.dry_run:
+                    queue_items.append(existing_by_identity[queue_item.identity_key])
+                else:
+                    queue_items.append(self.repository.upsert_validation_request_queue_item(queue_item))
                 continue
             if request.dry_run:
                 queue_items.append(queue_item)
@@ -2043,6 +2202,8 @@ class HSAResearchService:
         queued_count = 0
         preexisting_count = 0
         updated_lead_count = 0
+        handoff_documents: list[ResearchHuntSynthesisDocument] = []
+        handoff_artifacts: list[ArtifactHandle] = []
 
         for lead_row in report.leads:
             if candidate_count >= request.limit:
@@ -2066,6 +2227,30 @@ class HSAResearchService:
             if lead is None:
                 errors.append(f"lead {lead_row.lead_id}: not found")
                 continue
+
+            if request.create_handoff_docs:
+                try:
+                    doc, artifact = _research_hunt_synthesis_doc_from_lead(
+                        self.repository,
+                        lead,
+                        lead_row,
+                        ResearchHuntSynthesisDocRequest(
+                            lead_ids=[lead.lead_id],
+                            lead_statuses=request.lead_statuses,
+                            source_keys=request.source_keys,
+                            limit=1,
+                            max_claims=request.max_claims,
+                            dry_run=request.dry_run,
+                            operator=request.operator,
+                            dagster_run_id=request.dagster_run_id,
+                            metadata=request.metadata,
+                        ),
+                    )
+                    handoff_documents.append(doc)
+                    if artifact is not None:
+                        handoff_artifacts.append(artifact)
+                except Exception as exc:  # pragma: no cover - defensive service boundary
+                    errors.append(f"lead {lead.lead_id} handoff doc: {exc}")
 
             queue_request = _research_hunt_synthesis_queue_request_from_lead(lead, lead_row, request)
             preview_item = ResearchBriefQueueItem(
@@ -2143,8 +2328,78 @@ class HSAResearchService:
             queued_count=queued_count,
             preexisting_count=preexisting_count,
             updated_lead_count=updated_lead_count,
+            handoff_document_count=len(handoff_documents),
+            handoff_artifact_count=len(handoff_artifacts),
             skipped_count=len(skipped),
             queue_items=queue_items,
+            handoff_documents=handoff_documents,
+            handoff_artifacts=handoff_artifacts,
+            skipped=skipped,
+            errors=errors,
+        )
+
+    def create_ready_research_hunt_synthesis_docs(
+        self,
+        request: ResearchHuntSynthesisDocRequest,
+    ) -> ResearchHuntSynthesisDocResult:
+        report = self.build_research_hunt_queue_report(
+            ResearchHuntQueueReportRequest(
+                lead_ids=request.lead_ids,
+                lead_statuses=request.lead_statuses,
+                source_keys=request.source_keys,
+                limit=1000 if not request.lead_ids else max(len(request.lead_ids), 1),
+                task_limit=2000,
+                include_tasks=True,
+                include_suppressed=True,
+            )
+        )
+        documents: list[ResearchHuntSynthesisDocument] = []
+        artifacts: list[ArtifactHandle] = []
+        skipped: list[dict[str, Any]] = []
+        errors: list[str] = []
+        candidate_count = 0
+        updated_lead_count = 0
+
+        for lead_row in report.leads:
+            if candidate_count >= request.limit:
+                break
+            if lead_row.control_status != "ready_for_synthesis":
+                skipped.append(
+                    {
+                        "lead_id": str(lead_row.lead_id),
+                        "title": lead_row.title,
+                        "status": lead_row.status,
+                        "source_key": lead_row.source_key,
+                        "control_status": lead_row.control_status,
+                        "recommended_action": lead_row.recommended_action,
+                        "reason": "lead_not_ready_for_synthesis",
+                    }
+                )
+                continue
+
+            candidate_count += 1
+            lead = self.repository.get_research_lead(lead_row.lead_id)
+            if lead is None:
+                errors.append(f"lead {lead_row.lead_id}: not found")
+                continue
+            try:
+                doc, artifact = _research_hunt_synthesis_doc_from_lead(self.repository, lead, lead_row, request)
+                documents.append(doc)
+                if artifact is not None:
+                    artifacts.append(artifact)
+                    updated_lead_count += 1
+            except Exception as exc:  # pragma: no cover - defensive service boundary
+                errors.append(f"lead {lead.lead_id}: {exc}")
+
+        return ResearchHuntSynthesisDocResult(
+            dry_run=request.dry_run,
+            candidate_count=candidate_count,
+            document_count=len(documents),
+            artifact_count=len(artifacts),
+            updated_lead_count=updated_lead_count,
+            skipped_count=len(skipped),
+            documents=documents,
+            artifacts=artifacts,
             skipped=skipped,
             errors=errors,
         )
@@ -3977,6 +4232,544 @@ def _research_brief_record_from_result(
     )
 
 
+def _therapy_idea_record_from_result(
+    idea: TherapyIdea,
+    result: TherapyCommitteeResult,
+    request: TherapyCommitteeRequest,
+) -> TherapyIdeaRecord:
+    status = "ready_for_promotion" if idea.priority_score >= 0.65 and len(idea.evidence_refs) >= 2 else "proposed"
+    promotion_state = "ready_for_validation_plan" if status == "ready_for_promotion" else "needs_more_evidence"
+    return TherapyIdeaRecord(
+        therapy_idea_id=idea.idea_id,
+        idea=idea,
+        committee_run_id=result.committee_run_id,
+        agent_run_id=result.agent_run_id,
+        source_brief_id=result.source_brief_id or request.brief_id,
+        source_evaluation_id=result.source_evaluation_id or request.evaluation_id,
+        topic=result.topic,
+        disease_scope=result.disease_scope,
+        source_key=request.source_key,
+        status=status,
+        promotion_state=promotion_state,
+        score=idea.priority_score,
+        evidence_refs=idea.evidence_refs,
+        targets=idea.targets,
+        biomarkers=idea.biomarkers,
+        candidate_therapies=idea.candidate_therapies,
+        risks=idea.risks,
+        next_experiments=idea.next_experiments,
+        promotion_metadata={
+            "review_mode": request.review_mode,
+            "model_profile": request.model_profile,
+            "source_brief_id": str(result.source_brief_id or request.brief_id) if result.source_brief_id or request.brief_id else None,
+            "source_evaluation_id": (
+                str(result.source_evaluation_id or request.evaluation_id)
+                if result.source_evaluation_id or request.evaluation_id
+                else None
+            ),
+            "recommend_only": True,
+        },
+        metadata={
+            "therapy_committee": {
+                "committee_run_id": str(result.committee_run_id),
+                "agent_run_id": str(result.agent_run_id) if result.agent_run_id else None,
+            }
+        },
+    )
+
+
+def _build_hypothesis_promotion_report(
+    repository: ResearchRepository,
+    request: HypothesisPromotionReportRequest,
+) -> HypothesisPromotionReportResult:
+    candidates: list[HypothesisPromotionCandidate] = []
+    errors: list[str] = []
+    queued_idea_ids = _queued_therapy_idea_ids(repository)
+
+    try:
+        therapy_records = repository.list_therapy_ideas(
+            source_brief_id=request.brief_id,
+            source_evaluation_id=request.evaluation_id,
+            topic_query=request.topic_query,
+            limit=request.limit,
+        )
+        if request.therapy_idea_id:
+            therapy_records = [
+                record for record in therapy_records if record.therapy_idea_id == request.therapy_idea_id
+            ] or [
+                record
+                for record in [repository.get_therapy_idea(request.therapy_idea_id)]
+                if record is not None
+            ]
+        if request.source_key:
+            therapy_records = [record for record in therapy_records if record.source_key == request.source_key]
+        for record in therapy_records:
+            candidates.append(_promotion_candidate_from_therapy_idea(repository, record, queued_idea_ids))
+    except Exception as exc:
+        errors.append(f"Could not build therapy idea promotion candidates: {exc}")
+
+    if request.therapy_idea_id is None:
+        try:
+            briefs = _promotion_briefs(repository, request)
+            for brief in briefs:
+                evaluation = _latest_promotion_evaluation(repository, brief.brief_id, request.evaluation_id)
+                candidates.extend(
+                    _promotion_candidates_from_brief(
+                        repository=repository,
+                        brief=brief,
+                        evaluation=evaluation,
+                    )
+                )
+        except Exception as exc:
+            errors.append(f"Could not build research brief promotion candidates: {exc}")
+
+    candidates = [_filter_promotion_candidate(candidate, request) for candidate in candidates]
+    candidates = [candidate for candidate in candidates if candidate is not None]
+    candidates.sort(key=lambda candidate: (_promotion_state_rank(candidate.promotion_state), -candidate.score, candidate.title))
+    candidates = candidates[: request.limit]
+    return HypothesisPromotionReportResult(
+        candidate_count=len(candidates),
+        state_counts=dict(sorted(Counter(candidate.promotion_state for candidate in candidates).items())),
+        candidates=candidates,
+        errors=errors,
+    )
+
+
+def _promotion_candidate_from_therapy_idea(
+    repository: ResearchRepository,
+    record: TherapyIdeaRecord,
+    queued_idea_ids: set[str],
+) -> HypothesisPromotionCandidate:
+    state = _therapy_idea_promotion_state(repository, record, queued_idea_ids)
+    blockers = _therapy_idea_blockers(repository, record, state)
+    objective = " ".join(
+        [
+            record.idea.hypothesis,
+            " ".join(record.candidate_therapies),
+            " ".join(record.targets),
+            " ".join(record.biomarkers),
+            " ".join(record.risks),
+        ]
+    )
+    matches = match_validation_tools(
+        ValidationToolMatchRequest(
+            validation_type=_promotion_validation_type(record),
+            task_type=_promotion_task_type(record),
+            objective=objective,
+            candidate_name=record.candidate_therapies[0] if record.candidate_therapies else None,
+            target_name=record.targets[0] if record.targets else None,
+            required_inputs=[
+                "committee-ranked therapy idea",
+                "cited evidence refs",
+                *("target and biomarker list" for _ in record.targets[:1]),
+                *("candidate therapy list" for _ in record.candidate_therapies[:1]),
+            ],
+            limit=3,
+        )
+    ).matches
+    return HypothesisPromotionCandidate(
+        candidate_id=f"therapy_idea:{record.therapy_idea_id}",
+        source_type="therapy_idea",
+        source_id=str(record.therapy_idea_id),
+        brief_id=record.source_brief_id,
+        evaluation_id=record.source_evaluation_id,
+        therapy_idea_id=record.therapy_idea_id,
+        committee_run_id=record.committee_run_id,
+        title=record.idea.title,
+        hypothesis=record.idea.hypothesis,
+        promotion_state=state,
+        score=record.score,
+        candidate_therapies=record.candidate_therapies,
+        targets=record.targets,
+        biomarkers=record.biomarkers,
+        evidence_refs=record.evidence_refs,
+        risks=record.risks,
+        next_experiments=record.next_experiments,
+        blockers=blockers,
+        recommended_next_action=_recommended_promotion_action(state),
+        recommended_job_name=_recommended_promotion_job(state),
+        matched_tools=matches,
+        metadata={
+            "status": record.status,
+            "evidence_strength": record.idea.evidence_strength,
+            "promotion_metadata": record.promotion_metadata,
+        },
+    )
+
+
+def _promotion_candidates_from_brief(
+    *,
+    repository: ResearchRepository,
+    brief: ResearchBriefRecord,
+    evaluation: ResearchBriefEvaluationRecord | None,
+) -> list[HypothesisPromotionCandidate]:
+    payload = brief.result_payload or {}
+    findings: list[ResearchBriefFinding] = []
+    for raw in payload.get("ranked_hypotheses", []):
+        if not isinstance(raw, dict):
+            continue
+        try:
+            findings.append(ResearchBriefFinding.model_validate(raw))
+        except Exception:
+            continue
+    candidates: list[HypothesisPromotionCandidate] = []
+    for index, finding in enumerate(findings[:8], start=1):
+        state = _brief_hypothesis_promotion_state(brief, evaluation)
+        text = f"{finding.claim} {finding.reasoning} {' '.join(finding.open_questions)}"
+        therapies = _extract_known_terms(text, _PROMOTION_THERAPY_TERMS)
+        targets = _extract_known_terms(text, _PROMOTION_TARGET_TERMS)
+        biomarkers = _extract_known_terms(text, _PROMOTION_BIOMARKER_TERMS)
+        matches = match_validation_tools(
+            ValidationToolMatchRequest(
+                validation_type="expert_review" if state == "ready_for_committee" else "omics",
+                task_type="expert_review" if state == "ready_for_committee" else "omics",
+                objective=text,
+                candidate_name=therapies[0] if therapies else None,
+                target_name=targets[0] if targets else None,
+                required_inputs=["research brief", "citation set", "synthesis evaluation"],
+                limit=3,
+            )
+        ).matches
+        candidates.append(
+            HypothesisPromotionCandidate(
+                candidate_id=f"brief_hypothesis:{brief.brief_id}:{index}",
+                source_type="research_brief_hypothesis",
+                source_id=f"{brief.brief_id}:{index}",
+                brief_id=brief.brief_id,
+                evaluation_id=evaluation.evaluation_id if evaluation else None,
+                title=_title_from_claim(finding.claim),
+                hypothesis=finding.claim,
+                promotion_state=state,
+                score=_promotion_score_from_finding(finding, evaluation),
+                candidate_therapies=therapies,
+                targets=targets,
+                biomarkers=biomarkers,
+                evidence_refs=finding.citations,
+                risks=finding.open_questions,
+                next_experiments=["Run therapy committee review from this evaluated brief."],
+                blockers=_brief_hypothesis_blockers(brief, evaluation, state),
+                recommended_next_action=_recommended_promotion_action(state),
+                recommended_job_name=_recommended_promotion_job(state),
+                matched_tools=matches,
+                metadata={
+                    "topic": brief.topic,
+                    "source_key": brief.source_key,
+                    "evidence_strength": finding.evidence_strength,
+                    "stance": finding.stance,
+                    "evaluation_readiness": evaluation.readiness if evaluation else None,
+                    "evaluation_score": evaluation.overall_score if evaluation else None,
+                },
+            )
+        )
+    return candidates
+
+
+def _promotion_briefs(
+    repository: ResearchRepository,
+    request: HypothesisPromotionReportRequest,
+) -> list[ResearchBriefRecord]:
+    if request.brief_id:
+        brief = repository.get_research_brief(request.brief_id)
+        return [brief] if brief else []
+    if request.evaluation_id:
+        evaluation = repository.get_research_brief_evaluation(request.evaluation_id)
+        if evaluation is None:
+            return []
+        brief = repository.get_research_brief(evaluation.brief_id)
+        return [brief] if brief else []
+    return repository.list_research_briefs(
+        status="completed",
+        source_key=request.source_key,
+        topic_query=request.topic_query,
+        limit=request.limit,
+    )
+
+
+def _latest_promotion_evaluation(
+    repository: ResearchRepository,
+    brief_id: UUID,
+    evaluation_id: UUID | None,
+) -> ResearchBriefEvaluationRecord | None:
+    if evaluation_id:
+        return repository.get_research_brief_evaluation(evaluation_id)
+    evaluations = repository.list_research_brief_evaluations(brief_id=brief_id, limit=1)
+    return evaluations[0] if evaluations else None
+
+
+def _therapy_idea_promotion_state(
+    repository: ResearchRepository,
+    record: TherapyIdeaRecord,
+    queued_idea_ids: set[str],
+) -> str:
+    if record.status in {"archived", "rejected"}:
+        return "blocked"
+    if str(record.therapy_idea_id) in queued_idea_ids or record.status == "queued_for_validation":
+        return "queued_for_validation"
+    evaluation = repository.get_research_brief_evaluation(record.source_evaluation_id) if record.source_evaluation_id else None
+    if _needs_citation_repair(record=record, evaluation=evaluation):
+        return "needs_citation_repair"
+    if len(record.evidence_refs) < 2 or record.score < 0.55:
+        return "needs_more_evidence"
+    return "ready_for_validation_plan"
+
+
+def _brief_hypothesis_promotion_state(
+    brief: ResearchBriefRecord,
+    evaluation: ResearchBriefEvaluationRecord | None,
+) -> str:
+    if _needs_citation_repair(brief=brief, evaluation=evaluation):
+        return "needs_citation_repair"
+    if evaluation is None or not evaluation.passes_quality_bar or evaluation.readiness not in {
+        "ready_for_hypothesis_review",
+        "ready_for_validation",
+    }:
+        return "needs_more_evidence"
+    return "ready_for_committee"
+
+
+def _needs_citation_repair(
+    *,
+    brief: ResearchBriefRecord | None = None,
+    evaluation: ResearchBriefEvaluationRecord | None = None,
+    record: TherapyIdeaRecord | None = None,
+) -> bool:
+    payloads = [
+        payload
+        for payload in (
+            brief.result_payload if brief else None,
+            evaluation.result_payload if evaluation else None,
+            evaluation.summary if evaluation else None,
+            record.promotion_metadata if record else None,
+            record.metadata if record else None,
+        )
+        if isinstance(payload, dict)
+    ]
+    if any(_payload_has_citation_repair_flag(payload) for payload in payloads):
+        return True
+    repair_text = " ".join(_citation_repair_text_fields(payloads)).casefold()
+    if _CITATION_REPAIR_PATTERN.search(repair_text):
+        return True
+    return False
+
+
+_CITATION_REPAIR_PATTERN = re.compile(
+    r"\b(?:citation|citations|reference|references|doi|pmid|pmcid)\b.{0,80}\b(?:repair|deduplicate|dedupe)\b.{0,40}\b(?:need(?:ed|s)?|required|before promotion|before validation)\b"
+    r"|\b(?:repair|deduplicate|dedupe)\b.{0,40}\b(?:citation|citations|reference|references)\b.{0,40}\b(?:need(?:ed|s)?|required|before promotion|before validation)\b"
+)
+
+
+def _payload_has_citation_repair_flag(payload: dict[str, Any]) -> bool:
+    for key in (
+        "citation_repair_required",
+        "needs_citation_repair",
+        "unresolved_citation_duplicates",
+        "has_unresolved_citation_duplicates",
+    ):
+        if payload.get(key) is True:
+            return True
+    for key in ("unresolved_citation_duplicate_count", "citation_repair_count"):
+        try:
+            if int(payload.get(key) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    for value in payload.values():
+        if isinstance(value, dict) and _payload_has_citation_repair_flag(value):
+            return True
+    return False
+
+
+def _citation_repair_text_fields(payloads: list[dict[str, Any]]) -> list[str]:
+    values: list[str] = []
+    for payload in payloads:
+        values.extend(_nested_strings(payload.get("errors")))
+        values.extend(_nested_strings(payload.get("weaknesses")))
+        values.extend(_nested_strings(payload.get("recommendations")))
+        evidence = payload.get("evidence")
+        if isinstance(evidence, dict):
+            values.extend(_nested_strings(evidence.get("errors")))
+            values.extend(_nested_strings(evidence.get("weaknesses")))
+            values.extend(_nested_strings(evidence.get("notable_risks")))
+            values.extend(_nested_strings(evidence.get("recommendations")))
+        for value in payload.values():
+            if isinstance(value, dict):
+                values.extend(_citation_repair_text_fields([value]))
+    return values
+
+
+def _therapy_idea_blockers(
+    repository: ResearchRepository,
+    record: TherapyIdeaRecord,
+    state: str,
+) -> list[str]:
+    blockers: list[str] = []
+    if state == "needs_citation_repair":
+        blockers.append("citation_repair_required")
+    if len(record.evidence_refs) < 2:
+        blockers.append("at_least_two_evidence_refs_required")
+    if record.source_evaluation_id:
+        evaluation = repository.get_research_brief_evaluation(record.source_evaluation_id)
+        if evaluation and not evaluation.passes_quality_bar:
+            blockers.append("source_evaluation_did_not_pass_quality_bar")
+    if state == "blocked":
+        blockers.append(f"therapy_idea_status_{record.status}")
+    return _dedupe_quality_labels(blockers)
+
+
+def _brief_hypothesis_blockers(
+    brief: ResearchBriefRecord,
+    evaluation: ResearchBriefEvaluationRecord | None,
+    state: str,
+) -> list[str]:
+    blockers: list[str] = []
+    if state == "needs_citation_repair":
+        blockers.append("citation_repair_required")
+    if evaluation is None:
+        blockers.append("synthesis_evaluation_required")
+    elif not evaluation.passes_quality_bar:
+        blockers.append("synthesis_quality_bar_required")
+    if brief.citation_count < 2:
+        blockers.append("at_least_two_unique_citations_required")
+    return _dedupe_quality_labels(blockers)
+
+
+def _queued_therapy_idea_ids(repository: ResearchRepository) -> set[str]:
+    queued: set[str] = set()
+    for item in repository.list_validation_request_queue_items(limit=None):
+        idea_id = str((item.metadata or {}).get("idea_id") or "").strip()
+        if idea_id:
+            queued.add(idea_id)
+    return queued
+
+
+def _filter_promotion_candidate(
+    candidate: HypothesisPromotionCandidate,
+    request: HypothesisPromotionReportRequest,
+) -> HypothesisPromotionCandidate | None:
+    if candidate.promotion_state in {"needs_citation_repair", "needs_more_evidence", "blocked"} and not request.include_blocked:
+        return None
+    if candidate.promotion_state == "ready_for_committee" and not request.include_ready_for_committee:
+        return None
+    if candidate.promotion_state in {"ready_for_validation_plan", "queued_for_validation"} and not request.include_ready_for_validation:
+        return None
+    return candidate
+
+
+def _recommended_promotion_action(state: str) -> str:
+    return {
+        "needs_citation_repair": "Repair/dedupe citations and rerun synthesis evaluation before promotion.",
+        "needs_more_evidence": "Queue focused evidence acquisition before committee or validation planning.",
+        "ready_for_committee": "Run therapy committee from the evaluated brief.",
+        "ready_for_validation_plan": "Create a recommend-only validation plan using the matched tool hints.",
+        "queued_for_validation": "Wait for validation queue review/dispatch outcome.",
+        "blocked": "Keep blocked until an operator changes the idea status or resolves blockers.",
+    }[state]
+
+
+def _recommended_promotion_job(state: str) -> str | None:
+    return {
+        "needs_citation_repair": "research_brief_evaluation_job",
+        "needs_more_evidence": "research_hunt_synthesis_queue_job",
+        "ready_for_committee": "therapy_committee_job",
+        "ready_for_validation_plan": "validation_plan_job",
+        "queued_for_validation": None,
+        "blocked": None,
+    }[state]
+
+
+def _promotion_state_rank(state: str) -> int:
+    return {
+        "ready_for_validation_plan": 0,
+        "ready_for_committee": 1,
+        "queued_for_validation": 2,
+        "needs_citation_repair": 3,
+        "needs_more_evidence": 4,
+        "blocked": 5,
+    }.get(state, 9)
+
+
+def _promotion_validation_type(record: TherapyIdeaRecord) -> str:
+    if record.risks:
+        return "safety"
+    if record.candidate_therapies and (record.targets or record.biomarkers):
+        return "wet_lab"
+    if record.targets or record.biomarkers:
+        return "omics"
+    return "expert_review"
+
+
+def _promotion_task_type(record: TherapyIdeaRecord) -> str:
+    if record.risks:
+        return "safety"
+    if record.candidate_therapies and (record.targets or record.biomarkers):
+        return "wet_lab"
+    if record.targets or record.biomarkers:
+        return "omics"
+    return "expert_review"
+
+
+def _promotion_score_from_finding(
+    finding: ResearchBriefFinding,
+    evaluation: ResearchBriefEvaluationRecord | None,
+) -> float:
+    strength = {"high": 0.75, "medium": 0.6, "low": 0.42, "unknown": 0.32}.get(finding.evidence_strength, 0.32)
+    eval_score = evaluation.overall_score if evaluation else 0.4
+    return round(min(1.0, (strength * 0.55) + (eval_score * 0.45)), 3)
+
+
+def _title_from_claim(claim: str) -> str:
+    text = re.sub(r"\s+", " ", claim).strip()
+    if len(text) <= 96:
+        return text
+    return text[:93].rstrip(" .,;:") + "..."
+
+
+def _extract_known_terms(text: str, terms: set[str]) -> list[str]:
+    normalized = text.casefold()
+    return sorted({term for term in terms if term.casefold() in normalized})
+
+
+_PROMOTION_THERAPY_TERMS = {
+    "dasatinib",
+    "doxorubicin",
+    "mirdametinib",
+    "paclitaxel",
+    "pazopanib",
+    "propranolol",
+    "rapamycin",
+    "sirolimus",
+    "sorafenib",
+    "toceranib",
+    "trametinib",
+}
+
+_PROMOTION_TARGET_TERMS = {
+    "ANGPT2",
+    "EGFR",
+    "FLT4",
+    "KDR",
+    "KIT",
+    "MET",
+    "MTOR",
+    "PDGFRB",
+    "PIK3CA",
+    "PTEN",
+    "TP53",
+    "VEGFA",
+    "VEGFR",
+}
+
+_PROMOTION_BIOMARKER_TERMS = {
+    "CD31",
+    "CD34",
+    "KIT",
+    "KDR",
+    "MKI67",
+    "PDGFRB",
+    "VEGFA",
+}
+
+
 def _research_brief_completion_error(result: ResearchBriefResult) -> str | None:
     finding_count = sum(len(report.findings) for report in result.perspective_reports)
     missing: list[str] = []
@@ -3991,6 +4784,305 @@ def _research_brief_completion_error(result: ResearchBriefResult) -> str | None:
     hard_errors = _research_brief_hard_errors(result)
     suffix = f"; agent_error_count={len(hard_errors)}" if hard_errors else ""
     return f"research brief did not meet completion bar; missing {', '.join(missing)}{suffix}"
+
+
+def _research_brief_operator_doc_from_brief(
+    repository: ResearchRepository,
+    brief: ResearchBriefRecord,
+    request: ResearchBriefOperatorDocRequest,
+) -> tuple[ResearchBriefOperatorDocument, ArtifactHandle | None]:
+    title = _research_brief_operator_doc_title(brief)
+    hypotheses = _research_brief_result_list(brief, "ranked_hypotheses")[: request.max_hypotheses]
+    unresolved_questions = _research_brief_result_list(brief, "unresolved_questions")[
+        : request.max_unresolved_questions
+    ]
+    evidence_limitations = _research_brief_record_evidence_limitations(brief)[
+        : request.max_evidence_limitations
+    ]
+    citations = _research_brief_result_list(brief, "citations")
+    plain_summary = _research_brief_operator_doc_plain_summary(
+        brief,
+        hypotheses=hypotheses,
+        evidence_limitations=evidence_limitations,
+    )
+    markdown, footnote_count = _render_research_brief_operator_doc_markdown(
+        brief=brief,
+        title=title,
+        plain_summary=plain_summary,
+        hypotheses=hypotheses,
+        unresolved_questions=unresolved_questions,
+        evidence_limitations=evidence_limitations,
+        citations=citations,
+        request=request,
+    )
+    artifact_id = uuid5(NAMESPACE_URL, f"twog:research-brief-operator-doc:{brief.brief_id}")
+    artifact_uri = f"twog://research-brief/operator-doc/{artifact_id}"
+    document = ResearchBriefOperatorDocument(
+        brief_id=brief.brief_id,
+        title=title,
+        artifact_id=None if request.dry_run else artifact_id,
+        artifact_uri=None if request.dry_run else artifact_uri,
+        markdown=markdown,
+        plain_language_summary=plain_summary,
+        citation_count=brief.citation_count,
+        hypothesis_count=len(hypotheses),
+        unresolved_question_count=len(unresolved_questions),
+        evidence_limitation_count=len(evidence_limitations),
+        technical_footnote_count=footnote_count,
+        metadata={
+            **request.metadata,
+            "source_key": brief.source_key,
+            "brief_status": brief.status,
+            "brief_style": brief.brief_style,
+            "model_profile": brief.model_profile,
+            "review_mode": brief.review_mode,
+            "operator": request.operator,
+            "dagster_run_id": request.dagster_run_id,
+        },
+    )
+    if request.dry_run:
+        return document, None
+
+    artifact = ArtifactHandle(
+        artifact_id=artifact_id,
+        artifact_type="research_brief_operator_markdown",
+        uri=artifact_uri,
+        legal_status="derived_from_local_research_metadata",
+        mime_type="text/markdown",
+        metadata={
+            **document.metadata,
+            "brief_id": str(brief.brief_id),
+            "agent_run_id": str(brief.agent_run_id) if brief.agent_run_id else None,
+            "agent_run_ids": [str(agent_run_id) for agent_run_id in brief.agent_run_ids],
+            "title": title,
+            "markdown": markdown,
+            "plain_language_summary": plain_summary,
+            "citation_count": brief.citation_count,
+            "hypothesis_count": len(hypotheses),
+            "unresolved_question_count": len(unresolved_questions),
+            "evidence_limitation_count": len(evidence_limitations),
+            "technical_footnote_count": footnote_count,
+            "created_at": document.created_at.isoformat(),
+        },
+    )
+    repository.upsert_artifact(artifact)
+    return document.model_copy(update={"artifact_id": artifact.artifact_id, "artifact_uri": artifact.uri}), artifact
+
+
+def _research_brief_operator_doc_title(brief: ResearchBriefRecord) -> str:
+    topic = brief.topic.strip()
+    if topic.lower().startswith("review research lead:"):
+        topic = topic.split(":", 1)[1].strip()
+    topic = topic.split("|", 1)[0].strip()
+    return topic[:240] or "Research synthesis brief"
+
+
+def _research_brief_operator_doc_plain_summary(
+    brief: ResearchBriefRecord,
+    *,
+    hypotheses: list[Any],
+    evidence_limitations: list[str],
+) -> str:
+    first_hypothesis = _brief_finding_claim(hypotheses[0]) if hypotheses else ""
+    if first_hypothesis:
+        basis = first_hypothesis
+    elif brief.final_brief:
+        basis = _first_nonheading_sentence(brief.final_brief)
+    else:
+        basis = str(brief.summary.get("topic") if isinstance(brief.summary, dict) else "")
+    limitation = evidence_limitations[0] if evidence_limitations else ""
+    if limitation:
+        return (
+            f"The synthesis currently says: {basis} The important caveat is: {limitation} "
+            "This should be treated as a decision-support brief, not as proof of clinical benefit."
+        )
+    return (
+        f"The synthesis currently says: {basis} This should be treated as a decision-support brief, "
+        "not as proof of clinical benefit."
+    )
+
+
+def _render_research_brief_operator_doc_markdown(
+    *,
+    brief: ResearchBriefRecord,
+    title: str,
+    plain_summary: str,
+    hypotheses: list[Any],
+    unresolved_questions: list[Any],
+    evidence_limitations: list[str],
+    citations: list[Any],
+    request: ResearchBriefOperatorDocRequest,
+) -> tuple[str, int]:
+    footnotes: list[str] = []
+    citation_by_id = {
+        str(citation.get("citation_id") or ""): citation
+        for citation in citations
+        if isinstance(citation, dict)
+    }
+    lines = [
+        f"# {title}",
+        "",
+        "## Plain-language summary",
+        plain_summary,
+        "",
+        "## Bottom line",
+        (
+            "This brief is ready for human review and next-step planning. It does not say a therapy is proven. "
+            "It separates what the agents found from what still needs direct evidence."
+        ),
+        "",
+        "## What looks supported",
+    ]
+    if hypotheses:
+        for hypothesis in hypotheses:
+            claim = _brief_finding_claim(hypothesis)
+            if not claim:
+                continue
+            marker = _append_operator_doc_footnote(
+                footnotes,
+                request,
+                _brief_hypothesis_footnote(hypothesis, citation_by_id),
+            )
+            lines.append(f"- {claim}{marker}")
+    else:
+        lines.append("- No ranked hypotheses were persisted with this brief.")
+
+    lines.extend(["", "## What is still missing"])
+    if evidence_limitations:
+        for limitation in evidence_limitations:
+            lines.append(f"- {_humanize_doc_text(limitation)}")
+    else:
+        lines.append("- No evidence limitations were persisted with this brief.")
+
+    if unresolved_questions:
+        lines.extend(["", "## Questions to hand to the next agent"])
+        for question in unresolved_questions:
+            text = str(question).strip()
+            if text:
+                lines.append(f"- {_humanize_doc_text(text)}")
+
+    lines.extend(
+        [
+            "",
+            "## Recommended next move",
+            (
+                "- Create focused evidence-acquisition tasks for the missing direct evidence, then rerun synthesis "
+                "after those tasks either find records or confirm the gap."
+            ),
+            (
+                "- Keep treatment-context labels explicit: monotherapy, maintenance, adjuvant combination, "
+                "in-vitro mechanism, safety, and cross-species translation are separate claims."
+            ),
+            "",
+            "## System record",
+            f"- Brief ID: {brief.brief_id}",
+            f"- Status: {brief.status}",
+            f"- Source key: {brief.source_key or 'mixed'}",
+            f"- Citations: {brief.citation_count}",
+            f"- Findings: {brief.finding_count}",
+            f"- Ranked hypotheses: {brief.hypothesis_count}",
+            f"- Evidence limitations: {brief.evidence_limitation_count}",
+            f"- Open questions: {brief.unresolved_question_count}",
+        ]
+    )
+
+    if request.include_technical_footnotes:
+        lines.extend(["", "## Technical footnotes"])
+        _append_operator_doc_footnote(
+            footnotes,
+            request,
+            (
+                f"Brief generated by agent run {brief.agent_run_id}; perspective runs: "
+                f"{[str(agent_run_id) for agent_run_id in brief.agent_run_ids]}; "
+                f"model_profile={brief.model_profile}; review_mode={brief.review_mode}."
+            ),
+        )
+        for citation in citations:
+            if isinstance(citation, dict):
+                _append_operator_doc_footnote(footnotes, request, _brief_citation_footnote(citation))
+        if not footnotes:
+            lines.append("No technical footnotes were available for this brief.")
+        else:
+            for index, footnote in enumerate(footnotes, start=1):
+                lines.append(f"[T{index}] {footnote}")
+
+    return "\n".join(lines).strip() + "\n", len(footnotes)
+
+
+def _research_brief_result_list(brief: ResearchBriefRecord, key: str) -> list[Any]:
+    value = (brief.result_payload or {}).get(key)
+    return value if isinstance(value, list) else []
+
+
+def _brief_finding_claim(finding: Any) -> str:
+    if isinstance(finding, dict):
+        return str(finding.get("claim") or "").strip()
+    return str(finding).strip()
+
+
+def _brief_hypothesis_footnote(finding: Any, citation_by_id: dict[str, Any]) -> str:
+    if not isinstance(finding, dict):
+        return str(finding)
+    citations = [str(citation_id) for citation_id in finding.get("citations", [])]
+    citation_summaries = [
+        _brief_citation_footnote(citation_by_id[citation_id])
+        for citation_id in citations
+        if citation_id in citation_by_id
+    ]
+    return "; ".join(
+        item
+        for item in [
+            f"stance={finding.get('stance')}",
+            f"evidence_strength={finding.get('evidence_strength')}",
+            f"reasoning={finding.get('reasoning')}",
+            f"citations={citation_summaries[:3]}",
+        ]
+        if item and item != "citations=[]"
+    )
+
+
+def _brief_citation_footnote(citation: dict[str, Any]) -> str:
+    return _truncate(
+        " ".join(
+            item
+            for item in [
+                str(citation.get("citation_id") or "").strip(),
+                str(citation.get("title") or "").strip(),
+                str(citation.get("source_key") or "").strip(),
+                str(citation.get("source_url") or "").strip(),
+                str(citation.get("quote") or "").strip(),
+            ]
+            if item
+        ),
+        1800,
+    )
+
+
+def _append_operator_doc_footnote(
+    footnotes: list[str],
+    request: ResearchBriefOperatorDocRequest,
+    text: str,
+) -> str:
+    if not request.include_technical_footnotes or len(footnotes) >= request.max_technical_footnotes:
+        return ""
+    normalized = _truncate(re.sub(r"\s+", " ", str(text).strip()), 1800)
+    if not normalized:
+        return ""
+    if normalized in footnotes:
+        return f" [T{footnotes.index(normalized) + 1}]"
+    footnotes.append(normalized)
+    return f" [T{len(footnotes)}]"
+
+
+def _first_nonheading_sentence(markdown: str) -> str:
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith("-"):
+            continue
+        sentence = re.split(r"(?<=[.!?])\s+", line, maxsplit=1)[0].strip()
+        if sentence:
+            return sentence[:1000]
+    return ""
 
 
 def _research_brief_hard_errors(result: ResearchBriefResult) -> list[str]:
@@ -4765,7 +5857,7 @@ def _research_hunt_synthesis_queue_request_from_lead(
     return ResearchBriefQueueRequest(
         topic=_research_brief_topic_from_lead(lead),
         disease_scope=request.disease_scope,
-        source_key=_research_brief_source_key_from_lead(lead),
+        source_key=None,
         priority=min(request.priority, lead.priority),
         max_chunks_per_perspective=request.max_chunks_per_perspective,
         max_claims=request.max_claims,
@@ -4808,6 +5900,504 @@ def _research_hunt_synthesis_queue_request_from_lead(
             },
         },
     )
+
+
+def _research_hunt_synthesis_doc_from_lead(
+    repository: ResearchRepository,
+    lead: ResearchLeadRecord,
+    lead_row: ResearchHuntLeadQueueRow,
+    request: ResearchHuntSynthesisDocRequest,
+) -> tuple[ResearchHuntSynthesisDocument, ArtifactHandle | None]:
+    state = lead.metadata.get("research_hunt") if isinstance(lead.metadata, dict) else None
+    state = state if isinstance(state, dict) else {}
+    best_signal = state.get("best_signal") if isinstance(state.get("best_signal"), dict) else {}
+    task_rows = state.get("tasks") if isinstance(state.get("tasks"), list) else []
+    suppressed_rows = state.get("suppressed_tasks") if isinstance(state.get("suppressed_tasks"), list) else []
+    evidence_refs = _research_hunt_synthesis_doc_evidence_refs(lead, best_signal, task_rows, suppressed_rows)
+    chunks, objects = _research_hunt_synthesis_doc_evidence(repository, evidence_refs, request)
+    claims = _research_hunt_synthesis_doc_claims(repository, lead, objects, request)
+    title = lead.title or lead.summary or lead.reason or "Ready research lead"
+    summary = _research_hunt_synthesis_doc_plain_summary(lead, lead_row, best_signal)
+    markdown, footnote_count = _render_research_hunt_synthesis_doc_markdown(
+        lead=lead,
+        lead_row=lead_row,
+        title=title,
+        plain_summary=summary,
+        best_signal=best_signal,
+        claims=claims,
+        chunks=chunks,
+        objects=objects,
+        evidence_refs=evidence_refs,
+        task_rows=task_rows,
+        suppressed_rows=suppressed_rows,
+        request=request,
+    )
+    artifact_id = uuid5(NAMESPACE_URL, f"twog:research-hunt-synthesis-doc:{lead.lead_id}")
+    artifact_uri = f"twog://research-hunt/synthesis-doc/{artifact_id}"
+    document = ResearchHuntSynthesisDocument(
+        lead_id=lead.lead_id,
+        title=title,
+        control_status=lead_row.control_status,
+        recommended_action=lead_row.recommended_action,
+        artifact_id=None if request.dry_run else artifact_id,
+        artifact_uri=None if request.dry_run else artifact_uri,
+        markdown=markdown,
+        plain_language_summary=summary,
+        claim_count=len(claims),
+        chunk_count=len(chunks),
+        research_object_count=len(objects),
+        evidence_ref_count=len(evidence_refs),
+        technical_footnote_count=footnote_count,
+        metadata={
+            **request.metadata,
+            "source_key": lead_row.source_key or lead.source_key,
+            "signal_status": lead_row.signal_status,
+            "coverage_status": lead_row.coverage_status,
+            "best_signal_score": lead_row.best_signal_score,
+            "operator": request.operator,
+            "dagster_run_id": request.dagster_run_id,
+        },
+    )
+    if request.dry_run:
+        return document, None
+
+    artifact = ArtifactHandle(
+        artifact_id=artifact_id,
+        artifact_type="research_hunt_synthesis_handoff_markdown",
+        uri=artifact_uri,
+        legal_status="derived_from_local_research_metadata",
+        mime_type="text/markdown",
+        metadata={
+            **document.metadata,
+            "lead_id": str(lead.lead_id),
+            "title": title,
+            "markdown": markdown,
+            "plain_language_summary": summary,
+            "claim_count": len(claims),
+            "chunk_count": len(chunks),
+            "research_object_count": len(objects),
+            "evidence_ref_count": len(evidence_refs),
+            "technical_footnote_count": footnote_count,
+            "created_at": document.created_at.isoformat(),
+        },
+    )
+    repository.upsert_artifact(artifact)
+    repository.update_research_lead(
+        lead.lead_id,
+        metadata={
+            "research_hunt_synthesis_doc": {
+                "artifact_id": str(artifact.artifact_id),
+                "artifact_uri": artifact.uri,
+                "artifact_type": artifact.artifact_type,
+                "operator": request.operator,
+                "dagster_run_id": request.dagster_run_id,
+                "created_at": document.created_at.isoformat(),
+            }
+        },
+    )
+    return document.model_copy(update={"artifact_id": artifact.artifact_id, "artifact_uri": artifact.uri}), artifact
+
+
+def _research_hunt_synthesis_doc_evidence_refs(
+    lead: ResearchLeadRecord,
+    best_signal: dict[str, Any],
+    task_rows: list[Any],
+    suppressed_rows: list[Any],
+) -> list[str]:
+    refs: list[str] = []
+    refs.extend(str(ref) for ref in lead.evidence_refs)
+    for value in _nested_strings(best_signal):
+        if _looks_like_evidence_ref(value):
+            refs.append(value)
+    for row in [*task_rows, *suppressed_rows]:
+        if isinstance(row, dict):
+            for key in ("evidence_refs", "result_evidence_refs", "refs"):
+                value = row.get(key)
+                if isinstance(value, list):
+                    refs.extend(str(item) for item in value if _looks_like_evidence_ref(str(item)))
+            for value in _nested_strings(row.get("result") or row.get("metadata") or {}):
+                if _looks_like_evidence_ref(value):
+                    refs.append(value)
+    return _dedupe_preserve_order(refs)
+
+
+def _research_hunt_synthesis_doc_evidence(
+    repository: ResearchRepository,
+    evidence_refs: list[str],
+    request: ResearchHuntSynthesisDocRequest,
+) -> tuple[list[DocumentChunk], list[ResearchObject]]:
+    chunk_ids: list[UUID] = []
+    object_ids: list[UUID] = []
+    for ref in evidence_refs:
+        chunk_ids.extend(UUID(match.group(1)) for match in _RESEARCH_HUNT_CHUNK_REF_RE.finditer(ref))
+        object_ids.extend(UUID(match.group(1)) for match in _RESEARCH_HUNT_OBJECT_REF_RE.finditer(ref))
+
+    chunks: list[DocumentChunk] = []
+    objects_by_id: dict[UUID, ResearchObject] = {}
+    for chunk_id in _dedupe_preserve_order(chunk_ids):
+        chunk = repository.get_document_chunk(chunk_id)
+        if chunk is None:
+            continue
+        chunks.append(chunk)
+        obj = repository.get_research_object(chunk.research_object_id)
+        if obj is not None:
+            objects_by_id[obj.id] = obj
+    for object_id in _dedupe_preserve_order(object_ids):
+        obj = repository.get_research_object(object_id)
+        if obj is None:
+            continue
+        objects_by_id[obj.id] = obj
+        if len(chunks) < request.max_chunks:
+            for chunk in repository.list_document_chunks(object_id=obj.id, limit=max(request.max_chunks - len(chunks), 0)):
+                if chunk.id not in {item.id for item in chunks}:
+                    chunks.append(chunk)
+                if len(chunks) >= request.max_chunks:
+                    break
+
+    chunks = chunks[: request.max_chunks]
+    objects = list(objects_by_id.values())
+    objects.sort(key=lambda obj: (obj.source_key or "", obj.title or "", str(obj.id)))
+    return chunks, objects
+
+
+def _research_hunt_synthesis_doc_claims(
+    repository: ResearchRepository,
+    lead: ResearchLeadRecord,
+    objects: list[ResearchObject],
+    request: ResearchHuntSynthesisDocRequest,
+) -> list[ClaimSearchResult]:
+    object_ids = {obj.id for obj in objects}
+    list_claims = getattr(repository, "list_claims", None)
+    if callable(list_claims):
+        claims = list_claims(
+            min_confidence=0.0,
+            include_seed_claims=False,
+            limit=None if object_ids else max(request.max_claims * 50, 250),
+        )
+    else:
+        claims = repository.search_claims(
+            ClaimSearchRequest(
+                query=None,
+                min_confidence=0.0,
+                include_drafts=True,
+                limit=max(request.max_claims * 4, request.max_claims, 1),
+            )
+        )
+    if object_ids:
+        claims = [claim for claim in claims if claim.source_object_id in object_ids]
+    if not claims and request.max_claims:
+        for query in _research_hunt_doc_query_terms(lead):
+            claims.extend(
+                repository.search_claims(
+                    ClaimSearchRequest(
+                        query=query,
+                        min_confidence=0.0,
+                        include_drafts=True,
+                        limit=request.max_claims,
+                    )
+                )
+            )
+            if len(claims) >= request.max_claims:
+                break
+    seen: set[UUID] = set()
+    seen_statements: set[str] = set()
+    deduped: list[ClaimSearchResult] = []
+    terms = set(_research_hunt_doc_query_terms(lead))
+    scored_claims = [(claim, _claim_relevance_score(claim, terms)) for claim in claims]
+    if terms and any(score > 0 for _, score in scored_claims):
+        scored_claims = [(claim, score) for claim, score in scored_claims if score > 0]
+    elif terms:
+        scored_claims = []
+    for claim, _score in sorted(scored_claims, key=lambda item: (-item[1], -item[0].confidence, item[0].statement)):
+        statement_key = re.sub(r"\s+", " ", claim.statement.strip().lower())
+        if claim.claim_id in seen or statement_key in seen_statements:
+            continue
+        seen.add(claim.claim_id)
+        seen_statements.add(statement_key)
+        deduped.append(claim)
+    return deduped[: request.max_claims]
+
+
+def _claim_relevance_score(claim: ClaimSearchResult, terms: set[str]) -> int:
+    if not terms:
+        return 0
+    haystack = " ".join(
+        [
+            claim.statement,
+            claim.source_title or "",
+            claim.source_url or "",
+            " ".join(entity.canonical_name for entity in claim.entities),
+        ]
+    ).lower()
+    return sum(1 for term in terms if term in haystack)
+
+
+def _research_hunt_doc_query_terms(lead: ResearchLeadRecord) -> list[str]:
+    candidates = [lead.title or "", lead.reason or "", lead.summary or "", *lead.topic_tags]
+    useful: list[str] = []
+    for candidate in candidates:
+        for term in re.findall(r"[A-Za-z0-9]{3,}", candidate):
+            normalized = term.strip(".,;:()[]{}").lower()
+            if len(normalized) < 4 or normalized in _RESEARCH_HUNT_DOC_STOPWORDS:
+                continue
+            useful.append(normalized)
+    return _dedupe_preserve_order(useful)[:8]
+
+
+def _research_hunt_synthesis_doc_plain_summary(
+    lead: ResearchLeadRecord,
+    lead_row: ResearchHuntLeadQueueRow,
+    best_signal: dict[str, Any],
+) -> str:
+    signal_summary = best_signal.get("summary") if isinstance(best_signal.get("summary"), str) else None
+    basis = signal_summary or lead.summary or lead.reason or "The research hunt found enough supported evidence to move this topic into synthesis."
+    return (
+        f"{basis} The system has marked this lead as ready for synthesis because concrete hunt tasks are closed "
+        f"and the best current signal score is {lead_row.best_signal_score}/100."
+    )
+
+
+def _render_research_hunt_synthesis_doc_markdown(
+    *,
+    lead: ResearchLeadRecord,
+    lead_row: ResearchHuntLeadQueueRow,
+    title: str,
+    plain_summary: str,
+    best_signal: dict[str, Any],
+    claims: list[ClaimSearchResult],
+    chunks: list[DocumentChunk],
+    objects: list[ResearchObject],
+    evidence_refs: list[str],
+    task_rows: list[Any],
+    suppressed_rows: list[Any],
+    request: ResearchHuntSynthesisDocRequest,
+) -> tuple[str, int]:
+    footnotes: list[str] = []
+    lines = [
+        f"# {title}",
+        "",
+        "## Plain-language summary",
+        plain_summary,
+        "",
+        "## What this means",
+        (
+            "This is a handoff document for synthesis. It means the research hunt found a signal worth briefing, "
+            "not that the therapy or idea is proven. The next synthesis pass should compare the strongest direct "
+            "evidence against adjacent evidence and decide what still needs validation."
+        ),
+        "",
+        "## What the system found",
+    ]
+    if claims:
+        for index, claim in enumerate(claims[: min(6, len(claims))], start=1):
+            marker = _append_footnote(
+                footnotes,
+                request,
+                _claim_technical_footnote(claim, objects),
+            )
+            lines.append(f"- {claim.statement}{marker}")
+            if index >= 6:
+                break
+    elif best_signal:
+        marker = _append_footnote(footnotes, request, f"Best signal payload: {best_signal}")
+        lines.append(f"- The strongest available signal is captured in the research-hunt state.{marker}")
+    else:
+        lines.append("- No extracted claims were attached yet; synthesis should start from the evidence references below.")
+
+    lines.extend(
+        [
+            "",
+            "## What this does not prove yet",
+            (
+                "- This does not establish clinical efficacy on its own. Synthesis still needs to separate direct canine "
+                "hemangiosarcoma evidence from human angiosarcoma, broader canine oncology, and mechanism-only evidence."
+            ),
+            (
+                "- Treatment context matters. Maintenance, combination therapy, in-vitro response, safety, and true "
+                "monotherapy outcomes should be labeled separately before any validation plan is proposed."
+            ),
+            "",
+            "## Why it matters",
+            (
+                "A ready lead is where the system stops hunting broadly and asks the synthesis agents to turn the evidence "
+                "into a usable brief: what appears supported, what is weak, what is missing, and what should be tested next."
+            ),
+            "",
+            "## What should happen next",
+            "- Queue or run the synthesis brief for this lead.",
+            "- Ask the synthesis agents to preserve the distinction between direct evidence and translational evidence.",
+            "- Convert missing evidence into focused follow-up tasks instead of leaving vague caveats in the brief.",
+            "",
+            "## System state",
+            f"- Control status: {lead_row.control_status}",
+            f"- Recommended action: {lead_row.recommended_action}",
+            f"- Signal status: {lead_row.signal_status or 'unknown'}",
+            f"- Coverage status: {lead_row.coverage_status or 'unknown'}",
+            f"- Best signal score: {lead_row.best_signal_score}/100",
+            f"- Completed hunt tasks: {lead_row.completed_task_count}",
+            f"- Open concrete hunt tasks: {lead_row.open_concrete_count}",
+            f"- Open broad/passive hunt tasks: {lead_row.open_broad_count + lead_row.open_passive_count}",
+        ]
+    )
+    open_tasks = [
+        row
+        for row in task_rows
+        if isinstance(row, dict) and str(row.get("status") or "open").lower() not in {"completed", "done", "suppressed"}
+    ]
+    if open_tasks:
+        lines.append("")
+        lines.append("## Remaining watch items")
+        for row in open_tasks[:6]:
+            action = _humanize_doc_text(str(row.get("action") or row.get("task_type") or "Follow-up task"))
+            lines.append(f"- {action[:240]}")
+    if suppressed_rows:
+        suppressed_actions = [
+            _humanize_doc_text(str(row.get("action") or row.get("task_type") or "Suppressed task"))
+            for row in suppressed_rows[:5]
+            if isinstance(row, dict)
+        ]
+        marker = _append_footnote(
+            footnotes,
+            request,
+            f"Suppressed hunt tasks retained for audit: count={len(suppressed_rows)}, examples={suppressed_actions}",
+        )
+        lines.append(f"- Suppressed duplicate or passive tasks are retained for audit.{marker}")
+
+    if request.include_technical_footnotes:
+        lines.extend(["", "## Technical footnotes"])
+        for obj in objects:
+            marker_text = _object_technical_footnote(obj)
+            _append_footnote(footnotes, request, marker_text)
+        for chunk in chunks:
+            obj = next((item for item in objects if item.id == chunk.research_object_id), None)
+            _append_footnote(footnotes, request, _chunk_technical_footnote(chunk, obj, request.max_chunk_chars))
+        if evidence_refs:
+            _append_footnote(footnotes, request, f"Raw evidence refs on the lead/state: {evidence_refs[:25]}")
+        if not footnotes:
+            lines.append("No technical footnotes were available for this handoff.")
+        else:
+            for index, footnote in enumerate(footnotes, start=1):
+                lines.append(f"[T{index}] {footnote}")
+
+    return "\n".join(lines).strip() + "\n", len(footnotes)
+
+
+def _append_footnote(footnotes: list[str], request: ResearchHuntSynthesisDocRequest, text: str) -> str:
+    if not request.include_technical_footnotes or len(footnotes) >= request.max_technical_footnotes:
+        return ""
+    normalized = _truncate(text, 1800)
+    if normalized in footnotes:
+        return f" [T{footnotes.index(normalized) + 1}]"
+    footnotes.append(normalized)
+    return f" [T{len(footnotes)}]"
+
+
+def _claim_technical_footnote(claim: ClaimSearchResult, objects: list[ResearchObject]) -> str:
+    obj = next((item for item in objects if item.id == claim.source_object_id), None)
+    source = _object_source_label(obj) if obj is not None else claim.source_title or claim.source_url or str(claim.source_object_id or "unknown source")
+    return (
+        f"Claim {claim.claim_id}: type={claim.claim_type}, direction={claim.direction}, "
+        f"confidence={claim.confidence:.2f}, evidence_level={claim.evidence_level}, source={source}."
+    )
+
+
+def _object_technical_footnote(obj: ResearchObject) -> str:
+    return f"Research object {obj.id}: {_object_source_label(obj)}."
+
+
+def _chunk_technical_footnote(chunk: DocumentChunk, obj: ResearchObject | None, max_chars: int) -> str:
+    preview = _truncate(chunk.text_content.replace("\n", " "), max_chars)
+    source = _object_source_label(obj) if obj is not None else str(chunk.research_object_id)
+    section = f", section={chunk.section_label}" if chunk.section_label else ""
+    return f"Chunk {chunk.id}: source={source}, index={chunk.chunk_index}{section}, preview={preview}"
+
+
+def _object_source_label(obj: ResearchObject | None) -> str:
+    if obj is None:
+        return "unknown source"
+    ids = []
+    for key in ("pmid", "pmcid", "doi", "nct_id"):
+        value = obj.identifiers.get(key) if isinstance(obj.identifiers, dict) else None
+        if value:
+            ids.append(f"{key.upper()} {value}")
+    id_text = f" ({'; '.join(ids)})" if ids else ""
+    title = obj.title or obj.canonical_url or str(obj.id)
+    source = f", source={obj.source_key}" if obj.source_key else ""
+    return f"{title}{id_text}{source}"
+
+
+def _humanize_doc_text(value: str) -> str:
+    text = value.replace("_", " ")
+    text = re.sub(r"\s+", " ", text)
+    text = text.replace("( e.g.,", "(e.g.,")
+    return text.strip()
+
+
+def _nested_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        strings: list[str] = []
+        for item in value.values():
+            strings.extend(_nested_strings(item))
+        return strings
+    if isinstance(value, list | tuple | set):
+        strings = []
+        for item in value:
+            strings.extend(_nested_strings(item))
+        return strings
+    return []
+
+
+def _looks_like_evidence_ref(value: str) -> bool:
+    return any(
+        token in value.lower()
+        for token in ("chunk:", "research_object:", "pmid", "pmcid", "doi:", "nct")
+    )
+
+
+def _dedupe_preserve_order(values: list[Any]) -> list[Any]:
+    deduped: list[Any] = []
+    seen: set[Any] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
+_RESEARCH_HUNT_DOC_STOPWORDS = {
+    "about",
+    "after",
+    "against",
+    "and",
+    "angiosarcoma",
+    "canine",
+    "clinical",
+    "data",
+    "evidence",
+    "find",
+    "found",
+    "from",
+    "hemangiosarcoma",
+    "hsa",
+    "human",
+    "inhibitor",
+    "inhibitors",
+    "into",
+    "lead",
+    "monotherapy",
+    "outcomes",
+    "research",
+    "review",
+    "search",
+    "signal",
+    "splenic",
+    "study",
+    "therapy",
+    "with",
+}
 
 
 _RESEARCH_HUNT_CHUNK_REF_RE = re.compile(r"chunk:([0-9a-fA-F-]{36})")

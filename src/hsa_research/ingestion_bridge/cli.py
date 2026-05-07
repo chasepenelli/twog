@@ -25,9 +25,11 @@ from .contracts import (
     EntityResolutionRequest,
     FullTextTriageRequest,
     FullTextOpsRequest,
+    HypothesisPromotionReportRequest,
     PubMedIdentifierRepairRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
+    ResearchBriefOperatorDocRequest,
     ResearchBriefQueueBatchRequest,
     ResearchBriefQueueMaintenanceRequest,
     ResearchBriefQueueRequest,
@@ -39,6 +41,7 @@ from .contracts import (
     ResearchHuntTaskRunRequest,
     ResearchHuntQueueReportRequest,
     ResearchHuntQueueMaintenanceRequest,
+    ResearchHuntSynthesisDocRequest,
     ResearchHuntSynthesisQueueRequest,
     ResearchLeadCollectRequest,
     RetrievalSmokeRequest,
@@ -54,11 +57,14 @@ from .contracts import (
     SourceScoutRequest,
     TherapyCommitteeRequest,
     TherapyCommitteeValidationQueueRequest,
+    TherapyIdeaLibraryRequest,
     ValidationAutopilotRequest,
     ValidationGapSourceIngestRequest,
     ValidationGapSourcePackRequest,
     ValidationPlanRequest,
     ValidationRequestQueueRequest,
+    ValidationToolCatalogRequest,
+    ValidationToolMatchRequest,
     XLinkedArticleReviewRequest,
     XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
@@ -339,6 +345,23 @@ def main() -> None:
     research_briefs.add_argument("--topic-query", default=None, help="Case-insensitive topic/scope filter")
     research_briefs.add_argument("--limit", type=int, default=50, help="Maximum briefs to return")
 
+    research_brief_operator_doc = subparsers.add_parser(
+        "research-brief-operator-doc",
+        help="Create plain-language operator docs from completed research briefs",
+    )
+    research_brief_operator_doc.add_argument("--brief-id", action="append", default=[], help="Specific brief ID")
+    research_brief_operator_doc.add_argument("--status", default="completed", help="Brief status filter")
+    research_brief_operator_doc.add_argument("--source", default=None, help="Optional source key filter")
+    research_brief_operator_doc.add_argument("--topic-query", default=None, help="Case-insensitive topic/scope filter")
+    research_brief_operator_doc.add_argument("--limit", type=int, default=10, help="Maximum docs to create")
+    research_brief_operator_doc.add_argument("--max-hypotheses", type=int, default=5)
+    research_brief_operator_doc.add_argument("--max-unresolved-questions", type=int, default=8)
+    research_brief_operator_doc.add_argument("--max-evidence-limitations", type=int, default=8)
+    research_brief_operator_doc.add_argument("--max-technical-footnotes", type=int, default=30)
+    research_brief_operator_doc.add_argument("--no-technical-footnotes", action="store_true")
+    research_brief_operator_doc.add_argument("--apply", action="store_true", help="Persist artifact records")
+    research_brief_operator_doc.add_argument("--operator", default="cli_operator")
+
     queue_research_brief = subparsers.add_parser(
         "queue-research-brief",
         help="Queue a research brief request for later runner execution",
@@ -590,6 +613,59 @@ def main() -> None:
         default=[],
         help="OpenRouter model id; repeat to compare multiple models",
     )
+    therapy_committee.add_argument("--brief-id", default=None, help="Run committee from a persisted evaluated brief")
+    therapy_committee.add_argument("--evaluation-id", default=None, help="Run committee from a persisted brief evaluation")
+
+    validation_tool_catalog = subparsers.add_parser(
+        "validation-tool-catalog",
+        help="List the in-repo recommend-only validation tool catalog",
+    )
+    validation_tool_catalog.add_argument("--category", default=None, help="Optional tool category")
+    validation_tool_catalog.add_argument("--runner-status", default=None, help="Optional runner status")
+    validation_tool_catalog.add_argument("--validation-type", default=None, help="Optional validation type filter")
+    validation_tool_catalog.add_argument("--task-type", default=None, help="Optional validation plan task type filter")
+    validation_tool_catalog.add_argument("--query", default=None, help="Text search over catalog descriptions")
+    validation_tool_catalog.add_argument("--limit", type=int, default=50, help="Maximum tools to return")
+
+    match_validation_tool = subparsers.add_parser(
+        "match-validation-tool",
+        help="Match validation tool catalog entries to a task context",
+    )
+    match_validation_tool.add_argument("--validation-type", default=None, help="Validation request type")
+    match_validation_tool.add_argument("--task-type", default=None, help="Validation plan task type")
+    match_validation_tool.add_argument("--objective", default=None, help="Task objective text")
+    match_validation_tool.add_argument("--candidate-name", default=None, help="Candidate therapy/compound")
+    match_validation_tool.add_argument("--target-name", default=None, help="Target or biomarker")
+    match_validation_tool.add_argument("--species", action="append", default=[], help="Species context; repeatable")
+    match_validation_tool.add_argument("--required-input", action="append", default=[], help="Available input; repeatable")
+    match_validation_tool.add_argument("--runner-status", default="recommend_only", help="Runner status filter")
+    match_validation_tool.add_argument("--limit", type=int, default=5, help="Maximum matches to return")
+
+    therapy_ideas = subparsers.add_parser(
+        "therapy-idea-library",
+        help="List persisted therapy ideas",
+    )
+    therapy_ideas.add_argument("--id", default=None, help="Therapy idea ID")
+    therapy_ideas.add_argument("--status", default=None, help="Therapy idea status")
+    therapy_ideas.add_argument("--brief-id", default=None, help="Source brief ID")
+    therapy_ideas.add_argument("--evaluation-id", default=None, help="Source evaluation ID")
+    therapy_ideas.add_argument("--committee-run-id", default=None, help="Committee run ID")
+    therapy_ideas.add_argument("--query", default=None, help="Topic/title/hypothesis search")
+    therapy_ideas.add_argument("--limit", type=int, default=50, help="Maximum ideas to return")
+
+    hypothesis_promotion = subparsers.add_parser(
+        "hypothesis-promotion-report",
+        help="Report evaluated brief and therapy idea promotion candidates",
+    )
+    hypothesis_promotion.add_argument("--brief-id", default=None, help="Brief ID")
+    hypothesis_promotion.add_argument("--evaluation-id", default=None, help="Evaluation ID")
+    hypothesis_promotion.add_argument("--therapy-idea-id", default=None, help="Therapy idea ID")
+    hypothesis_promotion.add_argument("--query", default=None, help="Topic/title/hypothesis search")
+    hypothesis_promotion.add_argument("--source", default=None, help="Source key filter")
+    hypothesis_promotion.add_argument("--hide-blocked", action="store_true", help="Hide blocked/follow-up candidates")
+    hypothesis_promotion.add_argument("--hide-ready-committee", action="store_true", help="Hide committee-ready candidates")
+    hypothesis_promotion.add_argument("--hide-ready-validation", action="store_true", help="Hide validation-ready candidates")
+    hypothesis_promotion.add_argument("--limit", type=int, default=50, help="Maximum candidates to return")
 
     x_topic_monitor = subparsers.add_parser(
         "x-topic-monitor",
@@ -1004,6 +1080,11 @@ def main() -> None:
         action="store_true",
         help="Use only brief-level limitations, not latest evaluation feedback",
     )
+    queue_research_brief_followups.add_argument(
+        "--force",
+        action="store_true",
+        help="Queue evidence-limit follow-ups even when the brief only needs evaluator review",
+    )
     queue_research_brief_followups.add_argument("--dry-run", action="store_true", help="Preview without persisting")
 
     plan_validation = subparsers.add_parser(
@@ -1327,9 +1408,30 @@ def main() -> None:
         default=[],
         help="OpenRouter model id; repeat to compare multiple models.",
     )
+    queue_ready_hunt_synthesis.add_argument(
+        "--no-handoff-docs",
+        action="store_true",
+        help="Skip plain-language synthesis handoff document generation.",
+    )
     queue_ready_hunt_synthesis.add_argument("--apply", action="store_true", help="Persist queue items. Without this flag the command is a dry run.")
     queue_ready_hunt_synthesis.add_argument("--no-transition-leads", action="store_true", help="Do not mark queued leads as queued.")
     queue_ready_hunt_synthesis.add_argument("--operator", default="cli_operator", help="Operator identity recorded in metadata.")
+
+    research_hunt_synthesis_doc = subparsers.add_parser(
+        "research-hunt-synthesis-doc",
+        help="Create plain-language synthesis handoff docs for ready research-hunt leads.",
+    )
+    research_hunt_synthesis_doc.add_argument("--lead-id", action="append", default=[], help="Research lead ID; repeat for multiple.")
+    research_hunt_synthesis_doc.add_argument("--lead-status", action="append", default=[], help="Lead status filter. Defaults to active/queued hunt statuses.")
+    research_hunt_synthesis_doc.add_argument("--source", action="append", default=[], help="Source key filter.")
+    research_hunt_synthesis_doc.add_argument("--limit", type=int, default=10, help="Maximum ready leads to document.")
+    research_hunt_synthesis_doc.add_argument("--max-claims", type=int, default=16, help="Maximum claims to include.")
+    research_hunt_synthesis_doc.add_argument("--max-chunks", type=int, default=12, help="Maximum cited chunks to footnote.")
+    research_hunt_synthesis_doc.add_argument("--max-chunk-chars", type=int, default=900, help="Maximum chars per chunk footnote.")
+    research_hunt_synthesis_doc.add_argument("--max-technical-footnotes", type=int, default=30, help="Maximum technical footnotes.")
+    research_hunt_synthesis_doc.add_argument("--no-technical-footnotes", action="store_true", help="Create the plain-language doc without technical footnotes.")
+    research_hunt_synthesis_doc.add_argument("--apply", action="store_true", help="Persist artifact records. Without this flag the command is a dry run.")
+    research_hunt_synthesis_doc.add_argument("--operator", default="cli_operator", help="Operator identity recorded in metadata.")
 
     model_review_summary = subparsers.add_parser(
         "model-review-summary",
@@ -1667,6 +1769,23 @@ def main() -> None:
                     limit=args.limit,
                 )
             ]
+    elif args.command == "research-brief-operator-doc":
+        output = HSAResearchService(repo).create_research_brief_operator_docs(
+            ResearchBriefOperatorDocRequest(
+                brief_ids=[UUID(value) for value in args.brief_id],
+                status=args.status,
+                source_key=args.source,
+                topic_query=args.topic_query,
+                limit=args.limit,
+                max_hypotheses=args.max_hypotheses,
+                max_unresolved_questions=args.max_unresolved_questions,
+                max_evidence_limitations=args.max_evidence_limitations,
+                max_technical_footnotes=args.max_technical_footnotes,
+                include_technical_footnotes=not args.no_technical_footnotes,
+                dry_run=not args.apply,
+                operator=args.operator,
+            )
+        ).model_dump(mode="json")
     elif args.command == "queue-research-brief":
         output = HSAResearchService(repo).queue_research_brief(
             ResearchBriefQueueRequest(
@@ -1779,6 +1898,59 @@ def main() -> None:
                 model_profile=args.model_profile,
                 review_mode=args.review_mode,
                 review_models=args.review_model,
+                brief_id=UUID(args.brief_id) if args.brief_id else None,
+                evaluation_id=UUID(args.evaluation_id) if args.evaluation_id else None,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "validation-tool-catalog":
+        output = HSAResearchService(repo).list_validation_tool_catalog(
+            ValidationToolCatalogRequest(
+                category=args.category,
+                runner_status=args.runner_status,
+                validation_type=args.validation_type,
+                task_type=args.task_type,
+                query=args.query,
+                limit=args.limit,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "match-validation-tool":
+        output = HSAResearchService(repo).match_validation_tools(
+            ValidationToolMatchRequest(
+                validation_type=args.validation_type,
+                task_type=args.task_type,
+                objective=args.objective,
+                candidate_name=args.candidate_name,
+                target_name=args.target_name,
+                species=args.species,
+                required_inputs=args.required_input,
+                runner_status=args.runner_status,
+                limit=args.limit,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "therapy-idea-library":
+        output = HSAResearchService(repo).list_therapy_ideas(
+            TherapyIdeaLibraryRequest(
+                therapy_idea_id=UUID(args.id) if args.id else None,
+                status=args.status,
+                source_brief_id=UUID(args.brief_id) if args.brief_id else None,
+                source_evaluation_id=UUID(args.evaluation_id) if args.evaluation_id else None,
+                committee_run_id=UUID(args.committee_run_id) if args.committee_run_id else None,
+                topic_query=args.query,
+                limit=args.limit,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "hypothesis-promotion-report":
+        output = HSAResearchService(repo).build_hypothesis_promotion_report(
+            HypothesisPromotionReportRequest(
+                brief_id=UUID(args.brief_id) if args.brief_id else None,
+                evaluation_id=UUID(args.evaluation_id) if args.evaluation_id else None,
+                therapy_idea_id=UUID(args.therapy_idea_id) if args.therapy_idea_id else None,
+                topic_query=args.query,
+                source_key=args.source,
+                include_blocked=not args.hide_blocked,
+                include_ready_for_committee=not args.hide_ready_committee,
+                include_ready_for_validation=not args.hide_ready_validation,
+                limit=args.limit,
             )
         ).model_dump(mode="json")
     elif args.command == "x-topic-monitor":
@@ -2087,6 +2259,7 @@ def main() -> None:
                 limit=args.limit,
                 include_evaluations=not args.no_evaluations,
                 max_limitations_per_brief=args.max_limitations_per_brief,
+                force=args.force,
                 dry_run=args.dry_run,
             )
         ).model_dump(mode="json")
@@ -2335,8 +2508,25 @@ def main() -> None:
                 model_profile=args.model_profile,
                 review_mode=args.review_mode,
                 review_models=args.review_model,
+                create_handoff_docs=not args.no_handoff_docs,
                 dry_run=not args.apply,
                 transition_leads=not args.no_transition_leads,
+                operator=args.operator,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "research-hunt-synthesis-doc":
+        output = HSAResearchService(repo).create_ready_research_hunt_synthesis_docs(
+            ResearchHuntSynthesisDocRequest(
+                lead_ids=[UUID(value) for value in args.lead_id],
+                lead_statuses=args.lead_status or ["new", "watching", "followup", "queued"],
+                source_keys=args.source,
+                limit=args.limit,
+                max_claims=args.max_claims,
+                max_chunks=args.max_chunks,
+                max_chunk_chars=args.max_chunk_chars,
+                max_technical_footnotes=args.max_technical_footnotes,
+                include_technical_footnotes=not args.no_technical_footnotes,
+                dry_run=not args.apply,
                 operator=args.operator,
             )
         ).model_dump(mode="json")

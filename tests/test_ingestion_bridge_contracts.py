@@ -45,6 +45,7 @@ from hsa_research.ingestion_bridge.contracts import (
     FullTextOpsAction,
     FullTextOpsRequest,
     FullTextOpsResult,
+    HypothesisPromotionReportRequest,
     HypothesisProposalRequest,
     IngestionResult,
     RawSourceRecord,
@@ -59,6 +60,8 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchBriefFollowupQueueRequest,
     ResearchBriefFollowupQueueResult,
     ResearchBriefFinding,
+    ResearchBriefOperatorDocRequest,
+    ResearchBriefOperatorDocResult,
     ResearchBriefPerspectiveReport,
     ResearchBriefQualityReportRequest,
     ResearchBriefQueueBatchRequest,
@@ -80,6 +83,9 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchHuntQueueMaintenanceRequest,
     ResearchHuntQueueMaintenanceResult,
     ResearchHuntQueueMaintenanceItem,
+    ResearchHuntSynthesisDocument,
+    ResearchHuntSynthesisDocRequest,
+    ResearchHuntSynthesisDocResult,
     ResearchHuntSynthesisQueueRequest,
     ResearchHuntSynthesisQueueResult,
     ResearchFollowupRefinementRequest,
@@ -108,6 +114,8 @@ from hsa_research.ingestion_bridge.contracts import (
     TherapyCommitteeValidationQueueRequest,
     TherapyCommitteeValidationQueueResult,
     TherapyIdea,
+    TherapyIdeaLibraryRequest,
+    TherapyIdeaRecord,
     ValidationAgentResult,
     ValidationPlanRecord,
     ValidationPlanRequest,
@@ -123,6 +131,9 @@ from hsa_research.ingestion_bridge.contracts import (
     ValidationRequest,
     ValidationRequestQueueItem,
     ValidationRequestQueueRequest,
+    ValidationToolCatalogRequest,
+    ValidationToolCapability,
+    ValidationToolMatchRequest,
     ClaimCurationRequest,
     SourceScoutRequest,
     PubMedIdentifierRepairRequest,
@@ -149,6 +160,7 @@ from hsa_research.ingestion_bridge import research_followup_resolver
 from hsa_research.ingestion_bridge import pubmed_identifier_repair
 from hsa_research.ingestion_bridge import research_brief_agent
 from hsa_research.ingestion_bridge import therapy_committee
+from hsa_research.ingestion_bridge import validation_agents
 from hsa_research.ingestion_bridge import source_followup
 from hsa_research.ingestion_bridge.full_text_ops import FullTextOpsAgent
 from hsa_research.ingestion_bridge.dagster_assets import (
@@ -215,6 +227,11 @@ from hsa_research.ingestion_bridge.structured_orchestration import (
     full_text_source_qa,
     run_structured_sources_pipeline,
     structured_source_qa,
+)
+from hsa_research.ingestion_bridge.validation_tool_catalog import (
+    build_validation_tool_task,
+    get_validation_tool,
+    list_validation_tool_catalog,
 )
 
 
@@ -330,6 +347,373 @@ def test_validation_plan_contracts_validate():
     with pytest.raises(ValueError):
         ValidationPlanResult(brief_id=uuid4(), topic="x", readiness="bad")
 
+
+def test_validation_tool_catalog_covers_recommend_only_lanes():
+    catalog = list_validation_tool_catalog()
+    expected_keys = {
+        "expert_review",
+        "assay_design_review",
+        "target_expression_review",
+        "biomarker_response_assay_design",
+        "omics_expression_review",
+        "mutation_function_review",
+        "peptide_specialist_review",
+        "safety_translational_risk_review",
+    }
+
+    assert {entry.tool_key for entry in catalog} == expected_keys
+    assert len(catalog) == len(expected_keys)
+    assert all(entry.runner_status == "recommend_only" for entry in catalog)
+    assert all(entry.mode == "draft" for entry in catalog)
+    assert all(entry.assay_context_template.species == ["canine", "human"] for entry in catalog)
+    assert get_validation_tool("safety_translational_risk_review").validation_type == "safety"
+    assert get_validation_tool("mutation_function_review").task_type == "target_validation"
+    assert get_validation_tool("peptide_specialist_review").recommended_agent_name == (
+        "peptide_specialist_validation_agent"
+    )
+    for entry in catalog:
+        task = entry.as_plan_task(
+            rationale="Source-traceable recommend-only catalog task.",
+            candidate_name="sorafenib",
+            target_name="KDR",
+            evidence_refs=["C1"],
+        )
+        assert isinstance(task.validation_request, ValidationRequest)
+        assert task.validation_request.validation_type == entry.validation_type
+        assert task.validation_request.metadata["validation_tool_catalog"]["tool_key"] == entry.tool_key
+        assert task.validation_request.metadata["validation_tool_catalog"]["runner_status"] == "recommend_only"
+    with pytest.raises(KeyError):
+        get_validation_tool("wet_magic")
+
+
+def test_validation_tool_catalog_builds_existing_validation_task_contracts():
+    task = build_validation_tool_task(
+        "biomarker_response_assay_design",
+        title="Biomarker response assay: KDR",
+        objective="Design a conservative response assay for KDR-high canine HSA models.",
+        rationale="The committee needs a recommend-only assay design before any dispatch.",
+        candidate_name="sorafenib",
+        target_name="KDR",
+        priority=42,
+        evidence_refs=["C1", "C1", "brief:1"],
+        assay_context_overrides={"sample_context": "KDR-high and KDR-low canine HSA samples."},
+        metadata={"origin": "unit-test"},
+    )
+
+    assert task.task_type == "wet_lab"
+    assert task.tool_hint == "biomarker_response_assay_design"
+    assert task.evidence_refs == ["C1", "brief:1"]
+    assert task.validation_request is not None
+    assert isinstance(task.validation_request, ValidationRequest)
+    assert task.validation_request.validation_type == "wet_lab"
+    assert task.validation_request.require_approval is True
+    assert task.validation_request.candidate_name == "sorafenib"
+    assert task.validation_request.target_name == "KDR"
+    assert task.validation_request.assay_context.sample_context == "KDR-high and KDR-low canine HSA samples."
+    assert task.validation_request.assay_context.evidence_refs == ["C1", "brief:1"]
+    assert task.validation_request.metadata["origin"] == "unit-test"
+    assert task.validation_request.metadata["recommend_only"] is True
+    assert task.validation_request.metadata["validation_tool_catalog"] == {
+        "version": "v1",
+        "tool_key": "biomarker_response_assay_design",
+        "display_name": "Biomarker-response assay design",
+        "runner_status": "recommend_only",
+        "mode": "draft",
+        "recommended_agent_name": "assay_design_validation_agent",
+        "tool_hint": "biomarker_response_assay_design",
+    }
+
+
+def test_validation_tool_catalog_contracts_and_matching_service(tmp_path):
+    with pytest.raises(ValueError):
+        ValidationToolCapability(
+            tool_key="bad-tool",
+            display_name="Bad tool",
+            category="unknown",
+            description="Invalid category should fail.",
+            compatible_validation_types=["expert_review"],
+            compatible_task_types=["expert_review"],
+            tool_hint="bad",
+        )
+
+    service = HSAResearchService(SQLiteResearchRepository(tmp_path / "catalog.sqlite3", seed=False))
+    catalog = service.list_validation_tool_catalog(ValidationToolCatalogRequest(query="omics"))
+    matched = service.match_validation_tools(
+        ValidationToolMatchRequest(
+            validation_type="omics",
+            task_type="omics",
+            objective="Review KDR expression in canine HSA and human angiosarcoma datasets.",
+            target_name="KDR",
+            required_inputs=["gene or biomarker terms", "canine HSA datasets", "human angiosarcoma datasets"],
+        )
+    )
+
+    assert catalog.tool_count >= 1
+    assert matched.match_count >= 1
+    assert matched.matches[0].tool.runner_status == "recommend_only"
+    assert matched.matches[0].tool.tool_key in {"omics_expression_review", "target_expression_review"}
+
+    peptide_matched = service.match_validation_tools(
+        ValidationToolMatchRequest(
+            validation_type="expert_review",
+            task_type="expert_review",
+            objective="Review a cyclic peptide for target engagement, delivery, stability, and immunogenicity.",
+            required_inputs=[
+                "peptide sequence or modality",
+                "target/pathway rationale",
+                "delivery route or formulation context",
+                "stability or protease risk context",
+            ],
+        )
+    )
+
+    assert peptide_matched.match_count >= 1
+    assert peptide_matched.matches[0].tool.tool_key == "peptide_specialist_review"
+    assert peptide_matched.matches[0].tool.category == "peptide_specialist"
+
+
+def test_therapy_ideas_round_trip_and_committee_from_brief(tmp_path):
+    for repo in [
+        InMemoryResearchRepository(),
+        SQLiteResearchRepository(tmp_path / "therapy-ideas.sqlite3", seed=False),
+    ]:
+        service = HSAResearchService(repo)
+        brief, evaluation = _seed_evaluated_brief(repo, duplicate_count=0)
+        result = service.run_therapy_committee(
+            TherapyCommitteeRequest(
+                brief_id=brief.brief_id,
+                evaluation_id=evaluation.evaluation_id,
+                review_mode="deterministic_only",
+                max_claims=0,
+            )
+        )
+        ideas = service.list_therapy_ideas(
+            TherapyIdeaLibraryRequest(source_brief_id=brief.brief_id, limit=20)
+        )
+
+        assert result.source_brief_id == brief.brief_id
+        assert result.source_evaluation_id == evaluation.evaluation_id
+        assert result.ranked_ideas
+        assert ideas.idea_count == len(result.ranked_ideas)
+        assert ideas.ideas[0].source_brief_id == brief.brief_id
+        assert repo.get_therapy_idea(ideas.ideas[0].therapy_idea_id) is not None
+
+
+def test_hypothesis_promotion_report_blocks_citation_repair_and_promotes_clean(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "promotion.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    dirty_brief, _dirty_eval = _seed_evaluated_brief(repo, duplicate_count=2)
+    clean_brief, clean_eval = _seed_evaluated_brief(repo, topic="Clean toceranib VEGFR hypothesis", duplicate_count=0)
+    clean_idea = TherapyIdea(
+        title="Toceranib/KDR validation lane",
+        hypothesis="Toceranib monotherapy should be reviewed against KDR/VEGFR direct canine HSA evidence.",
+        rationale="The evidence packet has enough cited VEGFR context to plan a recommend-only validation review.",
+        candidate_therapies=["toceranib"],
+        targets=["KDR", "VEGFR"],
+        biomarkers=["VEGFR2"],
+        evidence_refs=["C1", "C2"],
+        evidence_strength="medium",
+        risks=["direct monotherapy response data may be sparse"],
+        next_experiments=["Review direct canine monotherapy outcomes."],
+        priority_score=0.72,
+    )
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=clean_idea,
+            source_brief_id=clean_brief.brief_id,
+            source_evaluation_id=clean_eval.evaluation_id,
+            topic=clean_brief.topic,
+            status="ready_for_promotion",
+            score=0.72,
+        )
+    )
+
+    dirty_report = service.build_hypothesis_promotion_report(
+        HypothesisPromotionReportRequest(brief_id=dirty_brief.brief_id)
+    )
+    clean_report = service.build_hypothesis_promotion_report(
+        HypothesisPromotionReportRequest(therapy_idea_id=clean_idea.idea_id)
+    )
+
+    assert dirty_report.candidates
+    assert {candidate.promotion_state for candidate in dirty_report.candidates} == {"needs_citation_repair"}
+    assert clean_report.candidates[0].promotion_state == "ready_for_validation_plan"
+    assert clean_report.candidates[0].matched_tools
+    assert clean_report.candidates[0].matched_tools[0].tool.runner_status == "recommend_only"
+
+
+def test_hypothesis_promotion_allows_successful_dedupe_metadata(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "promotion-dedupe.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief, _evaluation = _seed_evaluated_brief(
+        repo,
+        topic="Successfully deduped canine HSA citation packet",
+        duplicate_count=3,
+        evaluation_weaknesses=[],
+    )
+
+    report = service.build_hypothesis_promotion_report(
+        HypothesisPromotionReportRequest(brief_id=brief.brief_id)
+    )
+
+    assert report.candidates
+    assert {candidate.promotion_state for candidate in report.candidates} == {"ready_for_committee"}
+    assert all("citation_repair_required" not in candidate.blockers for candidate in report.candidates)
+
+
+def test_validation_plan_includes_catalog_hints_and_queue_blockers(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-plan-catalog.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief, evaluation = _seed_evaluated_brief(repo, duplicate_count=0)
+
+    plan = service.plan_validation(
+        ValidationPlanRequest(brief_id=brief.brief_id, evaluation_id=evaluation.evaluation_id)
+    )
+    task = next(task for task in plan.tasks if task.validation_request is not None)
+    queued = service.queue_validation_requests_from_plan(
+        ValidationRequestQueueRequest(plan_id=plan.plan_id, dry_run=True)
+    )
+
+    assert task.metadata["validation_tool_catalog"]["tool_key"]
+    assert task.validation_request.metadata["validation_tool_catalog"]["runner_status"] == "recommend_only"
+    assert queued.queue_items
+    assert queued.queue_items[0].metadata["tool_hint"] == task.tool_hint
+    assert queued.queue_items[0].dispatch_blockers
+    assert all("human_approval_required" in item.dispatch_blockers for item in queued.queue_items)
+    assert all("recommend_only_runner" in item.dispatch_blockers for item in queued.queue_items)
+
+
+def test_peptide_specialist_validation_planning_and_routing(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-plan-peptide.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief, evaluation = _seed_evaluated_brief(
+        repo,
+        topic="Cyclic peptide VEGFR pathway blockade in canine HSA",
+        duplicate_count=0,
+    )
+    payload = dict(brief.result_payload)
+    hypothesis = dict(payload["ranked_hypotheses"][0])
+    hypothesis["claim"] = "A cyclic peptide could disrupt VEGFR pathway signaling in canine HSA."
+    hypothesis["reasoning"] = (
+        "The peptide modality needs specialist review for target engagement, protease stability, "
+        "delivery, immunogenicity, and translational feasibility."
+    )
+    hypothesis["open_questions"] = ["What sequence, delivery route, and stability data are available?"]
+    payload["ranked_hypotheses"] = [hypothesis]
+    payload["final_brief"] = (
+        "A cyclic peptide VEGFR-pathway concept should go through peptide specialist review [C1] [C2]."
+    )
+    brief = repo.upsert_research_brief(
+        brief.model_copy(
+            update={
+                "topic": "Cyclic peptide VEGFR pathway blockade in canine HSA",
+                "final_brief": payload["final_brief"],
+                "result_payload": payload,
+            }
+        )
+    )
+
+    plan = service.plan_validation(
+        ValidationPlanRequest(brief_id=brief.brief_id, evaluation_id=evaluation.evaluation_id, max_tasks=6)
+    )
+    peptide_task = next(task for task in plan.tasks if task.tool_hint == "peptide_specialist_review")
+    queued = service.queue_validation_requests_from_plan(
+        ValidationRequestQueueRequest(plan_id=plan.plan_id, task_ids=[peptide_task.task_id], dry_run=True)
+    )
+
+    catalog = peptide_task.metadata["validation_tool_catalog"]
+    assert peptide_task.validation_request is not None
+    assert peptide_task.task_type == "expert_review"
+    assert peptide_task.validation_request.validation_type == "expert_review"
+    assert catalog["tool_key"] == "peptide_specialist_review"
+    assert catalog["recommended_agent_name"] == "peptide_specialist_validation_agent"
+    assert "peptide_identity_required" in peptide_task.validation_request.quality_gates
+    assert queued.queue_items
+    assert validation_agents.validation_agent_name(queued.queue_items[0]) == "peptide_specialist_validation_agent"
+
+
+def _seed_evaluated_brief(
+    repo,
+    *,
+    topic: str = "Toceranib VEGFR monotherapy in canine splenic HSA",
+    duplicate_count: int = 0,
+    evaluation_weaknesses: list[str] | None = None,
+) -> tuple[ResearchBriefRecord, ResearchBriefEvaluationRecord]:
+    citation_1 = ResearchBriefCitation(
+        citation_id="C1",
+        chunk_id=uuid4(),
+        research_object_id=uuid4(),
+        source_key="pmc_oa",
+        title="Canine hemangiosarcoma VEGFR evidence",
+        source_url="https://example.org/c1",
+        section_label="Results",
+        quote="Canine hemangiosarcoma evidence discusses toceranib, VEGFR, KDR, response, dose, and safety.",
+        relevance="Direct canine HSA VEGFR context.",
+        metadata={"provenance": {"doi": "10.1/example"}, "dedupe": {"duplicate_count": duplicate_count}},
+    )
+    citation_2 = ResearchBriefCitation(
+        citation_id="C2",
+        chunk_id=uuid4(),
+        research_object_id=uuid4(),
+        source_key="pubmed",
+        title="Comparative angiosarcoma VEGFR evidence",
+        source_url="https://example.org/c2",
+        section_label="Abstract",
+        quote="Human angiosarcoma analog evidence links VEGFR signaling with vascular tumor therapy selection.",
+        relevance="Analog human angiosarcoma support.",
+    )
+    finding = ResearchBriefFinding(
+        claim="Toceranib/VEGFR signaling is a therapy-aware validation hypothesis for canine HSA.",
+        stance="supporting",
+        citations=["C1", "C2"],
+        evidence_strength="medium",
+        reasoning="The hypothesis has direct canine context plus comparative angiosarcoma support.",
+        open_questions=["Find negative monotherapy evidence."],
+    )
+    result = ResearchBriefResult(
+        brief_id=uuid4(),
+        topic=topic,
+        disease_scope="canine hemangiosarcoma and human angiosarcoma",
+        final_brief="Toceranib/VEGFR should be reviewed as a validation lane [C1] [C2].",
+        ranked_hypotheses=[finding],
+        citations=[citation_1, citation_2],
+        evidence={"citation_duplicate_count": duplicate_count},
+    )
+    brief = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            brief_id=result.brief_id,
+            topic=result.topic,
+            disease_scope=result.disease_scope,
+            source_key="pmc_oa",
+            review_mode="deterministic_only",
+            final_brief=result.final_brief,
+            result_payload=result.model_dump(mode="json"),
+            citation_count=2,
+            finding_count=1,
+            hypothesis_count=1,
+        )
+    )
+    evaluation = repo.upsert_research_brief_evaluation(
+        ResearchBriefEvaluationRecord(
+            evaluation_id=uuid4(),
+            brief_id=brief.brief_id,
+            topic=brief.topic,
+            source_key=brief.source_key,
+            overall_score=0.78,
+            passes_quality_bar=True,
+            readiness="ready_for_hypothesis_review",
+            summary={"duplicate_citation_count": duplicate_count},
+            result_payload={
+                "weaknesses": (
+                    evaluation_weaknesses
+                    if evaluation_weaknesses is not None
+                    else ["duplicate citation repair needed"] if duplicate_count else []
+                ),
+                "recommendations": [],
+            },
+        )
+    )
+    return brief, evaluation
 
 def test_validation_request_queue_contracts_validate():
     plan_id = uuid4()
@@ -1005,6 +1389,61 @@ def test_research_followup_refinement_respects_explicit_source_filter_and_reject
     assert not any("check whether" in query.query_text.lower() for query in queries)
     assert not any("watching" in query.query_text.lower() for query in queries)
     assert any(skip["reason"] == "operational_recommendation_not_query" for skip in result.skipped)
+
+
+def test_research_followup_refinement_handles_brief_quality_leads_without_review(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-followup-refinement-brief-quality.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title=(
+                "Strengthen citation provenance: mTOR inhibition in canine HSA "
+                "and human angiosarcoma"
+            ),
+            status="followup",
+            priority=20,
+            source_key="pubmed",
+            origin_source_key="research_brief_quality",
+            origin_record_id=str(uuid4()),
+            reason="Citations lack PMIDs, DOIs, and publication years.",
+            summary="Strengthen provenance before promotion.",
+            suggested_sources=["pubmed", "europe_pmc", "openalex", "crossref"],
+            topic_tags=["citation_provenance_repair", "canine_hemangiosarcoma"],
+            metadata={
+                "research_followup_queue": {
+                    "followup_kind": "citation_provenance_repair",
+                    "requires_manual_research": False,
+                    "topic": (
+                        "Explicit negative or contradictory findings for mTOR inhibition "
+                        "in canine HSA or human angiosarcoma."
+                    ),
+                    "feedback_items": [
+                        {"source": "weakness", "text": "Citations lack PMIDs, DOIs, and publication years."},
+                        {"source": "recommendation", "text": "Require citations to include PMIDs/DOIs/years."},
+                    ],
+                }
+            },
+        )
+    )
+
+    result = service.refine_research_followups(
+        ResearchFollowupRefinementRequest(
+            lead_ids=[lead.lead_id],
+            source_keys=["pubmed", "europe_pmc"],
+            max_queries_per_review=10,
+            operator="operator",
+        )
+    )
+    queries = repo.list_source_queries(active_only=True)
+
+    assert result.scanned_count == 1
+    assert result.lead_count == 1
+    assert result.source_queries_created == 2
+    assert {query.source_key for query in queries} == {"pubmed", "europe_pmc"}
+    assert all("mtor" in query.query_text.lower() for query in queries)
+    assert any("canine" in query.query_text.lower() for query in queries)
+    assert all(query.query_params["origin_review_id"] for query in queries)
+    assert all(query.query_params["origin_agent_run_id"] for query in queries)
 
 
 def test_command_center_web_refines_research_followup_payload(tmp_path):
@@ -3821,6 +4260,23 @@ def test_research_brief_contracts_require_known_citations():
         )
 
 
+def test_research_brief_finding_truncates_model_citation_overflow():
+    finding = ResearchBriefFinding(
+        claim="A model may cite too many supporting snippets for one finding.",
+        stance="supporting",
+        citations=[f"C{index}" for index in range(1, 12)],
+        evidence_strength="medium",
+        reasoning="The contract should preserve the finding and keep a bounded citation set.",
+    )
+
+    assert finding.citations == [f"C{index}" for index in range(1, 11)]
+    assert finding.metadata["citation_truncation"] == {
+        "original_count": 11,
+        "kept_count": 10,
+        "dropped_citations": ["C11"],
+    }
+
+
 def test_research_brief_record_splits_legacy_errors_from_evidence_limitations():
     record = ResearchBriefRecord(
         topic="VEGF therapy",
@@ -4061,10 +4517,80 @@ def test_research_brief_followup_queue_contracts_validate():
     )
 
     assert ResearchBriefFollowupQueueRequest(limit=25).max_limitations_per_brief == 20
+    assert ResearchBriefFollowupQueueRequest(limit=25).force is False
     assert ResearchBriefFollowupQueueRequest(brief_ids=[lead.lead_id, lead.lead_id]).brief_ids == [lead.lead_id]
     assert result.followup_leads[0].status == "followup"
     with pytest.raises(ValueError):
         ResearchBriefFollowupQueueRequest(max_limitations_per_brief=0)
+
+
+def test_research_brief_operator_doc_contracts_validate():
+    brief_id = uuid4()
+    request = ResearchBriefOperatorDocRequest(brief_ids=[brief_id, brief_id], operator=" ")
+    assert request.brief_ids == [brief_id]
+    assert request.operator == "research_brief_operator_doc"
+    assert request.status == "completed"
+
+    result = ResearchBriefOperatorDocResult(document_count=1, artifact_count=1)
+    assert result.document_count == 1
+
+    with pytest.raises(ValidationError):
+        ResearchBriefOperatorDocRequest(max_hypotheses=0)
+
+
+def test_research_brief_operator_doc_persists_plain_language_artifact(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+    brief = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            topic="Review research lead: Toceranib monotherapy in canine HSA | Reason: test",
+            disease_scope="canine hemangiosarcoma",
+            source_key="pubmed",
+            final_brief="## Evidence Scout\nToceranib has not shown direct monotherapy outcome evidence. [C1]",
+            result_payload={
+                "ranked_hypotheses": [
+                    {
+                        "claim": "No direct toceranib monotherapy cohort was found for canine splenic HSA.",
+                        "stance": "risk",
+                        "citations": ["C1"],
+                        "evidence_strength": "medium",
+                        "reasoning": "The available record describes maintenance therapy, not monotherapy.",
+                    }
+                ],
+                "unresolved_questions": ["Do gray-literature veterinary cohorts exist?"],
+                "evidence_limitations": [
+                    "No veterinary conference abstract or registry search is represented in the supplied evidence."
+                ],
+                "citations": [
+                    {
+                        "citation_id": "C1",
+                        "title": "Toceranib maintenance study",
+                        "source_key": "pubmed",
+                        "source_url": "https://example.test/study",
+                        "quote": "Toceranib maintenance did not improve outcomes.",
+                    }
+                ],
+            },
+            citation_count=1,
+            finding_count=1,
+            hypothesis_count=1,
+            unresolved_question_count=1,
+        )
+    )
+
+    result = HSAResearchService(repo).create_research_brief_operator_docs(
+        ResearchBriefOperatorDocRequest(brief_ids=[brief.brief_id], dry_run=False)
+    )
+
+    assert result.document_count == 1
+    assert result.artifact_count == 1
+    document = result.documents[0]
+    artifact = repo.get_artifact(result.artifacts[0].artifact_id)
+    assert document.title == "Toceranib monotherapy in canine HSA"
+    assert "## Plain-language summary" in document.markdown
+    assert "No direct toceranib monotherapy cohort" in document.markdown
+    assert artifact.artifact_type == "research_brief_operator_markdown"
+    assert artifact.metadata["brief_id"] == str(brief.brief_id)
+    assert artifact.metadata["technical_footnote_count"] >= 1
 
 
 def test_research_brief_repository_roundtrip_sqlite_and_memory(tmp_path):
@@ -4263,6 +4789,47 @@ def test_research_brief_followup_queue_creates_idempotent_followup_leads(tmp_pat
     assert {lead.origin_record_id for lead in leads} == {str(brief.brief_id)}
     assert all(f"research_brief:{brief.brief_id}" in lead.evidence_refs for lead in leads)
     assert all(lead.metadata["research_followup_queue"]["origin"] == "research_brief_quality" for lead in leads)
+
+
+def test_research_brief_followup_queue_force_routes_completed_unevaluated_gap(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-force-followup.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            topic="Toceranib monotherapy in canine splenic HSA",
+            disease_scope="canine hemangiosarcoma and human angiosarcoma",
+            source_key="europe_pmc",
+            status="completed",
+            review_mode="openrouter_required",
+            final_brief="Stored synthesis [C1].",
+            citation_count=3,
+            finding_count=2,
+            hypothesis_count=1,
+            result_payload={
+                "evidence_limitations": [
+                    "No prospective toceranib monotherapy cohort was found in supplied citations."
+                ],
+                "errors": [],
+            },
+            evidence_limitation_count=1,
+        )
+    )
+
+    skipped = service.queue_research_brief_followups(
+        ResearchBriefFollowupQueueRequest(brief_ids=[brief.brief_id], include_evaluations=False)
+    )
+    forced = service.queue_research_brief_followups(
+        ResearchBriefFollowupQueueRequest(
+            brief_ids=[brief.brief_id],
+            include_evaluations=False,
+            force=True,
+        )
+    )
+
+    assert skipped.queued_count == 0
+    assert skipped.skipped[0]["quality_status"] == "needs_evaluation"
+    assert forced.queued_count == 1
+    assert forced.followup_leads[0].reason.startswith("No prospective toceranib monotherapy cohort")
 
 
 def test_research_brief_followup_queue_routes_failed_evaluation_feedback(tmp_path):
@@ -6387,7 +6954,14 @@ def test_therapy_committee_runs_cited_idea_layer(tmp_path):
     )
 
     assert isinstance(result, TherapyCommitteeResult)
-    assert len(result.reports) == 4
+    assert len(result.reports) == 5
+    assert {report.perspective for report in result.reports} == {
+        "target_biology",
+        "drug_repurposing",
+        "translational_clinical",
+        "peptide_specialist",
+        "skeptic_risk",
+    }
     assert result.ranked_ideas
     assert result.ranked_ideas[0].evidence_refs
     assert result.evidence["citation_count"] >= 1
@@ -6537,6 +7111,140 @@ def test_research_brief_service_runs_three_perspectives_and_synthesis(tmp_path):
         "skeptic_validation_agent",
         "research_synthesis_editor_agent",
     }
+
+
+def test_research_brief_evidence_dedupes_citations_by_identifier_with_provenance():
+    repo = InMemoryResearchRepository()
+    first_object = ResearchObject(
+        object_type="publication",
+        title="Toceranib therapy outcomes in canine hemangiosarcoma",
+        source_key="pubmed",
+        canonical_url="https://pubmed.ncbi.nlm.nih.gov/26062540/",
+        dedupe_key="pmid:26062540",
+        identifiers={"pmid": "26062540", "doi": "10.1186/S12917-015-0446-1"},
+    )
+    second_object = ResearchObject(
+        object_type="publication",
+        title="Toceranib therapy outcomes in canine hemangiosarcoma",
+        source_key="europe_pmc",
+        canonical_url="https://doi.org/10.1186/s12917-015-0446-1",
+        dedupe_key="europe_pmc:26062540",
+        identifiers={"doi": "https://doi.org/10.1186/s12917-015-0446-1", "pmcid": "PMC3837095"},
+    )
+    first_chunk = DocumentChunk(
+        research_object_id=first_object.id,
+        chunk_index=0,
+        section_label="Abstract",
+        text_content=(
+            "Canine hemangiosarcoma toceranib therapy evidence discusses VEGF VEGFR inhibitor "
+            "response, survival outcome, toxicity, and clinical relevance."
+        ),
+        content_hash="toceranib-primary",
+    )
+    second_chunk = DocumentChunk(
+        research_object_id=second_object.id,
+        chunk_index=0,
+        section_label="Abstract",
+        text_content=(
+            "Toceranib therapy for canine hemangiosarcoma is a duplicate source discussing "
+            "VEGF inhibition, survival outcome, clinical response, and toxicity."
+        ),
+        content_hash="toceranib-duplicate",
+    )
+    repo.research_objects[first_object.id] = first_object
+    repo.research_objects[second_object.id] = second_object
+    repo.document_chunks[first_chunk.id] = first_chunk
+    repo.document_chunks[second_chunk.id] = second_chunk
+
+    evidence = research_brief_agent.ResearchBriefAgent(repo).build_evidence(
+        ResearchBriefRequest(
+            topic="Toceranib therapy in canine hemangiosarcoma",
+            review_mode="deterministic_only",
+            max_chunks_per_perspective=4,
+            max_claims=0,
+        )
+    )
+
+    assert len(evidence.citations) == 1
+    citation = evidence.citations[0]
+    assert citation.metadata["identifiers"]["doi"] == "10.1186/s12917-015-0446-1"
+    assert citation.metadata["dedupe"]["duplicate_count"] >= 1
+    assert citation.metadata["dedupe"]["duplicate_citation_ids"] == ["C2"]
+    assert set(citation.metadata["provenance"]["chunk_ids"]) == {str(first_chunk.id), str(second_chunk.id)}
+    assert set(citation.metadata["provenance"]["source_keys"]) == {"pubmed", "europe_pmc"}
+    assert "evidence_scout:" in (citation.relevance or "")
+    assert "translational_hypothesis:" in (citation.relevance or "")
+    assert "skeptic_validation:" in (citation.relevance or "")
+
+
+def test_research_brief_synthesis_remaps_duplicate_citations_and_ranks_therapy_hypotheses():
+    first_object_id = uuid4()
+    second_object_id = uuid4()
+    citation = ResearchBriefCitation(
+        citation_id="C1",
+        chunk_id=uuid4(),
+        research_object_id=first_object_id,
+        title="Shared vascular biology in hemangiosarcoma",
+        quote="Canine and human vascular sarcoma biology has overlapping pathway signals.",
+        relevance="translational_hypothesis:cross_species:biology",
+        metadata={"identifiers": {"doi": "10.1234/hsa.therapy"}},
+    )
+    duplicate = ResearchBriefCitation(
+        citation_id="C2",
+        chunk_id=uuid4(),
+        research_object_id=second_object_id,
+        title="Toceranib monotherapy outcomes in canine hemangiosarcoma",
+        quote="Toceranib monotherapy therapy evidence discusses dose, response, survival, and toxicity.",
+        relevance="translational_hypothesis:comparative_model:therapy",
+        metadata={"identifiers": {"doi": "https://doi.org/10.1234/HSA.THERAPY"}},
+    )
+    broad_finding = ResearchBriefFinding(
+        claim="Shared vascular biology can motivate comparative pathway work.",
+        stance="opportunity",
+        citations=["C1"],
+        evidence_strength="low",
+        reasoning="The citation describes overlapping pathway signals.",
+    )
+    therapy_finding = ResearchBriefFinding(
+        claim="Toceranib monotherapy should be prioritized as a therapy-specific validation hypothesis.",
+        stance="opportunity",
+        citations=["C2"],
+        evidence_strength="medium",
+        reasoning="The duplicate citation discusses therapy dose, response, survival, and toxicity.",
+    )
+    report = ResearchBriefPerspectiveReport(
+        perspective="translational_hypothesis",
+        agent_name="translational_hypothesis_agent",
+        summary="Translational hypotheses were found.",
+        findings=[broad_finding, therapy_finding],
+        citations=[citation, duplicate],
+    )
+    evidence = research_brief_agent.ResearchBriefEvidenceBundle(
+        citations=[citation, duplicate],
+        claims=[],
+        research_leads=[],
+        search_queries={},
+        errors=[],
+    )
+
+    result = research_brief_agent.ResearchBriefAgent(InMemoryResearchRepository()).synthesize(
+        ResearchBriefRequest(
+            topic="Toceranib monotherapy in canine hemangiosarcoma",
+            review_mode="deterministic_only",
+        ),
+        [report],
+        evidence=evidence,
+    )
+
+    assert len(result.citations) == 1
+    assert result.citations[0].metadata["dedupe"]["duplicate_citation_ids"] == ["C2"]
+    assert result.ranked_hypotheses[0].claim.startswith("Toceranib monotherapy")
+    assert result.ranked_hypotheses[0].citations == ["C1"]
+    assert result.ranked_hypotheses[0].metadata["citation_aliases"] == {"C2": "C1"}
+    assert result.ranked_hypotheses[0].metadata["therapy_relevance_score"] > result.ranked_hypotheses[1].metadata[
+        "therapy_relevance_score"
+    ]
+    assert "[C2]" not in result.final_brief
 
 
 def test_research_brief_perspective_queries_stay_within_chunk_search_contract():
@@ -6861,6 +7569,90 @@ def test_research_brief_evaluation_tracks_soft_evidence_limitations(tmp_path):
     assert any("follow-up research queue" in item for item in result.recommendations)
 
 
+def test_research_brief_evaluation_blocks_explicit_insufficient_evidence(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-evaluation-insufficient.sqlite3", seed=False)
+    citation = {
+        "citation_id": "C1",
+        "chunk_id": str(uuid4()),
+        "research_object_id": str(uuid4()),
+        "quote": "mTOR pathway validation is discussed.",
+        "relevance": "evidence_scout:direct_evidence",
+    }
+    finding = {
+        "claim": "The supplied evidence is insufficient to answer the mTOR inhibition question.",
+        "stance": "uncertain",
+        "citations": ["C1"],
+        "evidence_strength": "low",
+        "reasoning": "No primary clinical trial data were found in the supplied citations.",
+        "open_questions": ["Which mTOR inhibitor trial provides direct response data?"],
+    }
+    record = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            topic="mTOR evidence in canine hemangiosarcoma",
+            disease_scope="canine hemangiosarcoma",
+            source_key="pubmed",
+            review_mode="deterministic_only",
+            final_brief=(
+                "The supplied evidence is insufficient to answer the mTOR inhibition "
+                "question, so this should not be promoted yet [C1]."
+            ),
+            result_payload={
+                "topic": "mTOR evidence in canine hemangiosarcoma",
+                "disease_scope": "canine hemangiosarcoma",
+                "brief_style": "technical",
+                "model_profile": "research_brief",
+                "final_brief": (
+                    "The supplied evidence is insufficient to answer the mTOR inhibition "
+                    "question, so this should not be promoted yet [C1]."
+                ),
+                "citations": [citation],
+                "perspective_reports": [
+                    {
+                        "perspective": "evidence_scout",
+                        "agent_name": "evidence_scout_agent",
+                        "model_profile": "research_brief",
+                        "summary": "Evidence was reviewed.",
+                        "findings": [finding],
+                        "citations": [citation],
+                        "errors": [],
+                    },
+                    {
+                        "perspective": "translational_hypothesis",
+                        "agent_name": "translational_hypothesis_agent",
+                        "model_profile": "research_brief",
+                        "summary": "Translation was reviewed.",
+                        "findings": [finding],
+                        "citations": [citation],
+                        "errors": [],
+                    },
+                    {
+                        "perspective": "skeptic_validation",
+                        "agent_name": "skeptic_validation_agent",
+                        "model_profile": "research_brief",
+                        "summary": "Skeptic validation found insufficient evidence for the focal question.",
+                        "findings": [finding],
+                        "citations": [citation],
+                        "errors": [],
+                    },
+                ],
+                "ranked_hypotheses": [finding],
+                "unresolved_questions": ["Which mTOR inhibitor trial provides direct response data?"],
+                "evidence": {},
+                "errors": [],
+            },
+        )
+    )
+
+    result = HSAResearchService(repo).evaluate_research_brief(
+        ResearchBriefEvaluationRequest(brief_id=record.brief_id)
+    )
+
+    assert result.readiness == "needs_more_evidence"
+    assert result.passes_quality_bar is False
+    assert result.evidence["insufficient_evidence_flag_count"] >= 1
+    assert any("focused evidence acquisition" in item for item in result.recommendations)
+
+
 def test_research_brief_evaluation_keeps_system_errors_hard(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "research-brief-evaluation-hard-errors.sqlite3", seed=False)
     citation = {
@@ -7139,6 +7931,53 @@ def test_validation_request_queue_blocks_dispatch_without_assay_context(tmp_path
     assert blocked.status == "blocked"
     assert "assay_context_required" in blocked.dispatch_blockers
     assert "dispatch blocked" in blocked.last_error.lower()
+    assert blocked.last_run_id is None
+
+
+def test_live_compute_validation_lanes_stay_blocked_until_runner_exists(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-request-live-compute-blocked.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="Docking queue compute guardrail",
+            task_type="docking",
+            title="Dock candidate A against KDR",
+            objective="Run docking only after a live compute runner is enabled.",
+            rationale="The current validation layer is recommend-only.",
+            validation_request=ValidationRequest(
+                validation_type="docking",
+                target_name="KDR",
+                candidate_name="candidate A",
+                objective="Dock candidate A against KDR.",
+                require_approval=True,
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma and human angiosarcoma",
+                    species=["canine", "human"],
+                    model_system="Computational target or structure model with explicit source provenance.",
+                    assay_type="in silico structural validation",
+                    readout="binding plausibility and failure modes",
+                    endpoint="computational plausibility",
+                ),
+            ),
+        )
+    )
+
+    service.approve_validation_request_queue_item(
+        item.queue_item_id,
+        approved_by="unit-test",
+        approval_note="Approval should not enable live compute.",
+    )
+    blocked = service.dispatch_validation_request_queue_item(
+        item.queue_item_id,
+        model_profile="deterministic_only",
+    )
+
+    assert blocked is not None
+    assert blocked.status == "blocked"
+    assert "live_compute_runner_not_enabled" in blocked.dispatch_blockers
     assert blocked.last_run_id is None
 
 
@@ -9180,6 +10019,8 @@ def test_queue_ready_research_hunt_synthesis_dry_run_does_not_mutate():
     assert result.preexisting_count == 0
     assert len(result.queue_items) == 1
     assert result.queue_items[0].status == "queued"
+    assert result.queue_items[0].source_key is None
+    assert "all-sources" in result.queue_items[0].identity_key
     assert result.queue_items[0].metadata["research_hunt_synthesis_queue"]["lead_id"] == str(lead.lead_id)
     assert repo.list_research_brief_queue_items(limit=None) == []
     assert updated_lead is not None
@@ -9227,6 +10068,7 @@ def test_queue_ready_research_hunt_synthesis_apply_queues_and_transitions_lead()
     assert result.queued_count == 1
     assert result.preexisting_count == 0
     assert len(persisted_items) == 1
+    assert persisted_items[0].source_key is None
     assert persisted_items[0].priority == 12
     assert persisted_items[0].review_mode == "openrouter_required"
     assert persisted_items[0].review_models == ["anthropic/claude-sonnet-4.6"]
@@ -9303,7 +10145,7 @@ def test_queue_ready_research_hunt_synthesis_dedupes_preexisting_queue_item():
     existing = service.queue_research_brief(
         ResearchBriefQueueRequest(
             topic="Review research lead: Supported mTOR lead",
-            source_key="pubmed",
+            source_key=None,
             priority=20,
             max_chunks_per_perspective=10,
             max_claims=20,
@@ -9329,6 +10171,139 @@ def test_queue_ready_research_hunt_synthesis_dedupes_preexisting_queue_item():
     assert updated_lead is not None
     assert updated_lead.status == "queued"
     assert updated_lead.metadata["research_hunt_synthesis_queue"]["preexisting"] is True
+
+
+def test_research_hunt_synthesis_doc_contracts_validate():
+    document = ResearchHuntSynthesisDocument(
+        lead_id=uuid4(),
+        title="Plain-language synthesis handoff",
+        control_status="ready_for_synthesis",
+        recommended_action="queue_synthesis",
+        markdown="# Plain-language synthesis handoff\n",
+        plain_language_summary="The lead is ready for a synthesis brief.",
+    )
+    result = ResearchHuntSynthesisDocResult(documents=[document])
+    request = ResearchHuntSynthesisDocRequest(source_keys=["Europe PMC", "europe_pmc"], operator="  ")
+
+    assert result.documents[0].control_status == "ready_for_synthesis"
+    assert request.source_keys == ["europe_pmc"]
+    assert request.operator == "research_hunt_synthesis_doc"
+
+
+def test_create_ready_research_hunt_synthesis_doc_persists_plain_language_artifact():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    obj = ResearchObject(
+        object_type=ResearchObjectType.PUBLICATION,
+        title="Toceranib maintenance after splenectomy in canine hemangiosarcoma",
+        source_key="europe_pmc",
+        identifiers={"pmid": "26062540", "doi": "10.1186/s12917-015-0446-1"},
+    )
+    repo.research_objects[obj.id] = obj
+    chunk = DocumentChunk(
+        research_object_id=obj.id,
+        chunk_index=0,
+        section_label="Abstract",
+        text_content="Dogs receiving toceranib after splenectomy and chemotherapy were evaluated for outcomes.",
+        content_hash="toceranib-chunk",
+    )
+    repo.replace_document_chunks(obj.id, [chunk])
+    repo.claims.append(
+        ClaimSearchResult(
+            claim_id=uuid4(),
+            statement="Toceranib outcome evidence should distinguish maintenance therapy from monotherapy.",
+            claim_type=ClaimType.COMPOUND_AFFECTS_OUTCOME,
+            direction=ClaimDirection.UNKNOWN,
+            confidence=0.84,
+            evidence_level=EvidenceLevel.CANINE_CLINICAL,
+            species="canine",
+            source_object_id=obj.id,
+            source_title=obj.title,
+        )
+    )
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Find toceranib/VEGFR inhibitor monotherapy outcomes in canine splenic HSA",
+            status="watching",
+            source_key="europe_pmc",
+            evidence_refs=[f"chunk:{chunk.id}", f"research_object:{obj.id}"],
+            metadata={
+                "research_hunt": {
+                    "signal_status": "supported",
+                    "coverage_status": "supported",
+                    "best_signal": {
+                        "score": 100,
+                        "summary": "The hunt found a useful toceranib/VEGFR signal.",
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 4, "total_required_count": 4},
+                    },
+                    "tasks": [
+                        {
+                            "task_id": str(uuid4()),
+                            "identity_key": "claim_extract:done",
+                            "status": "completed",
+                            "task_type": "claim_extract",
+                            "action": "Extract claims from newly ingested chunks.",
+                            "created_at": datetime.now(UTC).isoformat(),
+                        }
+                    ],
+                }
+            },
+        )
+    )
+
+    result = service.create_ready_research_hunt_synthesis_docs(
+        ResearchHuntSynthesisDocRequest(lead_ids=[lead.lead_id], dry_run=False, max_claims=4)
+    )
+    updated_lead = repo.get_research_lead(lead.lead_id)
+    artifact = repo.get_artifact(result.documents[0].artifact_id)
+
+    assert result.candidate_count == 1
+    assert result.document_count == 1
+    assert result.artifact_count == 1
+    assert result.documents[0].claim_count == 1
+    assert "## Plain-language summary" in result.documents[0].markdown
+    assert "## What this does not prove yet" in result.documents[0].markdown
+    assert "## Technical footnotes" in result.documents[0].markdown
+    assert "maintenance therapy from monotherapy" in result.documents[0].markdown
+    assert artifact is not None
+    assert artifact.artifact_type == "research_hunt_synthesis_handoff_markdown"
+    assert artifact.metadata["markdown"] == result.documents[0].markdown
+    assert updated_lead is not None
+    assert updated_lead.metadata["research_hunt_synthesis_doc"]["artifact_id"] == str(artifact.artifact_id)
+
+
+def test_queue_ready_research_hunt_synthesis_creates_handoff_doc_by_default():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Supported VEGFR synthesis handoff",
+            status="watching",
+            priority=15,
+            metadata={
+                "research_hunt": {
+                    "signal_status": "supported",
+                    "coverage_status": "supported",
+                    "best_signal": {
+                        "summary": "VEGFR evidence is ready to brief.",
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 4, "total_required_count": 4},
+                    },
+                    "tasks": [],
+                }
+            },
+        )
+    )
+
+    result = service.queue_ready_research_hunt_synthesis(
+        ResearchHuntSynthesisQueueRequest(lead_ids=[lead.lead_id], dry_run=False, review_mode="deterministic_only")
+    )
+    artifacts = repo.list_artifacts(artifact_type="research_hunt_synthesis_handoff_markdown", limit=None)
+
+    assert result.queued_count == 1
+    assert result.handoff_document_count == 1
+    assert result.handoff_artifact_count == 1
+    assert len(artifacts) == 1
+    assert artifacts[0].metadata["lead_id"] == str(lead.lead_id)
 
 
 def test_research_hunt_queue_maintenance_dry_run_does_not_mutate():
@@ -15331,6 +16306,7 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.research_brief_queue_job is not None
     assert dagster_asset_module.research_brief_queue_batch_job is not None
     assert dagster_asset_module.research_hunt_synthesis_queue_job is not None
+    assert dagster_asset_module.research_hunt_synthesis_doc_job is not None
     assert dagster_asset_module.research_brief_queue_seed_job is not None
     assert dagster_asset_module.research_brief_queue_runner_job is not None
     assert dagster_asset_module.research_brief_queue_maintenance_job is not None

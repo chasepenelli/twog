@@ -12,6 +12,7 @@ import json
 import os
 import time
 from typing import Any
+from uuid import UUID
 
 from .contracts import (
     AgentPerformanceEvaluationRequest,
@@ -21,6 +22,7 @@ from .contracts import (
     CommandCenterRequest,
     EvidenceGapResolverRequest,
     FullTextOpsRequest,
+    HypothesisPromotionReportRequest,
     PubMedIdentifierRepairRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
@@ -33,6 +35,7 @@ from .contracts import (
     ResearchFollowupResolverRequest,
     ResearchHuntQueueReportRequest,
     ResearchHuntQueueMaintenanceRequest,
+    ResearchHuntSynthesisDocRequest,
     ResearchHuntSynthesisQueueRequest,
     ResearchLeadCollectRequest,
     ResearchObject,
@@ -42,11 +45,14 @@ from .contracts import (
     SourceScoutRequest,
     TherapyCommitteeRequest,
     TherapyCommitteeValidationQueueRequest,
+    TherapyIdeaLibraryRequest,
     ValidationAutopilotRequest,
     ValidationGapSourceIngestRequest,
     ValidationGapSourcePackRequest,
     ValidationPlanRequest,
     ValidationRequestQueueRequest,
+    ValidationToolCatalogRequest,
+    ValidationToolMatchRequest,
     XLinkedArticleReviewRequest,
     XLinkedArticleFollowupRequest,
     XTopicReviewRequest,
@@ -240,6 +246,35 @@ _THERAPY_COMMITTEE_REPORT_TABLE_COLUMNS = (
     "error_count",
     "summary",
 )
+_VALIDATION_TOOL_CATALOG_TABLE_COLUMNS = (
+    "tool_key",
+    "category",
+    "runner_status",
+    "tool_hint",
+    "validation_types",
+    "task_types",
+    "quality_gates",
+)
+_THERAPY_IDEA_LIBRARY_TABLE_COLUMNS = (
+    "therapy_idea_id",
+    "status",
+    "promotion_state",
+    "score",
+    "title",
+    "candidate_therapies",
+    "targets",
+    "evidence_refs",
+)
+_HYPOTHESIS_PROMOTION_TABLE_COLUMNS = (
+    "candidate_id",
+    "source_type",
+    "promotion_state",
+    "score",
+    "title",
+    "recommended_job_name",
+    "blockers",
+    "matched_tools",
+)
 _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS = (
     "brief_id",
     "agent_run_id",
@@ -372,6 +407,18 @@ _RESEARCH_BRIEF_QUEUE_TABLE_COLUMNS = (
     "attempts",
     "last_brief_id",
     "last_error",
+    "created_at",
+)
+_RESEARCH_HUNT_SYNTHESIS_DOC_TABLE_COLUMNS = (
+    "lead_id",
+    "title",
+    "control_status",
+    "recommended_action",
+    "artifact_id",
+    "claim_count",
+    "chunk_count",
+    "research_object_count",
+    "technical_footnote_count",
     "created_at",
 )
 _RESEARCH_LEAD_TABLE_COLUMNS = (
@@ -640,6 +687,9 @@ if dg is not None:
             records=[],
             schema=dg.TableSchema(columns=[dg.TableColumn(name=column) for column in columns]),
         )
+
+    def _uuid_or_none(value: str | None) -> UUID | None:
+        return UUID(value) if value else None
 
     def _base_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
         return {
@@ -979,6 +1029,74 @@ if dg is not None:
             "decision_summary": dg.MetadataValue.md(str(report.get("decision_summary") or "")[:4000]),
         }
 
+    def _validation_tool_catalog_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = [
+            {
+                "tool_key": tool.get("tool_key"),
+                "category": tool.get("category"),
+                "runner_status": tool.get("runner_status"),
+                "tool_hint": tool.get("tool_hint"),
+                "validation_types": ", ".join(tool.get("compatible_validation_types") or []),
+                "task_types": ", ".join(tool.get("compatible_task_types") or []),
+                "quality_gates": ", ".join((tool.get("quality_gates") or [])[:5]),
+            }
+            for tool in report.get("tools", [])
+        ]
+        return {
+            "tool_count": dg.MetadataValue.int(int(report.get("tool_count", 0))),
+            "runner_status_counts": dg.MetadataValue.json(report.get("runner_status_counts", {})),
+            "category_counts": dg.MetadataValue.json(report.get("category_counts", {})),
+            "tools": _metadata_table(rows, _VALIDATION_TOOL_CATALOG_TABLE_COLUMNS),
+        }
+
+    def _therapy_idea_library_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = []
+        for record in report.get("ideas", []):
+            idea = record.get("idea") or {}
+            rows.append(
+                {
+                    "therapy_idea_id": record.get("therapy_idea_id"),
+                    "status": record.get("status"),
+                    "promotion_state": record.get("promotion_state"),
+                    "score": record.get("score"),
+                    "title": str(idea.get("title") or "")[:300],
+                    "candidate_therapies": ", ".join(record.get("candidate_therapies") or []),
+                    "targets": ", ".join(record.get("targets") or []),
+                    "evidence_refs": ", ".join(record.get("evidence_refs") or []),
+                }
+            )
+        return {
+            "idea_count": dg.MetadataValue.int(int(report.get("idea_count", 0))),
+            "status_counts": dg.MetadataValue.json(report.get("status_counts", {})),
+            "ideas": _metadata_table(rows, _THERAPY_IDEA_LIBRARY_TABLE_COLUMNS),
+        }
+
+    def _hypothesis_promotion_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = [
+            {
+                "candidate_id": candidate.get("candidate_id"),
+                "source_type": candidate.get("source_type"),
+                "promotion_state": candidate.get("promotion_state"),
+                "score": candidate.get("score"),
+                "title": str(candidate.get("title") or "")[:300],
+                "recommended_job_name": candidate.get("recommended_job_name"),
+                "blockers": ", ".join(candidate.get("blockers") or []),
+                "matched_tools": ", ".join(
+                    [
+                        ((match.get("tool") or {}).get("tool_key") or "")
+                        for match in candidate.get("matched_tools", [])
+                    ]
+                ),
+            }
+            for candidate in report.get("candidates", [])
+        ]
+        return {
+            "candidate_count": dg.MetadataValue.int(int(report.get("candidate_count", 0))),
+            "state_counts": dg.MetadataValue.json(report.get("state_counts", {})),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "candidates": _metadata_table(rows, _HYPOTHESIS_PROMOTION_TABLE_COLUMNS),
+        }
+
     def _research_brief_library_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
         rows = report.get("briefs", [])
         return {
@@ -1265,11 +1383,46 @@ if dg is not None:
             "queued_count": dg.MetadataValue.int(int(report.get("queued_count", 0))),
             "preexisting_count": dg.MetadataValue.int(int(report.get("preexisting_count", 0))),
             "updated_lead_count": dg.MetadataValue.int(int(report.get("updated_lead_count", 0))),
+            "handoff_document_count": dg.MetadataValue.int(int(report.get("handoff_document_count", 0))),
+            "handoff_artifact_count": dg.MetadataValue.int(int(report.get("handoff_artifact_count", 0))),
             "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0))),
             "skipped": dg.MetadataValue.json(report.get("skipped", [])[:50]),
             "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "queue_items": _metadata_table(queue_rows, _RESEARCH_BRIEF_QUEUE_TABLE_COLUMNS),
+        }
+
+    def _research_hunt_synthesis_doc_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        doc_rows = [
+            {
+                "lead_id": doc.get("lead_id"),
+                "title": str(doc.get("title") or "")[:300],
+                "control_status": doc.get("control_status"),
+                "recommended_action": doc.get("recommended_action"),
+                "artifact_id": doc.get("artifact_id"),
+                "claim_count": doc.get("claim_count"),
+                "chunk_count": doc.get("chunk_count"),
+                "research_object_count": doc.get("research_object_count"),
+                "technical_footnote_count": doc.get("technical_footnote_count"),
+                "created_at": doc.get("created_at"),
+            }
+            for doc in report.get("documents", [])
+        ]
+        preview = ""
+        documents = report.get("documents", [])
+        if documents:
+            preview = str(documents[0].get("markdown") or "")[:8000]
+        return {
+            "dry_run": bool(report.get("dry_run", True)),
+            "candidate_count": dg.MetadataValue.int(int(report.get("candidate_count", 0))),
+            "document_count": dg.MetadataValue.int(int(report.get("document_count", 0))),
+            "artifact_count": dg.MetadataValue.int(int(report.get("artifact_count", 0))),
+            "updated_lead_count": dg.MetadataValue.int(int(report.get("updated_lead_count", 0))),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0))),
+            "error_count": dg.MetadataValue.int(len(report.get("errors", []))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "documents": _metadata_table(doc_rows, _RESEARCH_HUNT_SYNTHESIS_DOC_TABLE_COLUMNS),
+            "preview": dg.MetadataValue.md(preview or "No synthesis handoff document generated."),
         }
 
     def _research_brief_queue_runner_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -2729,6 +2882,7 @@ if dg is not None:
             ),
             "dry_run": dg.Field(bool, default_value=True, description="Preview queueing without mutating records."),
             "transition_leads": dg.Field(bool, default_value=True, description="Mark newly queued leads as queued."),
+            "create_handoff_docs": dg.Field(bool, default_value=True, description="Create plain-language synthesis handoff docs for ready leads."),
         },
     )
     def research_hunt_synthesis_queue_report(
@@ -2758,6 +2912,7 @@ if dg is not None:
                 model_profile=config["model_profile"],
                 review_mode=config["review_mode"],
                 review_models=config["review_models"],
+                create_handoff_docs=config.get("create_handoff_docs", True),
                 dry_run=config["dry_run"],
                 transition_leads=config["transition_leads"],
                 operator="dagster",
@@ -2767,6 +2922,57 @@ if dg is not None:
         )
         report = result.model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_research_hunt_synthesis_queue_metadata(report))
+
+    @dg.asset(
+        group_name="agent_ops",
+        config_schema={
+            "lead_ids": dg.Field([str], default_value=[], description="Optional lead IDs to document."),
+            "lead_statuses": dg.Field(
+                [str],
+                default_value=["new", "watching", "followup", "queued"],
+                description="Lead statuses to scan.",
+            ),
+            "source_keys": dg.Field([str], default_value=[], description="Optional source keys to filter."),
+            "limit": dg.Field(int, default_value=10, description="Maximum ready leads to document."),
+            "max_claims": dg.Field(int, default_value=16, description="Maximum claims to include."),
+            "max_chunks": dg.Field(int, default_value=12, description="Maximum chunks to footnote."),
+            "max_chunk_chars": dg.Field(int, default_value=900, description="Maximum chars per chunk footnote."),
+            "max_technical_footnotes": dg.Field(int, default_value=30, description="Maximum technical footnotes."),
+            "include_technical_footnotes": dg.Field(bool, default_value=True, description="Include technical provenance footnotes."),
+            "dry_run": dg.Field(bool, default_value=True, description="Preview docs without persisting artifacts."),
+        },
+    )
+    def research_hunt_synthesis_doc_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Create plain-language synthesis handoff docs for ready research-hunt leads."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).create_ready_research_hunt_synthesis_docs(
+            ResearchHuntSynthesisDocRequest(
+                lead_ids=[UUID(value) for value in config["lead_ids"]],
+                lead_statuses=config["lead_statuses"],
+                source_keys=config["source_keys"],
+                limit=config["limit"],
+                max_claims=config["max_claims"],
+                max_chunks=config["max_chunks"],
+                max_chunk_chars=config["max_chunk_chars"],
+                max_technical_footnotes=config["max_technical_footnotes"],
+                include_technical_footnotes=config["include_technical_footnotes"],
+                dry_run=config["dry_run"],
+                operator="dagster",
+                dagster_run_id=context.run_id,
+                metadata={"dagster_synthesis_doc_run_id": context.run_id},
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_research_hunt_synthesis_doc_metadata(report))
 
     @dg.asset(group_name="agent_ops")
     def full_text_ops_agent_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
@@ -2960,6 +3166,8 @@ if dg is not None:
                 description="Committee review mode: openrouter_required, openrouter_compare, external_required, or deterministic_only.",
             ),
             "review_models": dg.Field([str], default_value=[]),
+            "brief_id": dg.Field(str, is_required=False),
+            "evaluation_id": dg.Field(str, is_required=False),
         },
     )
     def therapy_committee_report(
@@ -2983,11 +3191,126 @@ if dg is not None:
                 max_ideas_per_perspective=config["max_ideas_per_perspective"],
                 review_mode=config["review_mode"],
                 review_models=config["review_models"],
+                brief_id=_uuid_or_none(config.get("brief_id")),
+                evaluation_id=_uuid_or_none(config.get("evaluation_id")),
                 dagster_run_id=context.run_id,
             )
         )
         report = result.model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_therapy_committee_metadata(report))
+
+    @dg.asset(group_name="ai_research")
+    def validation_tool_catalog_report(
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual read-only report of recommend-only validation tool capabilities."""
+
+        from .service import HSAResearchService
+
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).list_validation_tool_catalog(
+            ValidationToolCatalogRequest()
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_validation_tool_catalog_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "validation_type": dg.Field(str, default_value="expert_review"),
+            "task_type": dg.Field(str, default_value="expert_review"),
+            "objective": dg.Field(str, default_value="Review a cited therapy hypothesis for validation readiness."),
+            "candidate_name": dg.Field(str, is_required=False),
+            "target_name": dg.Field(str, is_required=False),
+            "limit": dg.Field(int, default_value=5),
+        },
+    )
+    def validation_tool_match_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual read-only validation tool match report for a task context."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).match_validation_tools(
+            ValidationToolMatchRequest(
+                validation_type=config.get("validation_type"),
+                task_type=config.get("task_type"),
+                objective=config.get("objective"),
+                candidate_name=config.get("candidate_name"),
+                target_name=config.get("target_name"),
+                limit=config.get("limit", 5),
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata={
+                "match_count": dg.MetadataValue.int(int(report.get("match_count", 0))),
+                "matches": dg.MetadataValue.json(report.get("matches", [])),
+            },
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "status": dg.Field(str, is_required=False),
+            "topic_query": dg.Field(str, is_required=False),
+            "limit": dg.Field(int, default_value=50),
+        },
+    )
+    def therapy_idea_library_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual read-only report of persisted therapy ideas."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).list_therapy_ideas(
+            TherapyIdeaLibraryRequest(
+                status=config.get("status"),
+                topic_query=config.get("topic_query"),
+                limit=config.get("limit", 50),
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_therapy_idea_library_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "brief_id": dg.Field(str, is_required=False),
+            "evaluation_id": dg.Field(str, is_required=False),
+            "therapy_idea_id": dg.Field(str, is_required=False),
+            "topic_query": dg.Field(str, is_required=False),
+            "source_key": dg.Field(str, is_required=False),
+            "limit": dg.Field(int, default_value=50),
+        },
+    )
+    def hypothesis_promotion_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual report of brief and therapy idea promotion candidates."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_hypothesis_promotion_report(
+            HypothesisPromotionReportRequest(
+                brief_id=_uuid_or_none(config.get("brief_id")),
+                evaluation_id=_uuid_or_none(config.get("evaluation_id")),
+                therapy_idea_id=_uuid_or_none(config.get("therapy_idea_id")),
+                topic_query=config.get("topic_query"),
+                source_key=config.get("source_key"),
+                limit=config.get("limit", 50),
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_hypothesis_promotion_metadata(report))
 
     @dg.asset(
         group_name="ai_research",
@@ -5667,11 +5990,16 @@ if dg is not None:
         research_hunt_queue_report,
         research_hunt_queue_maintenance_report,
         research_hunt_synthesis_queue_report,
+        research_hunt_synthesis_doc_report,
         full_text_ops_agent_report,
         agent_performance_report,
         agent_performance_evaluation_report,
         research_brief_agent_report,
         therapy_committee_report,
+        validation_tool_catalog_report,
+        validation_tool_match_report,
+        therapy_idea_library_report,
+        hypothesis_promotion_report,
         therapy_committee_validation_queue_report,
         research_brief_library_report,
         research_brief_evaluation_report,
@@ -5795,6 +6123,10 @@ if dg is not None:
         "research_hunt_synthesis_queue_job",
         selection=dg.AssetSelection.assets(research_hunt_synthesis_queue_report),
     )
+    research_hunt_synthesis_doc_job = dg.define_asset_job(
+        "research_hunt_synthesis_doc_job",
+        selection=dg.AssetSelection.assets(research_hunt_synthesis_doc_report),
+    )
     full_text_ops_agent_job = dg.define_asset_job(
         "full_text_ops_agent_job",
         selection=dg.AssetSelection.assets(full_text_ops_agent_report),
@@ -5814,6 +6146,22 @@ if dg is not None:
     therapy_committee_job = dg.define_asset_job(
         "therapy_committee_job",
         selection=dg.AssetSelection.assets(therapy_committee_report),
+    )
+    validation_tool_catalog_job = dg.define_asset_job(
+        "validation_tool_catalog_job",
+        selection=dg.AssetSelection.assets(validation_tool_catalog_report),
+    )
+    validation_tool_match_job = dg.define_asset_job(
+        "validation_tool_match_job",
+        selection=dg.AssetSelection.assets(validation_tool_match_report),
+    )
+    therapy_idea_library_job = dg.define_asset_job(
+        "therapy_idea_library_job",
+        selection=dg.AssetSelection.assets(therapy_idea_library_report),
+    )
+    hypothesis_promotion_job = dg.define_asset_job(
+        "hypothesis_promotion_job",
+        selection=dg.AssetSelection.assets(hypothesis_promotion_report),
     )
     therapy_committee_validation_queue_job = dg.define_asset_job(
         "therapy_committee_validation_queue_job",
@@ -6151,11 +6499,16 @@ if dg is not None:
             research_hunt_queue_report_job,
             research_hunt_queue_maintenance_job,
             research_hunt_synthesis_queue_job,
+            research_hunt_synthesis_doc_job,
             full_text_ops_agent_job,
             agent_performance_report_job,
             agent_performance_evaluation_job,
             research_brief_agent_job,
             therapy_committee_job,
+            validation_tool_catalog_job,
+            validation_tool_match_job,
+            therapy_idea_library_job,
+            hypothesis_promotion_job,
             therapy_committee_validation_queue_job,
             research_brief_library_job,
             research_brief_evaluation_job,
@@ -6241,11 +6594,16 @@ else:
     research_hunt_queue_report_job = None
     research_hunt_queue_maintenance_job = None
     research_hunt_synthesis_queue_job = None
+    research_hunt_synthesis_doc_job = None
     full_text_ops_agent_job = None
     agent_performance_report_job = None
     agent_performance_evaluation_job = None
     research_brief_agent_job = None
     therapy_committee_job = None
+    validation_tool_catalog_job = None
+    validation_tool_match_job = None
+    therapy_idea_library_job = None
+    hypothesis_promotion_job = None
     therapy_committee_validation_queue_job = None
     research_brief_library_job = None
     research_brief_evaluation_job = None

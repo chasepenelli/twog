@@ -21,8 +21,11 @@ from .contracts import (
     ValidationPlanTask,
     ValidationPlanTaskType,
     ValidationRequest,
+    ValidationToolMatch,
+    ValidationToolMatchRequest,
 )
 from .repository import ResearchRepository
+from .validation_tool_catalog import match_validation_tools
 
 
 VALIDATION_PLANNING_AGENT_NAME = "validation_planning_agent"
@@ -75,6 +78,15 @@ _COMPOUND_TERMS = {
 _STRUCTURE_TERMS = {"binding", "docking", "kinase", "ligand", "protein", "structure", "target"}
 _SAFETY_TERMS = {"admet", "dose", "safety", "toxicity", "toxicology"}
 _OMICS_TERMS = {"biomarker", "expression", "gene", "genomic", "omics", "rna", "transcriptomic"}
+_PEPTIDE_TERMS = {
+    "cyclic peptide",
+    "epitope",
+    "neoantigen",
+    "peptide",
+    "peptide vaccine",
+    "peptidomimetic",
+    "stapled peptide",
+}
 _TRANSLATION_TERMS = {"angiosarcoma", "canine", "comparative", "human", "species", "translation"}
 
 
@@ -346,6 +358,44 @@ def _tasks_from_findings(
         if len(tasks) >= max_tasks:
             break
 
+        if _contains_any(text, _PEPTIDE_TERMS):
+            _append_task(
+                tasks,
+                seen,
+                _task(
+                    task_type="expert_review",
+                    title=f"Peptide specialist review: {_title_from_claim(finding.claim)}",
+                    objective=(
+                        "Have a peptide specialist assess modality feasibility, target engagement, "
+                        "delivery, stability, immunogenicity, and translational risk."
+                    ),
+                    rationale=finding.reasoning,
+                    brief=brief,
+                    evaluation=evaluation,
+                    finding=finding,
+                    priority=75 + index,
+                    validation_type="expert_review",
+                    candidate_name=candidate_name,
+                    target_name=target_name,
+                    tool_hint="peptide_specialist_review",
+                    required_inputs=[
+                        "peptide sequence or modality",
+                        "target/pathway rationale",
+                        "delivery route or formulation context",
+                        "stability or protease risk context",
+                    ],
+                    expected_outputs=[
+                        "peptide feasibility rating",
+                        "target engagement caveats",
+                        "delivery and stability risks",
+                        "immunogenicity/manufacturability gaps",
+                    ],
+                ),
+                max_tasks,
+            )
+        if len(tasks) >= max_tasks:
+            break
+
         if target_name or _contains_any(text, _STRUCTURE_TERMS):
             _append_task(
                 tasks,
@@ -491,6 +541,8 @@ def _task(
     expected_outputs: list[str] | None = None,
 ) -> ValidationPlanTask:
     evidence_refs = _evidence_refs(brief, evaluation, finding)
+    base_required_inputs = required_inputs or []
+    base_expected_outputs = expected_outputs or []
     assay_context = _validation_assay_context(
         brief=brief,
         finding=finding,
@@ -502,6 +554,18 @@ def _task(
         task_type=task_type,
         validation_type=validation_type,
     )
+    catalog_match = _catalog_match_for_task(
+        task_type=task_type,
+        validation_type=validation_type,
+        objective=objective,
+        candidate_name=candidate_name,
+        target_name=target_name,
+        required_inputs=base_required_inputs,
+        tool_hint=tool_hint,
+    )
+    if catalog_match is not None:
+        quality_gates = _dedupe_labels([*quality_gates, *catalog_match.tool.quality_gates])
+        tool_hint = tool_hint or catalog_match.tool.tool_hint
     validation_request = None
     if validation_type:
         validation_request = ValidationRequest(
@@ -517,6 +581,7 @@ def _task(
                 "brief_id": str(brief.brief_id),
                 "evaluation_id": str(evaluation.evaluation_id) if evaluation else None,
                 "citation_refs": finding.citations,
+                "validation_tool_catalog": _catalog_match_metadata(catalog_match),
                 "recommend_only": True,
             },
         )
@@ -526,8 +591,8 @@ def _task(
         objective=objective,
         rationale=rationale,
         validation_request=validation_request,
-        required_inputs=required_inputs or [],
-        expected_outputs=expected_outputs or [],
+        required_inputs=base_required_inputs,
+        expected_outputs=base_expected_outputs,
         evidence_refs=evidence_refs,
         priority=priority,
         requires_human_approval=True,
@@ -536,6 +601,7 @@ def _task(
             "stance": finding.stance,
             "evidence_strength": finding.evidence_strength,
             "open_questions": finding.open_questions,
+            "validation_tool_catalog": _catalog_match_metadata(catalog_match),
         },
     )
 
@@ -583,6 +649,55 @@ def _append_task(
         return
     tasks.append(task)
     seen.add(key)
+
+
+def _catalog_match_for_task(
+    *,
+    task_type: ValidationPlanTaskType,
+    validation_type: str | None,
+    objective: str,
+    candidate_name: str | None,
+    target_name: str | None,
+    required_inputs: list[str],
+    tool_hint: str | None = None,
+) -> ValidationToolMatch | None:
+    result = match_validation_tools(
+        ValidationToolMatchRequest(
+            validation_type=validation_type,
+            task_type=task_type,
+            objective=objective,
+            candidate_name=candidate_name,
+            target_name=target_name,
+            required_inputs=required_inputs,
+            limit=10,
+        )
+    )
+    if not result.matches:
+        return None
+    normalized_hint = (tool_hint or "").strip().casefold()
+    if normalized_hint:
+        for match in result.matches:
+            if match.tool.tool_key.casefold() == normalized_hint or match.tool.tool_hint.casefold() == normalized_hint:
+                return match
+    return result.matches[0]
+
+
+def _catalog_match_metadata(match: ValidationToolMatch | None) -> dict[str, Any]:
+    if match is None:
+        return {}
+    return {
+        "tool_key": match.tool.tool_key,
+        "display_name": match.tool.display_name,
+        "category": match.tool.category,
+        "tool_hint": match.tool.tool_hint,
+        "runner_status": match.tool.runner_status,
+        "recommended_agent_name": match.tool.metadata.get("recommended_agent_name"),
+        "score": match.score,
+        "quality_gates": match.tool.quality_gates,
+        "dispatch_blockers": match.dispatch_blockers,
+        "missing_inputs": match.missing_inputs,
+        "recommend_only": True,
+    }
 
 
 def _evidence_refs(

@@ -46,6 +46,7 @@ from .contracts import (
     TextEmbedding,
     TextEmbeddingSearchRequest,
     TextEmbeddingSearchResult,
+    TherapyIdeaRecord,
     ValidationRequest,
 )
 
@@ -269,6 +270,25 @@ class ResearchRepository(Protocol):
     ) -> list[ResearchBriefEvaluationRecord]:
         """Return generated research brief evaluations by durable filters."""
 
+    def upsert_therapy_idea(self, record: TherapyIdeaRecord) -> TherapyIdeaRecord:
+        """Persist a therapy idea promoted by the committee layer."""
+
+    def get_therapy_idea(self, therapy_idea_id: UUID) -> TherapyIdeaRecord | None:
+        """Return a persisted therapy idea."""
+
+    def list_therapy_ideas(
+        self,
+        *,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        source_brief_id: UUID | None = None,
+        source_evaluation_id: UUID | None = None,
+        committee_run_id: UUID | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[TherapyIdeaRecord]:
+        """Return persisted therapy ideas by durable filters."""
+
     def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:
         """Persist a recommend-only validation plan derived from a research brief."""
 
@@ -482,6 +502,7 @@ class InMemoryResearchRepository:
         self.research_leads: dict[UUID, ResearchLeadRecord] = {}
         self.research_briefs: dict[UUID, ResearchBriefRecord] = {}
         self.research_brief_evaluations: dict[UUID, ResearchBriefEvaluationRecord] = {}
+        self.therapy_ideas: dict[UUID, TherapyIdeaRecord] = {}
         self.validation_plans: dict[UUID, ValidationPlanRecord] = {}
         self.validation_request_queue: dict[UUID, ValidationRequestQueueItem] = {}
         self.research_brief_queue: dict[UUID, ResearchBriefQueueItem] = {}
@@ -1068,6 +1089,57 @@ class InMemoryResearchRepository:
         if passes_quality_bar is not None:
             records = [record for record in records if record.passes_quality_bar == passes_quality_bar]
         records.sort(key=lambda record: record.created_at, reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def upsert_therapy_idea(self, record: TherapyIdeaRecord) -> TherapyIdeaRecord:
+        existing = self.therapy_ideas.get(record.therapy_idea_id)
+        if existing:
+            record = record.model_copy(
+                update={
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **record.metadata},
+                }
+            )
+        self.therapy_ideas[record.therapy_idea_id] = record
+        return record
+
+    def get_therapy_idea(self, therapy_idea_id: UUID) -> TherapyIdeaRecord | None:
+        return self.therapy_ideas.get(therapy_idea_id)
+
+    def list_therapy_ideas(
+        self,
+        *,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        source_brief_id: UUID | None = None,
+        source_evaluation_id: UUID | None = None,
+        committee_run_id: UUID | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[TherapyIdeaRecord]:
+        records = list(self.therapy_ideas.values())
+        if status:
+            records = [record for record in records if record.status == status]
+        if statuses:
+            allowed = set(statuses)
+            records = [record for record in records if record.status in allowed]
+        if source_brief_id:
+            records = [record for record in records if record.source_brief_id == source_brief_id]
+        if source_evaluation_id:
+            records = [record for record in records if record.source_evaluation_id == source_evaluation_id]
+        if committee_run_id:
+            records = [record for record in records if record.committee_run_id == committee_run_id]
+        if topic_query:
+            normalized = topic_query.lower()
+            records = [
+                record
+                for record in records
+                if normalized in record.topic.lower()
+                or normalized in record.idea.title.lower()
+                or normalized in record.idea.hypothesis.lower()
+            ]
+        records.sort(key=lambda record: (-record.score, record.updated_at))
         return records[:limit] if limit is not None else records
 
     def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:

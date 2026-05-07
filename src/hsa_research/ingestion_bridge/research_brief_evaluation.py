@@ -42,6 +42,20 @@ _LIMITATION_TERMS = {
     "weak",
 }
 _ACTION_TERMS = {"next step", "next steps", "prioritize", "validation", "test", "monitor"}
+_INSUFFICIENT_EVIDENCE_TERMS = {
+    "cannot answer",
+    "does not answer",
+    "evidence is insufficient",
+    "insufficient evidence",
+    "no direct evidence",
+    "no primary clinical trial data",
+    "no quantitative",
+    "not enough evidence",
+    "supplied corpus cannot",
+    "supplied evidence was insufficient",
+    "unanswered",
+    "unsupported by supplied evidence",
+}
 def evaluate_research_brief_synthesis(
     brief: ResearchBriefRecord,
     request: ResearchBriefEvaluationRequest,
@@ -93,6 +107,13 @@ def _evaluate_research_brief_deterministic(
         if isinstance(finding, Mapping)
     ]
     all_findings.extend(finding for finding in ranked_hypotheses if isinstance(finding, Mapping))
+    insufficient_evidence_flags = _insufficient_evidence_flags(
+        payload=payload,
+        final_brief=final_brief,
+        perspective_reports=perspective_reports,
+        findings=all_findings,
+        synthesis_limitations=synthesis_limitations,
+    )
 
     final_has_citation_tokens = bool(re.search(r"\[C\d+\]", final_brief))
     finding_refs = [
@@ -158,6 +179,7 @@ def _evaluate_research_brief_deterministic(
         has_citations=bool(citations),
         final_has_citation_tokens=final_has_citation_tokens,
         errors=errors,
+        insufficient_evidence_flags=insufficient_evidence_flags,
     )
     passes_quality_bar = (
         readiness == "ready_for_hypothesis_review"
@@ -175,6 +197,7 @@ def _evaluate_research_brief_deterministic(
         readiness=readiness,
         errors=errors,
         synthesis_limitations=synthesis_limitations,
+        insufficient_evidence_flags=insufficient_evidence_flags,
     )
     evidence = {
         "citation_count": len(citations),
@@ -192,6 +215,8 @@ def _evaluate_research_brief_deterministic(
         "hard_error_count": len(errors),
         "synthesis_limitation_count": len(synthesis_limitations),
         "synthesis_limitations": synthesis_limitations[:20],
+        "insufficient_evidence_flag_count": len(insufficient_evidence_flags),
+        "insufficient_evidence_flags": insufficient_evidence_flags[:20],
     }
     return ResearchBriefEvaluationResult(
         brief_id=brief.brief_id,
@@ -676,11 +701,14 @@ def _readiness(
     has_citations: bool,
     final_has_citation_tokens: bool,
     errors: Sequence[str],
+    insufficient_evidence_flags: Sequence[str],
 ) -> ResearchBriefEvaluationReadiness:
     if not has_citations or not final_has_citation_tokens or any("unknown citation" in error for error in errors):
         return "blocked"
     if errors:
         return "needs_human_review"
+    if insufficient_evidence_flags:
+        return "needs_more_evidence"
     if overall_score < minimum_overall_score or citation_coverage_score < 0.70 or perspective_balance_score < 0.65:
         return "needs_more_evidence"
     if contradiction_handling_score < 0.45 or actionability_score < 0.50:
@@ -699,6 +727,7 @@ def _narrative(
     readiness: str,
     errors: Sequence[str],
     synthesis_limitations: Sequence[str],
+    insufficient_evidence_flags: Sequence[str],
 ) -> tuple[list[str], list[str], list[str]]:
     strengths: list[str] = []
     weaknesses: list[str] = []
@@ -723,6 +752,9 @@ def _narrative(
     if synthesis_limitations:
         weaknesses.append("Brief reports evidence limitations that should be tracked.")
         recommendations.append("Route evidence limitations into the follow-up research queue before downstream validation.")
+    if insufficient_evidence_flags:
+        weaknesses.append("Brief explicitly says the supplied evidence is insufficient for the focal question.")
+        recommendations.append("Queue focused evidence acquisition before promoting this brief.")
     if readiness == "ready_for_hypothesis_review":
         recommendations.append("Promote this brief into hypothesis review and validation planning.")
     elif readiness == "blocked":
@@ -732,6 +764,42 @@ def _narrative(
     elif readiness == "needs_human_review":
         recommendations.append("Have a human reviewer inspect the weak or error-bearing sections.")
     return strengths[:20], weaknesses[:20], _dedupe(recommendations)[:20]
+
+
+def _insufficient_evidence_flags(
+    *,
+    payload: Mapping[str, Any],
+    final_brief: str,
+    perspective_reports: Sequence[Any],
+    findings: Sequence[Mapping[str, Any]],
+    synthesis_limitations: Sequence[str],
+) -> list[str]:
+    candidates: list[tuple[str, str]] = [
+        ("final_brief", final_brief),
+        ("topic", str(payload.get("topic") or "")),
+    ]
+    candidates.extend(("synthesis_limitation", item) for item in synthesis_limitations)
+    for item in _as_list(payload.get("evidence_limitations")):
+        candidates.append(("evidence_limitation", str(item)))
+    for report in perspective_reports:
+        if not isinstance(report, Mapping):
+            continue
+        candidates.append((f"perspective:{report.get('perspective') or 'unknown'}:summary", str(report.get("summary") or "")))
+    for index, finding in enumerate(findings, start=1):
+        candidates.append((f"finding:{index}:claim", str(finding.get("claim") or "")))
+        candidates.append((f"finding:{index}:reasoning", str(finding.get("reasoning") or "")))
+        for question in _as_list(finding.get("open_questions")):
+            candidates.append((f"finding:{index}:open_question", str(question)))
+
+    flags: list[str] = []
+    for label, text in candidates:
+        normalized = text.lower()
+        if "completion bar" in normalized and ("not meet" in normalized or "did not meet" in normalized):
+            flags.append(f"{label}: {text[:240]}")
+            continue
+        if any(term in normalized for term in _INSUFFICIENT_EVIDENCE_TERMS):
+            flags.append(f"{label}: {text[:240]}")
+    return _dedupe(flags)
 
 
 def _stance_counts(findings: Sequence[Mapping[str, Any]]) -> dict[str, int]:

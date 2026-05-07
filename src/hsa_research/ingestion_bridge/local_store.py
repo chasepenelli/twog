@@ -48,6 +48,7 @@ from .contracts import (
     TextEmbedding,
     TextEmbeddingSearchRequest,
     TextEmbeddingSearchResult,
+    TherapyIdeaRecord,
     ValidationPlanRecord,
     ValidationRequest,
     ValidationRequestQueueItem,
@@ -1812,6 +1813,101 @@ class SQLiteResearchRepository(ResearchRepository):
             for row in self.conn.execute(sql, params).fetchall()
         ]
 
+    def upsert_therapy_idea(self, record: TherapyIdeaRecord) -> TherapyIdeaRecord:
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into therapy_ideas (
+              therapy_idea_id, committee_run_id, agent_run_id, source_brief_id,
+              source_evaluation_id, topic, source_key, status, promotion_state,
+              score, created_at, updated_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(therapy_idea_id) do update set
+              committee_run_id = excluded.committee_run_id,
+              agent_run_id = excluded.agent_run_id,
+              source_brief_id = excluded.source_brief_id,
+              source_evaluation_id = excluded.source_evaluation_id,
+              topic = excluded.topic,
+              source_key = excluded.source_key,
+              status = excluded.status,
+              promotion_state = excluded.promotion_state,
+              score = excluded.score,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(record.therapy_idea_id),
+                str(record.committee_run_id) if record.committee_run_id else None,
+                str(record.agent_run_id) if record.agent_run_id else None,
+                str(record.source_brief_id) if record.source_brief_id else None,
+                str(record.source_evaluation_id) if record.source_evaluation_id else None,
+                record.topic,
+                record.source_key,
+                record.status,
+                record.promotion_state,
+                record.score,
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_therapy_idea(self, therapy_idea_id: UUID) -> TherapyIdeaRecord | None:
+        row = self.conn.execute(
+            "select payload from therapy_ideas where therapy_idea_id = ?",
+            (str(therapy_idea_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return TherapyIdeaRecord.model_validate(json.loads(row["payload"]))
+
+    def list_therapy_ideas(
+        self,
+        *,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        source_brief_id: UUID | None = None,
+        source_evaluation_id: UUID | None = None,
+        committee_run_id: UUID | None = None,
+        topic_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[TherapyIdeaRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            clauses.append(f"status in ({placeholders})")
+            params.extend(statuses)
+        if source_brief_id:
+            clauses.append("source_brief_id = ?")
+            params.append(str(source_brief_id))
+        if source_evaluation_id:
+            clauses.append("source_evaluation_id = ?")
+            params.append(str(source_evaluation_id))
+        if committee_run_id:
+            clauses.append("committee_run_id = ?")
+            params.append(str(committee_run_id))
+        if topic_query:
+            clauses.append("lower(topic) like ?")
+            params.append(f"%{topic_query.lower()}%")
+        sql = "select payload from therapy_ideas"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by score desc, updated_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            TherapyIdeaRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
     def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:
         payload = record.model_dump(mode="json")
         self.conn.execute(
@@ -3224,6 +3320,31 @@ class SQLiteResearchRepository(ResearchRepository):
               on research_brief_evaluations(readiness, created_at desc);
             create index if not exists research_brief_evaluations_quality_idx
               on research_brief_evaluations(passes_quality_bar, overall_score desc);
+
+            create table if not exists therapy_ideas (
+              therapy_idea_id text primary key,
+              committee_run_id text,
+              agent_run_id text,
+              source_brief_id text,
+              source_evaluation_id text,
+              topic text not null,
+              source_key text,
+              status text not null,
+              promotion_state text,
+              score real not null default 0.5,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp
+            );
+
+            create index if not exists therapy_ideas_status_idx
+              on therapy_ideas(status, score desc, updated_at desc);
+            create index if not exists therapy_ideas_brief_idx
+              on therapy_ideas(source_brief_id, updated_at desc);
+            create index if not exists therapy_ideas_evaluation_idx
+              on therapy_ideas(source_evaluation_id, updated_at desc);
+            create index if not exists therapy_ideas_committee_idx
+              on therapy_ideas(committee_run_id, updated_at desc);
 
             create table if not exists validation_plans (
               plan_id text primary key,

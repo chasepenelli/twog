@@ -210,8 +210,50 @@ TherapyCommitteePerspectiveName = Literal[
     "target_biology",
     "drug_repurposing",
     "translational_clinical",
+    "peptide_specialist",
     "skeptic_risk",
 ]
+
+ValidationToolCategory = Literal[
+    "expert_review",
+    "assay_design",
+    "target_expression",
+    "biomarker_response",
+    "omics_expression",
+    "mutation_function",
+    "peptide_specialist",
+    "safety_translational_risk",
+]
+
+ValidationToolRunnerStatus = Literal["recommend_only", "dry_run", "live"]
+
+ValidationToolComputeProfile = Literal[
+    "manual_review",
+    "local_cpu",
+    "llm_review",
+    "wet_lab_planning",
+    "external_compute",
+    "gpu_compute",
+]
+
+TherapyIdeaStatus = Literal[
+    "proposed",
+    "ready_for_promotion",
+    "queued_for_validation",
+    "archived",
+    "rejected",
+]
+
+HypothesisPromotionState = Literal[
+    "needs_citation_repair",
+    "needs_more_evidence",
+    "ready_for_committee",
+    "ready_for_validation_plan",
+    "queued_for_validation",
+    "blocked",
+]
+
+HypothesisPromotionSourceType = Literal["research_brief_hypothesis", "therapy_idea"]
 
 CommandCenterArea = Literal[
     "brief_queue",
@@ -756,6 +798,29 @@ class ResearchBriefFinding(StrictBaseModel):
     open_questions: list[str] = Field(default_factory=list, max_length=10)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_model_citations(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "citations" not in data:
+            return data
+        citations = data.get("citations")
+        if not isinstance(citations, list):
+            return data
+        normalized = _dedupe_strings([str(value) for value in citations])
+        if len(normalized) > 10:
+            data = {**data}
+            data["citations"] = normalized[:10]
+            metadata = dict(data.get("metadata") or {})
+            metadata["citation_truncation"] = {
+                "original_count": len(normalized),
+                "kept_count": 10,
+                "dropped_citations": normalized[10:],
+            }
+            data["metadata"] = metadata
+        else:
+            data = {**data, "citations": normalized}
+        return data
+
 
 class ResearchBriefPerspectiveReport(StrictBaseModel):
     agent_run_id: UUID | None = None
@@ -889,6 +954,60 @@ class ResearchBriefRecord(StrictBaseModel):
             seen_agent_run_ids.add(agent_run_id)
         self.agent_run_ids = deduped_agent_run_ids
         return self
+
+
+class ResearchBriefOperatorDocRequest(StrictBaseModel):
+    brief_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    status: ResearchBriefStatus | None = "completed"
+    source_key: str | None = None
+    topic_query: str | None = None
+    limit: int = Field(default=10, ge=1, le=100)
+    max_hypotheses: int = Field(default=5, ge=1, le=20)
+    max_unresolved_questions: int = Field(default=8, ge=0, le=50)
+    max_evidence_limitations: int = Field(default=8, ge=0, le=50)
+    max_technical_footnotes: int = Field(default=30, ge=0, le=100)
+    include_technical_footnotes: bool = True
+    dry_run: bool = True
+    operator: str = "research_brief_operator_doc"
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_brief_operator_doc_request(self) -> "ResearchBriefOperatorDocRequest":
+        self.brief_ids = list(dict.fromkeys(self.brief_ids))
+        self.operator = self.operator.strip() or "research_brief_operator_doc"
+        self.source_key = self.source_key.strip().lower() if self.source_key and self.source_key.strip() else None
+        self.topic_query = self.topic_query.strip() if self.topic_query and self.topic_query.strip() else None
+        return self
+
+
+class ResearchBriefOperatorDocument(StrictBaseModel):
+    brief_id: UUID
+    title: str
+    artifact_id: UUID | None = None
+    artifact_uri: str | None = None
+    markdown: str
+    plain_language_summary: str
+    citation_count: int = Field(default=0, ge=0)
+    hypothesis_count: int = Field(default=0, ge=0)
+    unresolved_question_count: int = Field(default=0, ge=0)
+    evidence_limitation_count: int = Field(default=0, ge=0)
+    technical_footnote_count: int = Field(default=0, ge=0)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchBriefOperatorDocResult(StrictBaseModel):
+    dry_run: bool = True
+    candidate_count: int = Field(default=0, ge=0)
+    document_count: int = Field(default=0, ge=0)
+    artifact_count: int = Field(default=0, ge=0)
+    skipped_count: int = Field(default=0, ge=0)
+    documents: list[ResearchBriefOperatorDocument] = Field(default_factory=list)
+    artifacts: list[ArtifactHandle] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ResearchBriefQueueItem(StrictBaseModel):
@@ -1081,6 +1200,7 @@ class ResearchHuntSynthesisQueueRequest(StrictBaseModel):
         "deterministic_only",
     ] = "openrouter_required"
     review_models: list[str] = Field(default_factory=list, max_length=10)
+    create_handoff_docs: bool = True
     dry_run: bool = True
     transition_leads: bool = True
     operator: str = "research_hunt_synthesis_queue"
@@ -1102,8 +1222,70 @@ class ResearchHuntSynthesisQueueResult(StrictBaseModel):
     queued_count: int = Field(default=0, ge=0)
     preexisting_count: int = Field(default=0, ge=0)
     updated_lead_count: int = Field(default=0, ge=0)
+    handoff_document_count: int = Field(default=0, ge=0)
+    handoff_artifact_count: int = Field(default=0, ge=0)
     skipped_count: int = Field(default=0, ge=0)
     queue_items: list[ResearchBriefQueueItem] = Field(default_factory=list)
+    handoff_documents: list["ResearchHuntSynthesisDocument"] = Field(default_factory=list)
+    handoff_artifacts: list["ArtifactHandle"] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ResearchHuntSynthesisDocRequest(StrictBaseModel):
+    lead_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    lead_statuses: list[ResearchLeadStatus] = Field(
+        default_factory=lambda: ["new", "watching", "followup", "queued"],
+        max_length=10,
+    )
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    limit: int = Field(default=10, ge=1, le=100)
+    max_claims: int = Field(default=16, ge=0, le=50)
+    max_chunks: int = Field(default=12, ge=0, le=40)
+    max_chunk_chars: int = Field(default=900, ge=200, le=5000)
+    max_technical_footnotes: int = Field(default=30, ge=0, le=100)
+    include_technical_footnotes: bool = True
+    dry_run: bool = True
+    operator: str = "research_hunt_synthesis_doc"
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_hunt_synthesis_doc_request(self) -> "ResearchHuntSynthesisDocRequest":
+        self.lead_statuses = _dedupe_strings(self.lead_statuses)
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        self.operator = self.operator.strip() or "research_hunt_synthesis_doc"
+        return self
+
+
+class ResearchHuntSynthesisDocument(StrictBaseModel):
+    lead_id: UUID
+    title: str
+    control_status: ResearchHuntControlStatus
+    recommended_action: str
+    artifact_id: UUID | None = None
+    artifact_uri: str | None = None
+    markdown: str
+    plain_language_summary: str
+    claim_count: int = Field(default=0, ge=0)
+    chunk_count: int = Field(default=0, ge=0)
+    research_object_count: int = Field(default=0, ge=0)
+    evidence_ref_count: int = Field(default=0, ge=0)
+    technical_footnote_count: int = Field(default=0, ge=0)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchHuntSynthesisDocResult(StrictBaseModel):
+    dry_run: bool = True
+    candidate_count: int = Field(default=0, ge=0)
+    document_count: int = Field(default=0, ge=0)
+    artifact_count: int = Field(default=0, ge=0)
+    updated_lead_count: int = Field(default=0, ge=0)
+    skipped_count: int = Field(default=0, ge=0)
+    documents: list[ResearchHuntSynthesisDocument] = Field(default_factory=list)
+    artifacts: list[ArtifactHandle] = Field(default_factory=list)
     skipped: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -1173,6 +1355,8 @@ class TherapyCommitteeRequest(StrictBaseModel):
     )
     disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
     source_key: str | None = None
+    brief_id: UUID | None = None
+    evaluation_id: UUID | None = None
     max_chunks_per_perspective: int = Field(default=10, ge=1, le=30)
     max_claims: int = Field(default=20, ge=0, le=75)
     max_chunk_chars: int = Field(default=2200, ge=500, le=12000)
@@ -1240,6 +1424,8 @@ class TherapyCommitteeResult(StrictBaseModel):
     agent_name: str = "therapy_committee_chair_agent"
     topic: str
     disease_scope: str
+    source_brief_id: UUID | None = None
+    source_evaluation_id: UUID | None = None
     model_profile: str = "therapy_committee"
     review_mode: Literal[
         "external_required",
@@ -1255,6 +1441,182 @@ class TherapyCommitteeResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ValidationToolCapability(StrictBaseModel):
+    tool_key: str = Field(min_length=2, max_length=120)
+    display_name: str = Field(min_length=2, max_length=200)
+    category: ValidationToolCategory
+    description: str = Field(min_length=3, max_length=2000)
+    compatible_validation_types: list[str] = Field(default_factory=list, min_length=1, max_length=25)
+    compatible_task_types: list[str] = Field(default_factory=list, min_length=1, max_length=25)
+    required_inputs: list[str] = Field(default_factory=list, max_length=25)
+    optional_inputs: list[str] = Field(default_factory=list, max_length=25)
+    outputs: list[str] = Field(default_factory=list, max_length=25)
+    artifacts: list[str] = Field(default_factory=list, max_length=25)
+    quality_gates: list[str] = Field(default_factory=list, max_length=25)
+    dispatch_blockers: list[str] = Field(default_factory=list, max_length=25)
+    estimated_runtime_minutes: int | None = Field(default=None, ge=0, le=10080)
+    estimated_cost_usd: float | None = Field(default=None, ge=0.0, le=100000.0)
+    compute_profile: ValidationToolComputeProfile = "manual_review"
+    runner_status: ValidationToolRunnerStatus = "recommend_only"
+    sop_path: str | None = Field(default=None, max_length=500)
+    tool_hint: str = Field(min_length=2, max_length=200)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_tool_capability(self) -> "ValidationToolCapability":
+        self.tool_key = re.sub(r"[^a-z0-9_:-]+", "_", self.tool_key.strip().lower()).strip("_")
+        self.tool_hint = self.tool_hint.strip()
+        self.display_name = self.display_name.strip()
+        self.description = self.description.strip()
+        self.compatible_validation_types = _dedupe_lower_tokens(self.compatible_validation_types)
+        self.compatible_task_types = _dedupe_lower_tokens(self.compatible_task_types)
+        self.required_inputs = _normalized_unique_strings(self.required_inputs)
+        self.optional_inputs = _normalized_unique_strings(self.optional_inputs)
+        self.outputs = _normalized_unique_strings(self.outputs)
+        self.artifacts = _normalized_unique_strings(self.artifacts)
+        self.quality_gates = _normalized_unique_strings(self.quality_gates)
+        self.dispatch_blockers = _normalized_unique_strings(self.dispatch_blockers)
+        if self.sop_path:
+            self.sop_path = self.sop_path.strip() or None
+        if not self.tool_key:
+            raise ValueError("tool_key cannot be empty after normalization")
+        return self
+
+
+class ValidationToolCatalogRequest(StrictBaseModel):
+    category: ValidationToolCategory | None = None
+    runner_status: ValidationToolRunnerStatus | None = None
+    validation_type: str | None = None
+    task_type: str | None = None
+    query: str | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def normalize_catalog_request(self) -> "ValidationToolCatalogRequest":
+        if self.validation_type:
+            self.validation_type = re.sub(r"\s+", "_", self.validation_type.strip().lower()) or None
+        if self.task_type:
+            self.task_type = re.sub(r"\s+", "_", self.task_type.strip().lower()) or None
+        if self.query:
+            self.query = self.query.strip() or None
+        return self
+
+
+class ValidationToolCatalogResult(StrictBaseModel):
+    tool_count: int = 0
+    runner_status_counts: dict[str, int] = Field(default_factory=dict)
+    category_counts: dict[str, int] = Field(default_factory=dict)
+    tools: list[ValidationToolCapability] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ValidationToolMatchRequest(StrictBaseModel):
+    validation_type: str | None = None
+    task_type: str | None = None
+    objective: str | None = None
+    candidate_name: str | None = None
+    target_name: str | None = None
+    species: list[str] = Field(default_factory=list, max_length=10)
+    required_inputs: list[str] = Field(default_factory=list, max_length=25)
+    runner_status: ValidationToolRunnerStatus | None = "recommend_only"
+    limit: int = Field(default=5, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def normalize_match_request(self) -> "ValidationToolMatchRequest":
+        for field_name in ("validation_type", "task_type", "objective", "candidate_name", "target_name"):
+            value = getattr(self, field_name)
+            if isinstance(value, str):
+                setattr(self, field_name, value.strip() or None)
+        if self.validation_type:
+            self.validation_type = re.sub(r"\s+", "_", self.validation_type.lower())
+        if self.task_type:
+            self.task_type = re.sub(r"\s+", "_", self.task_type.lower())
+        self.species = _dedupe_lower_tokens(self.species)
+        self.required_inputs = _normalized_unique_strings(self.required_inputs)
+        return self
+
+
+class ValidationToolMatch(StrictBaseModel):
+    tool: ValidationToolCapability
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    reasons: list[str] = Field(default_factory=list, max_length=25)
+    missing_inputs: list[str] = Field(default_factory=list, max_length=25)
+    dispatch_blockers: list[str] = Field(default_factory=list, max_length=25)
+
+
+class ValidationToolMatchResult(StrictBaseModel):
+    match_count: int = 0
+    matches: list[ValidationToolMatch] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class TherapyIdeaRecord(StrictBaseModel):
+    therapy_idea_id: UUID = Field(default_factory=uuid4)
+    idea: TherapyIdea
+    committee_run_id: UUID | None = None
+    agent_run_id: UUID | None = None
+    source_brief_id: UUID | None = None
+    source_evaluation_id: UUID | None = None
+    topic: str = Field(default="", max_length=1000)
+    disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
+    source_key: str | None = None
+    status: TherapyIdeaStatus = "proposed"
+    promotion_state: HypothesisPromotionState | None = None
+    score: float = Field(default=0.5, ge=0.0, le=1.0)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=50)
+    targets: list[str] = Field(default_factory=list, max_length=50)
+    biomarkers: list[str] = Field(default_factory=list, max_length=50)
+    candidate_therapies: list[str] = Field(default_factory=list, max_length=50)
+    risks: list[str] = Field(default_factory=list, max_length=50)
+    next_experiments: list[str] = Field(default_factory=list, max_length=50)
+    promotion_metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_therapy_idea_record(self) -> "TherapyIdeaRecord":
+        self.therapy_idea_id = self.idea.idea_id
+        self.topic = self.topic.strip()
+        self.disease_scope = self.disease_scope.strip()
+        self.score = self.idea.priority_score if "score" not in self.model_fields_set else self.score
+        self.evidence_refs = _dedupe_strings(self.evidence_refs or self.idea.evidence_refs)
+        self.targets = _dedupe_strings(self.targets or self.idea.targets)
+        self.biomarkers = _dedupe_strings(self.biomarkers or self.idea.biomarkers)
+        self.candidate_therapies = _dedupe_strings(self.candidate_therapies or self.idea.candidate_therapies)
+        self.risks = _dedupe_strings(self.risks or self.idea.risks)
+        self.next_experiments = _dedupe_strings(self.next_experiments or self.idea.next_experiments)
+        return self
+
+
+class TherapyIdeaLibraryRequest(StrictBaseModel):
+    therapy_idea_id: UUID | None = None
+    status: TherapyIdeaStatus | None = None
+    statuses: list[TherapyIdeaStatus] = Field(default_factory=list, max_length=10)
+    source_brief_id: UUID | None = None
+    source_evaluation_id: UUID | None = None
+    committee_run_id: UUID | None = None
+    topic_query: str | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def normalize_therapy_idea_library_request(self) -> "TherapyIdeaLibraryRequest":
+        if self.topic_query:
+            self.topic_query = self.topic_query.strip() or None
+        self.statuses = _dedupe_strings(self.statuses)
+        return self
+
+
+class TherapyIdeaLibraryResult(StrictBaseModel):
+    idea_count: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    ideas: list[TherapyIdeaRecord] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class TherapyCommitteeValidationQueueRequest(StrictBaseModel):
     agent_run_id: UUID | None = None
     idea_ids: list[UUID] = Field(default_factory=list, max_length=10)
@@ -1262,6 +1624,75 @@ class TherapyCommitteeValidationQueueRequest(StrictBaseModel):
     priority: int = Field(default=40, ge=1, le=1000)
     dry_run: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class HypothesisPromotionCandidate(StrictBaseModel):
+    candidate_id: str = Field(min_length=3, max_length=240)
+    source_type: HypothesisPromotionSourceType
+    source_id: str = Field(min_length=1, max_length=200)
+    brief_id: UUID | None = None
+    evaluation_id: UUID | None = None
+    therapy_idea_id: UUID | None = None
+    committee_run_id: UUID | None = None
+    title: str = Field(min_length=1, max_length=500)
+    hypothesis: str = Field(min_length=1, max_length=3000)
+    promotion_state: HypothesisPromotionState
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    candidate_therapies: list[str] = Field(default_factory=list, max_length=50)
+    targets: list[str] = Field(default_factory=list, max_length=50)
+    biomarkers: list[str] = Field(default_factory=list, max_length=50)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=50)
+    risks: list[str] = Field(default_factory=list, max_length=50)
+    next_experiments: list[str] = Field(default_factory=list, max_length=50)
+    blockers: list[str] = Field(default_factory=list, max_length=25)
+    recommended_next_action: str = Field(default="", max_length=1000)
+    recommended_job_name: str | None = Field(default=None, max_length=200)
+    matched_tools: list[ValidationToolMatch] = Field(default_factory=list, max_length=10)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_promotion_candidate(self) -> "HypothesisPromotionCandidate":
+        self.candidate_id = self.candidate_id.strip()
+        self.source_id = self.source_id.strip()
+        self.title = self.title.strip()
+        self.hypothesis = self.hypothesis.strip()
+        self.candidate_therapies = _dedupe_strings(self.candidate_therapies)
+        self.targets = _dedupe_strings(self.targets)
+        self.biomarkers = _dedupe_strings(self.biomarkers)
+        self.evidence_refs = _dedupe_strings(self.evidence_refs)
+        self.risks = _dedupe_strings(self.risks)
+        self.next_experiments = _dedupe_strings(self.next_experiments)
+        self.blockers = _dedupe_strings(self.blockers)
+        self.recommended_next_action = self.recommended_next_action.strip()
+        return self
+
+
+class HypothesisPromotionReportRequest(StrictBaseModel):
+    brief_id: UUID | None = None
+    evaluation_id: UUID | None = None
+    therapy_idea_id: UUID | None = None
+    topic_query: str | None = None
+    source_key: str | None = None
+    include_blocked: bool = True
+    include_ready_for_committee: bool = True
+    include_ready_for_validation: bool = True
+    limit: int = Field(default=50, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def normalize_hypothesis_promotion_request(self) -> "HypothesisPromotionReportRequest":
+        if self.topic_query:
+            self.topic_query = self.topic_query.strip() or None
+        if self.source_key:
+            self.source_key = self.source_key.strip().lower() or None
+        return self
+
+
+class HypothesisPromotionReportResult(StrictBaseModel):
+    candidate_count: int = 0
+    state_counts: dict[str, int] = Field(default_factory=dict)
+    candidates: list[HypothesisPromotionCandidate] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ResearchBriefEvaluationRequest(StrictBaseModel):
@@ -1399,6 +1830,7 @@ class ResearchBriefFollowupQueueRequest(StrictBaseModel):
     limit: int = Field(default=50, ge=1, le=500)
     include_evaluations: bool = True
     max_limitations_per_brief: int = Field(default=20, ge=1, le=50)
+    force: bool = False
     dry_run: bool = False
 
     @model_validator(mode="after")
