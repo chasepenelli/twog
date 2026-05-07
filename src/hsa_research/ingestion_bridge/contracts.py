@@ -255,6 +255,24 @@ HypothesisPromotionState = Literal[
 
 HypothesisPromotionSourceType = Literal["research_brief_hypothesis", "therapy_idea"]
 
+ValidationPacketStatus = Literal[
+    "draft",
+    "ready_for_review",
+    "queued_for_validation",
+    "blocked",
+    "archived",
+]
+
+ValidationPacketReadiness = Literal[
+    "ready_for_committee",
+    "ready_for_validation_plan",
+    "ready_for_validation_queue",
+    "queued_for_validation",
+    "needs_more_evidence",
+    "needs_citation_repair",
+    "blocked",
+]
+
 CommandCenterArea = Literal[
     "brief_queue",
     "research_leads",
@@ -3513,6 +3531,115 @@ class ValidationRequestQueueResult(StrictBaseModel):
     dry_run: bool = True
     queue_items: list[ValidationRequestQueueItem] = Field(default_factory=list)
     skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ValidationPacketRequest(StrictBaseModel):
+    candidate_id: str | None = Field(default=None, max_length=240)
+    therapy_idea_id: UUID | None = None
+    plan_id: UUID | None = None
+    queue_item_id: UUID | None = None
+    brief_id: UUID | None = None
+    evaluation_id: UUID | None = None
+    topic_query: str | None = None
+    source_key: str | None = None
+    include_queue_items: bool = True
+    queue_if_ready: bool = False
+    dry_run: bool = True
+    max_tasks: int = Field(default=8, ge=1, le=25)
+    priority: int = Field(default=40, ge=1, le=1000)
+    limit: int = Field(default=10, ge=1, le=100)
+    model_profile: str = "validation_packet_builder"
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_validation_packet_request(self) -> "ValidationPacketRequest":
+        if self.candidate_id:
+            self.candidate_id = self.candidate_id.strip() or None
+        if self.topic_query:
+            self.topic_query = self.topic_query.strip() or None
+        if self.source_key:
+            self.source_key = self.source_key.strip().lower() or None
+        self.model_profile = self.model_profile.strip() or "validation_packet_builder"
+        return self
+
+
+class ValidationPacket(StrictBaseModel):
+    packet_id: str = Field(min_length=3, max_length=260)
+    candidate_id: str = Field(min_length=3, max_length=240)
+    source_type: HypothesisPromotionSourceType
+    source_id: str = Field(min_length=1, max_length=200)
+    therapy_idea_id: UUID | None = None
+    brief_id: UUID | None = None
+    evaluation_id: UUID | None = None
+    committee_run_id: UUID | None = None
+    agent_run_id: UUID | None = None
+    therapy_idea: TherapyIdeaRecord | None = None
+    promotion_candidate: HypothesisPromotionCandidate
+    validation_plan: ValidationPlanRecord | None = None
+    queue_items: list[ValidationRequestQueueItem] = Field(default_factory=list)
+    validation_tasks: list[ValidationPlanTask] = Field(default_factory=list, max_length=25)
+    title: str = Field(min_length=1, max_length=500)
+    hypothesis: str = Field(min_length=1, max_length=3000)
+    disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
+    candidate_therapies: list[str] = Field(default_factory=list, max_length=50)
+    targets: list[str] = Field(default_factory=list, max_length=50)
+    biomarkers: list[str] = Field(default_factory=list, max_length=50)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=100)
+    direct_evidence_refs: list[str] = Field(default_factory=list, max_length=100)
+    analog_evidence_refs: list[str] = Field(default_factory=list, max_length=100)
+    missing_evidence: list[str] = Field(default_factory=list, max_length=50)
+    safety_risks: list[str] = Field(default_factory=list, max_length=50)
+    contradictions: list[str] = Field(default_factory=list, max_length=50)
+    next_experiments: list[str] = Field(default_factory=list, max_length=50)
+    matched_tools: list[ValidationToolMatch] = Field(default_factory=list, max_length=10)
+    required_inputs: list[str] = Field(default_factory=list, max_length=50)
+    quality_gates: list[str] = Field(default_factory=list, max_length=50)
+    dispatch_blockers: list[str] = Field(default_factory=list, max_length=50)
+    promotion_state: HypothesisPromotionState | None = None
+    status: ValidationPacketStatus = "draft"
+    readiness: ValidationPacketReadiness = "needs_more_evidence"
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_validation_packet(self) -> "ValidationPacket":
+        self.packet_id = self.packet_id.strip()
+        self.candidate_id = self.candidate_id.strip()
+        self.source_id = self.source_id.strip()
+        self.title = self.title.strip()
+        self.hypothesis = self.hypothesis.strip()
+        self.disease_scope = self.disease_scope.strip()
+        self.candidate_therapies = _dedupe_strings(self.candidate_therapies)
+        self.targets = _dedupe_strings(self.targets)
+        self.biomarkers = _dedupe_strings(self.biomarkers)
+        self.evidence_refs = _dedupe_strings(self.evidence_refs)
+        self.direct_evidence_refs = _dedupe_strings(self.direct_evidence_refs)
+        self.analog_evidence_refs = _dedupe_strings(self.analog_evidence_refs)
+        self.missing_evidence = _dedupe_strings(self.missing_evidence)
+        self.safety_risks = _dedupe_strings(self.safety_risks)
+        self.contradictions = _dedupe_strings(self.contradictions)
+        self.next_experiments = _dedupe_strings(self.next_experiments)
+        self.required_inputs = _dedupe_strings(self.required_inputs)
+        self.quality_gates = _dedupe_strings(self.quality_gates)
+        self.dispatch_blockers = _dedupe_strings(self.dispatch_blockers)
+        return self
+
+
+class ValidationPacketResult(StrictBaseModel):
+    packet_count: int = 0
+    ready_count: int = 0
+    blocked_count: int = 0
+    created_plan_count: int = 0
+    queued_count: int = 0
+    existing_queue_count: int = 0
+    dry_run: bool = True
+    packets: list[ValidationPacket] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

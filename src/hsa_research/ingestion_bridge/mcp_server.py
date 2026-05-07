@@ -51,6 +51,7 @@ from .contracts import (
     ValidationAutopilotRequest,
     ValidationGapSourceIngestRequest,
     ValidationGapSourcePackRequest,
+    ValidationPacketRequest,
     ValidationPlanRequest,
     ValidationAssayContext,
     ValidationRequest,
@@ -331,6 +332,44 @@ def hypothesis_promotion_report_tool(
             include_blocked=include_blocked,
             include_ready_for_committee=include_ready_for_committee,
             include_ready_for_validation=include_ready_for_validation,
+            limit=limit,
+        )
+    ).model_dump(mode="json")
+
+
+def validation_packets_tool(
+    candidate_id: str | None = None,
+    therapy_idea_id: str | None = None,
+    plan_id: str | None = None,
+    queue_item_id: str | None = None,
+    brief_id: str | None = None,
+    evaluation_id: str | None = None,
+    topic_query: str | None = None,
+    source_key: str | None = None,
+    include_queue_items: bool = True,
+    queue_if_ready: bool = False,
+    dry_run: bool = True,
+    max_tasks: int = 8,
+    priority: int = 40,
+    limit: int = 10,
+) -> dict:
+    """Build validation packet views from promotion candidates, plans, and queue state."""
+
+    return get_service().build_validation_packets(
+        ValidationPacketRequest(
+            candidate_id=candidate_id,
+            therapy_idea_id=UUID(therapy_idea_id) if therapy_idea_id else None,
+            plan_id=UUID(plan_id) if plan_id else None,
+            queue_item_id=UUID(queue_item_id) if queue_item_id else None,
+            brief_id=UUID(brief_id) if brief_id else None,
+            evaluation_id=UUID(evaluation_id) if evaluation_id else None,
+            topic_query=topic_query,
+            source_key=source_key,
+            include_queue_items=include_queue_items,
+            queue_if_ready=queue_if_ready,
+            dry_run=dry_run,
+            max_tasks=max_tasks,
+            priority=priority,
             limit=limit,
         )
     ).model_dump(mode="json")
@@ -1606,6 +1645,42 @@ if mcp is not None:
         )
 
     @mcp.tool()
+    def validation_packets(
+        candidate_id: str | None = None,
+        therapy_idea_id: str | None = None,
+        plan_id: str | None = None,
+        queue_item_id: str | None = None,
+        brief_id: str | None = None,
+        evaluation_id: str | None = None,
+        topic_query: str | None = None,
+        source_key: str | None = None,
+        include_queue_items: bool = True,
+        queue_if_ready: bool = False,
+        dry_run: bool = True,
+        max_tasks: int = 8,
+        priority: int = 40,
+        limit: int = 10,
+    ) -> dict:
+        """Build validation packet views from promotion candidates, plans, and queue state."""
+
+        return validation_packets_tool(
+            candidate_id=candidate_id,
+            therapy_idea_id=therapy_idea_id,
+            plan_id=plan_id,
+            queue_item_id=queue_item_id,
+            brief_id=brief_id,
+            evaluation_id=evaluation_id,
+            topic_query=topic_query,
+            source_key=source_key,
+            include_queue_items=include_queue_items,
+            queue_if_ready=queue_if_ready,
+            dry_run=dry_run,
+            max_tasks=max_tasks,
+            priority=priority,
+            limit=limit,
+        )
+
+    @mcp.tool()
     def get_research_brief(brief_id: str) -> dict:
         """Return one persisted research brief ledger record."""
 
@@ -2795,6 +2870,12 @@ if mcp is not None:
         """Fetch a persisted therapy idea as an MCP resource."""
 
         return therapy_idea_library_tool(therapy_idea_id=therapy_idea_id)
+
+    @mcp.resource("validation-packet://{candidate_id}")
+    def validation_packet_resource(candidate_id: str) -> dict:
+        """Fetch a validation packet view by promotion candidate ID."""
+
+        return validation_packets_tool(candidate_id=candidate_id, limit=1)
 
     @mcp.resource("validation-request-queue://{queue_item_id}")
     def validation_request_queue_resource(queue_item_id: str) -> dict:

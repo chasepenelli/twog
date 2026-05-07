@@ -61,6 +61,7 @@ from .contracts import (
     ValidationAutopilotRequest,
     ValidationGapSourceIngestRequest,
     ValidationGapSourcePackRequest,
+    ValidationPacketRequest,
     ValidationPlanRequest,
     ValidationRequestQueueRequest,
     ValidationToolCatalogRequest,
@@ -666,6 +667,25 @@ def main() -> None:
     hypothesis_promotion.add_argument("--hide-ready-committee", action="store_true", help="Hide committee-ready candidates")
     hypothesis_promotion.add_argument("--hide-ready-validation", action="store_true", help="Hide validation-ready candidates")
     hypothesis_promotion.add_argument("--limit", type=int, default=50, help="Maximum candidates to return")
+
+    validation_packets = subparsers.add_parser(
+        "validation-packets",
+        help="Build validation packet views from promotion candidates, plans, and queue items",
+    )
+    validation_packets.add_argument("--candidate-id", default=None, help="Promotion candidate ID")
+    validation_packets.add_argument("--therapy-idea-id", default=None, help="Therapy idea ID")
+    validation_packets.add_argument("--plan-id", default=None, help="Validation plan ID")
+    validation_packets.add_argument("--queue-item-id", default=None, help="Validation request queue item ID")
+    validation_packets.add_argument("--brief-id", default=None, help="Source brief ID")
+    validation_packets.add_argument("--evaluation-id", default=None, help="Source evaluation ID")
+    validation_packets.add_argument("--query", default=None, help="Topic/title/hypothesis search")
+    validation_packets.add_argument("--source", default=None, help="Source key filter")
+    validation_packets.add_argument("--hide-queue-items", action="store_true", help="Do not include queue item payloads")
+    validation_packets.add_argument("--queue-if-ready", action="store_true", help="Queue ready therapy idea packets")
+    validation_packets.add_argument("--apply", action="store_true", help="Persist queue mutations when queueing")
+    validation_packets.add_argument("--max-tasks", type=int, default=8, help="Maximum packet tasks")
+    validation_packets.add_argument("--priority", type=int, default=40, help="Queue priority when queueing")
+    validation_packets.add_argument("--limit", type=int, default=10, help="Maximum packets to return")
 
     x_topic_monitor = subparsers.add_parser(
         "x-topic-monitor",
@@ -1950,6 +1970,25 @@ def main() -> None:
                 include_blocked=not args.hide_blocked,
                 include_ready_for_committee=not args.hide_ready_committee,
                 include_ready_for_validation=not args.hide_ready_validation,
+                limit=args.limit,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "validation-packets":
+        output = HSAResearchService(repo).build_validation_packets(
+            ValidationPacketRequest(
+                candidate_id=args.candidate_id,
+                therapy_idea_id=UUID(args.therapy_idea_id) if args.therapy_idea_id else None,
+                plan_id=UUID(args.plan_id) if args.plan_id else None,
+                queue_item_id=UUID(args.queue_item_id) if args.queue_item_id else None,
+                brief_id=UUID(args.brief_id) if args.brief_id else None,
+                evaluation_id=UUID(args.evaluation_id) if args.evaluation_id else None,
+                topic_query=args.query,
+                source_key=args.source,
+                include_queue_items=not args.hide_queue_items,
+                queue_if_ready=args.queue_if_ready,
+                dry_run=not args.apply,
+                max_tasks=args.max_tasks,
+                priority=args.priority,
                 limit=args.limit,
             )
         ).model_dump(mode="json")

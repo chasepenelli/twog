@@ -138,6 +138,9 @@ from .contracts import (
     ValidationGapSourceIngestResult,
     ValidationGapSourcePackRequest,
     ValidationGapSourcePackResult,
+    ValidationPacket,
+    ValidationPacketRequest,
+    ValidationPacketResult,
     ValidationPlanRecord,
     ValidationPlanRequest,
     ValidationPlanResult,
@@ -823,6 +826,16 @@ class HSAResearchService:
         return _build_hypothesis_promotion_report(
             self.repository,
             request or HypothesisPromotionReportRequest(),
+        )
+
+    def build_validation_packets(
+        self,
+        request: ValidationPacketRequest | None = None,
+    ) -> ValidationPacketResult:
+        return _build_validation_packets(
+            self.repository,
+            request or ValidationPacketRequest(),
+            service=self,
         )
 
     def queue_therapy_committee_validation_requests(
@@ -4335,6 +4348,495 @@ def _build_hypothesis_promotion_report(
         candidates=candidates,
         errors=errors,
     )
+
+
+def _build_validation_packets(
+    repository: ResearchRepository,
+    request: ValidationPacketRequest,
+    *,
+    service: HSAResearchService | None = None,
+) -> ValidationPacketResult:
+    errors: list[str] = []
+    queued_count = 0
+    existing_queue_count = 0
+    created_plan_count = 0
+    promotion_report = _build_hypothesis_promotion_report(
+        repository,
+        HypothesisPromotionReportRequest(
+            brief_id=request.brief_id,
+            evaluation_id=request.evaluation_id,
+            therapy_idea_id=request.therapy_idea_id,
+            topic_query=request.topic_query,
+            source_key=request.source_key,
+            include_blocked=True,
+            include_ready_for_committee=True,
+            include_ready_for_validation=True,
+            limit=request.limit,
+        ),
+    )
+    errors.extend(promotion_report.errors)
+    candidates = promotion_report.candidates
+    if request.candidate_id:
+        candidates = [candidate for candidate in candidates if candidate.candidate_id == request.candidate_id]
+
+    queue_item_filter: ValidationRequestQueueItem | None = None
+    if request.queue_item_id:
+        queue_item_filter = repository.get_validation_request_queue_item(request.queue_item_id)
+        if queue_item_filter is None:
+            errors.append(f"Validation request queue item not found: {request.queue_item_id}")
+
+    packets: list[ValidationPacket] = []
+    for candidate in candidates[: request.limit]:
+        packet_id = _validation_packet_id(candidate)
+        queue_override: list[ValidationRequestQueueItem] | None = None
+        existing_plan = _validation_packet_plan_for_candidate(repository, candidate, request)
+        if (
+            request.queue_if_ready
+            and service is not None
+            and candidate.promotion_state == "ready_for_validation_plan"
+            and candidate.therapy_idea_id is not None
+        ):
+            record = repository.get_therapy_idea(candidate.therapy_idea_id)
+            if record is None:
+                errors.append(f"Therapy idea not found for packet queueing: {candidate.therapy_idea_id}")
+            elif record.agent_run_id is None:
+                errors.append(
+                    "Therapy idea cannot be queued from packet because it has no source committee agent_run_id: "
+                    f"{candidate.therapy_idea_id}"
+                )
+            else:
+                queue_result = service.queue_therapy_committee_validation_requests(
+                    TherapyCommitteeValidationQueueRequest(
+                        agent_run_id=record.agent_run_id,
+                        idea_ids=[candidate.therapy_idea_id],
+                        max_ideas=1,
+                        priority=request.priority,
+                        dry_run=request.dry_run,
+                        metadata={
+                            **request.metadata,
+                            "queued_from": "validation_packet",
+                            "packet_id": packet_id,
+                            "promotion_candidate_id": candidate.candidate_id,
+                            "dagster_run_id": request.dagster_run_id,
+                        },
+                    )
+                )
+                queued_count += queue_result.queued_count
+                existing_queue_count += queue_result.existing_count
+                errors.extend(queue_result.errors)
+                queue_override = queue_result.queue_items
+                if not request.dry_run and existing_plan is None and queue_result.plan_id:
+                    if repository.get_validation_plan(queue_result.plan_id) is not None:
+                        created_plan_count += 1
+
+        packet = _validation_packet_from_candidate(
+            repository,
+            candidate,
+            request,
+            queue_item_filter=queue_item_filter,
+            queue_items_override=queue_override,
+        )
+        packets.append(packet)
+
+    return ValidationPacketResult(
+        packet_count=len(packets),
+        ready_count=sum(
+            1
+            for packet in packets
+            if packet.readiness in {"ready_for_validation_plan", "ready_for_validation_queue", "queued_for_validation"}
+        ),
+        blocked_count=sum(1 for packet in packets if packet.status == "blocked"),
+        created_plan_count=created_plan_count,
+        queued_count=queued_count,
+        existing_queue_count=existing_queue_count,
+        dry_run=request.dry_run,
+        packets=packets,
+        errors=errors,
+    )
+
+
+def _validation_packet_from_candidate(
+    repository: ResearchRepository,
+    candidate: HypothesisPromotionCandidate,
+    request: ValidationPacketRequest,
+    *,
+    queue_item_filter: ValidationRequestQueueItem | None = None,
+    queue_items_override: list[ValidationRequestQueueItem] | None = None,
+) -> ValidationPacket:
+    therapy_idea = repository.get_therapy_idea(candidate.therapy_idea_id) if candidate.therapy_idea_id else None
+    plan = _validation_packet_plan_for_candidate(repository, candidate, request)
+    queue_items = (
+        list(queue_items_override)
+        if queue_items_override is not None
+        else _validation_packet_queue_items(repository, candidate, plan, request)
+    )
+    if queue_item_filter is not None:
+        queue_items = [item for item in queue_items if item.queue_item_id == queue_item_filter.queue_item_id]
+    tasks = _validation_packet_tasks(plan, candidate, request)
+    quality_gates = _dedupe_quality_labels(
+        [
+            *candidate.blockers,
+            *[gate for item in queue_items for gate in item.quality_gates],
+            *[
+                gate
+                for task in tasks
+                if task.validation_request is not None
+                for gate in _validation_request_quality_gates(task.validation_request)
+            ],
+        ]
+    )
+    dispatch_blockers = _dedupe_quality_labels(
+        [
+            *candidate.blockers,
+            *[blocker for item in queue_items for blocker in item.dispatch_blockers],
+            *[
+                blocker
+                for task in tasks
+                for blocker in _validation_queue_dispatch_blockers_for_task(task)
+            ],
+        ]
+    )
+    required_inputs = _dedupe_quality_labels([item for task in tasks for item in task.required_inputs])
+    missing_evidence = _validation_packet_missing_evidence(candidate)
+    status, readiness = _validation_packet_status_and_readiness(candidate, plan, queue_items)
+    return ValidationPacket(
+        packet_id=_validation_packet_id(candidate),
+        candidate_id=candidate.candidate_id,
+        source_type=candidate.source_type,
+        source_id=candidate.source_id,
+        therapy_idea_id=candidate.therapy_idea_id,
+        brief_id=candidate.brief_id,
+        evaluation_id=candidate.evaluation_id,
+        committee_run_id=candidate.committee_run_id,
+        agent_run_id=therapy_idea.agent_run_id if therapy_idea else None,
+        therapy_idea=therapy_idea,
+        promotion_candidate=candidate,
+        validation_plan=plan,
+        queue_items=queue_items if request.include_queue_items else [],
+        validation_tasks=tasks,
+        title=candidate.title,
+        hypothesis=candidate.hypothesis,
+        disease_scope=therapy_idea.disease_scope if therapy_idea else "canine hemangiosarcoma and human angiosarcoma",
+        candidate_therapies=candidate.candidate_therapies,
+        targets=candidate.targets,
+        biomarkers=candidate.biomarkers,
+        evidence_refs=candidate.evidence_refs,
+        direct_evidence_refs=_validation_packet_direct_evidence_refs(candidate),
+        analog_evidence_refs=_validation_packet_analog_evidence_refs(candidate),
+        missing_evidence=missing_evidence,
+        safety_risks=_validation_packet_safety_risks(candidate),
+        contradictions=_validation_packet_contradictions(candidate),
+        next_experiments=candidate.next_experiments,
+        matched_tools=candidate.matched_tools,
+        required_inputs=required_inputs,
+        quality_gates=quality_gates,
+        dispatch_blockers=dispatch_blockers,
+        promotion_state=candidate.promotion_state,
+        status=status,
+        readiness=readiness,
+        score=candidate.score,
+        summary={
+            "task_count": len(tasks),
+            "queue_item_count": len(queue_items),
+            "matched_tool_count": len(candidate.matched_tools),
+            "missing_evidence_count": len(missing_evidence),
+            "dispatch_blocker_count": len(dispatch_blockers),
+        },
+        metadata={
+            **request.metadata,
+            "source": "validation_packet",
+            "promotion_candidate_id": candidate.candidate_id,
+            "recommended_next_action": candidate.recommended_next_action,
+            "recommended_job_name": candidate.recommended_job_name,
+            "dagster_run_id": request.dagster_run_id,
+        },
+    )
+
+
+def _validation_packet_id(candidate: HypothesisPromotionCandidate) -> str:
+    digest = hashlib.sha1(candidate.candidate_id.encode("utf-8")).hexdigest()[:16]
+    return f"validation_packet:{digest}"
+
+
+def _validation_packet_plan_for_candidate(
+    repository: ResearchRepository,
+    candidate: HypothesisPromotionCandidate,
+    request: ValidationPacketRequest,
+) -> ValidationPlanRecord | None:
+    if request.plan_id:
+        return repository.get_validation_plan(request.plan_id)
+    plans: list[ValidationPlanRecord] = []
+    if candidate.evaluation_id:
+        plans.extend(repository.list_validation_plans(evaluation_id=candidate.evaluation_id, limit=None))
+    if candidate.brief_id:
+        plans.extend(repository.list_validation_plans(brief_id=candidate.brief_id, limit=None))
+    if candidate.therapy_idea_id or candidate.committee_run_id:
+        plans.extend(repository.list_validation_plans(limit=None))
+    seen: set[UUID] = set()
+    deduped: list[ValidationPlanRecord] = []
+    for plan in plans:
+        if plan.plan_id in seen:
+            continue
+        seen.add(plan.plan_id)
+        deduped.append(plan)
+    if candidate.therapy_idea_id:
+        target = str(candidate.therapy_idea_id)
+        for plan in deduped:
+            if _payload_contains_identifier(plan.metadata, target) or _payload_contains_identifier(plan.result_payload, target):
+                return plan
+    if candidate.committee_run_id:
+        target = str(candidate.committee_run_id)
+        for plan in deduped:
+            if _payload_contains_identifier(plan.metadata, target) or _payload_contains_identifier(plan.result_payload, target):
+                return plan
+    return deduped[0] if deduped else None
+
+
+def _validation_packet_queue_items(
+    repository: ResearchRepository,
+    candidate: HypothesisPromotionCandidate,
+    plan: ValidationPlanRecord | None,
+    request: ValidationPacketRequest,
+) -> list[ValidationRequestQueueItem]:
+    if request.queue_item_id:
+        item = repository.get_validation_request_queue_item(request.queue_item_id)
+        return [item] if item else []
+    items: list[ValidationRequestQueueItem] = []
+    if plan is not None:
+        items.extend(repository.list_validation_request_queue_items(plan_id=plan.plan_id, limit=None))
+    if candidate.therapy_idea_id or candidate.committee_run_id:
+        all_items = repository.list_validation_request_queue_items(limit=None)
+        targets = {
+            str(value)
+            for value in (candidate.therapy_idea_id, candidate.committee_run_id)
+            if value is not None
+        }
+        for item in all_items:
+            if any(_payload_contains_identifier(item.metadata, target) for target in targets):
+                items.append(item)
+    seen: set[UUID] = set()
+    deduped: list[ValidationRequestQueueItem] = []
+    for item in items:
+        if item.queue_item_id in seen:
+            continue
+        seen.add(item.queue_item_id)
+        deduped.append(item)
+    deduped.sort(key=lambda item: (item.priority, item.created_at))
+    return deduped
+
+
+def _validation_packet_tasks(
+    plan: ValidationPlanRecord | None,
+    candidate: HypothesisPromotionCandidate,
+    request: ValidationPacketRequest,
+) -> list[ValidationPlanTask]:
+    tasks: list[ValidationPlanTask] = []
+    if plan is not None:
+        for raw_task in (plan.result_payload or {}).get("tasks", []):
+            if not isinstance(raw_task, dict):
+                continue
+            try:
+                tasks.append(ValidationPlanTask.model_validate(raw_task))
+            except Exception:
+                continue
+    if tasks:
+        return tasks[: request.max_tasks]
+    return _validation_packet_proposed_tasks(candidate, request)
+
+
+_VALIDATION_REQUEST_TYPE_SET = {"boltz", "docking", "md", "admet", "homology", "safety", "expert_review", "wet_lab", "omics"}
+_VALIDATION_PLAN_TASK_TYPE_SET = {
+    "literature_review",
+    "expert_review",
+    "target_validation",
+    "protein_structure",
+    "compound_screen",
+    "docking",
+    "boltz",
+    "md",
+    "admet",
+    "safety",
+    "omics",
+    "wet_lab",
+}
+
+
+def _validation_packet_proposed_tasks(
+    candidate: HypothesisPromotionCandidate,
+    request: ValidationPacketRequest,
+) -> list[ValidationPlanTask]:
+    matches = candidate.matched_tools[: request.max_tasks] or match_validation_tools(
+        ValidationToolMatchRequest(
+            validation_type="expert_review",
+            task_type="expert_review",
+            objective=candidate.hypothesis,
+            candidate_name=candidate.candidate_therapies[0] if candidate.candidate_therapies else None,
+            target_name=candidate.targets[0] if candidate.targets else None,
+            required_inputs=["promotion candidate", "evidence refs"],
+            limit=min(request.max_tasks, 3),
+        )
+    ).matches
+    tasks: list[ValidationPlanTask] = []
+    for index, match in enumerate(matches[: request.max_tasks], start=1):
+        tool = match.tool
+        validation_type = next(
+            (item for item in tool.compatible_validation_types if item in _VALIDATION_REQUEST_TYPE_SET),
+            "expert_review",
+        )
+        task_type = next(
+            (item for item in tool.compatible_task_types if item in _VALIDATION_PLAN_TASK_TYPE_SET),
+            "expert_review",
+        )
+        task_id = uuid5(NAMESPACE_URL, f"{candidate.candidate_id}:{tool.tool_key}:{index}")
+        validation_request = ValidationRequest(
+            validation_type=validation_type,  # type: ignore[arg-type]
+            candidate_name=_truncate(" / ".join(candidate.candidate_therapies[:3]), 500)
+            if candidate.candidate_therapies
+            else None,
+            target_name=_truncate(" / ".join(candidate.targets[:3]), 500) if candidate.targets else None,
+            objective=_truncate(
+                f"{tool.display_name}: review validation readiness for {candidate.hypothesis}",
+                2000,
+            ),
+            priority=min(1000, request.priority + index - 1),
+            require_approval=True,
+            assay_context=ValidationAssayContext(
+                disease_context="canine hemangiosarcoma and human angiosarcoma",
+                species=["canine", "human"],
+                model_system="local evidence packet review",
+                assay_type=tool.display_name,
+                readout="go/no-go validation readiness, missing inputs, and confidence-changing evidence",
+                endpoint="recommend-only validation decision",
+                safety_context="; ".join(candidate.risks[:5]) or None,
+                evidence_refs=candidate.evidence_refs[:25],
+                negative_evidence_needs=candidate.blockers[:10],
+                provenance_requirements=["source-traceable citations", "direct-vs-analog evidence labeling"],
+            ),
+            quality_gates=tool.quality_gates,
+            metadata={
+                "recommend_only": True,
+                "validation_packet": {
+                    "packet_id": _validation_packet_id(candidate),
+                    "candidate_id": candidate.candidate_id,
+                    "source_type": candidate.source_type,
+                },
+                "validation_tool_catalog": tool.model_dump(mode="json"),
+            },
+        )
+        tasks.append(
+            ValidationPlanTask(
+                task_id=task_id,
+                task_type=task_type,  # type: ignore[arg-type]
+                title=_truncate(f"{tool.display_name}: {candidate.title}", 500),
+                objective=validation_request.objective,
+                rationale=_truncate(
+                    " | ".join(
+                        item
+                        for item in [
+                            candidate.hypothesis,
+                            candidate.recommended_next_action,
+                            "; ".join(match.reasons),
+                        ]
+                        if item
+                    ),
+                    3000,
+                ),
+                validation_request=validation_request,
+                required_inputs=_dedupe_quality_labels([*tool.required_inputs, *match.missing_inputs]),
+                expected_outputs=tool.outputs or tool.artifacts or ["recommend-only validation review"],
+                evidence_refs=candidate.evidence_refs[:25],
+                priority=validation_request.priority,
+                requires_human_approval=True,
+                tool_hint=tool.tool_hint,
+                metadata={
+                    "recommend_only": True,
+                    "validation_packet": {
+                        "packet_id": _validation_packet_id(candidate),
+                        "candidate_id": candidate.candidate_id,
+                    },
+                    "validation_tool_catalog": tool.model_dump(mode="json"),
+                    "match_score": match.score,
+                    "match_reasons": match.reasons,
+                },
+            )
+        )
+    return tasks
+
+
+def _validation_packet_status_and_readiness(
+    candidate: HypothesisPromotionCandidate,
+    plan: ValidationPlanRecord | None,
+    queue_items: list[ValidationRequestQueueItem],
+) -> tuple[str, str]:
+    if queue_items:
+        return "queued_for_validation", "queued_for_validation"
+    if plan is not None and plan.status == "ready_for_review" and plan.readiness == "ready_for_expert_review":
+        return "ready_for_review", "ready_for_validation_queue"
+    if candidate.promotion_state == "ready_for_validation_plan":
+        return "ready_for_review", "ready_for_validation_plan"
+    if candidate.promotion_state == "ready_for_committee":
+        return "draft", "ready_for_committee"
+    if candidate.promotion_state == "needs_citation_repair":
+        return "blocked", "needs_citation_repair"
+    if candidate.promotion_state == "blocked":
+        return "blocked", "blocked"
+    return "draft", "needs_more_evidence"
+
+
+def _validation_packet_missing_evidence(candidate: HypothesisPromotionCandidate) -> list[str]:
+    values = [*candidate.blockers]
+    if candidate.promotion_state in {"needs_more_evidence", "needs_citation_repair"} and candidate.recommended_next_action:
+        values.append(candidate.recommended_next_action)
+    for risk in candidate.risks:
+        if re.search(r"\b(?:missing|sparse|no direct|needs?|gap|weak|primary source)\b", risk, re.IGNORECASE):
+            values.append(risk)
+    return _dedupe_quality_labels(values)
+
+
+def _validation_packet_safety_risks(candidate: HypothesisPromotionCandidate) -> list[str]:
+    risks = [
+        risk
+        for risk in candidate.risks
+        if re.search(r"\b(?:safety|tox|adverse|dose|dlt|coag|bleed|hemorrhage|pk|pd)\b", risk, re.IGNORECASE)
+    ]
+    return _dedupe_quality_labels(risks or candidate.risks[:5])
+
+
+def _validation_packet_contradictions(candidate: HypothesisPromotionCandidate) -> list[str]:
+    return _dedupe_quality_labels(
+        [
+            risk
+            for risk in candidate.risks
+            if re.search(r"\b(?:contradict|negative|conflict|failed|no benefit|uncertain)\b", risk, re.IGNORECASE)
+        ]
+    )
+
+
+def _validation_packet_direct_evidence_refs(candidate: HypothesisPromotionCandidate) -> list[str]:
+    return [
+        ref
+        for ref in candidate.evidence_refs
+        if not re.search(r"\b(?:analog|review|human_only|cross_species)\b", ref, re.IGNORECASE)
+    ][:50]
+
+
+def _validation_packet_analog_evidence_refs(candidate: HypothesisPromotionCandidate) -> list[str]:
+    return [
+        ref
+        for ref in candidate.evidence_refs
+        if re.search(r"\b(?:analog|review|human_only|cross_species)\b", ref, re.IGNORECASE)
+    ][:50]
+
+
+def _payload_contains_identifier(payload: Any, target: str) -> bool:
+    if isinstance(payload, dict):
+        return any(
+            _payload_contains_identifier(value, target)
+            for value in payload.values()
+        )
+    if isinstance(payload, list):
+        return any(_payload_contains_identifier(value, target) for value in payload)
+    return str(payload) == target
 
 
 def _promotion_candidate_from_therapy_idea(

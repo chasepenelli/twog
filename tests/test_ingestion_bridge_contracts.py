@@ -45,6 +45,7 @@ from hsa_research.ingestion_bridge.contracts import (
     FullTextOpsAction,
     FullTextOpsRequest,
     FullTextOpsResult,
+    HypothesisPromotionCandidate,
     HypothesisPromotionReportRequest,
     HypothesisProposalRequest,
     IngestionResult,
@@ -128,6 +129,9 @@ from hsa_research.ingestion_bridge.contracts import (
     ValidationGapSourcePackRequest,
     ValidationGapSourcePackResult,
     ValidationGapSourceQuery,
+    ValidationPacket,
+    ValidationPacketRequest,
+    ValidationPacketResult,
     ValidationRequest,
     ValidationRequestQueueItem,
     ValidationRequestQueueRequest,
@@ -559,6 +563,57 @@ def test_hypothesis_promotion_allows_successful_dedupe_metadata(tmp_path):
     assert report.candidates
     assert {candidate.promotion_state for candidate in report.candidates} == {"ready_for_committee"}
     assert all("citation_repair_required" not in candidate.blockers for candidate in report.candidates)
+
+
+def test_validation_packets_build_from_ready_therapy_idea(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-packets.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief, evaluation = _seed_evaluated_brief(repo, topic="Pazopanib KDR packet", duplicate_count=0)
+    idea = TherapyIdea(
+        title="KDR/PIK3CA biomarker-enriched pazopanib strategy",
+        hypothesis="Pazopanib should be reviewed in KDR/PIK3CA-enriched canine splenic HSA.",
+        rationale="The committee found enough cited VEGFR/KDR rationale to plan recommend-only validation.",
+        candidate_therapies=["pazopanib"],
+        targets=["KDR", "PIK3CA"],
+        biomarkers=["VEGFR2"],
+        evidence_refs=["C1", "C2"],
+        evidence_strength="medium",
+        risks=["direct canine pazopanib response data may be sparse"],
+        next_experiments=["Review KDR/PIK3CA mutation and expression evidence."],
+        priority_score=0.78,
+    )
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            source_brief_id=brief.brief_id,
+            source_evaluation_id=evaluation.evaluation_id,
+            topic=brief.topic,
+            status="ready_for_promotion",
+            score=0.78,
+        )
+    )
+
+    result = service.build_validation_packets(
+        ValidationPacketRequest(therapy_idea_id=idea.idea_id, limit=1)
+    )
+
+    assert isinstance(result, ValidationPacketResult)
+    assert result.packet_count == 1
+    packet = result.packets[0]
+    assert isinstance(packet, ValidationPacket)
+    assert packet.therapy_idea_id == idea.idea_id
+    assert packet.status == "ready_for_review"
+    assert packet.readiness == "ready_for_validation_plan"
+    assert packet.validation_tasks
+    assert packet.matched_tools
+    assert "human_approval_required" in packet.dispatch_blockers
+    assert "recommend_only_runner" in packet.dispatch_blockers
+    assert "direct canine pazopanib response data may be sparse" in packet.missing_evidence
+
+    payload = packet.model_dump(mode="json")
+    payload["status"] = "bad"
+    with pytest.raises(ValueError):
+        ValidationPacket.model_validate(payload)
 
 
 def test_validation_plan_includes_catalog_hints_and_queue_blockers(tmp_path):
@@ -2616,6 +2671,92 @@ def test_dagster_agent_performance_assets_use_injected_repository(monkeypatch):
     assert report_result.metadata["reviewed_run_count"].value == 1
     assert evaluation_result.value["review_created_count"] == 1
     assert evaluation_result.metadata["review_created_count"].value == 1
+
+
+def test_dagster_validation_packet_asset_uses_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+    therapy_idea_id = uuid4()
+    candidate = HypothesisPromotionCandidate(
+        candidate_id=f"therapy_idea:{therapy_idea_id}",
+        source_type="therapy_idea",
+        source_id=str(therapy_idea_id),
+        therapy_idea_id=therapy_idea_id,
+        title="Pazopanib KDR packet",
+        hypothesis="Review pazopanib for KDR-altered canine HSA.",
+        promotion_state="ready_for_validation_plan",
+        score=0.78,
+        candidate_therapies=["pazopanib"],
+        targets=["KDR"],
+        evidence_refs=["C1", "C2"],
+    )
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    class FakeService:
+        def __init__(self, repository):
+            assert repository is sentinel_repository
+
+        def build_validation_packets(self, request):
+            assert isinstance(request, ValidationPacketRequest)
+            assert request.therapy_idea_id == therapy_idea_id
+            assert request.dagster_run_id == "dagster-validation-packet-test"
+            return ValidationPacketResult(
+                packet_count=1,
+                ready_count=1,
+                packets=[
+                    ValidationPacket(
+                        packet_id="validation_packet:test",
+                        candidate_id=candidate.candidate_id,
+                        source_type="therapy_idea",
+                        source_id=str(therapy_idea_id),
+                        therapy_idea_id=therapy_idea_id,
+                        promotion_candidate=candidate,
+                        title=candidate.title,
+                        hypothesis=candidate.hypothesis,
+                        candidate_therapies=["pazopanib"],
+                        targets=["KDR"],
+                        evidence_refs=["C1", "C2"],
+                        status="ready_for_review",
+                        readiness="ready_for_validation_plan",
+                        score=0.78,
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
+
+    result = dagster_asset_module.validation_packet_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "candidate_id": None,
+                "therapy_idea_id": str(therapy_idea_id),
+                "plan_id": None,
+                "queue_item_id": None,
+                "brief_id": None,
+                "evaluation_id": None,
+                "topic_query": None,
+                "source_key": None,
+                "include_queue_items": True,
+                "queue_if_ready": False,
+                "dry_run": True,
+                "max_tasks": 8,
+                "priority": 40,
+                "limit": 10,
+                "model_profile": "validation_packet_builder",
+            },
+            run_id="dagster-validation-packet-test",
+        ),
+        FakeRepositoryResource(),
+    )
+
+    assert calls == ["build_repository"]
+    assert result.value["packet_count"] == 1
+    assert result.metadata["packet_count"].value == 1
+    assert result.metadata["ready_count"].value == 1
 
 
 def test_dagster_validation_plan_asset_uses_injected_repository(monkeypatch):

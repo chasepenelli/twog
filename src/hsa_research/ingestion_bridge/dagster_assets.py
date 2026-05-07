@@ -49,6 +49,7 @@ from .contracts import (
     ValidationAutopilotRequest,
     ValidationGapSourceIngestRequest,
     ValidationGapSourcePackRequest,
+    ValidationPacketRequest,
     ValidationPlanRequest,
     ValidationRequestQueueRequest,
     ValidationToolCatalogRequest,
@@ -274,6 +275,20 @@ _HYPOTHESIS_PROMOTION_TABLE_COLUMNS = (
     "recommended_job_name",
     "blockers",
     "matched_tools",
+)
+_VALIDATION_PACKET_TABLE_COLUMNS = (
+    "packet_id",
+    "status",
+    "readiness",
+    "score",
+    "source_type",
+    "title",
+    "candidate_therapies",
+    "targets",
+    "matched_tools",
+    "task_count",
+    "queue_item_count",
+    "dispatch_blocker_count",
 )
 _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS = (
     "brief_id",
@@ -1095,6 +1110,45 @@ if dg is not None:
             "state_counts": dg.MetadataValue.json(report.get("state_counts", {})),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "candidates": _metadata_table(rows, _HYPOTHESIS_PROMOTION_TABLE_COLUMNS),
+        }
+
+    def _validation_packet_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = []
+        for packet in report.get("packets", []):
+            summary = packet.get("summary") if isinstance(packet.get("summary"), dict) else {}
+            rows.append(
+                {
+                    "packet_id": packet.get("packet_id"),
+                    "status": packet.get("status"),
+                    "readiness": packet.get("readiness"),
+                    "score": packet.get("score"),
+                    "source_type": packet.get("source_type"),
+                    "title": str(packet.get("title") or "")[:300],
+                    "candidate_therapies": ", ".join(packet.get("candidate_therapies") or []),
+                    "targets": ", ".join(packet.get("targets") or []),
+                    "matched_tools": ", ".join(
+                        [
+                            ((match.get("tool") or {}).get("tool_key") or "")
+                            for match in packet.get("matched_tools", [])
+                        ]
+                    ),
+                    "task_count": summary.get("task_count", len(packet.get("validation_tasks") or [])),
+                    "queue_item_count": summary.get("queue_item_count", len(packet.get("queue_items") or [])),
+                    "dispatch_blocker_count": summary.get(
+                        "dispatch_blocker_count",
+                        len(packet.get("dispatch_blockers") or []),
+                    ),
+                }
+            )
+        return {
+            "packet_count": dg.MetadataValue.int(int(report.get("packet_count", 0))),
+            "ready_count": dg.MetadataValue.int(int(report.get("ready_count", 0))),
+            "blocked_count": dg.MetadataValue.int(int(report.get("blocked_count", 0))),
+            "queued_count": dg.MetadataValue.int(int(report.get("queued_count", 0))),
+            "existing_queue_count": dg.MetadataValue.int(int(report.get("existing_queue_count", 0))),
+            "dry_run": bool(report.get("dry_run", True)),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "packets": _metadata_table(rows, _VALIDATION_PACKET_TABLE_COLUMNS),
         }
 
     def _research_brief_library_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -3311,6 +3365,59 @@ if dg is not None:
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_hypothesis_promotion_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "candidate_id": dg.Field(str, is_required=False),
+            "therapy_idea_id": dg.Field(str, is_required=False),
+            "plan_id": dg.Field(str, is_required=False),
+            "queue_item_id": dg.Field(str, is_required=False),
+            "brief_id": dg.Field(str, is_required=False),
+            "evaluation_id": dg.Field(str, is_required=False),
+            "topic_query": dg.Field(str, is_required=False),
+            "source_key": dg.Field(str, is_required=False),
+            "include_queue_items": dg.Field(bool, default_value=True),
+            "queue_if_ready": dg.Field(bool, default_value=False),
+            "dry_run": dg.Field(bool, default_value=True),
+            "max_tasks": dg.Field(int, default_value=8),
+            "priority": dg.Field(int, default_value=40),
+            "limit": dg.Field(int, default_value=10),
+            "model_profile": dg.Field(str, default_value="validation_packet_builder"),
+        },
+    )
+    def validation_packet_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual validation packet report tying ideas to plans, queue items, and tool gates."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_validation_packets(
+            ValidationPacketRequest(
+                candidate_id=config.get("candidate_id"),
+                therapy_idea_id=_uuid_or_none(config.get("therapy_idea_id")),
+                plan_id=_uuid_or_none(config.get("plan_id")),
+                queue_item_id=_uuid_or_none(config.get("queue_item_id")),
+                brief_id=_uuid_or_none(config.get("brief_id")),
+                evaluation_id=_uuid_or_none(config.get("evaluation_id")),
+                topic_query=config.get("topic_query"),
+                source_key=config.get("source_key"),
+                include_queue_items=config.get("include_queue_items", True),
+                queue_if_ready=config.get("queue_if_ready", False),
+                dry_run=config.get("dry_run", True),
+                max_tasks=config.get("max_tasks", 8),
+                priority=config.get("priority", 40),
+                limit=config.get("limit", 10),
+                model_profile=config.get("model_profile", "validation_packet_builder"),
+                dagster_run_id=context.run_id,
+                metadata={"dagster_packet_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_validation_packet_metadata(report))
 
     @dg.asset(
         group_name="ai_research",
@@ -6000,6 +6107,7 @@ if dg is not None:
         validation_tool_match_report,
         therapy_idea_library_report,
         hypothesis_promotion_report,
+        validation_packet_report,
         therapy_committee_validation_queue_report,
         research_brief_library_report,
         research_brief_evaluation_report,
@@ -6162,6 +6270,10 @@ if dg is not None:
     hypothesis_promotion_job = dg.define_asset_job(
         "hypothesis_promotion_job",
         selection=dg.AssetSelection.assets(hypothesis_promotion_report),
+    )
+    validation_packet_job = dg.define_asset_job(
+        "validation_packet_job",
+        selection=dg.AssetSelection.assets(validation_packet_report),
     )
     therapy_committee_validation_queue_job = dg.define_asset_job(
         "therapy_committee_validation_queue_job",
@@ -6509,6 +6621,7 @@ if dg is not None:
             validation_tool_match_job,
             therapy_idea_library_job,
             hypothesis_promotion_job,
+            validation_packet_job,
             therapy_committee_validation_queue_job,
             research_brief_library_job,
             research_brief_evaluation_job,
@@ -6604,6 +6717,7 @@ else:
     validation_tool_match_job = None
     therapy_idea_library_job = None
     hypothesis_promotion_job = None
+    validation_packet_job = None
     therapy_committee_validation_queue_job = None
     research_brief_library_job = None
     research_brief_evaluation_job = None

@@ -31,6 +31,7 @@ from .contracts import (
     ResearchBriefQualityReportRequest,
     TherapyIdeaLibraryRequest,
     ValidationAutopilotRequest,
+    ValidationPacketRequest,
     ValidationToolCatalogRequest,
     ValidationToolMatchRequest,
 )
@@ -266,6 +267,30 @@ def hypothesis_promotion_payload(
         limit=_int_param(params, "limit", 50),
     )
     return service.build_hypothesis_promotion_report(request).model_dump(mode="json")
+
+
+def validation_packets_payload(
+    service: HSAResearchService,
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    params = params or {}
+    request = ValidationPacketRequest(
+        candidate_id=_str_param(params, "candidate_id"),
+        therapy_idea_id=_uuid_param(params, "therapy_idea_id"),
+        plan_id=_uuid_param(params, "plan_id"),
+        queue_item_id=_uuid_param(params, "queue_item_id"),
+        brief_id=_uuid_param(params, "brief_id"),
+        evaluation_id=_uuid_param(params, "evaluation_id"),
+        topic_query=_str_param(params, "query"),
+        source_key=_str_param(params, "source"),
+        include_queue_items=_bool_param(params, "include_queue_items", True),
+        queue_if_ready=_bool_param(params, "queue_if_ready", False),
+        dry_run=_bool_param(params, "dry_run", True),
+        max_tasks=_int_param(params, "max_tasks", 8),
+        priority=_int_param(params, "priority", 40),
+        limit=_int_param(params, "limit", 10),
+    )
+    return service.build_validation_packets(request).model_dump(mode="json")
 
 
 def list_research_briefs_payload(
@@ -1188,6 +1213,9 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
                 return
             if parsed.path == "/api/hypothesis-promotion":
                 self._send_json(hypothesis_promotion_payload(service_factory(), parse_qs(parsed.query)))
+                return
+            if parsed.path == "/api/validation-packets":
+                self._send_json(validation_packets_payload(service_factory(), parse_qs(parsed.query)))
                 return
             parts = [part for part in PurePosixPath(parsed.path).parts if part != "/"]
             if len(parts) == 3 and parts[:2] == ["api", "agent-runs"]:
