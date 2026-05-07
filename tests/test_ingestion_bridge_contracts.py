@@ -96,6 +96,8 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchLeadRecord,
     ResearchProgramBoardRequest,
     ResearchProgramBoardResult,
+    ResearchProgramEvidenceLoopRequest,
+    ResearchProgramEvidenceLoopResult,
     ResearchProgramEvidenceTask,
     ResearchProgramQuestion,
     ResearchProgramRecord,
@@ -879,6 +881,64 @@ def test_research_program_contract_and_repository_round_trip(tmp_path):
         assert repo.list_research_programs(thesis_query="coagulation", limit=10)
         assert repo.list_research_programs(gate_decision="needs_one_more_pass", limit=10)
         assert repo.list_research_programs(status="active", limit=10) == []
+
+
+def test_research_program_evidence_loop_queues_bounded_work():
+    repo = InMemoryResearchRepository()
+    program = repo.upsert_research_program(_research_program_fixture())
+    result = HSAResearchService(repo).run_research_program_evidence_loop(
+        ResearchProgramEvidenceLoopRequest(
+            program_id=program.program_id,
+            max_tasks=1,
+            max_source_queries=2,
+            priority=35,
+            review_mode="deterministic_only",
+        )
+    )
+
+    assert isinstance(result, ResearchProgramEvidenceLoopResult)
+    assert result.blocked is False
+    assert result.loop_count_before == 0
+    assert result.loop_count_after == 1
+    assert result.selected_task_count == 1
+    assert result.research_lead_count == 1
+    assert result.source_query_count == 2
+    assert result.brief_queue_count == 1
+    assert result.task_results[0].status_after == "queued"
+    assert result.task_results[0].selected_source_keys == ["pubmed", "europe_pmc"]
+
+    stored = repo.get_research_program(program.program_id)
+    assert stored.evidence_loop_count == 1
+    assert stored.status == "active"
+    assert stored.evidence_tasks[0].status == "queued"
+    assert stored.metadata["latest_evidence_loop"]["source_query_count"] == 2
+    assert repo.list_research_brief_queue_items(topic_query="Coagulation evidence acquisition", limit=10)
+    assert repo.list_research_leads(statuses=["followup"], limit=10)
+    assert {
+        query.source_key
+        for query in repo.list_source_queries(active_only=True)
+        if query.track == "research_program_evidence"
+    } == {"pubmed", "europe_pmc"}
+
+
+def test_research_program_evidence_loop_dry_run_and_max_loop_block():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    program = repo.upsert_research_program(_research_program_fixture())
+    dry_run = service.run_research_program_evidence_loop(
+        ResearchProgramEvidenceLoopRequest(program_id=program.program_id, dry_run=True)
+    )
+    assert dry_run.loop_count_after == 0
+    assert repo.get_research_program(program.program_id).evidence_loop_count == 0
+    assert repo.list_research_brief_queue_items(limit=10) == []
+
+    maxed = program.model_copy(update={"evidence_loop_count": program.max_evidence_loops})
+    repo.upsert_research_program(maxed)
+    blocked = service.run_research_program_evidence_loop(
+        ResearchProgramEvidenceLoopRequest(program_id=program.program_id)
+    )
+    assert blocked.blocked is True
+    assert "max_evidence_loops" in blocked.errors[0]
 
 
 def test_model_policy_uses_sonnet_for_operations_and_opus_for_big_ideas(monkeypatch):
@@ -3267,6 +3327,24 @@ def test_dagster_research_program_assets_use_injected_repository(monkeypatch):
             assert request.thesis_query == "vascular"
             return ResearchProgramBoardResult(program_count=1, programs=[program])
 
+        def run_research_program_evidence_loop(self, request):
+            assert isinstance(request, ResearchProgramEvidenceLoopRequest)
+            assert request.program_id == program.program_id
+            assert request.dagster_run_id == "dagster-research-program-loop-test"
+            return ResearchProgramEvidenceLoopResult(
+                program_id=program.program_id,
+                program_title=program.title,
+                loop_count_before=0,
+                loop_count_after=1,
+                max_evidence_loops=2,
+                task_count=1,
+                selected_task_count=1,
+                research_lead_count=1,
+                source_query_count=2,
+                brief_queue_count=1,
+                program=program,
+            )
+
     monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
 
     board_result = dagster_asset_module.research_program_board_report.node_def.compute_fn.decorated_fn(
@@ -3301,13 +3379,41 @@ def test_dagster_research_program_assets_use_injected_repository(monkeypatch):
         ),
         FakeRepositoryResource(),
     )
+    loop_result = dagster_asset_module.research_program_evidence_loop_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "program_id": str(program.program_id),
+                "thesis_query": None,
+                "source_keys": [],
+                "max_tasks": 5,
+                "max_source_queries": 20,
+                "max_sources_per_task": 4,
+                "queue_briefs": True,
+                "create_research_leads": True,
+                "create_source_queries": True,
+                "priority": 40,
+                "max_chunks_per_perspective": 10,
+                "max_claims": 20,
+                "max_chunk_chars": 2200,
+                "brief_style": "technical",
+                "model_profile": "research_brief",
+                "review_mode": "openrouter_required",
+                "review_models": [],
+                "dry_run": False,
+            },
+            run_id="dagster-research-program-loop-test",
+        ),
+        FakeRepositoryResource(),
+    )
 
-    assert calls == ["build_repository", "build_repository"]
+    assert calls == ["build_repository", "build_repository", "build_repository"]
     assert board_result.value["program_count"] == 1
     assert board_result.metadata["program_count"].value == 1
     assert board_result.metadata["persisted_count"].value == 1
     assert library_result.value["program_count"] == 1
     assert library_result.metadata["program_count"].value == 1
+    assert loop_result.value["selected_task_count"] == 1
+    assert loop_result.metadata["loop_count_after"].value == 1
 
 
 def test_dagster_validation_plan_asset_uses_injected_repository(monkeypatch):

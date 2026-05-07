@@ -110,6 +110,10 @@ from .contracts import (
     ResearchObjectReadResult,
     ResearchProgramBoardRequest,
     ResearchProgramBoardResult,
+    ResearchProgramEvidenceTask,
+    ResearchProgramEvidenceLoopRequest,
+    ResearchProgramEvidenceLoopResult,
+    ResearchProgramEvidenceLoopTaskResult,
     ResearchProgramRecord,
     ResearchProgramReviewRequest,
     ResearchProgramReviewResult,
@@ -122,6 +126,7 @@ from .contracts import (
     SourceFollowupQueueRequest,
     SourceFollowupQueueResult,
     SourceFollowupQueueItem,
+    SourceQuery,
     TextEmbeddingSearchRequest,
     HypothesisPromotionCandidate,
     HypothesisPromotionReportRequest,
@@ -932,6 +937,225 @@ class HSAResearchService:
             gate_counts=dict(sorted(Counter(record.gate_decision for record in records).items())),
             programs=records,
         )
+
+    def run_research_program_evidence_loop(
+        self,
+        request: ResearchProgramEvidenceLoopRequest,
+    ) -> ResearchProgramEvidenceLoopResult:
+        program = self._select_research_program_for_evidence_loop(request)
+        if program is None:
+            return ResearchProgramEvidenceLoopResult(
+                dry_run=request.dry_run,
+                blocked=True,
+                errors=["No research program matched the evidence-loop request."],
+            )
+
+        loop_before = program.evidence_loop_count
+        base_result = {
+            "program_id": program.program_id,
+            "program_title": program.title,
+            "dry_run": request.dry_run,
+            "loop_count_before": loop_before,
+            "loop_count_after": loop_before,
+            "max_evidence_loops": program.max_evidence_loops,
+            "task_count": len(program.evidence_tasks),
+            "program": program,
+        }
+        if loop_before >= program.max_evidence_loops:
+            return ResearchProgramEvidenceLoopResult(
+                **base_result,
+                blocked=True,
+                errors=[
+                    (
+                        "Research program has reached max_evidence_loops; rerun the board "
+                        "for a promote/narrow/archive decision before adding more evidence work."
+                    )
+                ],
+            )
+
+        selected_tasks = list(program.evidence_tasks)[: request.max_tasks]
+        if not selected_tasks:
+            return ResearchProgramEvidenceLoopResult(
+                **base_result,
+                blocked=True,
+                errors=["Research program has no evidence tasks to run."],
+            )
+
+        loop_number = loop_before + 1
+        research_leads: list[ResearchLeadRecord] = []
+        source_queries: list[SourceQuery] = []
+        brief_queue_items: list[ResearchBriefQueueItem] = []
+        task_results: list[ResearchProgramEvidenceLoopTaskResult] = []
+        updated_task_ids = {task.task_id for task in selected_tasks}
+        source_query_budget = request.max_source_queries
+
+        for task in selected_tasks:
+            selected_sources = _research_program_loop_task_sources(task, request)
+            task_metadata = _research_program_loop_metadata(
+                program,
+                task,
+                request,
+                loop_number=loop_number,
+                selected_sources=selected_sources,
+            )
+            research_lead_id: UUID | None = None
+            brief_queue_item_id: UUID | None = None
+            source_query_names: list[str] = []
+            errors: list[str] = []
+
+            if request.create_research_leads:
+                lead = ResearchLeadRecord(
+                    identity_key=f"research_program_evidence:{program.program_id}:{task.task_id}",
+                    title=task.title,
+                    lead_type="unknown",
+                    status="followup",
+                    priority=request.priority,
+                    source_key=selected_sources[0] if selected_sources else None,
+                    reason=task.objective,
+                    summary=_research_program_loop_task_summary(program, task),
+                    evidence_refs=task.evidence_refs,
+                    topic_tags=["research_program", "evidence_loop", program.thesis_area],
+                    suggested_sources=selected_sources,
+                    metadata=task_metadata,
+                )
+                if not request.dry_run:
+                    lead = self.repository.upsert_research_lead(lead)
+                research_lead_id = lead.lead_id
+                research_leads.append(lead)
+
+            if request.create_source_queries and source_query_budget > 0:
+                for source_key in selected_sources[:source_query_budget]:
+                    query = _research_program_loop_source_query(
+                        program,
+                        task,
+                        source_key,
+                        loop_number=loop_number,
+                        metadata=task_metadata,
+                    )
+                    if not request.dry_run:
+                        query = self.repository.upsert_source_query(query)
+                    source_queries.append(query)
+                    source_query_names.append(query.query_name)
+                    source_query_budget -= 1
+                    if source_query_budget <= 0:
+                        break
+
+            if request.queue_briefs:
+                try:
+                    brief_request = ResearchBriefQueueRequest(
+                        topic=_research_program_loop_brief_topic(program, task),
+                        disease_scope=program.disease_scope,
+                        source_key=None,
+                        priority=request.priority,
+                        max_chunks_per_perspective=request.max_chunks_per_perspective,
+                        max_claims=request.max_claims,
+                        max_chunk_chars=request.max_chunk_chars,
+                        brief_style=request.brief_style,
+                        model_profile=request.model_profile,
+                        review_mode=request.review_mode,
+                        review_models=request.review_models,
+                        metadata=task_metadata,
+                    )
+                    if request.dry_run:
+                        queue_item = ResearchBriefQueueItem(
+                            topic=_research_program_loop_brief_topic(program, task),
+                            disease_scope=program.disease_scope,
+                            priority=request.priority,
+                            max_chunks_per_perspective=request.max_chunks_per_perspective,
+                            max_claims=request.max_claims,
+                            max_chunk_chars=request.max_chunk_chars,
+                            brief_style=request.brief_style,
+                            model_profile=request.model_profile,
+                            review_mode=request.review_mode,
+                            review_models=request.review_models,
+                            metadata=task_metadata,
+                        )
+                    else:
+                        queue_item = self.queue_research_brief(brief_request)
+                    brief_queue_item_id = queue_item.queue_item_id
+                    brief_queue_items.append(queue_item)
+                except Exception as exc:
+                    errors.append(str(exc))
+
+            task_results.append(
+                ResearchProgramEvidenceLoopTaskResult(
+                    task_id=task.task_id,
+                    title=task.title,
+                    status_before=task.status,
+                    status_after="queued" if not errors else task.status,
+                    research_lead_id=research_lead_id,
+                    brief_queue_item_id=brief_queue_item_id,
+                    source_query_names=source_query_names,
+                    selected_source_keys=selected_sources,
+                    errors=errors,
+                    metadata=task_metadata,
+                )
+            )
+
+        updated_program = program
+        if not request.dry_run:
+            updated_tasks = [
+                task.model_copy(update={"status": "queued"})
+                if task.task_id in updated_task_ids
+                else task
+                for task in program.evidence_tasks
+            ]
+            updated_program = program.model_copy(
+                update={
+                    "evidence_tasks": updated_tasks,
+                    "evidence_loop_count": loop_number,
+                    "status": "needs_one_more_pass" if loop_number >= program.max_evidence_loops else "active",
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {
+                        **program.metadata,
+                        "latest_evidence_loop": {
+                            "loop_number": loop_number,
+                            "dagster_run_id": request.dagster_run_id,
+                            "research_lead_count": len(research_leads),
+                            "source_query_count": len(source_queries),
+                            "brief_queue_count": len(brief_queue_items),
+                        },
+                    },
+                }
+            )
+            updated_program = self.repository.upsert_research_program(updated_program)
+
+        return ResearchProgramEvidenceLoopResult(
+            program_id=program.program_id,
+            program_title=program.title,
+            dry_run=request.dry_run,
+            blocked=False,
+            loop_count_before=loop_before,
+            loop_count_after=loop_before if request.dry_run else loop_number,
+            max_evidence_loops=program.max_evidence_loops,
+            task_count=len(program.evidence_tasks),
+            selected_task_count=len(selected_tasks),
+            research_lead_count=len(research_leads),
+            source_query_count=len(source_queries),
+            brief_queue_count=len(brief_queue_items),
+            task_results=task_results,
+            research_leads=research_leads,
+            source_queries=source_queries,
+            brief_queue_items=brief_queue_items,
+            program=updated_program,
+            errors=[error for task_result in task_results for error in task_result.errors],
+        )
+
+    def _select_research_program_for_evidence_loop(
+        self,
+        request: ResearchProgramEvidenceLoopRequest,
+    ) -> ResearchProgramRecord | None:
+        if request.program_id:
+            return self.repository.get_research_program(request.program_id)
+        query = request.thesis_query
+        if query:
+            records = self.repository.list_research_programs(thesis_query=query, limit=1)
+            return records[0] if records else None
+        records = self.repository.list_research_programs(gate_decision="needs_one_more_pass", limit=1)
+        if records:
+            return records[0]
+        records = self.repository.list_research_programs(status="active", limit=1)
+        return records[0] if records else None
 
     def queue_therapy_committee_validation_requests(
         self,
@@ -6774,6 +6998,134 @@ def _target_name(idea: TherapyIdea) -> str | None:
 def _truncate(value: str, limit: int) -> str:
     normalized = " ".join(str(value).split())
     return normalized[:limit]
+
+
+def _research_program_loop_task_sources(
+    task: ResearchProgramEvidenceTask,
+    request: ResearchProgramEvidenceLoopRequest,
+) -> list[str]:
+    if request.max_sources_per_task <= 0:
+        return []
+    sources = request.source_keys or task.source_keys or ["pubmed", "europe_pmc", "openalex", "crossref"]
+    selected: list[str] = []
+    for source in sources:
+        normalized = str(source).strip().lower()
+        if normalized and normalized not in selected:
+            selected.append(normalized)
+        if request.max_sources_per_task and len(selected) >= request.max_sources_per_task:
+            break
+    return selected
+
+
+def _research_program_loop_metadata(
+    program: ResearchProgramRecord,
+    task: ResearchProgramEvidenceTask,
+    request: ResearchProgramEvidenceLoopRequest,
+    *,
+    loop_number: int,
+    selected_sources: list[str],
+) -> dict[str, Any]:
+    return {
+        **request.metadata,
+        "research_program_evidence_loop": {
+            "program_id": str(program.program_id),
+            "program_title": program.title,
+            "task_id": str(task.task_id),
+            "task_title": task.title,
+            "loop_number": loop_number,
+            "max_evidence_loops": program.max_evidence_loops,
+            "gate_decision": program.gate_decision,
+            "selected_source_keys": selected_sources,
+            "dagster_run_id": request.dagster_run_id,
+        },
+    }
+
+
+def _research_program_loop_task_summary(
+    program: ResearchProgramRecord,
+    task: ResearchProgramEvidenceTask,
+) -> str:
+    parts = [
+        f"Program: {program.title}",
+        f"Task: {task.title}",
+        f"Objective: {task.objective}",
+    ]
+    if task.metrics:
+        parts.append(f"Metrics: {', '.join(task.metrics[:8])}")
+    if task.pass_values:
+        parts.append(f"Confidence increases if: {', '.join(task.pass_values[:5])}")
+    if task.fail_values:
+        parts.append(f"Confidence decreases if: {', '.join(task.fail_values[:5])}")
+    return _truncate(" ".join(parts), 2000)
+
+
+def _research_program_loop_brief_topic(
+    program: ResearchProgramRecord,
+    task: ResearchProgramEvidenceTask,
+) -> str:
+    parts = [
+        f"Research program evidence task: {task.title}.",
+        f"Program: {program.title}.",
+        f"Objective: {task.objective}.",
+    ]
+    if task.metrics:
+        parts.append(f"Report metrics: {', '.join(task.metrics[:8])}.")
+    if task.pass_values:
+        parts.append(f"Confidence increase criteria: {', '.join(task.pass_values[:5])}.")
+    if task.fail_values:
+        parts.append(f"Confidence decrease criteria: {', '.join(task.fail_values[:5])}.")
+    parts.append("Produce citation-first conclusions and state whether this changes program confidence.")
+    return _truncate(" ".join(parts), 1000)
+
+
+def _research_program_loop_source_query(
+    program: ResearchProgramRecord,
+    task: ResearchProgramEvidenceTask,
+    source_key: str,
+    *,
+    loop_number: int,
+    metadata: dict[str, Any],
+) -> SourceQuery:
+    slug = re.sub(r"[^a-z0-9]+", "_", task.title.lower()).strip("_")[:50] or "task"
+    query_name = f"research_program_{str(program.program_id)[:8]}_loop_{loop_number}_{slug}"
+    query_text = _research_program_loop_query_text(program, task)
+    return SourceQuery(
+        source_key=source_key,
+        query_name=query_name,
+        query_text=query_text,
+        query_params={
+            "research_program_id": str(program.program_id),
+            "research_program_title": program.title,
+            "evidence_task_id": str(task.task_id),
+            "evidence_task_title": task.title,
+            "loop_number": loop_number,
+            "metrics": task.metrics,
+            "pass_values": task.pass_values,
+            "fail_values": task.fail_values,
+            "tool_hints": task.tool_hints,
+            "metadata": metadata.get("research_program_evidence_loop", {}),
+        },
+        track="research_program_evidence",
+        active=True,
+    )
+
+
+def _research_program_loop_query_text(
+    program: ResearchProgramRecord,
+    task: ResearchProgramEvidenceTask,
+) -> str:
+    terms = [
+        task.title,
+        task.objective,
+        program.title,
+        program.disease_model,
+        "canine hemangiosarcoma human angiosarcoma",
+    ]
+    if task.metrics:
+        terms.append(" ".join(task.metrics[:8]))
+    if task.tool_hints:
+        terms.append(" ".join(task.tool_hints[:5]))
+    return _truncate(" ".join(terms), 700)
 
 
 def _research_brief_topic_from_lead(lead: ResearchLeadRecord) -> str:

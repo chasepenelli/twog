@@ -45,6 +45,7 @@ from .contracts import (
     ResearchHuntSynthesisQueueRequest,
     ResearchLeadCollectRequest,
     ResearchProgramBoardRequest,
+    ResearchProgramEvidenceLoopRequest,
     ResearchProgramReviewRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
@@ -743,6 +744,49 @@ def main() -> None:
     research_programs.add_argument("--gate-decision", default=None, help="Research program gate decision")
     research_programs.add_argument("--query", default=None, help="Thesis/title search")
     research_programs.add_argument("--limit", type=int, default=50, help="Maximum programs to return")
+
+    research_program_evidence_loop = subparsers.add_parser(
+        "research-program-evidence-loop",
+        help="Run one capped evidence loop for a persisted research program",
+    )
+    research_program_evidence_loop.add_argument("--program-id", default=None, help="Research program ID")
+    research_program_evidence_loop.add_argument("--query", default=None, help="Fallback thesis/title search")
+    research_program_evidence_loop.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="Override source key; repeatable. Defaults to each task's source hints.",
+    )
+    research_program_evidence_loop.add_argument("--max-tasks", type=int, default=5, help="Maximum evidence tasks to queue")
+    research_program_evidence_loop.add_argument(
+        "--max-source-queries",
+        type=int,
+        default=20,
+        help="Maximum source queries to persist across the loop",
+    )
+    research_program_evidence_loop.add_argument(
+        "--max-sources-per-task",
+        type=int,
+        default=4,
+        help="Maximum source keys per task",
+    )
+    research_program_evidence_loop.add_argument("--priority", type=int, default=40, help="Queue priority")
+    research_program_evidence_loop.add_argument("--no-briefs", action="store_true", help="Do not queue research briefs")
+    research_program_evidence_loop.add_argument("--no-leads", action="store_true", help="Do not create research leads")
+    research_program_evidence_loop.add_argument("--no-source-queries", action="store_true", help="Do not create source queries")
+    research_program_evidence_loop.add_argument("--max-chunks-per-perspective", type=int, default=10)
+    research_program_evidence_loop.add_argument("--max-claims", type=int, default=20)
+    research_program_evidence_loop.add_argument("--max-chunk-chars", type=int, default=2200)
+    research_program_evidence_loop.add_argument("--brief-style", default="technical")
+    research_program_evidence_loop.add_argument("--model-profile", default="research_brief")
+    research_program_evidence_loop.add_argument("--review-mode", default="openrouter_required")
+    research_program_evidence_loop.add_argument(
+        "--review-model",
+        action="append",
+        default=[],
+        help="OpenRouter model id; repeatable",
+    )
+    research_program_evidence_loop.add_argument("--dry-run", action="store_true", help="Preview without persisting")
 
     x_topic_monitor = subparsers.add_parser(
         "x-topic-monitor",
@@ -2082,6 +2126,29 @@ def main() -> None:
                     limit=args.limit,
                 )
             ).model_dump(mode="json")
+    elif args.command == "research-program-evidence-loop":
+        output = HSAResearchService(repo).run_research_program_evidence_loop(
+            ResearchProgramEvidenceLoopRequest(
+                program_id=UUID(args.program_id) if args.program_id else None,
+                thesis_query=args.query,
+                source_keys=args.source,
+                max_tasks=args.max_tasks,
+                max_source_queries=args.max_source_queries,
+                max_sources_per_task=args.max_sources_per_task,
+                queue_briefs=not args.no_briefs,
+                create_research_leads=not args.no_leads,
+                create_source_queries=not args.no_source_queries,
+                priority=args.priority,
+                max_chunks_per_perspective=args.max_chunks_per_perspective,
+                max_claims=args.max_claims,
+                max_chunk_chars=args.max_chunk_chars,
+                brief_style=args.brief_style,
+                model_profile=args.model_profile,
+                review_mode=args.review_mode,
+                review_models=args.review_model,
+                dry_run=args.dry_run,
+            )
+        ).model_dump(mode="json")
     elif args.command == "x-topic-monitor":
         from .x_topic_monitor import (
             TWITTERAPI_IO_MAX_SINGLE_PAGE_RESULTS,

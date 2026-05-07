@@ -3967,6 +3967,79 @@ class ResearchProgramBoardResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ResearchProgramEvidenceLoopRequest(StrictBaseModel):
+    program_id: UUID | None = None
+    thesis_query: str | None = None
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    max_tasks: int = Field(default=5, ge=1, le=25)
+    max_source_queries: int = Field(default=20, ge=0, le=100)
+    max_sources_per_task: int = Field(default=4, ge=0, le=25)
+    queue_briefs: bool = True
+    create_research_leads: bool = True
+    create_source_queries: bool = True
+    priority: int = Field(default=40, ge=0, le=1000)
+    max_chunks_per_perspective: int = Field(default=10, ge=1, le=25)
+    max_claims: int = Field(default=20, ge=0, le=50)
+    max_chunk_chars: int = Field(default=2200, ge=500, le=12000)
+    brief_style: Literal["technical", "operator", "substack", "vet_partner"] = "technical"
+    model_profile: str = "research_brief"
+    review_mode: Literal[
+        "external_required",
+        "openrouter_required",
+        "openrouter_compare",
+        "deterministic_only",
+    ] = "openrouter_required"
+    review_models: list[str] = Field(default_factory=list, max_length=10)
+    dry_run: bool = False
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_program_evidence_loop_request(self) -> "ResearchProgramEvidenceLoopRequest":
+        if self.thesis_query:
+            self.thesis_query = self.thesis_query.strip() or None
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        self.review_models = _dedupe_strings(self.review_models)
+        self.model_profile = self.model_profile.strip() or "research_brief"
+        return self
+
+
+class ResearchProgramEvidenceLoopTaskResult(StrictBaseModel):
+    task_id: UUID
+    title: str
+    status_before: ResearchProgramEvidenceTaskStatus
+    status_after: ResearchProgramEvidenceTaskStatus
+    research_lead_id: UUID | None = None
+    brief_queue_item_id: UUID | None = None
+    source_query_names: list[str] = Field(default_factory=list)
+    selected_source_keys: list[str] = Field(default_factory=list)
+    skipped_reason: str | None = None
+    errors: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchProgramEvidenceLoopResult(StrictBaseModel):
+    program_id: UUID | None = None
+    program_title: str | None = None
+    dry_run: bool = False
+    blocked: bool = False
+    loop_count_before: int = 0
+    loop_count_after: int = 0
+    max_evidence_loops: int = 0
+    task_count: int = 0
+    selected_task_count: int = 0
+    research_lead_count: int = 0
+    source_query_count: int = 0
+    brief_queue_count: int = 0
+    task_results: list[ResearchProgramEvidenceLoopTaskResult] = Field(default_factory=list)
+    research_leads: list[ResearchLeadRecord] = Field(default_factory=list)
+    source_queries: list[SourceQuery] = Field(default_factory=list)
+    brief_queue_items: list[ResearchBriefQueueItem] = Field(default_factory=list)
+    program: ResearchProgramRecord | None = None
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ValidationAutopilotRequest(StrictBaseModel):
     enabled: bool = True
     dry_run: bool = True

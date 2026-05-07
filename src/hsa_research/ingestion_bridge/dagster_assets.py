@@ -39,6 +39,7 @@ from .contracts import (
     ResearchHuntSynthesisQueueRequest,
     ResearchLeadCollectRequest,
     ResearchProgramBoardRequest,
+    ResearchProgramEvidenceLoopRequest,
     ResearchProgramReviewRequest,
     ResearchObject,
     SourceFollowupIngestRequest,
@@ -314,6 +315,17 @@ _RESEARCH_PROGRAM_TABLE_COLUMNS = (
     "therapy_families",
     "recommended_tools",
     "stop_criteria",
+)
+_RESEARCH_PROGRAM_EVIDENCE_LOOP_TABLE_COLUMNS = (
+    "task_id",
+    "title",
+    "status_before",
+    "status_after",
+    "research_lead_id",
+    "brief_queue_item_id",
+    "selected_source_keys",
+    "source_query_count",
+    "errors",
 )
 _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS = (
     "brief_id",
@@ -1235,6 +1247,38 @@ if dg is not None:
         if "gate_counts" in report:
             metadata["gate_counts"] = dg.MetadataValue.json(report.get("gate_counts", {}))
         return metadata
+
+    def _research_program_evidence_loop_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = []
+        for task in report.get("task_results", []):
+            rows.append(
+                {
+                    "task_id": task.get("task_id"),
+                    "title": str(task.get("title") or "")[:300],
+                    "status_before": task.get("status_before"),
+                    "status_after": task.get("status_after"),
+                    "research_lead_id": task.get("research_lead_id"),
+                    "brief_queue_item_id": task.get("brief_queue_item_id"),
+                    "selected_source_keys": ", ".join(task.get("selected_source_keys") or []),
+                    "source_query_count": len(task.get("source_query_names") or []),
+                    "errors": " | ".join(task.get("errors") or []),
+                }
+            )
+        return {
+            "program_id": report.get("program_id"),
+            "program_title": report.get("program_title"),
+            "dry_run": bool(report.get("dry_run", False)),
+            "blocked": bool(report.get("blocked", False)),
+            "loop_count_before": dg.MetadataValue.int(int(report.get("loop_count_before", 0))),
+            "loop_count_after": dg.MetadataValue.int(int(report.get("loop_count_after", 0))),
+            "max_evidence_loops": dg.MetadataValue.int(int(report.get("max_evidence_loops", 0))),
+            "selected_task_count": dg.MetadataValue.int(int(report.get("selected_task_count", 0))),
+            "research_lead_count": dg.MetadataValue.int(int(report.get("research_lead_count", 0))),
+            "source_query_count": dg.MetadataValue.int(int(report.get("source_query_count", 0))),
+            "brief_queue_count": dg.MetadataValue.int(int(report.get("brief_queue_count", 0))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "task_results": _metadata_table(rows, _RESEARCH_PROGRAM_EVIDENCE_LOOP_TABLE_COLUMNS),
+        }
 
     def _research_brief_library_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
         rows = report.get("briefs", [])
@@ -3586,6 +3630,69 @@ if dg is not None:
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_research_program_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "program_id": dg.Field(str, is_required=False),
+            "thesis_query": dg.Field(str, is_required=False),
+            "source_keys": dg.Field([str], default_value=[]),
+            "max_tasks": dg.Field(int, default_value=5),
+            "max_source_queries": dg.Field(int, default_value=20),
+            "max_sources_per_task": dg.Field(int, default_value=4),
+            "queue_briefs": dg.Field(bool, default_value=True),
+            "create_research_leads": dg.Field(bool, default_value=True),
+            "create_source_queries": dg.Field(bool, default_value=True),
+            "priority": dg.Field(int, default_value=40),
+            "max_chunks_per_perspective": dg.Field(int, default_value=10),
+            "max_claims": dg.Field(int, default_value=20),
+            "max_chunk_chars": dg.Field(int, default_value=2200),
+            "brief_style": dg.Field(str, default_value="technical"),
+            "model_profile": dg.Field(str, default_value="research_brief"),
+            "review_mode": dg.Field(str, default_value="openrouter_required"),
+            "review_models": dg.Field([str], default_value=[]),
+            "dry_run": dg.Field(bool, default_value=False),
+        },
+    )
+    def research_program_evidence_loop_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Run one capped evidence loop for a persisted Research Program Board record."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        program_id = UUID(config["program_id"]) if config.get("program_id") else None
+        report = HSAResearchService(repository).run_research_program_evidence_loop(
+            ResearchProgramEvidenceLoopRequest(
+                program_id=program_id,
+                thesis_query=config.get("thesis_query"),
+                source_keys=config["source_keys"],
+                max_tasks=config["max_tasks"],
+                max_source_queries=config["max_source_queries"],
+                max_sources_per_task=config["max_sources_per_task"],
+                queue_briefs=config["queue_briefs"],
+                create_research_leads=config["create_research_leads"],
+                create_source_queries=config["create_source_queries"],
+                priority=config["priority"],
+                max_chunks_per_perspective=config["max_chunks_per_perspective"],
+                max_claims=config["max_claims"],
+                max_chunk_chars=config["max_chunk_chars"],
+                brief_style=config["brief_style"],
+                model_profile=config["model_profile"],
+                review_mode=config["review_mode"],
+                review_models=config["review_models"],
+                dry_run=config["dry_run"],
+                dagster_run_id=context.run_id,
+                metadata={"dagster_program_evidence_loop_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_research_program_evidence_loop_metadata(report),
+        )
 
     @dg.asset(
         group_name="ai_research",
@@ -6278,6 +6385,7 @@ if dg is not None:
         validation_packet_report,
         research_program_board_report,
         research_program_library_report,
+        research_program_evidence_loop_report,
         therapy_committee_validation_queue_report,
         research_brief_library_report,
         research_brief_evaluation_report,
@@ -6452,6 +6560,10 @@ if dg is not None:
     research_program_library_job = dg.define_asset_job(
         "research_program_library_job",
         selection=dg.AssetSelection.assets(research_program_library_report),
+    )
+    research_program_evidence_loop_job = dg.define_asset_job(
+        "research_program_evidence_loop_job",
+        selection=dg.AssetSelection.assets(research_program_evidence_loop_report),
     )
     therapy_committee_validation_queue_job = dg.define_asset_job(
         "therapy_committee_validation_queue_job",
@@ -6802,6 +6914,7 @@ if dg is not None:
             validation_packet_job,
             research_program_board_job,
             research_program_library_job,
+            research_program_evidence_loop_job,
             therapy_committee_validation_queue_job,
             research_brief_library_job,
             research_brief_evaluation_job,
@@ -6900,6 +7013,7 @@ else:
     validation_packet_job = None
     research_program_board_job = None
     research_program_library_job = None
+    research_program_evidence_loop_job = None
     therapy_committee_validation_queue_job = None
     research_brief_library_job = None
     research_brief_evaluation_job = None

@@ -29,6 +29,7 @@ on:
           - "agent_performance_evaluation_job"
           - "research_program_board_job"
           - "research_program_library_job"
+          - "research_program_evidence_loop_job"
           - "research_brief_agent_job"
           - "therapy_committee_job"
           - "therapy_committee_validation_queue_job"
@@ -384,7 +385,7 @@ jobs:
         shell: bash
 
       - name: Print hosted research program summary
-        if: ${{ always() && (inputs.job == 'research_program_board_job' || inputs.job == 'research_program_library_job') }}
+        if: ${{ always() && (inputs.job == 'research_program_board_job' || inputs.job == 'research_program_library_job' || inputs.job == 'research_program_evidence_loop_job') }}
         continue-on-error: true
         run: |
           uv run python - <<'PY'
@@ -408,6 +409,7 @@ jobs:
           report_config = (
               (ops.get("research_program_board_report") or {}).get("config")
               or (ops.get("research_program_library_report") or {}).get("config")
+              or (ops.get("research_program_evidence_loop_report") or {}).get("config")
               or {}
           )
 
@@ -516,6 +518,123 @@ jobs:
                           summary.write(f"  - Task: {row['evidence_tasks'][0]['title']}\n")
                       if row["stop_criteria"]:
                           summary.write(f"  - Stop: {row['stop_criteria'][0]}\n")
+          PY
+        shell: bash
+
+      - name: Print hosted research program evidence-loop work
+        if: ${{ always() && inputs.job == 'research_program_evidence_loop_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          from uuid import UUID
+
+          from hsa_research.ingestion_bridge.contracts import ResearchProgramBoardRequest
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          raw_config = os.getenv("DAGSTER_CLOUD_CONFIG_JSON") or "{}"
+          try:
+              config = json.loads(raw_config)
+          except json.JSONDecodeError:
+              config = {}
+          report_config = (
+              (config.get("ops") or {})
+              .get("research_program_evidence_loop_report", {})
+              .get("config", {})
+          )
+          service = HSAResearchService(build_research_repository())
+          program_id = report_config.get("program_id")
+          thesis_query = report_config.get("thesis_query")
+          programs = service.list_research_programs(
+              ResearchProgramBoardRequest(
+                  program_id=UUID(program_id) if program_id else None,
+                  thesis_query=thesis_query,
+                  limit=1,
+              )
+          ).programs
+          program = programs[0] if programs else None
+          program_id_text = str(program.program_id) if program else program_id
+          loop_number = None
+          if program:
+              latest = program.metadata.get("latest_evidence_loop") or {}
+              loop_number = latest.get("loop_number")
+
+          queue_items = [
+              item
+              for item in service.list_research_brief_queue_items(limit=None)
+              if (
+                  (item.metadata.get("research_program_evidence_loop") or {}).get("program_id")
+                  == program_id_text
+              )
+          ]
+          leads = [
+              lead
+              for lead in service.list_research_leads(limit=None)
+              if (
+                  (lead.metadata.get("research_program_evidence_loop") or {}).get("program_id")
+                  == program_id_text
+              )
+          ]
+          source_queries = [
+              query
+              for query in service.repository.list_source_queries(active_only=True)
+              if query.track == "research_program_evidence"
+              and str((query.query_params or {}).get("research_program_id")) == program_id_text
+          ]
+          payload = {
+              "dagster_run_id": os.getenv("DAGSTER_CLOUD_RUN_ID"),
+              "program_id": program_id_text,
+              "program_title": program.title if program else None,
+              "loop_number": loop_number,
+              "queue_item_count": len(queue_items),
+              "research_lead_count": len(leads),
+              "source_query_count": len(source_queries),
+              "queue_items": [
+                  {
+                      "queue_item_id": str(item.queue_item_id),
+                      "status": item.status,
+                      "priority": item.priority,
+                      "topic": item.topic[:300],
+                      "last_brief_id": str(item.last_brief_id) if item.last_brief_id else None,
+                      "last_error": item.last_error,
+                  }
+                  for item in sorted(queue_items, key=lambda value: (value.priority, value.created_at))[:25]
+              ],
+              "research_leads": [
+                  {
+                      "lead_id": str(lead.lead_id),
+                      "status": lead.status,
+                      "priority": lead.priority,
+                      "source_key": lead.source_key,
+                      "title": (lead.title or "")[:300],
+                      "suggested_sources": lead.suggested_sources,
+                  }
+                  for lead in sorted(leads, key=lambda value: (value.priority, value.created_at))[:25]
+              ],
+              "source_queries": [
+                  {
+                      "source_key": query.source_key,
+                      "query_name": query.query_name,
+                      "query_text": query.query_text[:300],
+                  }
+                  for query in sorted(source_queries, key=lambda value: (value.source_key, value.query_name))[:25]
+              ],
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Research program evidence-loop work\n")
+                  summary.write(f"- Program: `{payload['program_id']}` {payload['program_title'] or ''}\n")
+                  summary.write(f"- Loop number: `{payload['loop_number']}`\n")
+                  summary.write(f"- Brief queue items: `{payload['queue_item_count']}`\n")
+                  summary.write(f"- Research leads: `{payload['research_lead_count']}`\n")
+                  summary.write(f"- Source queries: `{payload['source_query_count']}`\n")
+                  for item in payload["queue_items"][:5]:
+                      summary.write(f"- Brief `{item['status']}` `{item['queue_item_id']}`: {item['topic']}\n")
           PY
         shell: bash
 
