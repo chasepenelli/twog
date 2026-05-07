@@ -273,6 +273,64 @@ ValidationPacketReadiness = Literal[
     "blocked",
 ]
 
+DiscoveryReadiness = Literal[
+    "ready_for_validation_strategy",
+    "needs_more_evidence",
+    "needs_citation_repair",
+    "blocked",
+]
+
+ValidationStrategyReadiness = Literal[
+    "ready_for_validation_strategy",
+    "queued_for_validation_strategy",
+    "needs_more_evidence",
+    "needs_citation_repair",
+    "blocked",
+]
+
+ProtocolReadiness = Literal[
+    "not_protocol_ready",
+    "needs_protocol_inputs",
+    "ready_for_protocol_review",
+    "blocked",
+]
+
+ResearchProgramStatus = Literal[
+    "proposed",
+    "active",
+    "needs_one_more_pass",
+    "ready_for_therapy_ideas",
+    "ready_for_validation_strategy",
+    "archived",
+]
+
+ResearchProgramGateDecision = Literal[
+    "archive",
+    "needs_one_more_pass",
+    "ready_for_therapy_ideas",
+    "ready_for_validation_strategy",
+]
+
+ResearchProgramEvidenceTaskStatus = Literal[
+    "proposed",
+    "queued",
+    "completed",
+    "failed",
+    "skipped",
+]
+
+ResearchProgramEvidenceTaskType = Literal[
+    "literature_search",
+    "full_text_review",
+    "omics_lookup",
+    "clinical_trial_lookup",
+    "drug_target_lookup",
+    "safety_lookup",
+    "expert_review",
+    "x_topic_scan",
+    "other",
+]
+
 CommandCenterArea = Literal[
     "brief_queue",
     "research_leads",
@@ -3545,6 +3603,8 @@ class ValidationPacketRequest(StrictBaseModel):
     topic_query: str | None = None
     source_key: str | None = None
     include_queue_items: bool = True
+    include_evidence_addendum: bool = True
+    addendum_limit: int = Field(default=25, ge=0, le=200)
     queue_if_ready: bool = False
     dry_run: bool = True
     max_tasks: int = Field(default=8, ge=1, le=25)
@@ -3563,6 +3623,71 @@ class ValidationPacketRequest(StrictBaseModel):
         if self.source_key:
             self.source_key = self.source_key.strip().lower() or None
         self.model_profile = self.model_profile.strip() or "validation_packet_builder"
+        return self
+
+
+class ValidationPacketAddendumBrief(StrictBaseModel):
+    queue_item_id: UUID
+    topic: str = Field(min_length=3, max_length=1000)
+    status: ResearchBriefQueueStatus
+    source_key: str | None = None
+    priority: int = Field(default=100, ge=0, le=1000)
+    lead_id: UUID | None = None
+    origin_queue_item_id: UUID | None = None
+    plan_id: UUID | None = None
+    lane: str | None = Field(default=None, max_length=100)
+    task_type: str | None = Field(default=None, max_length=100)
+    validation_type: str | None = Field(default=None, max_length=100)
+    brief_id: UUID | None = None
+    brief_agent_run_id: UUID | None = None
+    evaluation_id: UUID | None = None
+    evaluation_agent_run_id: UUID | None = None
+    overall_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    passes_quality_bar: bool | None = None
+    readiness: ResearchBriefEvaluationReadiness | None = None
+    summary: dict[str, Any] = Field(default_factory=dict)
+    key_strengths: list[str] = Field(default_factory=list, max_length=10)
+    key_weaknesses: list[str] = Field(default_factory=list, max_length=10)
+    recommendations: list[str] = Field(default_factory=list, max_length=10)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_addendum_brief(self) -> "ValidationPacketAddendumBrief":
+        self.topic = self.topic.strip()
+        if self.source_key:
+            self.source_key = self.source_key.strip().lower() or None
+        if self.lane:
+            self.lane = self.lane.strip() or None
+        if self.task_type:
+            self.task_type = self.task_type.strip() or None
+        if self.validation_type:
+            self.validation_type = self.validation_type.strip() or None
+        self.key_strengths = _dedupe_strings(self.key_strengths)
+        self.key_weaknesses = _dedupe_strings(self.key_weaknesses)
+        self.recommendations = _dedupe_strings(self.recommendations)
+        return self
+
+
+class ValidationPacketEvidenceAddendum(StrictBaseModel):
+    follow_up_count: int = 0
+    completed_follow_up_count: int = 0
+    evaluated_follow_up_count: int = 0
+    passing_follow_up_count: int = 0
+    ready_for_hypothesis_review_count: int = 0
+    needs_more_evidence_count: int = 0
+    failed_follow_up_count: int = 0
+    material_updates: list[str] = Field(default_factory=list, max_length=25)
+    unresolved_blockers: list[str] = Field(default_factory=list, max_length=25)
+    follow_up_briefs: list[ValidationPacketAddendumBrief] = Field(default_factory=list, max_length=200)
+    latest_updated_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_evidence_addendum(self) -> "ValidationPacketEvidenceAddendum":
+        self.material_updates = _dedupe_strings(self.material_updates)
+        self.unresolved_blockers = _dedupe_strings(self.unresolved_blockers)
         return self
 
 
@@ -3590,6 +3715,7 @@ class ValidationPacket(StrictBaseModel):
     evidence_refs: list[str] = Field(default_factory=list, max_length=100)
     direct_evidence_refs: list[str] = Field(default_factory=list, max_length=100)
     analog_evidence_refs: list[str] = Field(default_factory=list, max_length=100)
+    evidence_addendum: ValidationPacketEvidenceAddendum = Field(default_factory=ValidationPacketEvidenceAddendum)
     missing_evidence: list[str] = Field(default_factory=list, max_length=50)
     safety_risks: list[str] = Field(default_factory=list, max_length=50)
     contradictions: list[str] = Field(default_factory=list, max_length=50)
@@ -3601,6 +3727,11 @@ class ValidationPacket(StrictBaseModel):
     promotion_state: HypothesisPromotionState | None = None
     status: ValidationPacketStatus = "draft"
     readiness: ValidationPacketReadiness = "needs_more_evidence"
+    discovery_readiness: DiscoveryReadiness = "needs_more_evidence"
+    validation_strategy_readiness: ValidationStrategyReadiness = "needs_more_evidence"
+    protocol_readiness: ProtocolReadiness = "needs_protocol_inputs"
+    risk_annotations: list[str] = Field(default_factory=list, max_length=50)
+    protocol_blockers: list[str] = Field(default_factory=list, max_length=50)
     score: float = Field(default=0.0, ge=0.0, le=1.0)
     summary: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -3628,6 +3759,8 @@ class ValidationPacket(StrictBaseModel):
         self.required_inputs = _dedupe_strings(self.required_inputs)
         self.quality_gates = _dedupe_strings(self.quality_gates)
         self.dispatch_blockers = _dedupe_strings(self.dispatch_blockers)
+        self.risk_annotations = _dedupe_strings(self.risk_annotations)
+        self.protocol_blockers = _dedupe_strings(self.protocol_blockers)
         return self
 
 
@@ -3640,6 +3773,196 @@ class ValidationPacketResult(StrictBaseModel):
     existing_queue_count: int = 0
     dry_run: bool = True
     packets: list[ValidationPacket] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ResearchProgramQuestion(StrictBaseModel):
+    question_id: UUID = Field(default_factory=uuid4)
+    question: str = Field(min_length=3, max_length=1000)
+    rationale: str = Field(default="", max_length=2000)
+    metric_plan: list[str] = Field(default_factory=list, max_length=20)
+    tool_hints: list[str] = Field(default_factory=list, max_length=20)
+    confidence_increase_criteria: list[str] = Field(default_factory=list, max_length=20)
+    confidence_decrease_criteria: list[str] = Field(default_factory=list, max_length=20)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=50)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_program_question(self) -> "ResearchProgramQuestion":
+        self.question = self.question.strip()
+        self.rationale = self.rationale.strip()
+        self.metric_plan = _dedupe_strings(self.metric_plan)
+        self.tool_hints = _dedupe_strings(self.tool_hints)
+        self.confidence_increase_criteria = _dedupe_strings(self.confidence_increase_criteria)
+        self.confidence_decrease_criteria = _dedupe_strings(self.confidence_decrease_criteria)
+        self.evidence_refs = _dedupe_strings(self.evidence_refs)
+        return self
+
+
+class ResearchProgramEvidenceTask(StrictBaseModel):
+    task_id: UUID = Field(default_factory=uuid4)
+    question_id: UUID | None = None
+    task_type: ResearchProgramEvidenceTaskType = "literature_search"
+    title: str = Field(min_length=3, max_length=500)
+    objective: str = Field(min_length=3, max_length=2000)
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    tool_hints: list[str] = Field(default_factory=list, max_length=20)
+    metrics: list[str] = Field(default_factory=list, max_length=25)
+    pass_values: list[str] = Field(default_factory=list, max_length=25)
+    fail_values: list[str] = Field(default_factory=list, max_length=25)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=50)
+    negative_coverage: list[str] = Field(default_factory=list, max_length=25)
+    status: ResearchProgramEvidenceTaskStatus = "proposed"
+    priority: int = Field(default=50, ge=1, le=1000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_program_evidence_task(self) -> "ResearchProgramEvidenceTask":
+        self.title = self.title.strip()
+        self.objective = self.objective.strip()
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        self.tool_hints = _dedupe_strings(self.tool_hints)
+        self.metrics = _dedupe_strings(self.metrics)
+        self.pass_values = _dedupe_strings(self.pass_values)
+        self.fail_values = _dedupe_strings(self.fail_values)
+        self.evidence_refs = _dedupe_strings(self.evidence_refs)
+        self.negative_coverage = _dedupe_strings(self.negative_coverage)
+        return self
+
+
+class ResearchProgramRecord(StrictBaseModel):
+    program_id: UUID = Field(default_factory=uuid4)
+    agent_run_id: UUID | None = None
+    title: str = Field(min_length=3, max_length=500)
+    thesis: str = Field(min_length=3, max_length=3000)
+    disease_model: str = Field(min_length=3, max_length=3000)
+    disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
+    thesis_area: str = Field(default="comparative_oncology", max_length=200)
+    therapy_families: list[str] = Field(default_factory=list, max_length=50)
+    modality_families: list[str] = Field(default_factory=list, max_length=50)
+    decisive_questions: list[ResearchProgramQuestion] = Field(default_factory=list, min_length=2, max_length=4)
+    evidence_tasks: list[ResearchProgramEvidenceTask] = Field(default_factory=list, max_length=25)
+    metric_plan: list[str] = Field(default_factory=list, max_length=50)
+    recommended_tools: list[str] = Field(default_factory=list, max_length=50)
+    stop_criteria: list[str] = Field(default_factory=list, min_length=1, max_length=25)
+    confidence_increase_criteria: list[str] = Field(default_factory=list, max_length=25)
+    confidence_decrease_criteria: list[str] = Field(default_factory=list, max_length=25)
+    downstream_therapy_opportunities: list[str] = Field(default_factory=list, max_length=50)
+    status: ResearchProgramStatus = "proposed"
+    gate_decision: ResearchProgramGateDecision = "needs_one_more_pass"
+    biological_plausibility_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    cross_species_support_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    evidence_density_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    novelty_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    testability_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    therapeutic_leverage_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    failure_risk_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    confidence_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    max_evidence_loops: int = Field(default=2, ge=1, le=5)
+    evidence_loop_count: int = Field(default=0, ge=0, le=5)
+    source_query: str | None = Field(default=None, max_length=1000)
+    source_packet_ids: list[str] = Field(default_factory=list, max_length=50)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=100)
+    review_summary: str = Field(default="", max_length=3000)
+    errors: list[str] = Field(default_factory=list, max_length=25)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_program_record(self) -> "ResearchProgramRecord":
+        self.title = self.title.strip()
+        self.thesis = self.thesis.strip()
+        self.disease_model = self.disease_model.strip()
+        self.disease_scope = self.disease_scope.strip()
+        self.thesis_area = re.sub(r"\s+", "_", self.thesis_area.strip().lower()) or "comparative_oncology"
+        self.therapy_families = _dedupe_strings(self.therapy_families)
+        self.modality_families = _dedupe_strings(self.modality_families)
+        self.metric_plan = _dedupe_strings(self.metric_plan)
+        self.recommended_tools = _dedupe_strings(self.recommended_tools)
+        self.stop_criteria = _dedupe_strings(self.stop_criteria)
+        self.confidence_increase_criteria = _dedupe_strings(self.confidence_increase_criteria)
+        self.confidence_decrease_criteria = _dedupe_strings(self.confidence_decrease_criteria)
+        self.downstream_therapy_opportunities = _dedupe_strings(self.downstream_therapy_opportunities)
+        self.source_packet_ids = _dedupe_strings(self.source_packet_ids)
+        self.evidence_refs = _dedupe_strings(self.evidence_refs)
+        self.errors = _dedupe_strings(self.errors)
+        self.review_summary = self.review_summary.strip()
+        if self.source_query:
+            self.source_query = self.source_query.strip() or None
+        if self.evidence_loop_count > self.max_evidence_loops:
+            raise ValueError("evidence_loop_count cannot exceed max_evidence_loops")
+        return self
+
+
+class ResearchProgramReviewRequest(StrictBaseModel):
+    program_id: UUID | None = None
+    thesis_topic: str = Field(
+        default="vascular injury / coagulation / angiogenesis ecology in canine HSA and human angiosarcoma",
+        min_length=3,
+        max_length=1000,
+    )
+    disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
+    topic_query: str | None = None
+    source_key: str | None = None
+    include_validation_packets: bool = True
+    include_evidence_addendum: bool = True
+    max_packets: int = Field(default=5, ge=0, le=25)
+    max_chunks: int = Field(default=20, ge=0, le=100)
+    max_chunk_chars: int = Field(default=1800, ge=200, le=8000)
+    max_programs: int = Field(default=1, ge=1, le=5)
+    max_evidence_loops: int = Field(default=2, ge=1, le=5)
+    review_mode: Literal["openrouter_required", "deterministic_only"] = "openrouter_required"
+    review_models: list[str] = Field(default_factory=list, max_length=5)
+    model_profile: str = "research_program_board"
+    persist: bool = True
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_program_review_request(self) -> "ResearchProgramReviewRequest":
+        self.thesis_topic = self.thesis_topic.strip()
+        self.disease_scope = self.disease_scope.strip()
+        if self.topic_query:
+            self.topic_query = self.topic_query.strip() or None
+        if self.source_key:
+            self.source_key = self.source_key.strip().lower() or None
+        self.review_models = _dedupe_strings(self.review_models)
+        self.model_profile = self.model_profile.strip() or "research_program_board"
+        return self
+
+
+class ResearchProgramReviewResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    program_count: int = 0
+    persisted_count: int = 0
+    packet_count: int = 0
+    evidence_chunk_count: int = 0
+    programs: list[ResearchProgramRecord] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ResearchProgramBoardRequest(StrictBaseModel):
+    program_id: UUID | None = None
+    status: ResearchProgramStatus | None = None
+    gate_decision: ResearchProgramGateDecision | None = None
+    thesis_query: str | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def normalize_research_program_board_request(self) -> "ResearchProgramBoardRequest":
+        if self.thesis_query:
+            self.thesis_query = self.thesis_query.strip() or None
+        return self
+
+
+class ResearchProgramBoardResult(StrictBaseModel):
+    program_count: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    gate_counts: dict[str, int] = Field(default_factory=dict)
+    programs: list[ResearchProgramRecord] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

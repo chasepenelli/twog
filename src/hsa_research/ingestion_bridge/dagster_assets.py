@@ -38,6 +38,8 @@ from .contracts import (
     ResearchHuntSynthesisDocRequest,
     ResearchHuntSynthesisQueueRequest,
     ResearchLeadCollectRequest,
+    ResearchProgramBoardRequest,
+    ResearchProgramReviewRequest,
     ResearchObject,
     SourceFollowupIngestRequest,
     SourceFollowupQueueRequest,
@@ -280,6 +282,9 @@ _VALIDATION_PACKET_TABLE_COLUMNS = (
     "packet_id",
     "status",
     "readiness",
+    "discovery_readiness",
+    "validation_strategy_readiness",
+    "protocol_readiness",
     "score",
     "source_type",
     "title",
@@ -289,6 +294,26 @@ _VALIDATION_PACKET_TABLE_COLUMNS = (
     "task_count",
     "queue_item_count",
     "dispatch_blocker_count",
+    "risk_annotation_count",
+    "protocol_blocker_count",
+    "follow_up_count",
+    "evaluated_follow_up_count",
+    "passing_follow_up_count",
+)
+_RESEARCH_PROGRAM_TABLE_COLUMNS = (
+    "program_id",
+    "status",
+    "gate_decision",
+    "confidence_score",
+    "evidence_loop_count",
+    "max_evidence_loops",
+    "title",
+    "thesis_area",
+    "question_count",
+    "evidence_task_count",
+    "therapy_families",
+    "recommended_tools",
+    "stop_criteria",
 )
 _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS = (
     "brief_id",
@@ -1121,6 +1146,9 @@ if dg is not None:
                     "packet_id": packet.get("packet_id"),
                     "status": packet.get("status"),
                     "readiness": packet.get("readiness"),
+                    "discovery_readiness": packet.get("discovery_readiness"),
+                    "validation_strategy_readiness": packet.get("validation_strategy_readiness"),
+                    "protocol_readiness": packet.get("protocol_readiness"),
                     "score": packet.get("score"),
                     "source_type": packet.get("source_type"),
                     "title": str(packet.get("title") or "")[:300],
@@ -1138,6 +1166,26 @@ if dg is not None:
                         "dispatch_blocker_count",
                         len(packet.get("dispatch_blockers") or []),
                     ),
+                    "risk_annotation_count": summary.get(
+                        "risk_annotation_count",
+                        len(packet.get("risk_annotations") or []),
+                    ),
+                    "protocol_blocker_count": summary.get(
+                        "protocol_blocker_count",
+                        len(packet.get("protocol_blockers") or []),
+                    ),
+                    "follow_up_count": summary.get(
+                        "follow_up_count",
+                        (packet.get("evidence_addendum") or {}).get("follow_up_count", 0),
+                    ),
+                    "evaluated_follow_up_count": summary.get(
+                        "evaluated_follow_up_count",
+                        (packet.get("evidence_addendum") or {}).get("evaluated_follow_up_count", 0),
+                    ),
+                    "passing_follow_up_count": summary.get(
+                        "passing_follow_up_count",
+                        (packet.get("evidence_addendum") or {}).get("passing_follow_up_count", 0),
+                    ),
                 }
             )
         return {
@@ -1150,6 +1198,43 @@ if dg is not None:
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "packets": _metadata_table(rows, _VALIDATION_PACKET_TABLE_COLUMNS),
         }
+
+    def _research_program_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = []
+        for program in report.get("programs", []):
+            rows.append(
+                {
+                    "program_id": program.get("program_id"),
+                    "status": program.get("status"),
+                    "gate_decision": program.get("gate_decision"),
+                    "confidence_score": program.get("confidence_score"),
+                    "evidence_loop_count": program.get("evidence_loop_count"),
+                    "max_evidence_loops": program.get("max_evidence_loops"),
+                    "title": str(program.get("title") or "")[:300],
+                    "thesis_area": program.get("thesis_area"),
+                    "question_count": len(program.get("decisive_questions") or []),
+                    "evidence_task_count": len(program.get("evidence_tasks") or []),
+                    "therapy_families": ", ".join(program.get("therapy_families") or []),
+                    "recommended_tools": ", ".join(program.get("recommended_tools") or []),
+                    "stop_criteria": " | ".join((program.get("stop_criteria") or [])[:3]),
+                }
+            )
+        metadata = {
+            "program_count": dg.MetadataValue.int(int(report.get("program_count", 0))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "programs": _metadata_table(rows, _RESEARCH_PROGRAM_TABLE_COLUMNS),
+        }
+        if "persisted_count" in report:
+            metadata["persisted_count"] = dg.MetadataValue.int(int(report.get("persisted_count", 0)))
+        if "packet_count" in report:
+            metadata["packet_count"] = dg.MetadataValue.int(int(report.get("packet_count", 0)))
+        if "evidence_chunk_count" in report:
+            metadata["evidence_chunk_count"] = dg.MetadataValue.int(int(report.get("evidence_chunk_count", 0)))
+        if "status_counts" in report:
+            metadata["status_counts"] = dg.MetadataValue.json(report.get("status_counts", {}))
+        if "gate_counts" in report:
+            metadata["gate_counts"] = dg.MetadataValue.json(report.get("gate_counts", {}))
+        return metadata
 
     def _research_brief_library_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
         rows = report.get("briefs", [])
@@ -3378,6 +3463,8 @@ if dg is not None:
             "topic_query": dg.Field(str, is_required=False),
             "source_key": dg.Field(str, is_required=False),
             "include_queue_items": dg.Field(bool, default_value=True),
+            "include_evidence_addendum": dg.Field(bool, default_value=True),
+            "addendum_limit": dg.Field(int, default_value=25),
             "queue_if_ready": dg.Field(bool, default_value=False),
             "dry_run": dg.Field(bool, default_value=True),
             "max_tasks": dg.Field(int, default_value=8),
@@ -3407,6 +3494,8 @@ if dg is not None:
                 topic_query=config.get("topic_query"),
                 source_key=config.get("source_key"),
                 include_queue_items=config.get("include_queue_items", True),
+                include_evidence_addendum=config.get("include_evidence_addendum", True),
+                addendum_limit=config.get("addendum_limit", 25),
                 queue_if_ready=config.get("queue_if_ready", False),
                 dry_run=config.get("dry_run", True),
                 max_tasks=config.get("max_tasks", 8),
@@ -3418,6 +3507,85 @@ if dg is not None:
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_validation_packet_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "thesis_topic": dg.Field(
+                str,
+                default_value="vascular injury / coagulation / angiogenesis ecology in canine HSA and human angiosarcoma",
+            ),
+            "disease_scope": dg.Field(str, default_value="canine hemangiosarcoma and human angiosarcoma"),
+            "topic_query": dg.Field(str, is_required=False),
+            "source_key": dg.Field(str, is_required=False),
+            "max_packets": dg.Field(int, default_value=5),
+            "max_chunks": dg.Field(int, default_value=20),
+            "max_programs": dg.Field(int, default_value=1),
+            "max_evidence_loops": dg.Field(int, default_value=2),
+            "review_mode": dg.Field(str, default_value="openrouter_required"),
+            "review_models": dg.Field([str], default_value=[]),
+            "model_profile": dg.Field(str, default_value="research_program_board"),
+            "persist": dg.Field(bool, default_value=True),
+        },
+    )
+    def research_program_board_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual big-idea research program board run."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).run_research_program_board(
+            ResearchProgramReviewRequest(
+                thesis_topic=config.get("thesis_topic"),
+                disease_scope=config.get("disease_scope"),
+                topic_query=config.get("topic_query"),
+                source_key=config.get("source_key"),
+                max_packets=config.get("max_packets", 5),
+                max_chunks=config.get("max_chunks", 20),
+                max_programs=config.get("max_programs", 1),
+                max_evidence_loops=config.get("max_evidence_loops", 2),
+                review_mode=config.get("review_mode", "openrouter_required"),
+                review_models=config.get("review_models") or [],
+                model_profile=config.get("model_profile", "research_program_board"),
+                persist=config.get("persist", True),
+                dagster_run_id=context.run_id,
+                metadata={"dagster_program_board_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_research_program_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "status": dg.Field(str, is_required=False),
+            "gate_decision": dg.Field(str, is_required=False),
+            "thesis_query": dg.Field(str, is_required=False),
+            "limit": dg.Field(int, default_value=50),
+        },
+    )
+    def research_program_library_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual read-only report of persisted research programs."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).list_research_programs(
+            ResearchProgramBoardRequest(
+                status=config.get("status"),
+                gate_decision=config.get("gate_decision"),
+                thesis_query=config.get("thesis_query"),
+                limit=config.get("limit", 50),
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_research_program_metadata(report))
 
     @dg.asset(
         group_name="ai_research",
@@ -6108,6 +6276,8 @@ if dg is not None:
         therapy_idea_library_report,
         hypothesis_promotion_report,
         validation_packet_report,
+        research_program_board_report,
+        research_program_library_report,
         therapy_committee_validation_queue_report,
         research_brief_library_report,
         research_brief_evaluation_report,
@@ -6274,6 +6444,14 @@ if dg is not None:
     validation_packet_job = dg.define_asset_job(
         "validation_packet_job",
         selection=dg.AssetSelection.assets(validation_packet_report),
+    )
+    research_program_board_job = dg.define_asset_job(
+        "research_program_board_job",
+        selection=dg.AssetSelection.assets(research_program_board_report),
+    )
+    research_program_library_job = dg.define_asset_job(
+        "research_program_library_job",
+        selection=dg.AssetSelection.assets(research_program_library_report),
     )
     therapy_committee_validation_queue_job = dg.define_asset_job(
         "therapy_committee_validation_queue_job",
@@ -6622,6 +6800,8 @@ if dg is not None:
             therapy_idea_library_job,
             hypothesis_promotion_job,
             validation_packet_job,
+            research_program_board_job,
+            research_program_library_job,
             therapy_committee_validation_queue_job,
             research_brief_library_job,
             research_brief_evaluation_job,
@@ -6718,6 +6898,8 @@ else:
     therapy_idea_library_job = None
     hypothesis_promotion_job = None
     validation_packet_job = None
+    research_program_board_job = None
+    research_program_library_job = None
     therapy_committee_validation_queue_job = None
     research_brief_library_job = None
     research_brief_evaluation_job = None

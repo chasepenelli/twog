@@ -16,10 +16,11 @@ import urllib.error
 import urllib.request
 
 from .contracts import ValidationAgentResult, ValidationRequestQueueItem
+from .model_policy import default_openrouter_model
 
 
 VALIDATION_AGENT_VERSION = "v1"
-DEFAULT_VALIDATION_AGENT_MODEL = "~anthropic/claude-opus-latest"
+DEFAULT_VALIDATION_AGENT_MODEL = default_openrouter_model()
 VALIDATION_AGENT_MODEL_PROFILE = "openrouter_required"
 
 _AGENT_NAMES = {
@@ -71,7 +72,8 @@ _SPECIALIST_RUBRICS = {
     ],
     "safety_review_validation_agent": [
         "Check dose, route, PK/PD, adverse events, contraindications, and species-specific safety constraints.",
-        "Hold if safety evidence lacks canine context or if dose/exposure assumptions are unstated.",
+        "At discovery and validation-strategy stage, annotate dose/PK/safety gaps as protocol-stage risks rather than vetoing biological hypothesis exploration.",
+        "Hold only when the reviewed item is being promoted into protocol, animal-facing work, dosing assumptions, or wet-lab/clinical dispatch without sufficient safety context.",
         "Treat hemorrhage, coagulation, immune, and cardiotoxicity signals as material risks.",
     ],
 }
@@ -85,7 +87,10 @@ Follow the specialist rubric supplied in the review payload.
 Your decision must be one of: promote, hold, demote.
 Use promote only when the supplied evidence and context are sufficient to move the item to the next validation step.
 Use hold when the idea is plausible but needs more evidence, protocol detail, safety context, or expert review.
-Use demote when the supplied evidence has a major contradiction, missing core premise, or unacceptable risk for this stage."""
+Use demote when the supplied evidence has a major contradiction, missing core premise, or unacceptable risk for this stage.
+For discovery-stage therapy ideas, safety and PK/PD gaps should usually become risk annotations or protocol-stage blockers, not automatic demotion.
+Do not block early combination ideation solely because dose, route, schedule, tolerability, or monitoring thresholds are not yet known.
+Only apply a hard safety hold when the queue item is explicitly asking to advance into protocol execution, animal-facing validation, dosing recommendations, or wet-lab/clinical dispatch."""
 
 
 def run_validation_agent(
@@ -418,7 +423,7 @@ def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) ->
 def _model_name(model_profile: str) -> str:
     if "/" in model_profile or model_profile.startswith("~"):
         return model_profile
-    return os.getenv("HSA_VALIDATION_AGENT_MODEL", DEFAULT_VALIDATION_AGENT_MODEL)
+    return os.getenv("HSA_VALIDATION_AGENT_MODEL", default_openrouter_model())
 
 
 def _load_json_object(text: str) -> dict[str, Any]:

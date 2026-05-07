@@ -31,6 +31,7 @@ from .contracts import (
     TextEmbeddingSearchRequest,
 )
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, build_embedding_provider, select_embedding_model_from_coverage
+from .model_policy import default_openrouter_model
 from .research_brief_errors import split_research_brief_errors
 from .research_leads import active_research_leads_for_brief
 from .repository import ResearchRepository
@@ -41,7 +42,7 @@ TRANSLATIONAL_HYPOTHESIS_AGENT_NAME = "translational_hypothesis_agent"
 SKEPTIC_VALIDATION_AGENT_NAME = "skeptic_validation_agent"
 RESEARCH_SYNTHESIS_EDITOR_AGENT_NAME = "research_synthesis_editor_agent"
 RESEARCH_BRIEF_AGENT_VERSION = "v1"
-DEFAULT_RESEARCH_BRIEF_MODEL = "~anthropic/claude-sonnet-latest"
+DEFAULT_RESEARCH_BRIEF_MODEL = default_openrouter_model()
 DEFAULT_RESEARCH_BRIEF_COMPARE_MODELS = (DEFAULT_RESEARCH_BRIEF_MODEL,)
 PERSPECTIVE_ORDER: tuple[ResearchBriefPerspectiveName, ...] = (
     "evidence_scout",
@@ -1863,7 +1864,7 @@ def _select_models(request: ResearchBriefRequest) -> list[str]:
         return list(request.review_models)
     if request.review_mode == "openrouter_compare":
         return list(DEFAULT_RESEARCH_BRIEF_COMPARE_MODELS)
-    return [os.getenv("HSA_RESEARCH_BRIEF_MODEL", DEFAULT_RESEARCH_BRIEF_MODEL)]
+    return [os.getenv("HSA_RESEARCH_BRIEF_MODEL", default_openrouter_model())]
 
 
 def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) -> dict[str, Any]:

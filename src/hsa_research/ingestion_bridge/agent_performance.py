@@ -22,12 +22,13 @@ from .contracts import (
     AgentRunReviewRecord,
     AgentRunReviewVerdict,
 )
+from .model_policy import default_openrouter_model
 from .repository import ResearchRepository
 
 
 AGENT_PERFORMANCE_EVALUATOR_AGENT_NAME = "agent_performance_evaluator_agent"
 AGENT_PERFORMANCE_EVALUATOR_AGENT_VERSION = "v1"
-DEFAULT_AGENT_PERFORMANCE_EVALUATOR_MODEL = "~anthropic/claude-sonnet-latest"
+DEFAULT_AGENT_PERFORMANCE_EVALUATOR_MODEL = default_openrouter_model()
 
 VERDICT_SCORES: dict[str, float] = {
     "useful": 1.0,
@@ -557,7 +558,7 @@ def _review_models(request: AgentPerformanceEvaluationRequest) -> list[str]:
     configured = os.getenv("HSA_AGENT_PERFORMANCE_EVALUATOR_MODELS")
     if configured:
         return [model.strip() for model in configured.split(",") if model.strip()]
-    return [os.getenv("HSA_AGENT_PERFORMANCE_EVALUATOR_MODEL", DEFAULT_AGENT_PERFORMANCE_EVALUATOR_MODEL)]
+    return [os.getenv("HSA_AGENT_PERFORMANCE_EVALUATOR_MODEL", default_openrouter_model())]
 
 
 def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) -> dict[str, Any]:

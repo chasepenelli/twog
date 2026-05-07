@@ -17,12 +17,13 @@ from .contracts import (
     ResearchBriefRecord,
     ResearchBriefResult,
 )
+from .model_policy import default_openrouter_model
 from .research_brief_errors import split_research_brief_errors
 
 
 RESEARCH_BRIEF_EVALUATION_AGENT_NAME = "research_brief_synthesis_evaluator_agent"
 RESEARCH_BRIEF_EVALUATION_AGENT_VERSION = "v1"
-DEFAULT_RESEARCH_BRIEF_EVALUATION_MODEL = "anthropic/claude-sonnet-4.6"
+DEFAULT_RESEARCH_BRIEF_EVALUATION_MODEL = default_openrouter_model()
 
 _EXPECTED_PERSPECTIVES = {
     "evidence_scout",
@@ -486,10 +487,9 @@ def _select_models(request: ResearchBriefEvaluationRequest) -> list[str]:
     if request.review_models:
         return list(request.review_models)
     return [
-        os.getenv(
-            "HSA_RESEARCH_BRIEF_EVALUATION_MODEL",
-            os.getenv("HSA_RESEARCH_BRIEF_MODEL", DEFAULT_RESEARCH_BRIEF_EVALUATION_MODEL),
-        )
+        os.getenv("HSA_RESEARCH_BRIEF_EVALUATION_MODEL")
+        or os.getenv("HSA_RESEARCH_BRIEF_MODEL")
+        or default_openrouter_model()
     ]
 
 

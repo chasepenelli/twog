@@ -108,6 +108,11 @@ from .contracts import (
     ResearchObject,
     ResearchObjectReadRequest,
     ResearchObjectReadResult,
+    ResearchProgramBoardRequest,
+    ResearchProgramBoardResult,
+    ResearchProgramRecord,
+    ResearchProgramReviewRequest,
+    ResearchProgramReviewResult,
     RetrievalSmokeRequest,
     RetrievalSmokeResult,
     SourceScoutRequest,
@@ -139,6 +144,8 @@ from .contracts import (
     ValidationGapSourcePackRequest,
     ValidationGapSourcePackResult,
     ValidationPacket,
+    ValidationPacketAddendumBrief,
+    ValidationPacketEvidenceAddendum,
     ValidationPacketRequest,
     ValidationPacketResult,
     ValidationPlanRecord,
@@ -186,6 +193,7 @@ from .evidence_gap_resolver import (
 )
 from .full_text_ops import FULL_TEXT_OPS_AGENT_NAME, FULL_TEXT_OPS_AGENT_VERSION, FullTextOpsAgent
 from .full_text_triage import FullTextTriageAgent
+from .model_policy import BIG_IDEA_OPENROUTER_MODEL, DEFAULT_OPENROUTER_MODEL
 from .research_brief_agent import (
     PERSPECTIVE_ORDER,
     RESEARCH_BRIEF_AGENT_VERSION,
@@ -202,6 +210,12 @@ from .research_brief_evaluation import (
 )
 from .research_brief_errors import split_research_brief_errors
 from .repository import ResearchRepository
+from .research_program_board import (
+    RESEARCH_PROGRAM_BOARD_AGENT_NAME,
+    RESEARCH_PROGRAM_BOARD_AGENT_VERSION,
+    run_research_program_board_agent,
+    summarize_research_program_board,
+)
 from .research_leads import collect_research_leads_from_agent_runs, persist_research_leads_from_agent_result
 from .research_followup_resolver import (
     RESEARCH_FOLLOWUP_RESOLVER_AGENT_NAME,
@@ -278,7 +292,7 @@ DEFAULT_MODEL_PROFILES: dict[str, ModelProfile] = {
     "research_brief": ModelProfile(
         profile_key="research_brief",
         provider="other",
-        model_name="openrouter:~anthropic/claude-sonnet-latest",
+        model_name=f"openrouter:{DEFAULT_OPENROUTER_MODEL}",
         purpose="Citation-first multi-perspective research briefs",
     ),
     "synthesis_quality_evaluator": ModelProfile(
@@ -294,8 +308,14 @@ DEFAULT_MODEL_PROFILES: dict[str, ModelProfile] = {
     "therapy_committee": ModelProfile(
         profile_key="therapy_committee",
         provider="other",
-        model_name="openrouter:~anthropic/claude-opus-latest",
+        model_name=f"openrouter:{DEFAULT_OPENROUTER_MODEL}",
         purpose="Multi-perspective therapy ideation committee over cited evidence",
+    ),
+    "research_program_board": ModelProfile(
+        profile_key="research_program_board",
+        provider="other",
+        model_name=f"openrouter:{BIG_IDEA_OPENROUTER_MODEL}",
+        purpose="Finite big-idea research program board",
     ),
 }
 
@@ -836,6 +856,81 @@ class HSAResearchService:
             self.repository,
             request or ValidationPacketRequest(),
             service=self,
+        )
+
+    def run_research_program_board(
+        self,
+        request: ResearchProgramReviewRequest,
+    ) -> ResearchProgramReviewResult:
+        packet_result = (
+            self.build_validation_packets(
+                ValidationPacketRequest(
+                    topic_query=request.topic_query or request.thesis_topic,
+                    source_key=request.source_key,
+                    include_evidence_addendum=request.include_evidence_addendum,
+                    limit=max(1, request.max_packets) if request.max_packets else 1,
+                )
+            )
+            if request.include_validation_packets and request.max_packets > 0
+            else ValidationPacketResult()
+        )
+        result = AgentRunner(self.repository).run(
+            agent_name=RESEARCH_PROGRAM_BOARD_AGENT_NAME,
+            agent_version=RESEARCH_PROGRAM_BOARD_AGENT_VERSION,
+            model_profile=request.model_profile,
+            input_payload={
+                "request": request.model_dump(mode="json"),
+                "packet_count": packet_result.packet_count,
+            },
+            source_key=request.source_key,
+            dagster_run_id=request.dagster_run_id,
+            metadata=request.metadata,
+            execute=lambda: run_research_program_board_agent(
+                self.repository,
+                request,
+                validation_packets=packet_result.packets,
+            ),
+            summarize=summarize_research_program_board,
+        )
+        if request.persist:
+            persisted = []
+            for program in result.programs:
+                persisted.append(
+                    self.repository.upsert_research_program(
+                        program.model_copy(update={"agent_run_id": result.agent_run_id})
+                    )
+                )
+            result = result.model_copy(
+                update={
+                    "programs": persisted,
+                    "persisted_count": len(persisted),
+                }
+            )
+        return result
+
+    def get_research_program(self, program_id: UUID) -> ResearchProgramRecord | None:
+        return self.repository.get_research_program(program_id)
+
+    def list_research_programs(
+        self,
+        request: ResearchProgramBoardRequest | None = None,
+    ) -> ResearchProgramBoardResult:
+        request = request or ResearchProgramBoardRequest()
+        if request.program_id:
+            record = self.repository.get_research_program(request.program_id)
+            records = [record] if record else []
+        else:
+            records = self.repository.list_research_programs(
+                status=request.status,
+                gate_decision=request.gate_decision,
+                thesis_query=request.thesis_query,
+                limit=request.limit,
+            )
+        return ResearchProgramBoardResult(
+            program_count=len(records),
+            status_counts=dict(sorted(Counter(record.status for record in records).items())),
+            gate_counts=dict(sorted(Counter(record.gate_decision for record in records).items())),
+            programs=records,
         )
 
     def queue_therapy_committee_validation_requests(
@@ -4498,7 +4593,26 @@ def _validation_packet_from_candidate(
     )
     required_inputs = _dedupe_quality_labels([item for task in tasks for item in task.required_inputs])
     missing_evidence = _validation_packet_missing_evidence(candidate)
+    evidence_addendum = (
+        _validation_packet_evidence_addendum(repository, candidate, plan, queue_items, request)
+        if request.include_evidence_addendum
+        else ValidationPacketEvidenceAddendum()
+    )
     status, readiness = _validation_packet_status_and_readiness(candidate, plan, queue_items)
+    discovery_readiness = _validation_packet_discovery_readiness(candidate, evidence_addendum)
+    validation_strategy_readiness = _validation_packet_strategy_readiness(
+        candidate,
+        status=status,
+        readiness=readiness,
+        queue_items=queue_items,
+    )
+    risk_annotations = _validation_packet_risk_annotations(candidate, evidence_addendum)
+    protocol_blockers = _validation_packet_protocol_blockers(candidate, evidence_addendum)
+    protocol_readiness = _validation_packet_protocol_readiness(
+        candidate,
+        protocol_blockers=protocol_blockers,
+        evidence_addendum=evidence_addendum,
+    )
     return ValidationPacket(
         packet_id=_validation_packet_id(candidate),
         candidate_id=candidate.candidate_id,
@@ -4523,6 +4637,7 @@ def _validation_packet_from_candidate(
         evidence_refs=candidate.evidence_refs,
         direct_evidence_refs=_validation_packet_direct_evidence_refs(candidate),
         analog_evidence_refs=_validation_packet_analog_evidence_refs(candidate),
+        evidence_addendum=evidence_addendum,
         missing_evidence=missing_evidence,
         safety_risks=_validation_packet_safety_risks(candidate),
         contradictions=_validation_packet_contradictions(candidate),
@@ -4534,6 +4649,11 @@ def _validation_packet_from_candidate(
         promotion_state=candidate.promotion_state,
         status=status,
         readiness=readiness,
+        discovery_readiness=discovery_readiness,
+        validation_strategy_readiness=validation_strategy_readiness,
+        protocol_readiness=protocol_readiness,
+        risk_annotations=risk_annotations,
+        protocol_blockers=protocol_blockers,
         score=candidate.score,
         summary={
             "task_count": len(tasks),
@@ -4541,6 +4661,16 @@ def _validation_packet_from_candidate(
             "matched_tool_count": len(candidate.matched_tools),
             "missing_evidence_count": len(missing_evidence),
             "dispatch_blocker_count": len(dispatch_blockers),
+            "risk_annotation_count": len(risk_annotations),
+            "protocol_blocker_count": len(protocol_blockers),
+            "stage_model": "discovery_strategy_protocol_v1",
+            "discovery_readiness": discovery_readiness,
+            "validation_strategy_readiness": validation_strategy_readiness,
+            "protocol_readiness": protocol_readiness,
+            "follow_up_count": evidence_addendum.follow_up_count,
+            "evaluated_follow_up_count": evidence_addendum.evaluated_follow_up_count,
+            "passing_follow_up_count": evidence_addendum.passing_follow_up_count,
+            "needs_more_evidence_follow_up_count": evidence_addendum.needs_more_evidence_count,
         },
         metadata={
             **request.metadata,
@@ -4551,6 +4681,227 @@ def _validation_packet_from_candidate(
             "dagster_run_id": request.dagster_run_id,
         },
     )
+
+
+def _validation_packet_evidence_addendum(
+    repository: ResearchRepository,
+    candidate: HypothesisPromotionCandidate,
+    plan: ValidationPlanRecord | None,
+    queue_items: list[ValidationRequestQueueItem],
+    request: ValidationPacketRequest,
+) -> ValidationPacketEvidenceAddendum:
+    if request.addendum_limit <= 0:
+        return ValidationPacketEvidenceAddendum()
+
+    plan_ids = {
+        str(value)
+        for value in (
+            request.plan_id,
+            plan.plan_id if plan is not None else None,
+            *[item.plan_id for item in queue_items],
+        )
+        if value is not None
+    }
+    origin_queue_item_ids = {
+        str(item.queue_item_id)
+        for item in queue_items
+        if item.queue_item_id is not None
+    }
+    if request.queue_item_id:
+        origin_queue_item_ids.add(str(request.queue_item_id))
+
+    related_items = [
+        item
+        for item in repository.list_research_brief_queue_items(limit=None)
+        if _research_brief_queue_item_matches_validation_packet(
+            item,
+            plan_ids=plan_ids,
+            origin_queue_item_ids=origin_queue_item_ids,
+            candidate=candidate,
+        )
+    ]
+    related_items.sort(
+        key=lambda item: (
+            _validation_packet_addendum_status_rank(item.status),
+            item.priority,
+            item.updated_at,
+        )
+    )
+    related_items = related_items[: request.addendum_limit]
+
+    rows: list[ValidationPacketAddendumBrief] = []
+    material_updates: list[str] = []
+    unresolved_blockers: list[str] = []
+    latest_updated_at: datetime | None = None
+
+    for item in related_items:
+        brief = repository.get_research_brief(item.last_brief_id) if item.last_brief_id else None
+        evaluations = (
+            repository.list_research_brief_evaluations(brief_id=brief.brief_id, limit=1)
+            if brief is not None
+            else []
+        )
+        evaluation = evaluations[0] if evaluations else None
+        resolver = _metadata_dict(item.metadata.get("evidence_gap_resolver"))
+        row = ValidationPacketAddendumBrief(
+            queue_item_id=item.queue_item_id,
+            topic=item.topic,
+            status=item.status,
+            source_key=item.source_key,
+            priority=item.priority,
+            lead_id=_uuid_or_none(resolver.get("lead_id")),
+            origin_queue_item_id=_uuid_or_none(resolver.get("queue_item_id")),
+            plan_id=_uuid_or_none(resolver.get("plan_id")),
+            lane=str(resolver.get("lane") or "") or None,
+            task_type=str(resolver.get("task_type") or "") or None,
+            validation_type=str(resolver.get("validation_type") or "") or None,
+            brief_id=brief.brief_id if brief else item.last_brief_id,
+            brief_agent_run_id=brief.agent_run_id if brief else item.last_agent_run_id,
+            evaluation_id=evaluation.evaluation_id if evaluation else None,
+            evaluation_agent_run_id=evaluation.agent_run_id if evaluation else None,
+            overall_score=evaluation.overall_score if evaluation else None,
+            passes_quality_bar=evaluation.passes_quality_bar if evaluation else None,
+            readiness=evaluation.readiness if evaluation else None,
+            summary=_validation_packet_addendum_summary(item, brief, evaluation),
+            key_strengths=_validation_packet_addendum_list(evaluation, "strengths"),
+            key_weaknesses=_validation_packet_addendum_list(evaluation, "weaknesses"),
+            recommendations=_validation_packet_addendum_list(evaluation, "recommendations"),
+            created_at=item.created_at,
+            updated_at=max(
+                [
+                    value
+                    for value in (
+                        item.updated_at,
+                        brief.updated_at if brief else None,
+                        evaluation.updated_at if evaluation else None,
+                    )
+                    if value is not None
+                ]
+            ),
+            metadata={"evidence_gap_resolver": resolver},
+        )
+        rows.append(row)
+        latest_updated_at = row.updated_at if latest_updated_at is None else max(latest_updated_at, row.updated_at)
+
+        if row.readiness == "ready_for_hypothesis_review" and row.passes_quality_bar:
+            material_updates.append(f"Follow-up ready for hypothesis review: {row.topic}")
+        elif row.readiness == "needs_more_evidence":
+            unresolved_blockers.extend(row.key_weaknesses[:2] or [f"Follow-up still needs evidence: {row.topic}"])
+        elif row.status == "failed":
+            unresolved_blockers.append(f"Follow-up brief failed: {row.topic}")
+        elif row.status == "completed" and row.evaluation_id is None:
+            unresolved_blockers.append(f"Follow-up brief needs evaluation: {row.topic}")
+
+    return ValidationPacketEvidenceAddendum(
+        follow_up_count=len(rows),
+        completed_follow_up_count=sum(1 for row in rows if row.status == "completed"),
+        evaluated_follow_up_count=sum(1 for row in rows if row.evaluation_id is not None),
+        passing_follow_up_count=sum(1 for row in rows if row.passes_quality_bar is True),
+        ready_for_hypothesis_review_count=sum(
+            1 for row in rows if row.readiness == "ready_for_hypothesis_review"
+        ),
+        needs_more_evidence_count=sum(1 for row in rows if row.readiness == "needs_more_evidence"),
+        failed_follow_up_count=sum(1 for row in rows if row.status == "failed"),
+        material_updates=_dedupe_texts(material_updates)[:25],
+        unresolved_blockers=_dedupe_texts(unresolved_blockers)[:25],
+        follow_up_briefs=rows,
+        latest_updated_at=latest_updated_at,
+        metadata={
+            "source": "validation_packet_addendum",
+            "plan_ids": sorted(plan_ids),
+            "origin_queue_item_ids": sorted(origin_queue_item_ids),
+            "candidate_id": candidate.candidate_id,
+        },
+    )
+
+
+def _research_brief_queue_item_matches_validation_packet(
+    item: ResearchBriefQueueItem,
+    *,
+    plan_ids: set[str],
+    origin_queue_item_ids: set[str],
+    candidate: HypothesisPromotionCandidate,
+) -> bool:
+    resolver = _metadata_dict(item.metadata.get("evidence_gap_resolver"))
+    if not resolver:
+        return False
+    if str(resolver.get("plan_id") or "") in plan_ids:
+        return True
+    if str(resolver.get("queue_item_id") or "") in origin_queue_item_ids:
+        return True
+    if candidate.therapy_idea_id and str(resolver.get("therapy_idea_id") or "") == str(candidate.therapy_idea_id):
+        return True
+    return False
+
+
+def _validation_packet_addendum_status_rank(status: str) -> int:
+    return {
+        "failed": 0,
+        "completed": 1,
+        "running": 2,
+        "queued": 3,
+        "archived": 4,
+    }.get(status, 5)
+
+
+def _metadata_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _uuid_or_none(value: Any) -> UUID | None:
+    if value is None:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _validation_packet_addendum_summary(
+    item: ResearchBriefQueueItem,
+    brief: ResearchBriefRecord | None,
+    evaluation: ResearchBriefEvaluationRecord | None,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "queue_status": item.status,
+        "attempts": item.attempts,
+        "last_error": item.last_error,
+    }
+    if brief is not None:
+        summary.update(
+            {
+                "brief_status": brief.status,
+                "citation_count": brief.citation_count,
+                "finding_count": brief.finding_count,
+                "hypothesis_count": brief.hypothesis_count,
+                "evidence_limitation_count": brief.evidence_limitation_count,
+            }
+        )
+    if evaluation is not None:
+        summary.update(
+            {
+                "overall_score": evaluation.overall_score,
+                "passes_quality_bar": evaluation.passes_quality_bar,
+                "readiness": evaluation.readiness,
+                **{f"evaluation_{key}": value for key, value in evaluation.summary.items()},
+            }
+        )
+    return summary
+
+
+def _validation_packet_addendum_list(
+    evaluation: ResearchBriefEvaluationRecord | None,
+    key: str,
+) -> list[str]:
+    if evaluation is None:
+        return []
+    payload = evaluation.result_payload if isinstance(evaluation.result_payload, dict) else {}
+    values = payload.get(key)
+    if not isinstance(values, list):
+        values = evaluation.summary.get(key) if isinstance(evaluation.summary, dict) else []
+    if not isinstance(values, list):
+        return []
+    return _dedupe_texts([str(value) for value in values if str(value).strip()])[:10]
 
 
 def _validation_packet_id(candidate: HypothesisPromotionCandidate) -> str:
@@ -4785,6 +5136,88 @@ def _validation_packet_status_and_readiness(
     if candidate.promotion_state == "blocked":
         return "blocked", "blocked"
     return "draft", "needs_more_evidence"
+
+
+def _validation_packet_discovery_readiness(
+    candidate: HypothesisPromotionCandidate,
+    evidence_addendum: ValidationPacketEvidenceAddendum,
+) -> str:
+    if candidate.promotion_state in {"needs_citation_repair", "blocked"}:
+        return candidate.promotion_state
+    if candidate.promotion_state in {"ready_for_committee", "ready_for_validation_plan", "queued_for_validation"}:
+        return "ready_for_validation_strategy"
+    if evidence_addendum.passing_follow_up_count > 0 and candidate.evidence_refs:
+        return "ready_for_validation_strategy"
+    return "needs_more_evidence"
+
+
+def _validation_packet_strategy_readiness(
+    candidate: HypothesisPromotionCandidate,
+    *,
+    status: str,
+    readiness: str,
+    queue_items: list[ValidationRequestQueueItem],
+) -> str:
+    if candidate.promotion_state in {"needs_citation_repair", "blocked"}:
+        return candidate.promotion_state
+    if queue_items or status == "queued_for_validation" or readiness == "queued_for_validation":
+        return "queued_for_validation_strategy"
+    if readiness in {"ready_for_committee", "ready_for_validation_plan", "ready_for_validation_queue"}:
+        return "ready_for_validation_strategy"
+    return "needs_more_evidence"
+
+
+def _validation_packet_protocol_readiness(
+    candidate: HypothesisPromotionCandidate,
+    *,
+    protocol_blockers: list[str],
+    evidence_addendum: ValidationPacketEvidenceAddendum,
+) -> str:
+    if candidate.promotion_state in {"needs_citation_repair", "blocked"}:
+        return "blocked"
+    if protocol_blockers:
+        return "needs_protocol_inputs"
+    if candidate.promotion_state in {"ready_for_validation_plan", "queued_for_validation"} and evidence_addendum.passing_follow_up_count > 0:
+        return "ready_for_protocol_review"
+    return "not_protocol_ready"
+
+
+_PROTOCOL_BLOCKER_PATTERN = re.compile(
+    r"\b(?:pk|pd|pk/pd|pharmacokinetic|pharmacodynamic|cmax|auc|half-life|metabolism|mtd|"
+    r"maximum tolerated|dose|dosing|dose-modification|route|schedule|toxicity|adverse|"
+    r"hepatotoxicity|hypertension|proteinuria|renal|hepatic|bleed|bleeding|hemorrhage|"
+    r"coagulation|dlt|stop criteria|stopping rule|monitoring threshold|blood pressure)\b",
+    re.IGNORECASE,
+)
+
+
+def _validation_packet_risk_annotations(
+    candidate: HypothesisPromotionCandidate,
+    evidence_addendum: ValidationPacketEvidenceAddendum,
+) -> list[str]:
+    annotations = [
+        *_validation_packet_safety_risks(candidate),
+        *evidence_addendum.unresolved_blockers,
+    ]
+    return _dedupe_quality_labels(annotations)[:50]
+
+
+def _validation_packet_protocol_blockers(
+    candidate: HypothesisPromotionCandidate,
+    evidence_addendum: ValidationPacketEvidenceAddendum,
+) -> list[str]:
+    blockers = [
+        value
+        for value in [
+            *candidate.risks,
+            *candidate.blockers,
+            *evidence_addendum.unresolved_blockers,
+        ]
+        if _PROTOCOL_BLOCKER_PATTERN.search(value)
+    ]
+    if _validation_packet_safety_risks(candidate) and not blockers:
+        blockers.append("Protocol-stage safety review required before animal-facing or dosing work.")
+    return _dedupe_quality_labels(blockers)[:50]
 
 
 def _validation_packet_missing_evidence(candidate: HypothesisPromotionCandidate) -> list[str]:
@@ -6221,8 +6654,9 @@ def _safety_review_task_from_therapy_idea(
         candidate_name=_candidate_name(idea),
         target_name=_target_name(idea),
         objective=_truncate(
-            "Review safety, toxicity, PK/PD, hemorrhage/coagulation, and species-translation risks "
-            f"before promoting: {idea.title}",
+            "Annotate safety, toxicity, PK/PD, hemorrhage/coagulation, and species-translation risks "
+            f"for discovery-stage validation strategy. Do not treat protocol-only dosing gaps as a veto on "
+            f"biological hypothesis exploration: {idea.title}",
             2000,
         ),
         priority=priority,
@@ -6232,7 +6666,7 @@ def _safety_review_task_from_therapy_idea(
             committee_result,
             assay_type="safety and translational risk review",
             readout="toxicity flags, coagulation risk, species PK/PD gaps, and contraindications",
-            endpoint="safety gate decision before any animal-facing validation",
+            endpoint="risk annotations for discovery now, hard safety gate only before protocol or animal-facing validation",
         ),
         quality_gates=[
             "human_approval_required",
@@ -6246,7 +6680,7 @@ def _safety_review_task_from_therapy_idea(
     return ValidationPlanTask(
         task_id=task_id,
         task_type="safety",
-        title=_truncate(f"Safety gate: {idea.title}", 500),
+        title=_truncate(f"Safety risk review: {idea.title}", 500),
         objective=request.objective,
         rationale=_truncate(" | ".join(idea.risks) or idea.rationale, 3000),
         validation_request=request,
@@ -6257,9 +6691,9 @@ def _safety_review_task_from_therapy_idea(
             "coagulation or toxicity monitoring requirements",
         ],
         expected_outputs=[
-            "safety gate decision",
+            "stage-aware safety risk annotations",
             "required monitoring plan",
-            "contraindications and stop criteria",
+            "protocol-stage contraindications and stop criteria",
         ],
         evidence_refs=idea.evidence_refs,
         priority=priority,

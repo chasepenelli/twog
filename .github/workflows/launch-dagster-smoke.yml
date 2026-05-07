@@ -27,6 +27,8 @@ on:
           - "full_text_ops_agent_job"
           - "agent_performance_report_job"
           - "agent_performance_evaluation_job"
+          - "research_program_board_job"
+          - "research_program_library_job"
           - "research_brief_agent_job"
           - "therapy_committee_job"
           - "therapy_committee_validation_queue_job"
@@ -113,6 +115,8 @@ jobs:
       HSA_THERAPY_COMMITTEE_WORKERS: "4"
       HSA_THERAPY_COMMITTEE_MODEL: "anthropic/claude-sonnet-4.6"
       HSA_RESEARCH_BRIEF_MODEL: "anthropic/claude-sonnet-4.6"
+      HSA_BIG_IDEA_OPENROUTER_MODEL: "~anthropic/claude-opus-latest"
+      HSA_RESEARCH_PROGRAM_BOARD_MODEL: "~anthropic/claude-opus-latest"
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
       HSA_X_LINKED_ARTICLE_APPROVED_BY: "github-actions"
@@ -146,6 +150,10 @@ jobs:
               echo "::error::OPENROUTER_API_KEY is required for OpenRouter review modes."
               exit 1
             fi
+          fi
+          if [ "$DAGSTER_CLOUD_JOB" = "research_program_board_job" ] && [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error::OPENROUTER_API_KEY is required for research_program_board_job."
+            exit 1
           fi
           if [ "$DAGSTER_CLOUD_JOB" = "x_topic_monitor_review_job" ] && [ -z "$TWITTERAPI_IO_KEY" ]; then
             echo "::error::TWITTERAPI_IO_KEY is required for x_topic_monitor_review_job."

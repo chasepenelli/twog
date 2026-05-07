@@ -44,6 +44,8 @@ from .contracts import (
     ResearchHuntSynthesisDocRequest,
     ResearchHuntSynthesisQueueRequest,
     ResearchLeadCollectRequest,
+    ResearchProgramBoardRequest,
+    ResearchProgramReviewRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
@@ -681,11 +683,66 @@ def main() -> None:
     validation_packets.add_argument("--query", default=None, help="Topic/title/hypothesis search")
     validation_packets.add_argument("--source", default=None, help="Source key filter")
     validation_packets.add_argument("--hide-queue-items", action="store_true", help="Do not include queue item payloads")
+    validation_packets.add_argument(
+        "--hide-evidence-addendum",
+        action="store_true",
+        help="Do not include validation-gap follow-up brief/evaluation addendum",
+    )
+    validation_packets.add_argument(
+        "--addendum-limit",
+        type=int,
+        default=25,
+        help="Maximum follow-up brief/evaluation rows to include in the addendum",
+    )
     validation_packets.add_argument("--queue-if-ready", action="store_true", help="Queue ready therapy idea packets")
     validation_packets.add_argument("--apply", action="store_true", help="Persist queue mutations when queueing")
     validation_packets.add_argument("--max-tasks", type=int, default=8, help="Maximum packet tasks")
     validation_packets.add_argument("--priority", type=int, default=40, help="Queue priority when queueing")
     validation_packets.add_argument("--limit", type=int, default=10, help="Maximum packets to return")
+
+    research_program_board = subparsers.add_parser(
+        "research-program-board",
+        help="Run the finite big-idea Research Program Board",
+    )
+    research_program_board.add_argument(
+        "--topic",
+        default="vascular injury / coagulation / angiogenesis ecology in canine HSA and human angiosarcoma",
+        help="Big research program thesis topic",
+    )
+    research_program_board.add_argument(
+        "--disease-scope",
+        default="canine hemangiosarcoma and human angiosarcoma",
+        help="Disease/scope guardrail",
+    )
+    research_program_board.add_argument("--query", default=None, help="Evidence/packet search query")
+    research_program_board.add_argument("--source", default=None, help="Optional source key filter")
+    research_program_board.add_argument("--max-packets", type=int, default=5, help="Maximum validation packets to include")
+    research_program_board.add_argument("--max-chunks", type=int, default=20, help="Maximum evidence chunks to include")
+    research_program_board.add_argument("--max-programs", type=int, default=1, help="Maximum programs to return")
+    research_program_board.add_argument("--max-evidence-loops", type=int, default=2, help="Maximum evidence loops per program")
+    research_program_board.add_argument(
+        "--review-mode",
+        choices=("openrouter_required", "deterministic_only"),
+        default="openrouter_required",
+    )
+    research_program_board.add_argument(
+        "--review-model",
+        action="append",
+        default=[],
+        help="OpenRouter model id; repeatable",
+    )
+    research_program_board.add_argument("--model-profile", default="research_program_board", help="Logical model profile")
+    research_program_board.add_argument("--no-persist", action="store_true", help="Do not persist generated programs")
+
+    research_programs = subparsers.add_parser(
+        "research-programs",
+        help="List persisted Research Program Board records",
+    )
+    research_programs.add_argument("--id", default=None, help="Research program ID")
+    research_programs.add_argument("--status", default=None, help="Research program status")
+    research_programs.add_argument("--gate-decision", default=None, help="Research program gate decision")
+    research_programs.add_argument("--query", default=None, help="Thesis/title search")
+    research_programs.add_argument("--limit", type=int, default=50, help="Maximum programs to return")
 
     x_topic_monitor = subparsers.add_parser(
         "x-topic-monitor",
@@ -1985,6 +2042,8 @@ def main() -> None:
                 topic_query=args.query,
                 source_key=args.source,
                 include_queue_items=not args.hide_queue_items,
+                include_evidence_addendum=not args.hide_evidence_addendum,
+                addendum_limit=args.addendum_limit,
                 queue_if_ready=args.queue_if_ready,
                 dry_run=not args.apply,
                 max_tasks=args.max_tasks,
@@ -1992,6 +2051,37 @@ def main() -> None:
                 limit=args.limit,
             )
         ).model_dump(mode="json")
+    elif args.command == "research-program-board":
+        output = HSAResearchService(repo).run_research_program_board(
+            ResearchProgramReviewRequest(
+                thesis_topic=args.topic,
+                disease_scope=args.disease_scope,
+                topic_query=args.query,
+                source_key=args.source,
+                max_packets=args.max_packets,
+                max_chunks=args.max_chunks,
+                max_programs=args.max_programs,
+                max_evidence_loops=args.max_evidence_loops,
+                review_mode=args.review_mode,
+                review_models=args.review_model,
+                model_profile=args.model_profile,
+                persist=not args.no_persist,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "research-programs":
+        service = HSAResearchService(repo)
+        if args.id:
+            record = service.get_research_program(UUID(args.id))
+            output = {} if record is None else record.model_dump(mode="json")
+        else:
+            output = service.list_research_programs(
+                ResearchProgramBoardRequest(
+                    status=args.status,
+                    gate_decision=args.gate_decision,
+                    thesis_query=args.query,
+                    limit=args.limit,
+                )
+            ).model_dump(mode="json")
     elif args.command == "x-topic-monitor":
         from .x_topic_monitor import (
             TWITTERAPI_IO_MAX_SINGLE_PAGE_RESULTS,

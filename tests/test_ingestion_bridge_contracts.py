@@ -94,6 +94,13 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchFollowupResolverResult,
     ResearchLeadCollectRequest,
     ResearchLeadRecord,
+    ResearchProgramBoardRequest,
+    ResearchProgramBoardResult,
+    ResearchProgramEvidenceTask,
+    ResearchProgramQuestion,
+    ResearchProgramRecord,
+    ResearchProgramReviewRequest,
+    ResearchProgramReviewResult,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
@@ -130,6 +137,7 @@ from hsa_research.ingestion_bridge.contracts import (
     ValidationGapSourcePackResult,
     ValidationGapSourceQuery,
     ValidationPacket,
+    ValidationPacketEvidenceAddendum,
     ValidationPacketRequest,
     ValidationPacketResult,
     ValidationRequest,
@@ -163,6 +171,8 @@ from hsa_research.ingestion_bridge import research_brief_evaluation
 from hsa_research.ingestion_bridge import research_followup_resolver
 from hsa_research.ingestion_bridge import pubmed_identifier_repair
 from hsa_research.ingestion_bridge import research_brief_agent
+from hsa_research.ingestion_bridge import model_policy
+from hsa_research.ingestion_bridge import research_program_board
 from hsa_research.ingestion_bridge import therapy_committee
 from hsa_research.ingestion_bridge import validation_agents
 from hsa_research.ingestion_bridge import source_followup
@@ -578,7 +588,10 @@ def test_validation_packets_build_from_ready_therapy_idea(tmp_path):
         biomarkers=["VEGFR2"],
         evidence_refs=["C1", "C2"],
         evidence_strength="medium",
-        risks=["direct canine pazopanib response data may be sparse"],
+        risks=[
+            "direct canine pazopanib response data may be sparse",
+            "canine pazopanib PK/PD and dose tolerance remain unknown",
+        ],
         next_experiments=["Review KDR/PIK3CA mutation and expression evidence."],
         priority_score=0.78,
     )
@@ -628,6 +641,9 @@ def test_validation_packets_build_from_ready_therapy_idea(tmp_path):
     assert packet.therapy_idea_id == idea.idea_id
     assert packet.status == "ready_for_review"
     assert packet.readiness == "ready_for_validation_plan"
+    assert packet.discovery_readiness == "ready_for_validation_strategy"
+    assert packet.validation_strategy_readiness == "ready_for_validation_strategy"
+    assert packet.protocol_readiness == "needs_protocol_inputs"
     assert packet.validation_plan is None
     assert packet.queue_items == []
     assert packet.validation_tasks
@@ -635,11 +651,446 @@ def test_validation_packets_build_from_ready_therapy_idea(tmp_path):
     assert "human_approval_required" in packet.dispatch_blockers
     assert "recommend_only_runner" in packet.dispatch_blockers
     assert "direct canine pazopanib response data may be sparse" in packet.missing_evidence
+    assert "canine pazopanib PK/PD and dose tolerance remain unknown" in packet.risk_annotations
+    assert "canine pazopanib PK/PD and dose tolerance remain unknown" in packet.protocol_blockers
 
     payload = packet.model_dump(mode="json")
     payload["status"] = "bad"
     with pytest.raises(ValueError):
         ValidationPacket.model_validate(payload)
+    payload = packet.model_dump(mode="json")
+    payload["protocol_readiness"] = "bad"
+    with pytest.raises(ValueError):
+        ValidationPacket.model_validate(payload)
+
+
+def test_validation_packet_includes_followup_brief_addendum(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-packet-addendum.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief, evaluation = _seed_evaluated_brief(repo, topic="Pazopanib KDR packet", duplicate_count=0)
+    idea = TherapyIdea(
+        title="KDR/PIK3CA biomarker-enriched pazopanib strategy",
+        hypothesis="Pazopanib should be reviewed in KDR/PIK3CA-enriched canine splenic HSA.",
+        rationale="The committee found enough cited VEGFR/KDR rationale to plan recommend-only validation.",
+        candidate_therapies=["pazopanib"],
+        targets=["KDR", "PIK3CA"],
+        biomarkers=["VEGFR2"],
+        evidence_refs=["C1", "C2"],
+        evidence_strength="medium",
+        risks=["direct canine pazopanib response data may be sparse"],
+        next_experiments=["Review KDR/PIK3CA mutation and expression evidence."],
+        priority_score=0.78,
+    )
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            source_brief_id=brief.brief_id,
+            source_evaluation_id=evaluation.evaluation_id,
+            topic=brief.topic,
+            status="ready_for_promotion",
+            score=0.78,
+        )
+    )
+    task_id = uuid4()
+    plan = repo.upsert_validation_plan(
+        ValidationPlanRecord(
+            brief_id=brief.brief_id,
+            evaluation_id=evaluation.evaluation_id,
+            topic="Pazopanib validation plan",
+            status="ready_for_review",
+            readiness="ready_for_expert_review",
+            task_count=1,
+            metadata={"therapy_idea_id": str(idea.idea_id)},
+            result_payload={
+                "tasks": [
+                    ValidationPlanTask(
+                        task_id=task_id,
+                        task_type="expert_review",
+                        title="Expert review",
+                        objective="Review pazopanib evidence.",
+                        rationale="Evidence needs review before validation.",
+                        validation_request=ValidationRequest(
+                            validation_type="expert_review",
+                            objective="Review pazopanib evidence.",
+                        ),
+                    ).model_dump(mode="json")
+                ]
+            },
+        )
+    )
+    validation_queue_item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=plan.plan_id,
+            task_id=task_id,
+            brief_id=brief.brief_id,
+            evaluation_id=evaluation.evaluation_id,
+            topic="Pazopanib validation plan",
+            task_type="expert_review",
+            title="Expert review",
+            objective="Review pazopanib evidence.",
+            rationale="Evidence needs review before validation.",
+            validation_request=ValidationRequest(
+                validation_type="expert_review",
+                objective="Review pazopanib evidence.",
+            ),
+        )
+    )
+    ready_brief, ready_eval = _seed_evaluated_brief(
+        repo,
+        topic="Explicit dose route schedule for pazopanib",
+        duplicate_count=0,
+    )
+    needs_brief, _old_eval = _seed_evaluated_brief(
+        repo,
+        topic="Canine pazopanib PK safety profile",
+        duplicate_count=0,
+    )
+    needs_eval = repo.upsert_research_brief_evaluation(
+        ResearchBriefEvaluationRecord(
+            brief_id=needs_brief.brief_id,
+            topic=needs_brief.topic,
+            source_key=needs_brief.source_key,
+            overall_score=0.62,
+            passes_quality_bar=False,
+            readiness="needs_more_evidence",
+            summary={"overall_score": 0.62},
+            result_payload={
+                "weaknesses": ["No canine pazopanib PK or adverse-event profile was found."],
+                "recommendations": ["Run a veterinary pharmacology retrieval pass."],
+            },
+        )
+    )
+    common_resolver = {
+        "plan_id": str(plan.plan_id),
+        "queue_item_id": str(validation_queue_item.queue_item_id),
+        "origin": "validation_agent_gap",
+        "task_type": "expert_review",
+        "validation_type": "expert_review",
+    }
+    repo.upsert_research_brief_queue_item(
+        ResearchBriefQueueItem(
+            topic=ready_brief.topic,
+            source_key="pubmed",
+            status="completed",
+            priority=10,
+            last_brief_id=ready_brief.brief_id,
+            last_agent_run_id=ready_brief.agent_run_id,
+            metadata={
+                "evidence_gap_resolver": {
+                    **common_resolver,
+                    "lead_id": str(uuid4()),
+                    "lane": "pkpd",
+                }
+            },
+        )
+    )
+    repo.upsert_research_brief_queue_item(
+        ResearchBriefQueueItem(
+            topic=needs_brief.topic,
+            source_key="pubmed",
+            status="completed",
+            priority=20,
+            last_brief_id=needs_brief.brief_id,
+            last_agent_run_id=needs_brief.agent_run_id,
+            metadata={
+                "evidence_gap_resolver": {
+                    **common_resolver,
+                    "lead_id": str(uuid4()),
+                    "lane": "safety_signal",
+                }
+            },
+        )
+    )
+
+    result = service.build_validation_packets(
+        ValidationPacketRequest(therapy_idea_id=idea.idea_id, plan_id=plan.plan_id, limit=1)
+    )
+
+    addendum = result.packets[0].evidence_addendum
+    packet = result.packets[0]
+    assert isinstance(addendum, ValidationPacketEvidenceAddendum)
+    assert packet.discovery_readiness == "ready_for_validation_strategy"
+    assert packet.validation_strategy_readiness == "queued_for_validation_strategy"
+    assert packet.protocol_readiness == "needs_protocol_inputs"
+    assert "No canine pazopanib PK or adverse-event profile was found." in packet.protocol_blockers
+    assert addendum.follow_up_count == 2
+    assert addendum.evaluated_follow_up_count == 2
+    assert addendum.passing_follow_up_count == 1
+    assert addendum.needs_more_evidence_count == 1
+    assert {row.evaluation_id for row in addendum.follow_up_briefs} == {
+        ready_eval.evaluation_id,
+        needs_eval.evaluation_id,
+    }
+    assert any("Explicit dose route schedule" in update for update in addendum.material_updates)
+    assert "No canine pazopanib PK or adverse-event profile was found." in addendum.unresolved_blockers
+
+
+def _research_program_fixture() -> ResearchProgramRecord:
+    return ResearchProgramRecord(
+        title="Vascular ecology program",
+        thesis="HSA may be vulnerable through vascular injury, coagulation, and angiogenesis ecology.",
+        disease_model="Endothelial tumor biology may intersect with coagulation and VEGF-axis signaling.",
+        thesis_area="vascular coagulation angiogenesis",
+        therapy_families=["vascular normalization"],
+        decisive_questions=[
+            ResearchProgramQuestion(
+                question="Is coagulation biology outcome-relevant in canine HSA?",
+                metric_plan=["direct evidence count"],
+                tool_hints=["literature_review"],
+            ),
+            ResearchProgramQuestion(
+                question="Can KDR or pathway biomarkers stratify the program?",
+                metric_plan=["expression support"],
+                tool_hints=["omics_expression_review"],
+            ),
+        ],
+        evidence_tasks=[
+            ResearchProgramEvidenceTask(
+                title="Coagulation evidence acquisition",
+                objective="Search for HSA coagulation and vascular injury evidence.",
+                source_keys=["pubmed", "europe_pmc"],
+                metrics=["unique source count"],
+                pass_values=["three independent sources"],
+                fail_values=["only nonspecific bleeding references"],
+            )
+        ],
+        stop_criteria=["Archive if no assayable vascular/coagulation signal emerges after two loops."],
+    )
+
+
+def test_research_program_contract_and_repository_round_trip(tmp_path):
+    program = _research_program_fixture()
+    payload = program.model_dump(mode="json")
+    payload["gate_decision"] = "bad"
+    with pytest.raises(ValueError):
+        ResearchProgramRecord.model_validate(payload)
+    payload = program.model_dump(mode="json")
+    payload["evidence_loop_count"] = 3
+    payload["max_evidence_loops"] = 2
+    with pytest.raises(ValueError):
+        ResearchProgramRecord.model_validate(payload)
+
+    for repo in (
+        InMemoryResearchRepository(),
+        SQLiteResearchRepository(tmp_path / "research-programs.sqlite3", seed=False),
+    ):
+        stored = repo.upsert_research_program(program)
+        assert repo.get_research_program(stored.program_id).title == "Vascular ecology program"
+        assert repo.list_research_programs(thesis_query="coagulation", limit=10)
+        assert repo.list_research_programs(gate_decision="needs_one_more_pass", limit=10)
+        assert repo.list_research_programs(status="active", limit=10) == []
+
+
+def test_model_policy_uses_sonnet_for_operations_and_opus_for_big_ideas(monkeypatch):
+    monkeypatch.delenv("HSA_DEFAULT_OPENROUTER_MODEL", raising=False)
+    monkeypatch.delenv("HSA_BIG_IDEA_OPENROUTER_MODEL", raising=False)
+    monkeypatch.delenv("HSA_THERAPY_COMMITTEE_MODEL", raising=False)
+    monkeypatch.delenv("HSA_VALIDATION_AGENT_MODEL", raising=False)
+    monkeypatch.delenv("HSA_RESEARCH_PROGRAM_BOARD_MODEL", raising=False)
+    assert model_policy.default_openrouter_model() == "~anthropic/claude-sonnet-latest"
+    assert model_policy.big_idea_openrouter_model() == "~anthropic/claude-opus-latest"
+    assert therapy_committee._select_models(TherapyCommitteeRequest(topic="therapy", review_mode="openrouter_required")) == [
+        "~anthropic/claude-sonnet-latest"
+    ]
+    assert validation_agents._model_name("openrouter_required") == "~anthropic/claude-sonnet-latest"
+    assert research_program_board._select_models(ResearchProgramReviewRequest(review_mode="openrouter_required")) == [
+        "~anthropic/claude-opus-latest"
+    ]
+
+
+def test_research_program_board_deterministic_run_persists_bounded_program(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-program-board.sqlite3", seed=False)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:vascular-program",
+            content_hash="vascular-program-raw",
+            raw_payload={"pmid": "vascular-program"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Coagulation and angiogenesis in canine hemangiosarcoma",
+            abstract="Canine HSA evidence mentions coagulation, vascular injury, KDR, VEGF, and angiogenesis.",
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            dedupe_key="pmid:vascular-program",
+        ),
+        raw_record_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "Canine hemangiosarcoma may involve coagulation, vascular injury, angiogenesis, "
+                "KDR, VEGF, endothelial signaling, and human angiosarcoma analog biology."
+            ),
+            content_hash="vascular-program-chunk",
+        )
+    )
+
+    result = HSAResearchService(repo).run_research_program_board(
+        ResearchProgramReviewRequest(
+            review_mode="deterministic_only",
+            max_packets=0,
+            thesis_topic="vascular injury coagulation angiogenesis HSA",
+        )
+    )
+
+    assert isinstance(result, ResearchProgramReviewResult)
+    assert result.program_count == 1
+    assert result.persisted_count == 1
+    program = result.programs[0]
+    assert len(program.decisive_questions) == 2
+    assert program.max_evidence_loops == 2
+    assert program.gate_decision in {"needs_one_more_pass", "ready_for_therapy_ideas"}
+    assert repo.list_research_programs(thesis_query="vascular", limit=10)
+    agent_runs = repo.list_agent_runs(agent_name="research_program_board_agent", limit=10)
+    assert agent_runs[0].status == RunStatus.COMPLETED
+
+
+def test_research_program_board_openrouter_success_records_model_and_program(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-program-board-openrouter.sqlite3", seed=False)
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id="PMID:program-openrouter",
+            content_hash="program-openrouter-raw",
+            raw_payload={"pmid": "program-openrouter"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type="publication",
+            title="Vascular program source",
+            abstract="KDR VEGF coagulation and angiogenesis source.",
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            dedupe_key="pmid:program-openrouter",
+        ),
+        raw_record_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content="KDR VEGF coagulation vascular injury angiogenesis canine HSA human angiosarcoma.",
+            content_hash="program-openrouter-chunk",
+        )
+    )
+
+    def fake_review_model(model_name, review_payload):
+        assert model_name == "test/opus"
+        return {
+            "text": json.dumps(
+                {
+                    "programs": [
+                        {
+                            "title": "Vascular-coagulation ecology",
+                            "thesis": "HSA may expose a vascular-coagulation ecology vulnerability.",
+                            "disease_model": "Endothelial signaling, coagulation, and angiogenesis may interact.",
+                            "thesis_area": "vascular_coagulation_angiogenesis",
+                            "therapy_families": ["vascular normalization"],
+                            "modality_families": ["combination strategy"],
+                            "decisive_questions": [
+                                {
+                                    "question": "Does coagulation biology affect HSA outcome?",
+                                    "metric_plan": ["direct evidence count"],
+                                    "tool_hints": ["literature_review"],
+                                    "evidence_refs": ["chunk:1"],
+                                },
+                                {
+                                    "question": "Can KDR/VEGF biomarkers gate the program?",
+                                    "metric_plan": ["pathway activity"],
+                                    "tool_hints": ["omics_expression_review"],
+                                    "evidence_refs": ["chunk:1"],
+                                },
+                            ],
+                            "evidence_tasks": [
+                                {
+                                    "task_type": "literature_search",
+                                    "title": "Acquire coagulation evidence",
+                                    "objective": "Find direct and analog coagulation evidence.",
+                                    "source_keys": ["pubmed"],
+                                    "tool_hints": ["literature_review"],
+                                    "metrics": ["unique source count"],
+                                    "pass_values": ["three sources"],
+                                    "fail_values": ["no direct evidence"],
+                                    "evidence_refs": ["chunk:1"],
+                                }
+                            ],
+                            "metric_plan": ["biological plausibility"],
+                            "recommended_tools": ["literature_review"],
+                            "stop_criteria": ["Archive if evidence is nonspecific after two loops."],
+                            "downstream_therapy_opportunities": ["coagulation-aware vascular strategy"],
+                            "status": "ready_for_therapy_ideas",
+                            "gate_decision": "ready_for_therapy_ideas",
+                            "biological_plausibility_score": 0.82,
+                            "cross_species_support_score": 0.7,
+                            "evidence_density_score": 0.66,
+                            "novelty_score": 0.75,
+                            "testability_score": 0.74,
+                            "therapeutic_leverage_score": 0.72,
+                            "failure_risk_score": 0.35,
+                            "confidence_score": 0.73,
+                            "review_summary": "Program is ready to spawn therapy ideas.",
+                            "evidence_refs": ["chunk:1"],
+                        }
+                    ],
+                    "errors": [],
+                }
+            ),
+            "metadata": {
+                "requested_model": model_name,
+                "model_name": "resolved/opus",
+                "usage": {"cost": 0.02},
+            },
+        }
+
+    monkeypatch.setattr(research_program_board, "_openrouter_review_model", fake_review_model)
+
+    result = HSAResearchService(repo).run_research_program_board(
+        ResearchProgramReviewRequest(
+            review_mode="openrouter_required",
+            review_models=["test/opus"],
+            max_packets=0,
+            thesis_topic="vascular coagulation angiogenesis HSA",
+        )
+    )
+
+    assert result.persisted_count == 1
+    assert result.programs[0].metadata["requested_model"] == "test/opus"
+    assert result.programs[0].metadata["model_name"] == "resolved/opus"
+    assert repo.list_research_programs(gate_decision="ready_for_therapy_ideas", limit=10)
+
+
+def test_research_program_board_invalid_openrouter_json_records_failed_run(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-program-board-invalid.sqlite3", seed=False)
+
+    def fake_review_model(model_name, review_payload):
+        return {"text": "not json", "metadata": {"requested_model": model_name}}
+
+    monkeypatch.setattr(research_program_board, "_openrouter_review_model", fake_review_model)
+
+    with pytest.raises(ValueError, match="Invalid research program board JSON"):
+        HSAResearchService(repo).run_research_program_board(
+            ResearchProgramReviewRequest(
+                review_mode="openrouter_required",
+                review_models=["test/opus"],
+                max_packets=0,
+                max_chunks=0,
+                thesis_topic="vascular coagulation angiogenesis HSA",
+            )
+        )
+
+    assert repo.list_research_programs(limit=10) == []
+    failed = repo.list_agent_runs(agent_name="research_program_board_agent", status="failed", limit=10)
+    assert failed
+    assert "Invalid research program board JSON" in failed[0].errors[0]
 
 
 def test_validation_plan_includes_catalog_hints_and_queue_blockers(tmp_path):
@@ -2783,6 +3234,80 @@ def test_dagster_validation_packet_asset_uses_injected_repository(monkeypatch):
     assert result.value["packet_count"] == 1
     assert result.metadata["packet_count"].value == 1
     assert result.metadata["ready_count"].value == 1
+
+
+def test_dagster_research_program_assets_use_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+    program = _research_program_fixture()
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    class FakeService:
+        def __init__(self, repository):
+            assert repository is sentinel_repository
+
+        def run_research_program_board(self, request):
+            assert isinstance(request, ResearchProgramReviewRequest)
+            assert request.dagster_run_id == "dagster-research-program-test"
+            assert request.review_models == ["test/opus"]
+            return ResearchProgramReviewResult(
+                program_count=1,
+                persisted_count=1,
+                packet_count=0,
+                evidence_chunk_count=0,
+                programs=[program],
+            )
+
+        def list_research_programs(self, request):
+            assert isinstance(request, ResearchProgramBoardRequest)
+            assert request.thesis_query == "vascular"
+            return ResearchProgramBoardResult(program_count=1, programs=[program])
+
+    monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
+
+    board_result = dagster_asset_module.research_program_board_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "thesis_topic": "vascular program",
+                "disease_scope": "canine hemangiosarcoma and human angiosarcoma",
+                "topic_query": None,
+                "source_key": None,
+                "max_packets": 5,
+                "max_chunks": 20,
+                "max_programs": 1,
+                "max_evidence_loops": 2,
+                "review_mode": "openrouter_required",
+                "review_models": ["test/opus"],
+                "model_profile": "research_program_board",
+                "persist": True,
+            },
+            run_id="dagster-research-program-test",
+        ),
+        FakeRepositoryResource(),
+    )
+    library_result = dagster_asset_module.research_program_library_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "status": None,
+                "gate_decision": None,
+                "thesis_query": "vascular",
+                "limit": 50,
+            },
+            run_id="dagster-research-program-library-test",
+        ),
+        FakeRepositoryResource(),
+    )
+
+    assert calls == ["build_repository", "build_repository"]
+    assert board_result.value["program_count"] == 1
+    assert board_result.metadata["program_count"].value == 1
+    assert board_result.metadata["persisted_count"].value == 1
+    assert library_result.value["program_count"] == 1
+    assert library_result.metadata["program_count"].value == 1
 
 
 def test_dagster_validation_plan_asset_uses_injected_repository(monkeypatch):

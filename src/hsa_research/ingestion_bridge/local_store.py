@@ -34,6 +34,7 @@ from .contracts import (
     RawSourceRecord,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
+    ResearchProgramRecord,
     ResearchBriefEvaluationRecord,
     ResearchBriefQueueItem,
     ResearchBriefRecord,
@@ -1908,6 +1909,98 @@ class SQLiteResearchRepository(ResearchRepository):
             for row in self.conn.execute(sql, params).fetchall()
         ]
 
+    def upsert_research_program(self, record: ResearchProgramRecord) -> ResearchProgramRecord:
+        existing = self.get_research_program(record.program_id)
+        if existing:
+            record = record.model_copy(
+                update={
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **record.metadata},
+                }
+            )
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into research_programs (
+              program_id, agent_run_id, title, thesis_area, status,
+              gate_decision, confidence_score, evidence_loop_count,
+              max_evidence_loops, source_query, created_at, updated_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(program_id) do update set
+              agent_run_id = excluded.agent_run_id,
+              title = excluded.title,
+              thesis_area = excluded.thesis_area,
+              status = excluded.status,
+              gate_decision = excluded.gate_decision,
+              confidence_score = excluded.confidence_score,
+              evidence_loop_count = excluded.evidence_loop_count,
+              max_evidence_loops = excluded.max_evidence_loops,
+              source_query = excluded.source_query,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(record.program_id),
+                str(record.agent_run_id) if record.agent_run_id else None,
+                record.title,
+                record.thesis_area,
+                record.status,
+                record.gate_decision,
+                record.confidence_score,
+                record.evidence_loop_count,
+                record.max_evidence_loops,
+                record.source_query,
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_research_program(self, program_id: UUID) -> ResearchProgramRecord | None:
+        row = self.conn.execute(
+            "select payload from research_programs where program_id = ?",
+            (str(program_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return ResearchProgramRecord.model_validate(json.loads(row["payload"]))
+
+    def list_research_programs(
+        self,
+        *,
+        status: str | None = None,
+        gate_decision: str | None = None,
+        thesis_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchProgramRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if gate_decision:
+            clauses.append("gate_decision = ?")
+            params.append(gate_decision)
+        if thesis_query:
+            clauses.append("(lower(title) like ? or lower(source_query) like ? or lower(payload) like ?)")
+            like_query = f"%{thesis_query.lower()}%"
+            params.extend([like_query, like_query, like_query])
+        sql = "select payload from research_programs"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by confidence_score desc, updated_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            ResearchProgramRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
     def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:
         payload = record.model_dump(mode="json")
         self.conn.execute(
@@ -3345,6 +3438,31 @@ class SQLiteResearchRepository(ResearchRepository):
               on therapy_ideas(source_evaluation_id, updated_at desc);
             create index if not exists therapy_ideas_committee_idx
               on therapy_ideas(committee_run_id, updated_at desc);
+
+            create table if not exists research_programs (
+              program_id text primary key,
+              agent_run_id text,
+              title text not null,
+              thesis_area text not null,
+              status text not null,
+              gate_decision text not null,
+              confidence_score real not null default 0.5,
+              evidence_loop_count integer not null default 0,
+              max_evidence_loops integer not null default 2,
+              source_query text,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp
+            );
+
+            create index if not exists research_programs_status_idx
+              on research_programs(status, confidence_score desc, updated_at desc);
+            create index if not exists research_programs_gate_idx
+              on research_programs(gate_decision, confidence_score desc, updated_at desc);
+            create index if not exists research_programs_area_idx
+              on research_programs(thesis_area, updated_at desc);
+            create index if not exists research_programs_agent_run_idx
+              on research_programs(agent_run_id, updated_at desc);
 
             create table if not exists validation_plans (
               plan_id text primary key,

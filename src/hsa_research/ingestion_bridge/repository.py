@@ -30,6 +30,7 @@ from .contracts import (
     HypothesisDraft,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
+    ResearchProgramRecord,
     ResearchBriefEvaluationRecord,
     ResearchBriefQueueItem,
     ResearchBriefRecord,
@@ -289,6 +290,22 @@ class ResearchRepository(Protocol):
     ) -> list[TherapyIdeaRecord]:
         """Return persisted therapy ideas by durable filters."""
 
+    def upsert_research_program(self, record: ResearchProgramRecord) -> ResearchProgramRecord:
+        """Persist a big-bet research program."""
+
+    def get_research_program(self, program_id: UUID) -> ResearchProgramRecord | None:
+        """Return a persisted research program."""
+
+    def list_research_programs(
+        self,
+        *,
+        status: str | None = None,
+        gate_decision: str | None = None,
+        thesis_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchProgramRecord]:
+        """Return persisted research programs by durable filters."""
+
     def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:
         """Persist a recommend-only validation plan derived from a research brief."""
 
@@ -503,6 +520,7 @@ class InMemoryResearchRepository:
         self.research_briefs: dict[UUID, ResearchBriefRecord] = {}
         self.research_brief_evaluations: dict[UUID, ResearchBriefEvaluationRecord] = {}
         self.therapy_ideas: dict[UUID, TherapyIdeaRecord] = {}
+        self.research_programs: dict[UUID, ResearchProgramRecord] = {}
         self.validation_plans: dict[UUID, ValidationPlanRecord] = {}
         self.validation_request_queue: dict[UUID, ValidationRequestQueueItem] = {}
         self.research_brief_queue: dict[UUID, ResearchBriefQueueItem] = {}
@@ -1140,6 +1158,47 @@ class InMemoryResearchRepository:
                 or normalized in record.idea.hypothesis.lower()
             ]
         records.sort(key=lambda record: (-record.score, record.updated_at))
+        return records[:limit] if limit is not None else records
+
+    def upsert_research_program(self, record: ResearchProgramRecord) -> ResearchProgramRecord:
+        existing = self.research_programs.get(record.program_id)
+        if existing:
+            record = record.model_copy(
+                update={
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **record.metadata},
+                }
+            )
+        self.research_programs[record.program_id] = record
+        return record
+
+    def get_research_program(self, program_id: UUID) -> ResearchProgramRecord | None:
+        return self.research_programs.get(program_id)
+
+    def list_research_programs(
+        self,
+        *,
+        status: str | None = None,
+        gate_decision: str | None = None,
+        thesis_query: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ResearchProgramRecord]:
+        records = list(self.research_programs.values())
+        if status:
+            records = [record for record in records if record.status == status]
+        if gate_decision:
+            records = [record for record in records if record.gate_decision == gate_decision]
+        if thesis_query:
+            normalized = thesis_query.lower()
+            records = [
+                record
+                for record in records
+                if normalized in record.title.lower()
+                or normalized in record.thesis.lower()
+                or normalized in record.disease_model.lower()
+            ]
+        records.sort(key=lambda record: (record.confidence_score, record.updated_at), reverse=True)
         return records[:limit] if limit is not None else records
 
     def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:

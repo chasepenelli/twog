@@ -26,13 +26,14 @@ from .contracts import (
     TherapyCommitteeResult,
     TherapyIdea,
 )
+from .model_policy import default_openrouter_model
 from .research_brief_agent import ResearchBriefAgent
 from .repository import ResearchRepository
 
 
 THERAPY_COMMITTEE_AGENT_NAME = "therapy_committee_chair_agent"
 THERAPY_COMMITTEE_AGENT_VERSION = "v1"
-DEFAULT_THERAPY_COMMITTEE_MODEL = "~anthropic/claude-opus-latest"
+DEFAULT_THERAPY_COMMITTEE_MODEL = default_openrouter_model()
 THERAPY_COMMITTEE_PERSPECTIVES: tuple[TherapyCommitteePerspectiveName, ...] = (
     "target_biology",
     "drug_repurposing",
@@ -788,7 +789,7 @@ def _response_contract() -> dict[str, Any]:
 def _select_models(request: TherapyCommitteeRequest) -> list[str]:
     if request.review_models:
         return list(request.review_models)
-    return [os.getenv("HSA_THERAPY_COMMITTEE_MODEL", DEFAULT_THERAPY_COMMITTEE_MODEL)]
+    return [os.getenv("HSA_THERAPY_COMMITTEE_MODEL", default_openrouter_model())]
 
 
 def _rank_ideas(ideas: Sequence[TherapyIdea]) -> list[TherapyIdea]:
