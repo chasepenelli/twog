@@ -5298,7 +5298,7 @@ def _research_brief_followup_leads_from_brief(
         leads.append(
             ResearchLeadRecord(
                 identity_key=f"research_lead:brief_followup:{brief.brief_id}:{limitation_digest}",
-                title=f"Follow up research gap: {brief.topic}"[:240],
+                title=f"Follow up research gap: {_clean_research_topic_label(brief.topic)}"[:240],
                 lead_type="unknown",
                 status="followup",
                 priority=25,
@@ -5420,7 +5420,7 @@ def _research_brief_evaluation_followup_title(
         return "Find toceranib/VEGFR inhibitor monotherapy outcomes in canine splenic HSA"
     else:
         prefix = "Follow up research brief evaluation"
-    return f"{prefix}: {brief.topic}"[:240]
+    return f"{prefix}: {_clean_research_topic_label(brief.topic)}"[:240]
 
 
 def _research_brief_evaluation_followup_summary(followup_kind: str) -> str:
@@ -5837,6 +5837,9 @@ def _truncate(value: str, limit: int) -> str:
 
 
 def _research_brief_topic_from_lead(lead: ResearchLeadRecord) -> str:
+    if _should_clean_research_lead_topic(lead):
+        return _clean_research_brief_topic_from_lead(lead)
+
     title = lead.title or lead.summary or lead.reason or "Untitled research lead"
     parts = [f"Review research lead: {title}"]
     if lead.reason:
@@ -5846,6 +5849,135 @@ def _research_brief_topic_from_lead(lead: ResearchLeadRecord) -> str:
     if lead.topic_tags:
         parts.append(f"Tags: {', '.join(lead.topic_tags[:8])}")
     return " | ".join(parts)[:1000]
+
+
+def _should_clean_research_lead_topic(lead: ResearchLeadRecord) -> bool:
+    metadata = lead.metadata if isinstance(lead.metadata, dict) else {}
+    title = lead.title or ""
+    return (
+        lead.origin_source_key == "research_brief_quality"
+        or isinstance(metadata.get("research_followup_queue"), dict)
+        or bool(re.search(r"\bReview research lead:|\bFollow up research gap:", title, re.IGNORECASE))
+    )
+
+
+def _clean_research_brief_topic_from_lead(lead: ResearchLeadRecord) -> str:
+    metadata = lead.metadata if isinstance(lead.metadata, dict) else {}
+    followup_meta = (
+        metadata.get("research_followup_queue")
+        if isinstance(metadata.get("research_followup_queue"), dict)
+        else {}
+    )
+    text_parts = [
+        lead.title or "",
+        lead.reason or "",
+        lead.summary or "",
+        " ".join(lead.topic_tags),
+        str(followup_meta.get("topic") or ""),
+        str(followup_meta.get("limitation") or ""),
+        *_nested_strings(followup_meta.get("feedback_items") or []),
+    ]
+    text = _clean_research_topic_label(" ".join(text_parts))
+    terms = _research_topic_terms(text)
+    disease_scope = "canine hemangiosarcoma and human angiosarcoma"
+    if terms:
+        subject = f"{' / '.join(terms[:6])} in {disease_scope}"
+    else:
+        subject = _fallback_research_topic_subject(text, disease_scope)
+
+    intent = _research_topic_intent(lead, text)
+    return _truncate(f"{subject}: {intent}", 1000)
+
+
+def _clean_research_topic_label(value: str) -> str:
+    text = str(value or "")
+    text = re.sub(
+        r"\b(?:Review research lead|Follow up research gap|Repair duplicate citations|"
+        r"Strengthen citation provenance|Follow up research brief evaluation)\s*:\s*",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\|\s*(?:Reason|Summary|Tags)\s*:\s*", ". ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bReason\s*:\s*T\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"\b(?:research_brief|evaluation_followup|citation_dedupe_repair|"
+        r"citation_provenance_repair|followup_research|pubmed|europe_pmc|openalex|crossref)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = text.replace("_", " ")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" .|,;:")
+
+
+def _research_topic_terms(text: str) -> list[str]:
+    normalized = text.casefold()
+    terms: list[str] = []
+    for display, aliases in _RESEARCH_TOPIC_TERM_ALIASES:
+        for alias in aliases:
+            if re.search(rf"(?<![a-z0-9]){re.escape(alias.casefold())}(?![a-z0-9])", normalized):
+                terms.append(display)
+                break
+    return _dedupe_preserve_order(terms)
+
+
+def _research_topic_intent(lead: ResearchLeadRecord, text: str) -> str:
+    metadata = lead.metadata if isinstance(lead.metadata, dict) else {}
+    followup_meta = (
+        metadata.get("research_followup_queue")
+        if isinstance(metadata.get("research_followup_queue"), dict)
+        else {}
+    )
+    followup_kind = str(followup_meta.get("followup_kind") or "")
+    haystack = f"{followup_kind} {text}".casefold()
+    if "citation_provenance" in haystack:
+        return "PMID/DOI/year provenance and primary-source replacement"
+    if "citation_dedupe" in haystack or "duplicate citation" in haystack or "dedupe" in haystack:
+        return "independent-source dedupe, citation-to-claim mapping, and coverage rescoring"
+    if "monotherapy" in haystack or "clinical response" in haystack or "survival" in haystack:
+        return "focused clinical outcome evidence acquisition"
+    if "species" in haystack or "translation" in haystack or "translational" in haystack:
+        return "cross-species evidence bridge and translation-risk review"
+    if "omics" in haystack or "mutation" in haystack or "expression" in haystack:
+        return "primary omics and mutation-function evidence acquisition"
+    return "primary-source evidence acquisition before committee promotion"
+
+
+def _fallback_research_topic_subject(text: str, disease_scope: str) -> str:
+    normalized = text.casefold()
+    if "species" in normalized or "translat" in normalized:
+        return f"{disease_scope} cross-species translation evidence"
+    if "omics" in normalized or "mutation" in normalized or "expression" in normalized:
+        return f"{disease_scope} omics and mutation evidence"
+    if "citation" in normalized or "dedupe" in normalized or "provenance" in normalized:
+        return f"{disease_scope} primary-source citation evidence"
+    subject = _truncate(text or "Research evidence gap", 180)
+    if not re.search(r"\b(?:hemangiosarcoma|angiosarcoma|HSA)\b", subject, re.IGNORECASE):
+        subject = f"{subject} in {disease_scope}"
+    return subject
+
+
+_RESEARCH_TOPIC_TERM_ALIASES = (
+    ("mTOR", ("mtor", "rapamycin", "sirolimus", "everolimus", "temsirolimus", "rapalog")),
+    ("PIK3CA", ("pik3ca", "pi3k")),
+    ("TP53", ("tp53", "p53")),
+    ("PTEN", ("pten",)),
+    ("PLCG1", ("plcg1",)),
+    ("VEGF", ("vegf", "vascular endothelial growth factor")),
+    ("VEGFR", ("vegfr", "vegfr-2", "vegfr2", "kdr")),
+    ("PD-1", ("pd-1", "pd1", "pdcd1")),
+    ("PD-L1", ("pd-l1", "pdl1", "cd274")),
+    ("toceranib", ("toceranib", "palladia")),
+    ("pazopanib", ("pazopanib",)),
+    ("sorafenib", ("sorafenib",)),
+    ("propranolol", ("propranolol",)),
+    ("doxorubicin", ("doxorubicin", "adriamycin")),
+    ("vimentin", ("vimentin",)),
+    ("CDKN2A", ("cdkn2a",)),
+    ("CD34", ("cd34",)),
+)
 
 
 def _research_hunt_synthesis_queue_request_from_lead(

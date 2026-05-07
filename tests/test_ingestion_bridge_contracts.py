@@ -1166,6 +1166,99 @@ def test_evidence_fit_splits_translational_target_support_from_direct_disease_fi
     assert "hemangiosarcoma/angiosarcoma" in assessment.missing_terms
 
 
+def test_evidence_fit_treats_multi_therapy_terms_as_alternatives(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "evidence-fit-therapy-alternatives.sqlite3", seed=False)
+    fetch_run_id = repo.create_fetch_run("europe_pmc", "pazopanib-canine-hsa")
+    raw_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="europe_pmc",
+            source_record_id="pazopanib-canine-hsa",
+            content_hash="pazopanib-canine-hsa",
+            raw_payload={"source_id": "pazopanib-canine-hsa"},
+        ),
+        fetch_run_id=fetch_run_id,
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type=ResearchObjectType.PUBLICATION,
+            title="Pazopanib safety evidence in canine hemangiosarcoma and human angiosarcoma",
+            abstract=(
+                "Pazopanib was discussed as a VEGFR inhibitor with safety and tolerability "
+                "context for canine hemangiosarcoma and human angiosarcoma."
+            ),
+            source_key="europe_pmc",
+            dedupe_key="europe_pmc:pazopanib-canine-hsa",
+            identifiers={"source_id": "pazopanib-canine-hsa"},
+            raw_record_id=raw_id,
+        ),
+        raw_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "Pazopanib safety and tolerability were discussed for canine hemangiosarcoma "
+                "and human angiosarcoma comparative oncology evidence."
+            ),
+            content_hash="pazopanib-canine-hsa-chunk",
+        )
+    )
+    lead = ResearchLeadRecord(
+        title="Repair duplicate citations for pazopanib, sorafenib, and propranolol in canine HSA",
+        status="followup",
+        topic_tags=["pazopanib", "sorafenib", "propranolol", "canine", "hemangiosarcoma", "safety"],
+    )
+    query = SourceQuery(
+        source_key="europe_pmc",
+        query_name="pazopanib-canine-hsa",
+        query_text="pazopanib canine safety hemangiosarcoma angiosarcoma",
+        query_params={
+            "required_terms": [
+                "pazopanib",
+                "sorafenib",
+                "propranolol",
+                "canine",
+                "safety",
+                "hemangiosarcoma",
+                "angiosarcoma",
+            ]
+        },
+        track="validation_gap",
+    )
+    ingest_result = ValidationGapSourceIngestResult(
+        dry_run=False,
+        source_keys=["europe_pmc"],
+        query_count=1,
+        attempted_query_count=1,
+        completed_query_count=1,
+        raw_records=1,
+        research_objects=1,
+        document_chunks=1,
+        source_queries=[query],
+        results=[
+            IngestionResult(
+                source_key="europe_pmc",
+                query_name="pazopanib-canine-hsa",
+                query_text=query.query_text,
+                fetch_run_id=fetch_run_id,
+                raw_records=1,
+                research_objects=1,
+                document_chunks=1,
+                status=RunStatus.COMPLETED,
+            )
+        ],
+    )
+
+    assessment = evidence_fit.assess_research_followup_ingest_evidence_fit(repo, lead, ingest_result)
+
+    assert assessment.fit == "strong"
+    assert "pazopanib" in assessment.matched_terms
+    assert "sorafenib" in assessment.missing_terms
+    assert "propranolol" in assessment.missing_terms
+
+
 def test_agent_finding_escalation_creates_research_lead_and_source_queries(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "agent-finding-escalation.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -1463,6 +1556,64 @@ def test_research_followup_refinement_handles_brief_quality_leads_without_review
     all_queries = repo.list_source_queries(active_only=False)
     old_query = next(query for query in all_queries if query.query_name == "agent_refine_old_bad_meta_query")
     assert old_query.active is False
+
+
+def test_research_followup_refinement_splits_multi_therapy_repair_queries(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-followup-refinement-multi-therapy.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Repair duplicate citations: pazopanib sorafenib propranolol canine HSA angiosarcoma",
+            status="followup",
+            priority=20,
+            source_key="pubmed",
+            origin_source_key="research_brief_quality",
+            reason=(
+                "Retrieve primary human angiosarcoma and canine hemangiosarcoma data for "
+                "pazopanib, sorafenib, and propranolol without bundling therapies together."
+            ),
+            suggested_sources=["pubmed", "europe_pmc"],
+            topic_tags=["citation_dedupe_repair", "canine_hemangiosarcoma"],
+            metadata={
+                "research_followup_queue": {
+                    "followup_kind": "citation_dedupe_repair",
+                    "requires_manual_research": False,
+                    "topic": (
+                        "Pazopanib, sorafenib, and propranolol evidence in canine "
+                        "hemangiosarcoma and human angiosarcoma"
+                    ),
+                }
+            },
+        )
+    )
+
+    result = service.refine_research_followups(
+        ResearchFollowupRefinementRequest(
+            lead_ids=[lead.lead_id],
+            source_keys=["pubmed", "europe_pmc"],
+            max_queries_per_review=10,
+            operator="operator",
+        )
+    )
+    queries = repo.list_source_queries(active_only=True)
+
+    assert result.scanned_count == 1
+    assert result.source_queries_created == 6
+    assert result.query_count == 6
+    for therapy in ("pazopanib", "sorafenib", "propranolol"):
+        matching = [query for query in queries if therapy in query.query_text.lower()]
+        assert len(matching) == 2
+        assert {query.source_key for query in matching} == {"pubmed", "europe_pmc"}
+        assert all(therapy in query.query_params["required_terms"] for query in matching)
+        other_therapies = {"pazopanib", "sorafenib", "propranolol"} - {therapy}
+        assert all(
+            not any(other in query.query_text.lower() for other in other_therapies)
+            for query in matching
+        )
+        assert all(
+            not any(other in query.query_params["required_terms"] for other in other_therapies)
+            for query in matching
+        )
 
 
 def test_command_center_web_refines_research_followup_payload(tmp_path):
@@ -10221,6 +10372,118 @@ def test_queue_ready_research_hunt_synthesis_dedupes_preexisting_queue_item():
     assert updated_lead is not None
     assert updated_lead.status == "queued"
     assert updated_lead.metadata["research_hunt_synthesis_queue"]["preexisting"] is True
+
+
+def test_queue_ready_research_hunt_synthesis_cleans_followup_topic():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title=(
+                "Repair duplicate citations: Review research lead: Follow up research gap: "
+                "Mutation function: PIK3CA/TP53 co-mutation and mTOR dependency"
+            ),
+            status="watching",
+            priority=20,
+            source_key="pubmed",
+            origin_source_key="research_brief_quality",
+            reason=(
+                "Resolve the topic-string recursion and citation deduplication flags before "
+                "re-synthesis. No supplied citation independently corroborates a PIK3CA/TP53 "
+                "rapamycin survival signal."
+            ),
+            metadata={
+                "research_followup_queue": {
+                    "followup_kind": "citation_dedupe_repair",
+                    "topic": (
+                        "Review research lead: Repair duplicate citations: Review research lead: "
+                        "Mutation function: Translational bridge evidence to human angiosarcoma "
+                        "PIK3CA/TP53 co-mutation frequency and mTOR pathway dependency | "
+                        "Reason: T | Tags: research_brief, evaluation_followup, pubmed"
+                    ),
+                },
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "supported",
+                    "best_signal": {
+                        "verdict": "useful",
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 4, "total_required_count": 4},
+                    },
+                    "tasks": [],
+                },
+            },
+        )
+    )
+
+    result = service.queue_ready_research_hunt_synthesis(
+        ResearchHuntSynthesisQueueRequest(
+            lead_ids=[lead.lead_id],
+            dry_run=True,
+            review_models=["~anthropic/claude-opus-latest"],
+        )
+    )
+
+    assert result.candidate_count == 1
+    assert result.queue_items
+    topic = result.queue_items[0].topic
+    assert "Review research lead" not in topic
+    assert "Reason:" not in topic
+    assert "Tags:" not in topic
+    assert "PIK3CA" in topic
+    assert "TP53" in topic
+    assert "mTOR" in topic
+    assert "canine hemangiosarcoma and human angiosarcoma" in topic
+    assert "independent-source dedupe" in topic
+
+
+def test_queue_ready_research_hunt_synthesis_cleans_no_term_followup_topic():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title=(
+                "Repair duplicate citations: Review research lead: Omics context: "
+                "Species-mismatch risk: canine splenic HSA survival benefit may not translate"
+            ),
+            status="watching",
+            priority=20,
+            source_key="pubmed",
+            origin_source_key="research_brief_quality",
+            reason="Duplicate-citation repair flagged but not executed before promotion.",
+            metadata={
+                "research_followup_queue": {
+                    "followup_kind": "citation_dedupe_repair",
+                    "topic": "Review research lead: Repair duplicate citations | Tags: research_brief, evaluation_followup",
+                },
+                "research_hunt": {
+                    "version": "v1",
+                    "signal_status": "supported",
+                    "coverage_status": "supported",
+                    "best_signal": {
+                        "verdict": "useful",
+                        "evidence_fit": {"fit": "strong", "matched_required_count": 3, "total_required_count": 3},
+                    },
+                    "tasks": [],
+                },
+            },
+        )
+    )
+
+    result = service.queue_ready_research_hunt_synthesis(
+        ResearchHuntSynthesisQueueRequest(
+            lead_ids=[lead.lead_id],
+            dry_run=True,
+            review_models=["~anthropic/claude-opus-latest"],
+        )
+    )
+
+    assert result.queue_items
+    topic = result.queue_items[0].topic
+    assert "Review research lead" not in topic
+    assert "Tags:" not in topic
+    assert topic.startswith("canine hemangiosarcoma and human angiosarcoma cross-species translation evidence")
+    assert "independent-source dedupe" in topic
 
 
 def test_research_hunt_synthesis_doc_contracts_validate():

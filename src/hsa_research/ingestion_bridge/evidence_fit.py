@@ -36,6 +36,18 @@ _TARGET_MECHANISM_LABELS = {
     "checkpoint inhibitor",
     "caninized antibody",
 }
+_THERAPY_ALTERNATIVE_LABELS = {
+    "sorafenib",
+    "toceranib",
+    "pazopanib",
+    "propranolol",
+    "doxorubicin",
+    "paclitaxel",
+    "sirolimus/rapamycin",
+    "imatinib",
+    "sunitinib",
+    "trametinib",
+}
 _SAFETY_ACTION_LABELS = {
     "maximum tolerated dose/dlt/safety",
     "pkpd",
@@ -259,7 +271,7 @@ def _assess_chunks(
     haystack = _normalize_evidence_text("\n".join(evidence_texts))
     matched: list[str] = []
     missing: list[str] = []
-    critical_missing = False
+    critical_missing_labels: list[str] = []
     for group in requirements:
         is_matched = any(_evidence_text_contains(haystack, alias) for alias in group["aliases"])
         if is_matched:
@@ -267,11 +279,18 @@ def _assess_chunks(
         else:
             missing.append(group["label"])
             if group["critical"]:
-                critical_missing = True
+                critical_missing_labels.append(group["label"])
 
     total_required = len(requirements)
     matched_required = len(matched)
     ratio = matched_required / total_required if total_required else 0.0
+    matched_therapy_alternative = bool(set(matched) & _THERAPY_ALTERNATIVE_LABELS)
+    blocking_missing = [
+        label
+        for label in critical_missing_labels
+        if not (matched_therapy_alternative and label in _THERAPY_ALTERNATIVE_LABELS)
+    ]
+    critical_missing = bool(blocking_missing)
     dimension_scores = _evidence_dimension_scores(matched, haystack)
     if (
         dimension_scores["target_safety_fit"] == "strong"

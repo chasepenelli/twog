@@ -53,6 +53,13 @@ _NON_SEARCH_QUERY_PATTERNS = (
     r"\b(?:fetch|chunking|converted\s+to\s+document\s+chunks?|raw\s+records?)\b",
     r"\b(?:max\s+utilization|allowed\s+search\s+terms)\b",
 )
+_SPLITTABLE_REFINEMENT_TERMS = (
+    "toceranib",
+    "pazopanib",
+    "sorafenib",
+    "propranolol",
+    "doxorubicin",
+)
 
 
 def refine_research_followups(
@@ -89,7 +96,16 @@ def refine_research_followups(
                     source_key=source_key,
                     query_name=_query_name(review, attempt_index, query_text),
                     query_text=query_text,
-                    query_params=_query_params(review, run, lead, request, attempt_index, reason, source_key),
+                    query_params=_query_params(
+                        review,
+                        run,
+                        lead,
+                        request,
+                        attempt_index,
+                        reason,
+                        source_key,
+                        query_text,
+                    ),
                     track=AGENT_FINDING_TRACK,
                     object_type=_object_type_for_source(source_key),
                     active=True,
@@ -325,9 +341,7 @@ def _query_specs_from_review(
     query_texts: list[tuple[str, str]] = []
     skipped: list[dict[str, Any]] = []
     if _prefer_base_terms_for_lead(lead):
-        base_query = _lead_base_query(lead, base_terms)
-        if base_query:
-            query_texts.append((base_query, "lead_terms"))
+        query_texts.extend((query, "lead_terms") for query in _lead_base_queries(lead, base_terms))
     else:
         for action in actions:
             queries, skip_reason = _queries_from_action(action)
@@ -356,9 +370,7 @@ def _query_specs_from_review(
         )
         query_texts.extend((query, "evaluator_feedback") for query in queries)
     if not query_texts:
-        base_query = _lead_base_query(lead, base_terms)
-        if base_query:
-            query_texts.append((base_query, "lead_terms"))
+        query_texts.extend((query, "lead_terms") for query in _lead_base_queries(lead, base_terms))
 
     specs: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -406,8 +418,7 @@ def _query_specs_from_review(
             seen.add(key)
             specs.append((source_key, query_text, reason))
     if not specs and query_texts:
-        base_query = _lead_base_query(lead, base_terms)
-        if base_query:
+        for base_query in _lead_base_queries(lead, base_terms):
             for source_key in source_keys:
                 key = (source_key, base_query.casefold())
                 if key in seen:
@@ -426,9 +437,18 @@ def _prefer_base_terms_for_lead(lead: ResearchLeadRecord) -> bool:
 
 
 def _lead_base_query(lead: ResearchLeadRecord, base_terms: list[str]) -> str:
+    queries = _lead_base_queries(lead, base_terms)
+    return queries[0] if queries else ""
+
+
+def _lead_base_queries(lead: ResearchLeadRecord, base_terms: list[str]) -> list[str]:
     if base_terms:
-        return " ".join(base_terms[:10])
-    return _clean_query(
+        therapy_terms = [term for term in base_terms if term in _SPLITTABLE_REFINEMENT_TERMS]
+        if len(therapy_terms) >= 2:
+            context_terms = [term for term in base_terms if term not in therapy_terms]
+            return [" ".join([therapy, *context_terms[:7]]) for therapy in therapy_terms[:6]]
+        return [" ".join(base_terms[:10])]
+    fallback = _clean_query(
         " ".join(
             [
                 lead.title or "",
@@ -438,6 +458,7 @@ def _lead_base_query(lead: ResearchLeadRecord, base_terms: list[str]) -> str:
             ]
         )
     )
+    return [fallback] if fallback else []
 
 
 def _queries_from_action(action: str) -> tuple[list[str], str | None]:
@@ -481,7 +502,12 @@ def _finalize_query(raw_query: str, base_terms: list[str]) -> str:
         return ""
     tokens = query.lower()
     additions = []
+    present_split_terms = [
+        term for term in _SPLITTABLE_REFINEMENT_TERMS if _term_matches_query(term, query)
+    ]
     for term in base_terms:
+        if present_split_terms and term in _SPLITTABLE_REFINEMENT_TERMS and term not in present_split_terms:
+            continue
         if term.lower() not in tokens:
             additions.append(term)
     if additions:
@@ -526,6 +552,7 @@ def _base_terms(
         ("toceranib", ("toceranib", "palladia")),
         ("pazopanib", ("pazopanib",)),
         ("sorafenib", ("sorafenib", "nexavar")),
+        ("propranolol", ("propranolol",)),
         ("doxorubicin", ("doxorubicin", "adriamycin")),
         ("PSMA", ("psma", "folh1")),
         ("PD-L1", ("pd-l1", "pdl1", "cd274", "programmed death-ligand 1")),
@@ -539,6 +566,29 @@ def _base_terms(
         if any(alias in text for alias in aliases):
             terms.append(term)
     return _dedupe_strings(terms)
+
+
+def _required_terms_for_query(query_text: str, base_terms: list[str]) -> list[str]:
+    selected = [term for term in base_terms if _term_matches_query(term, query_text)]
+    return selected or base_terms[:10]
+
+
+def _term_matches_query(term: str, query_text: str) -> bool:
+    text = query_text.casefold()
+    aliases = {
+        "sorafenib": ("sorafenib", "nexavar"),
+        "toceranib": ("toceranib", "palladia"),
+        "pazopanib": ("pazopanib",),
+        "propranolol": ("propranolol",),
+        "doxorubicin": ("doxorubicin", "adriamycin"),
+        "canine": ("canine", "dog", "dogs", "veterinary"),
+        "hemangiosarcoma": ("hemangiosarcoma", "hsa"),
+        "angiosarcoma": ("angiosarcoma",),
+        "safety": ("safety", "toxicity", "tolerability"),
+        "maximum tolerated dose": ("maximum tolerated", "mtd"),
+        "dose limiting toxicity": ("dose limiting", "dlt"),
+    }.get(term, (term,))
+    return any(alias.casefold() in text for alias in aliases)
 
 
 def _source_keys_for_review(
@@ -584,8 +634,9 @@ def _query_params(
     attempt_index: int,
     reason: str,
     source_key: str,
+    query_text: str,
 ) -> dict[str, Any]:
-    required_terms = _base_terms(lead, review, run)
+    required_terms = _required_terms_for_query(query_text, _base_terms(lead, review, run))
     params: dict[str, Any] = {
         "followup_lane": AGENT_FINDING_LANE,
         "origin_agent_run_id": str(lead.origin_agent_run_id or run.agent_run_id),
