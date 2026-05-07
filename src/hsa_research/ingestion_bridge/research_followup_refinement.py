@@ -82,16 +82,26 @@ def refine_research_followups(
                 result.skipped.append(_skip(review, run, lead, "no_refined_query_terms"))
             continue
         seen_leads.add(lead.lead_id)
+        candidate_queries: list[SourceQuery] = []
         for attempt_index, (source_key, query_text, reason) in enumerate(query_specs[: request.max_queries_per_review], start=1):
-            source_query = SourceQuery(
-                source_key=source_key,
-                query_name=_query_name(review, attempt_index, query_text),
-                query_text=query_text,
-                query_params=_query_params(review, run, lead, request, attempt_index, reason, source_key),
-                track=AGENT_FINDING_TRACK,
-                object_type=_object_type_for_source(source_key),
-                active=True,
+            candidate_queries.append(
+                SourceQuery(
+                    source_key=source_key,
+                    query_name=_query_name(review, attempt_index, query_text),
+                    query_text=query_text,
+                    query_params=_query_params(review, run, lead, request, attempt_index, reason, source_key),
+                    track=AGENT_FINDING_TRACK,
+                    object_type=_object_type_for_source(source_key),
+                    active=True,
+                )
             )
+        if not request.dry_run:
+            result.source_queries_deactivated += _deactivate_stale_refined_queries(
+                repository,
+                lead,
+                candidate_queries,
+            )
+        for source_query in candidate_queries:
             if not request.dry_run:
                 is_new = (source_query.source_key, source_query.query_name) not in existing_query_keys
                 persisted = repository.upsert_source_query(source_query)
@@ -112,6 +122,7 @@ def summarize_research_followup_refinement(result: ResearchFollowupRefinementRes
         "lead_count": result.lead_count,
         "query_count": result.query_count,
         "source_queries_created": result.source_queries_created,
+        "source_queries_deactivated": result.source_queries_deactivated,
         "dry_run": result.dry_run,
         "errors": len(result.errors),
     }
@@ -274,6 +285,32 @@ def _lead_ids_from_run(run: AgentRunRecord) -> list[UUID]:
         if lead_id is not None:
             lead_ids.append(lead_id)
     return _dedupe_uuids(lead_ids)
+
+
+def _deactivate_stale_refined_queries(
+    repository: ResearchRepository,
+    lead: ResearchLeadRecord,
+    desired_queries: list[SourceQuery],
+) -> int:
+    desired = {(query.source_key, query.query_name) for query in desired_queries}
+    source_keys = sorted({query.source_key for query in desired_queries})
+    deactivated = 0
+    for source_key in source_keys:
+        for existing in repository.list_source_queries(source_key=source_key, active_only=True):
+            params = existing.query_params or {}
+            if not isinstance(params, Mapping):
+                continue
+            if params.get("followup_lane") != AGENT_FINDING_LANE:
+                continue
+            if params.get("lead_id") != str(lead.lead_id):
+                continue
+            if not str(existing.query_name).startswith("agent_refine_"):
+                continue
+            if (existing.source_key, existing.query_name) in desired:
+                continue
+            repository.upsert_source_query(existing.model_copy(update={"active": False}))
+            deactivated += 1
+    return deactivated
 
 
 def _query_specs_from_review(

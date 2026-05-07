@@ -1425,6 +1425,21 @@ def test_research_followup_refinement_handles_brief_quality_leads_without_review
             },
         )
     )
+    repo.upsert_source_query(
+        SourceQuery(
+            source_key="pubmed",
+            query_name="agent_refine_old_bad_meta_query",
+            query_text="citations lack pmids dois years require citations include pmids dois years",
+            query_params={
+                "followup_lane": "agent_evaluator_followup",
+                "lead_id": str(lead.lead_id),
+                "refinement_source": "llm_evaluator_followup_action",
+            },
+            track="validation_gap",
+            object_type=ResearchObjectType.PUBLICATION,
+            active=True,
+        )
+    )
 
     result = service.refine_research_followups(
         ResearchFollowupRefinementRequest(
@@ -1439,11 +1454,15 @@ def test_research_followup_refinement_handles_brief_quality_leads_without_review
     assert result.scanned_count == 1
     assert result.lead_count == 1
     assert result.source_queries_created == 2
+    assert result.source_queries_deactivated == 1
     assert {query.source_key for query in queries} == {"pubmed", "europe_pmc"}
     assert all("mtor" in query.query_text.lower() for query in queries)
     assert any("canine" in query.query_text.lower() for query in queries)
     assert all(query.query_params["origin_review_id"] for query in queries)
     assert all(query.query_params["origin_agent_run_id"] for query in queries)
+    all_queries = repo.list_source_queries(active_only=False)
+    old_query = next(query for query in all_queries if query.query_name == "agent_refine_old_bad_meta_query")
+    assert old_query.active is False
 
 
 def test_command_center_web_refines_research_followup_payload(tmp_path):
@@ -9969,6 +9988,37 @@ def test_research_hunt_queue_report_marks_supported_lead_ready_for_synthesis():
 
     assert report.executable_task_count == 0
     assert report.ready_for_synthesis_count == 1
+    assert report.leads[0].control_status == "ready_for_synthesis"
+    assert report.leads[0].recommended_action == "queue_synthesis"
+
+
+def test_research_hunt_queue_report_marks_resolved_followup_ready_for_synthesis():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="Resolved mTOR evidence lead",
+            status="watching",
+            source_key="pubmed",
+            metadata={
+                "research_followup_resolver": {
+                    "evidence_refs": [f"chunk:{uuid4()}", f"research_object:{uuid4()}"],
+                    "evidence_fit": {
+                        "fit": "strong",
+                        "overall_fit": "strong",
+                        "matched_required_count": 3,
+                        "total_required_count": 3,
+                    },
+                }
+            },
+        )
+    )
+
+    report = service.build_research_hunt_queue_report(ResearchHuntQueueReportRequest(lead_ids=[lead.lead_id]))
+
+    assert report.ready_for_synthesis_count == 1
+    assert report.leads[0].signal_status == "supported"
+    assert report.leads[0].coverage_status == "supported"
     assert report.leads[0].control_status == "ready_for_synthesis"
     assert report.leads[0].recommended_action == "queue_synthesis"
 

@@ -2161,6 +2161,7 @@ class ResearchFollowupRefinementResult(StrictBaseModel):
     lead_count: int = Field(default=0, ge=0)
     query_count: int = Field(default=0, ge=0)
     source_queries_created: int = Field(default=0, ge=0)
+    source_queries_deactivated: int = Field(default=0, ge=0)
     source_queries: list[SourceQuery] = Field(default_factory=list)
     skipped: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)

@@ -3582,18 +3582,20 @@ class HSAResearchService:
         for lead in leads:
             state = lead.metadata.get("research_hunt") if isinstance(lead.metadata, dict) else None
             if not isinstance(state, dict):
-                lead_row = ResearchHuntLeadQueueRow(
-                    lead_id=lead.lead_id,
-                    title=lead.title,
-                    status=lead.status,
-                    source_key=lead.source_key or lead.origin_source_key,
-                    priority=lead.priority,
-                    control_status="no_hunt_state",
-                    recommended_action="no_hunt_state",
-                )
-                lead_rows.append(lead_row)
-                control_status_counts[lead_row.control_status] += 1
-                continue
+                state = _research_hunt_state_from_resolved_followup(lead)
+                if not isinstance(state, dict):
+                    lead_row = ResearchHuntLeadQueueRow(
+                        lead_id=lead.lead_id,
+                        title=lead.title,
+                        status=lead.status,
+                        source_key=lead.source_key or lead.origin_source_key,
+                        priority=lead.priority,
+                        control_status="no_hunt_state",
+                        recommended_action="no_hunt_state",
+                    )
+                    lead_rows.append(lead_row)
+                    control_status_counts[lead_row.control_status] += 1
+                    continue
 
             tasks = [dict(task) for task in state.get("tasks", []) if isinstance(task, dict)]
             suppressed_tasks = [
@@ -6847,6 +6849,52 @@ def _research_hunt_lead_control_status(
     if open_broad_count or open_passive_count:
         return "watching"
     return "idle"
+
+
+def _research_hunt_state_from_resolved_followup(lead: ResearchLeadRecord) -> dict[str, Any] | None:
+    if lead.status != "watching":
+        return None
+    metadata = lead.metadata if isinstance(lead.metadata, dict) else {}
+    resolver_meta = (
+        metadata.get("research_followup_resolver")
+        if isinstance(metadata.get("research_followup_resolver"), dict)
+        else {}
+    )
+    evidence_fit = metadata.get("evidence_fit") if isinstance(metadata.get("evidence_fit"), dict) else None
+    if not evidence_fit and isinstance(resolver_meta, dict):
+        evidence_fit = (
+            resolver_meta.get("evidence_fit")
+            if isinstance(resolver_meta.get("evidence_fit"), dict)
+            else None
+        )
+    if not evidence_fit:
+        return None
+    evidence_refs = list(lead.evidence_refs)
+    if not evidence_refs and isinstance(resolver_meta, dict):
+        evidence_refs = [
+            str(ref)
+            for ref in resolver_meta.get("evidence_refs", [])
+            if ref
+        ]
+    if not evidence_refs:
+        return None
+    fit = str(evidence_fit.get("fit") or evidence_fit.get("overall_fit") or "")
+    matched = int(evidence_fit.get("matched_required_count") or 0)
+    total = int(evidence_fit.get("total_required_count") or 0)
+    if fit != "strong" and (not total or matched < total):
+        return None
+    return {
+        "version": "v1",
+        "source": "resolved_followup",
+        "signal_status": "supported",
+        "coverage_status": "supported",
+        "best_signal": {
+            "evidence_fit": evidence_fit,
+            "evidence_refs": evidence_refs[:20],
+        },
+        "tasks": [],
+        "suppressed_tasks": [],
+    }
 
 
 def _research_hunt_control_status_from_state(
