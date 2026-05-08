@@ -1711,14 +1711,15 @@ class PostgresResearchRepository(ResearchRepository):
         self._execute(
             """
             insert into therapy_ideas (
-              therapy_idea_id, committee_run_id, agent_run_id, source_brief_id,
-              source_evaluation_id, topic, source_key, status, promotion_state,
-              score, created_at, updated_at, payload
+              therapy_idea_id, committee_run_id, agent_run_id, source_program_id,
+              source_brief_id, source_evaluation_id, topic, source_key, status,
+              promotion_state, score, created_at, updated_at, payload
             )
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             on conflict(therapy_idea_id) do update set
               committee_run_id = excluded.committee_run_id,
               agent_run_id = excluded.agent_run_id,
+              source_program_id = excluded.source_program_id,
               source_brief_id = excluded.source_brief_id,
               source_evaluation_id = excluded.source_evaluation_id,
               topic = excluded.topic,
@@ -1733,6 +1734,7 @@ class PostgresResearchRepository(ResearchRepository):
                 str(record.therapy_idea_id),
                 str(record.committee_run_id) if record.committee_run_id else None,
                 str(record.agent_run_id) if record.agent_run_id else None,
+                str(record.source_program_id) if record.source_program_id else None,
                 str(record.source_brief_id) if record.source_brief_id else None,
                 str(record.source_evaluation_id) if record.source_evaluation_id else None,
                 record.topic,
@@ -1761,6 +1763,7 @@ class PostgresResearchRepository(ResearchRepository):
         *,
         status: str | None = None,
         statuses: list[str] | None = None,
+        source_program_id: UUID | None = None,
         source_brief_id: UUID | None = None,
         source_evaluation_id: UUID | None = None,
         committee_run_id: UUID | None = None,
@@ -1775,6 +1778,9 @@ class PostgresResearchRepository(ResearchRepository):
         if statuses:
             clauses.append("status = any(%s)")
             params.append(statuses)
+        if source_program_id:
+            clauses.append("source_program_id = %s")
+            params.append(str(source_program_id))
         if source_brief_id:
             clauses.append("source_brief_id = %s")
             params.append(str(source_brief_id))
@@ -3255,6 +3261,7 @@ class PostgresResearchRepository(ResearchRepository):
               therapy_idea_id text primary key,
               committee_run_id text,
               agent_run_id text,
+              source_program_id text,
               source_brief_id text,
               source_evaluation_id text,
               topic text not null,
@@ -3275,6 +3282,8 @@ class PostgresResearchRepository(ResearchRepository):
               on therapy_ideas(source_evaluation_id, updated_at desc);
             create index if not exists therapy_ideas_committee_idx
               on therapy_ideas(committee_run_id, updated_at desc);
+            create index if not exists therapy_ideas_program_idx
+              on therapy_ideas(source_program_id, updated_at desc);
 
             create table if not exists research_programs (
               program_id text primary key,
@@ -3476,6 +3485,10 @@ class PostgresResearchRepository(ResearchRepository):
               updated_at timestamptz not null default now()
             );
             """
+        )
+        self._execute("alter table therapy_ideas add column if not exists source_program_id text")
+        self._execute(
+            "create index if not exists therapy_ideas_program_idx on therapy_ideas(source_program_id, updated_at desc)"
         )
 
     def _seed_claims_if_empty(self) -> None:

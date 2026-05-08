@@ -1819,14 +1819,15 @@ class SQLiteResearchRepository(ResearchRepository):
         self.conn.execute(
             """
             insert into therapy_ideas (
-              therapy_idea_id, committee_run_id, agent_run_id, source_brief_id,
-              source_evaluation_id, topic, source_key, status, promotion_state,
-              score, created_at, updated_at, payload
+              therapy_idea_id, committee_run_id, agent_run_id, source_program_id,
+              source_brief_id, source_evaluation_id, topic, source_key, status,
+              promotion_state, score, created_at, updated_at, payload
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             on conflict(therapy_idea_id) do update set
               committee_run_id = excluded.committee_run_id,
               agent_run_id = excluded.agent_run_id,
+              source_program_id = excluded.source_program_id,
               source_brief_id = excluded.source_brief_id,
               source_evaluation_id = excluded.source_evaluation_id,
               topic = excluded.topic,
@@ -1841,6 +1842,7 @@ class SQLiteResearchRepository(ResearchRepository):
                 str(record.therapy_idea_id),
                 str(record.committee_run_id) if record.committee_run_id else None,
                 str(record.agent_run_id) if record.agent_run_id else None,
+                str(record.source_program_id) if record.source_program_id else None,
                 str(record.source_brief_id) if record.source_brief_id else None,
                 str(record.source_evaluation_id) if record.source_evaluation_id else None,
                 record.topic,
@@ -1870,6 +1872,7 @@ class SQLiteResearchRepository(ResearchRepository):
         *,
         status: str | None = None,
         statuses: list[str] | None = None,
+        source_program_id: UUID | None = None,
         source_brief_id: UUID | None = None,
         source_evaluation_id: UUID | None = None,
         committee_run_id: UUID | None = None,
@@ -1885,6 +1888,9 @@ class SQLiteResearchRepository(ResearchRepository):
             placeholders = ",".join("?" for _ in statuses)
             clauses.append(f"status in ({placeholders})")
             params.extend(statuses)
+        if source_program_id:
+            clauses.append("source_program_id = ?")
+            params.append(str(source_program_id))
         if source_brief_id:
             clauses.append("source_brief_id = ?")
             params.append(str(source_brief_id))
@@ -3418,6 +3424,7 @@ class SQLiteResearchRepository(ResearchRepository):
               therapy_idea_id text primary key,
               committee_run_id text,
               agent_run_id text,
+              source_program_id text,
               source_brief_id text,
               source_evaluation_id text,
               topic text not null,
@@ -3438,6 +3445,8 @@ class SQLiteResearchRepository(ResearchRepository):
               on therapy_ideas(source_evaluation_id, updated_at desc);
             create index if not exists therapy_ideas_committee_idx
               on therapy_ideas(committee_run_id, updated_at desc);
+            create index if not exists therapy_ideas_program_idx
+              on therapy_ideas(source_program_id, updated_at desc);
 
             create table if not exists research_programs (
               program_id text primary key,
@@ -3640,7 +3649,19 @@ class SQLiteResearchRepository(ResearchRepository):
             );
             """
         )
+        self._ensure_column("therapy_ideas", "source_program_id", "text")
+        self.conn.execute(
+            "create index if not exists therapy_ideas_program_idx on therapy_ideas(source_program_id, updated_at desc)"
+        )
         self.conn.commit()
+
+    def _ensure_column(self, table_name: str, column_name: str, column_type: str) -> None:
+        columns = {
+            str(row["name"])
+            for row in self.conn.execute(f"pragma table_info({table_name})").fetchall()
+        }
+        if column_name not in columns:
+            self.conn.execute(f"alter table {table_name} add column {column_name} {column_type}")
 
     def _seed_claims_if_empty(self) -> None:
         row = self.conn.execute("select count(*) as count from claims").fetchone()

@@ -1069,6 +1069,7 @@ if dg is not None:
         return {
             "committee_run_id": report.get("committee_run_id"),
             "agent_run_id": report.get("agent_run_id"),
+            "source_program_id": report.get("source_program_id"),
             "topic": report.get("topic"),
             "review_mode": report.get("review_mode"),
             "perspective_count": len(reports),
@@ -3349,6 +3350,7 @@ if dg is not None:
                 description="Committee review mode: openrouter_required, openrouter_compare, external_required, or deterministic_only.",
             ),
             "review_models": dg.Field([str], default_value=[]),
+            "program_id": dg.Field(str, is_required=False),
             "brief_id": dg.Field(str, is_required=False),
             "evaluation_id": dg.Field(str, is_required=False),
         },
@@ -3374,6 +3376,7 @@ if dg is not None:
                 max_ideas_per_perspective=config["max_ideas_per_perspective"],
                 review_mode=config["review_mode"],
                 review_models=config["review_models"],
+                program_id=_uuid_or_none(config.get("program_id")),
                 brief_id=_uuid_or_none(config.get("brief_id")),
                 evaluation_id=_uuid_or_none(config.get("evaluation_id")),
                 dagster_run_id=context.run_id,
@@ -3439,6 +3442,7 @@ if dg is not None:
         group_name="ai_research",
         config_schema={
             "status": dg.Field(str, is_required=False),
+            "program_id": dg.Field(str, is_required=False),
             "topic_query": dg.Field(str, is_required=False),
             "limit": dg.Field(int, default_value=50),
         },
@@ -3456,6 +3460,7 @@ if dg is not None:
         report = HSAResearchService(repository).list_therapy_ideas(
             TherapyIdeaLibraryRequest(
                 status=config.get("status"),
+                source_program_id=_uuid_or_none(config.get("program_id")),
                 topic_query=config.get("topic_query"),
                 limit=config.get("limit", 50),
             )

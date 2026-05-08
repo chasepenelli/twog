@@ -213,6 +213,7 @@ def run_therapy_committee_tool(
     model_profile: str = "therapy_committee",
     review_mode: str = "openrouter_required",
     review_models: list[str] | None = None,
+    program_id: str | None = None,
     brief_id: str | None = None,
     evaluation_id: str | None = None,
 ) -> dict:
@@ -229,6 +230,7 @@ def run_therapy_committee_tool(
         model_profile=model_profile,
         review_mode=review_mode,  # type: ignore[arg-type]
         review_models=review_models or [],
+        program_id=UUID(program_id) if program_id else None,
         brief_id=UUID(brief_id) if brief_id else None,
         evaluation_id=UUID(evaluation_id) if evaluation_id else None,
     )
@@ -288,6 +290,7 @@ def match_validation_tool_tool(
 def therapy_idea_library_tool(
     therapy_idea_id: str | None = None,
     status: str | None = None,
+    source_program_id: str | None = None,
     source_brief_id: str | None = None,
     source_evaluation_id: str | None = None,
     committee_run_id: str | None = None,
@@ -300,6 +303,7 @@ def therapy_idea_library_tool(
         TherapyIdeaLibraryRequest(
             therapy_idea_id=UUID(therapy_idea_id) if therapy_idea_id else None,
             status=status,  # type: ignore[arg-type]
+            source_program_id=UUID(source_program_id) if source_program_id else None,
             source_brief_id=UUID(source_brief_id) if source_brief_id else None,
             source_evaluation_id=UUID(source_evaluation_id) if source_evaluation_id else None,
             committee_run_id=UUID(committee_run_id) if committee_run_id else None,
@@ -1530,6 +1534,7 @@ if mcp is not None:
         model_profile: str = "therapy_committee",
         review_mode: str = "openrouter_required",
         review_models: list[str] | None = None,
+        program_id: str | None = None,
         brief_id: str | None = None,
         evaluation_id: str | None = None,
     ) -> dict:
@@ -1546,6 +1551,7 @@ if mcp is not None:
             model_profile=model_profile,
             review_mode=review_mode,
             review_models=review_models,
+            program_id=program_id,
             brief_id=brief_id,
             evaluation_id=evaluation_id,
         )
@@ -1600,6 +1606,7 @@ if mcp is not None:
     def therapy_idea_library(
         therapy_idea_id: str | None = None,
         status: str | None = None,
+        source_program_id: str | None = None,
         source_brief_id: str | None = None,
         source_evaluation_id: str | None = None,
         committee_run_id: str | None = None,
@@ -1611,6 +1618,7 @@ if mcp is not None:
         return therapy_idea_library_tool(
             therapy_idea_id=therapy_idea_id,
             status=status,
+            source_program_id=source_program_id,
             source_brief_id=source_brief_id,
             source_evaluation_id=source_evaluation_id,
             committee_run_id=committee_run_id,

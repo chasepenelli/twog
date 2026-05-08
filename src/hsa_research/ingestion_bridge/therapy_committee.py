@@ -107,7 +107,8 @@ def run_therapy_committee(
 
     evidence = _build_evidence(repository, request)
     reports = _run_perspectives(request, evidence)
-    ranked_ideas = _rank_ideas([idea for report in reports for idea in report.ideas])[:12]
+    idea_limit = 3 if request.program_id else 12
+    ranked_ideas = _rank_ideas([idea for report in reports for idea in report.ideas])[:idea_limit]
     errors = _dedupe_strings([*evidence["errors"], *[error for report in reports for error in report.errors]])
     limitations = _dedupe_strings(
         limitation
@@ -117,6 +118,7 @@ def run_therapy_committee(
     return TherapyCommitteeResult(
         topic=str(evidence.get("topic") or request.topic),
         disease_scope=str(evidence.get("disease_scope") or request.disease_scope),
+        source_program_id=evidence.get("source_program_id"),
         source_brief_id=evidence.get("source_brief_id"),
         source_evaluation_id=evidence.get("source_evaluation_id"),
         model_profile=request.model_profile,
@@ -130,6 +132,8 @@ def run_therapy_committee(
             "research_lead_count": len(evidence["research_leads"]),
             "search_queries": evidence["search_queries"],
             "evidence_limitations": limitations,
+            "source_program_id": str(evidence["source_program_id"]) if evidence.get("source_program_id") else None,
+            "research_program": evidence.get("research_program"),
             "source_brief_id": str(evidence["source_brief_id"]) if evidence.get("source_brief_id") else None,
             "source_evaluation_id": (
                 str(evidence["source_evaluation_id"]) if evidence.get("source_evaluation_id") else None
@@ -173,6 +177,8 @@ def _run_perspectives(
 
 
 def _build_evidence(repository: ResearchRepository, request: TherapyCommitteeRequest) -> dict[str, Any]:
+    if request.program_id:
+        return _build_program_evidence(repository, request)
     if request.brief_id or request.evaluation_id:
         return _build_evaluated_brief_evidence(repository, request)
 
@@ -195,9 +201,140 @@ def _build_evidence(repository: ResearchRepository, request: TherapyCommitteeReq
         "errors": evidence.errors,
         "topic": request.topic,
         "disease_scope": request.disease_scope,
+        "source_program_id": None,
+        "research_program": None,
         "source_brief_id": None,
         "source_evaluation_id": None,
         "brief_evaluation": None,
+    }
+
+
+def _build_program_evidence(repository: ResearchRepository, request: TherapyCommitteeRequest) -> dict[str, Any]:
+    errors: list[str] = []
+    program = repository.get_research_program(request.program_id) if request.program_id else None
+    if program is None:
+        return _empty_evidence(
+            request,
+            errors=[f"Research program not found: {request.program_id}"],
+            blocked=True,
+            source_program_id=request.program_id,
+        )
+
+    if program.gate_decision != "ready_for_therapy_ideas":
+        errors.append(
+            "Research program is not ready for therapy ideas: "
+            f"gate_decision={program.gate_decision}, status={program.status}"
+        )
+        return _empty_evidence(
+            request,
+            errors=errors,
+            blocked=True,
+            source_program_id=program.program_id,
+            research_program=_research_program_payload(program),
+        )
+
+    topic = _program_committee_topic(program, request)
+    brief_request = ResearchBriefRequest(
+        topic=topic,
+        disease_scope=program.disease_scope or request.disease_scope,
+        source_key=request.source_key,
+        max_chunks_per_perspective=request.max_chunks_per_perspective,
+        max_claims=request.max_claims,
+        max_chunk_chars=request.max_chunk_chars,
+        model_profile=request.model_profile,
+        review_mode="deterministic_only",
+    )
+    evidence = ResearchBriefAgent(repository).build_evidence(brief_request)
+    return {
+        "citations": evidence.citations,
+        "claims": [claim.model_dump(mode="json") for claim in evidence.claims],
+        "research_leads": [lead.model_dump(mode="json") for lead in evidence.research_leads],
+        "search_queries": {
+            **dict(evidence.search_queries or {}),
+            "source_program_id": str(program.program_id),
+        },
+        "errors": [*evidence.errors, *errors],
+        "blocked": False,
+        "topic": topic,
+        "disease_scope": program.disease_scope or request.disease_scope,
+        "source_program_id": program.program_id,
+        "research_program": _research_program_payload(program),
+        "source_brief_id": None,
+        "source_evaluation_id": None,
+        "brief_evaluation": None,
+    }
+
+
+def _empty_evidence(
+    request: TherapyCommitteeRequest,
+    *,
+    errors: Sequence[str],
+    blocked: bool,
+    source_program_id: object | None = None,
+    research_program: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "citations": [],
+        "claims": [],
+        "research_leads": [],
+        "search_queries": {"source_program_id": str(source_program_id)} if source_program_id else {},
+        "errors": list(errors),
+        "blocked": blocked,
+        "topic": request.topic,
+        "disease_scope": request.disease_scope,
+        "source_program_id": source_program_id,
+        "research_program": dict(research_program or {}),
+        "source_brief_id": None,
+        "source_evaluation_id": None,
+        "brief_evaluation": None,
+    }
+
+
+def _program_committee_topic(program: Any, request: TherapyCommitteeRequest) -> str:
+    parts = [
+        request.topic,
+        f"Research program: {program.title}",
+        f"Thesis: {program.thesis}",
+        "Convert this finite program into the three strongest high-level therapy ideas.",
+    ]
+    return _compact_text(" | ".join(part for part in parts if part), max_chars=1000)
+
+
+def _research_program_payload(program: Any) -> dict[str, Any]:
+    return {
+        "program_id": str(program.program_id),
+        "title": program.title,
+        "thesis": program.thesis,
+        "disease_model": program.disease_model,
+        "disease_scope": program.disease_scope,
+        "thesis_area": program.thesis_area,
+        "status": program.status,
+        "gate_decision": program.gate_decision,
+        "evidence_loop_count": program.evidence_loop_count,
+        "max_evidence_loops": program.max_evidence_loops,
+        "therapy_families": program.therapy_families,
+        "modality_families": program.modality_families,
+        "downstream_therapy_opportunities": program.downstream_therapy_opportunities,
+        "decisive_questions": [question.model_dump(mode="json") for question in program.decisive_questions],
+        "evidence_tasks": [task.model_dump(mode="json") for task in program.evidence_tasks],
+        "metric_plan": program.metric_plan,
+        "recommended_tools": program.recommended_tools,
+        "stop_criteria": program.stop_criteria,
+        "confidence_increase_criteria": program.confidence_increase_criteria,
+        "confidence_decrease_criteria": program.confidence_decrease_criteria,
+        "scores": {
+            "biological_plausibility": program.biological_plausibility_score,
+            "cross_species_support": program.cross_species_support_score,
+            "evidence_density": program.evidence_density_score,
+            "novelty": program.novelty_score,
+            "testability": program.testability_score,
+            "therapeutic_leverage": program.therapeutic_leverage_score,
+            "failure_risk": program.failure_risk_score,
+            "confidence": program.confidence_score,
+        },
+        "evidence_refs": program.evidence_refs,
+        "review_summary": program.review_summary,
+        "known_blockers": program.errors,
     }
 
 
@@ -262,6 +399,8 @@ def _build_evaluated_brief_evidence(
         "errors": errors,
         "topic": brief.topic,
         "disease_scope": brief.disease_scope,
+        "source_program_id": None,
+        "research_program": None,
         "source_brief_id": brief.brief_id,
         "source_evaluation_id": evaluation.evaluation_id if evaluation else request.evaluation_id,
         "brief_evaluation": brief_evaluation,
@@ -287,6 +426,16 @@ def _run_perspective(
     evidence: Mapping[str, Any],
 ) -> TherapyCommitteeReport:
     citations = list(evidence.get("citations") or [])
+    if evidence.get("blocked"):
+        return TherapyCommitteeReport(
+            perspective=perspective,
+            agent_name=_PERSPECTIVE_AGENT_NAMES[perspective],
+            model_profile=request.model_profile,
+            summary="Committee run blocked before model review.",
+            evidence_limitations=["Research program bridge is not ready for therapy committee ideation."],
+            errors=list(evidence.get("errors") or []),
+            ideas=[],
+        )
     if request.review_mode == "external_required":
         return TherapyCommitteeReport(
             perspective=perspective,
@@ -365,6 +514,113 @@ def _deterministic_perspective(
     biomarkers = _prioritize_terms(_extract_terms(text, _BIOMARKER_TERMS), request.topic)
     refs = [citation.citation_id for citation in citations[:4]]
     ideas: list[TherapyIdea] = []
+    program_payload = evidence.get("research_program")
+
+    if request.program_id and isinstance(program_payload, Mapping):
+        opportunities = _string_list(program_payload.get("downstream_therapy_opportunities"))
+        families = _string_list(program_payload.get("therapy_families"))
+        base_metadata = {
+            "source_program_id": str(request.program_id),
+            "program_gate_decision": program_payload.get("gate_decision"),
+            "program_evidence_loop_count": program_payload.get("evidence_loop_count"),
+        }
+        if perspective == "target_biology":
+            ideas.append(
+                TherapyIdea(
+                    title="Biomarker-stratified vascular ecology therapy program",
+                    hypothesis="Vascular injury, coagulation, and angiogenesis signals may define biomarker-gated therapy families in canine HSA and human angiosarcoma.",
+                    rationale="The program has reached the finite idea gate; prioritize mechanisms that can be stratified by target and pathway readouts.",
+                    candidate_therapies=opportunities[:4] or families[:4],
+                    targets=targets[:5] or ["KDR", "VEGF", "PI3K-mTOR"],
+                    biomarkers=biomarkers[:5] or ["KDR", "PIK3CA", "coagulation markers"],
+                    mechanism="Select therapy families around vascular ecology dependency rather than isolated monotherapy response.",
+                    evidence_refs=refs,
+                    evidence_strength=_strength_from_refs(refs),
+                    translational_path="Compare direct canine HSA evidence with human angiosarcoma analogs before narrowing child therapy ideas.",
+                    risks=["Biomarker association may not equal therapeutic dependency.", "Sparse direct canine evidence may overfit the hypothesis."],
+                    next_experiments=[
+                        "Build a target-biomarker-readout matrix for the program.",
+                        "Select child therapy ideas only when a measurable vascular ecology readout exists.",
+                    ],
+                    priority_score=0.84,
+                    metadata=base_metadata,
+                )
+            )
+        elif perspective == "drug_repurposing":
+            ideas.append(
+                TherapyIdea(
+                    title="Mechanism-matched vascular therapy combination lane",
+                    hypothesis="Anti-angiogenic or kinase strategies should be explored as mechanism-matched combinations, not unstratified monotherapy.",
+                    rationale="The program review explicitly preserved VEGF-axis, coagulation, and vascular injury gaps while moving to therapy narrowing.",
+                    candidate_therapies=therapies[:6] or opportunities[:4] or ["anti-angiogenic combinations", "kinase inhibitor combinations"],
+                    targets=targets[:5] or ["KDR", "VEGFR", "PI3K-mTOR"],
+                    biomarkers=biomarkers[:5] or ["VEGFR2", "PIK3CA", "coagulation state"],
+                    mechanism="Pair vascular signaling inhibition with a second axis only when evidence supports pathway coupling.",
+                    evidence_refs=refs,
+                    evidence_strength=_strength_from_refs(refs),
+                    translational_path="Promote only combinations with direct canine feasibility plus analog mechanistic support.",
+                    risks=["Combination toxicity may limit translation.", "Prior negative VEGFR-class signals may constrain unselected use."],
+                    next_experiments=[
+                        "Rank combinations by target match, canine safety feasibility, and assayable pathway readouts.",
+                        "Separate biomarker-enriched and unselected hypotheses before validation packets.",
+                    ],
+                    priority_score=0.8,
+                    metadata=base_metadata,
+                )
+            )
+        elif perspective == "peptide_specialist":
+            ideas.append(
+                TherapyIdea(
+                    title="Endothelial antigen immunomodulation and peptide/vaccine lane",
+                    hypothesis="Endothelial or extracellular vascular antigens may support a vaccine, peptide, or immunomodulatory child strategy if target engagement is measurable.",
+                    rationale="The peptide specialist lane should convert vascular tumor antigen biology into a modality-aware therapy family, not a formulation protocol.",
+                    candidate_therapies=opportunities[:4] or ["anti-extracellular vimentin vaccine", "endothelial antigen immunotherapy"],
+                    targets=targets[:5] or ["extracellular vimentin", "endothelial antigens"],
+                    biomarkers=biomarkers[:5] or ["target expression", "immune infiltration", "vascular injury markers"],
+                    mechanism="Use vascular antigen exposure or endothelial stress biology to guide immunomodulatory therapy design.",
+                    evidence_refs=refs,
+                    evidence_strength=_strength_from_refs(refs),
+                    translational_path="Require target expression, delivery feasibility, and immune-response readouts before validation queueing.",
+                    risks=["Antigen accessibility and immunogenicity may not transfer across models.", "Peptide/vaccine feasibility requires specialist review."],
+                    next_experiments=[
+                        "Run peptide/vaccine specialist review on antigen identity and manufacturability.",
+                        "Define target-expression and immune-correlate gates for a child therapy idea.",
+                    ],
+                    priority_score=0.78,
+                    metadata=base_metadata,
+                )
+            )
+        else:
+            ideas.append(
+                TherapyIdea(
+                    title="Comparative vascular tumor translation strategy",
+                    hypothesis="The program should produce child therapy ideas only where canine HSA and human angiosarcoma evidence share mechanism and measurable readouts.",
+                    rationale="This guards the bridge from becoming a list of unsupported drug names.",
+                    candidate_therapies=opportunities[:4] or families[:4],
+                    targets=targets[:5],
+                    biomarkers=biomarkers[:5],
+                    mechanism="Use comparative vascular tumor biology as the selection frame.",
+                    evidence_refs=refs,
+                    evidence_strength=_strength_from_refs(refs),
+                    translational_path="Carry direct-versus-analog provenance into every downstream validation packet.",
+                    risks=["Cross-species transfer risk remains high without direct canine evidence.", "Weak citations should trigger evidence repair before dispatch."],
+                    next_experiments=[
+                        "Create three child therapy candidates with direct-versus-analog evidence tables.",
+                        "Attach validation readouts and stop criteria before any dispatch.",
+                    ],
+                    priority_score=0.72,
+                    metadata=base_metadata,
+                )
+            )
+        return TherapyCommitteeReport(
+            perspective=perspective,
+            agent_name=_PERSPECTIVE_AGENT_NAMES[perspective],
+            model_profile=request.model_profile,
+            summary="Deterministic program bridge generated high-level therapy strategy candidates.",
+            ideas=ideas[: request.max_ideas_per_perspective],
+            evidence_limitations=list(evidence.get("errors") or []),
+            errors=list(evidence.get("errors") or []),
+        )
 
     if perspective == "target_biology":
         target = targets[0] if targets else "VEGF/PI3K-mTOR axis"
@@ -578,6 +834,8 @@ def _perspective_payload(
         "claims": evidence.get("claims", []),
         "research_leads": evidence.get("research_leads", []),
         "search_queries": evidence.get("search_queries", {}),
+        "source_program_id": str(evidence["source_program_id"]) if evidence.get("source_program_id") else None,
+        "research_program": evidence.get("research_program"),
         "source_brief_id": str(evidence["source_brief_id"]) if evidence.get("source_brief_id") else None,
         "source_evaluation_id": (
             str(evidence["source_evaluation_id"]) if evidence.get("source_evaluation_id") else None
@@ -618,9 +876,12 @@ def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) ->
                     {
                         "instructions": [
                             "Return JSON only.",
-                            "Use only supplied citation IDs.",
-                            "Make therapy ideas specific enough to become validation plans later.",
-                            "Keep the response compact enough to avoid truncation.",
+                        "Use only supplied citation IDs.",
+                        "Make therapy ideas specific enough to become validation plans later.",
+                        "When research_program is present, produce high-level therapeutic strategies, not dosing or protocol tweaks.",
+                        "When research_program is present, avoid single weak drug tweaks unless they are part of a larger mechanism strategy.",
+                        "When research_program is present, include mechanism, therapy family, target/biomarker logic, risk annotations, and validation readouts for each idea.",
+                        "Keep the response compact enough to avoid truncation.",
                             f"Return no more than {review_payload.get('max_ideas', 1)} idea(s).",
                         ],
                         "response_contract": _response_contract(),

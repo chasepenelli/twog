@@ -515,6 +515,82 @@ def test_therapy_ideas_round_trip_and_committee_from_brief(tmp_path):
         assert repo.get_therapy_idea(ideas.ideas[0].therapy_idea_id) is not None
 
 
+def test_therapy_committee_from_research_program_persists_three_linked_ideas(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "program-therapy-ideas.sqlite3", seed=False)
+    _seed_program_committee_corpus(repo)
+    program = repo.upsert_research_program(_ready_for_therapy_ideas_program())
+    result = HSAResearchService(repo).run_therapy_committee(
+        TherapyCommitteeRequest(
+            program_id=program.program_id,
+            review_mode="deterministic_only",
+            max_claims=0,
+            max_ideas_per_perspective=3,
+        )
+    )
+    ideas = HSAResearchService(repo).list_therapy_ideas(
+        TherapyIdeaLibraryRequest(source_program_id=program.program_id, limit=20)
+    )
+
+    assert result.source_program_id == program.program_id
+    assert result.evidence["research_program"]["program_id"] == str(program.program_id)
+    assert len(result.ranked_ideas) == 3
+    assert ideas.idea_count == 3
+    assert {idea.source_program_id for idea in ideas.ideas} == {program.program_id}
+    assert all(idea.source_brief_id is None for idea in ideas.ideas)
+
+
+def test_therapy_idea_source_program_filter_round_trips_in_memory_and_sqlite(tmp_path):
+    for repo in [
+        InMemoryResearchRepository(),
+        SQLiteResearchRepository(tmp_path / "program-filter-ideas.sqlite3", seed=False),
+    ]:
+        program = repo.upsert_research_program(_ready_for_therapy_ideas_program())
+        other_program = repo.upsert_research_program(
+            _ready_for_therapy_ideas_program().model_copy(update={"title": "Other program"})
+        )
+        idea = TherapyIdea(
+            title="Program-linked vascular therapy idea",
+            hypothesis="A high-level vascular ecology strategy should stay linked to its source program.",
+            rationale="The bridge must support durable program provenance.",
+            evidence_refs=["C1", "C2"],
+            evidence_strength="medium",
+            priority_score=0.75,
+        )
+        repo.upsert_therapy_idea(
+            TherapyIdeaRecord(
+                idea=idea,
+                source_program_id=program.program_id,
+                topic="program-linked therapy idea",
+            )
+        )
+
+        assert HSAResearchService(repo).list_therapy_ideas(
+            TherapyIdeaLibraryRequest(source_program_id=program.program_id)
+        ).idea_count == 1
+        assert HSAResearchService(repo).list_therapy_ideas(
+            TherapyIdeaLibraryRequest(source_program_id=other_program.program_id)
+        ).idea_count == 0
+
+
+def test_therapy_committee_blocks_missing_or_unready_research_program(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "blocked-program-therapy-ideas.sqlite3", seed=False)
+    missing_result = HSAResearchService(repo).run_therapy_committee(
+        TherapyCommitteeRequest(program_id=uuid4(), review_mode="deterministic_only")
+    )
+    unready = repo.upsert_research_program(_research_program_fixture())
+    unready_result = HSAResearchService(repo).run_therapy_committee(
+        TherapyCommitteeRequest(program_id=unready.program_id, review_mode="deterministic_only")
+    )
+
+    assert not missing_result.ranked_ideas
+    assert any("Research program not found" in error for error in missing_result.errors)
+    assert not unready_result.ranked_ideas
+    assert any("not ready for therapy ideas" in error for error in unready_result.errors)
+    assert HSAResearchService(repo).list_therapy_ideas(
+        TherapyIdeaLibraryRequest(source_program_id=unready.program_id)
+    ).idea_count == 0
+
+
 def test_hypothesis_promotion_report_blocks_citation_repair_and_promotes_clean(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "promotion.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -857,6 +933,27 @@ def _research_program_fixture() -> ResearchProgramRecord:
             )
         ],
         stop_criteria=["Archive if no assayable vascular/coagulation signal emerges after two loops."],
+    )
+
+
+def _ready_for_therapy_ideas_program() -> ResearchProgramRecord:
+    return _research_program_fixture().model_copy(
+        update={
+            "status": "ready_for_therapy_ideas",
+            "gate_decision": "ready_for_therapy_ideas",
+            "evidence_loop_count": 2,
+            "max_evidence_loops": 2,
+            "therapy_families": [
+                "biomarker-stratified vascular ecology therapy",
+                "endothelial antigen immunomodulation",
+            ],
+            "downstream_therapy_opportunities": [
+                "PIK3CA/mTOR biomarker-stratified therapy",
+                "anti-extracellular vimentin immunotherapy",
+                "VEGFR-axis combinations under biomarker gating",
+            ],
+            "review_summary": "Program reached the finite idea gate after the capped evidence loop.",
+        }
     )
 
 
@@ -1462,6 +1559,46 @@ def _seed_evaluated_brief(
         )
     )
     return brief, evaluation
+
+
+def _seed_program_committee_corpus(repo) -> None:
+    raw_record_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="pubmed",
+            source_record_id=f"PMID:program-therapy-{uuid4()}",
+            content_hash=f"program-therapy-raw-{uuid4()}",
+            raw_payload={"pmid": "program-therapy"},
+        )
+    )
+    object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type=ResearchObjectType.PUBLICATION,
+            title="Vascular ecology therapy evidence in canine hemangiosarcoma",
+            abstract=(
+                "Canine HSA evidence links vascular injury, coagulation, angiogenesis, "
+                "KDR, VEGF, PIK3CA, extracellular vimentin, and immunotherapy opportunities."
+            ),
+            source_key="pubmed",
+            raw_record_id=raw_record_id,
+            dedupe_key=f"pmid:program-therapy-{uuid4()}",
+        ),
+        raw_record_id,
+    )
+    repo.upsert_document_chunk(
+        DocumentChunk(
+            research_object_id=object_id,
+            chunk_index=0,
+            section_label="abstract",
+            text_content=(
+                "Canine hemangiosarcoma and human angiosarcoma evidence discusses vascular injury, "
+                "coagulation, angiogenesis, KDR, VEGF, PI3K-mTOR, PIK3CA, extracellular vimentin, "
+                "anti-angiogenic combinations, endothelial antigen immunotherapy, response biomarkers, "
+                "and validation readouts."
+            ),
+            content_hash=f"program-therapy-chunk-{uuid4()}",
+        )
+    )
+
 
 def test_validation_request_queue_contracts_validate():
     plan_id = uuid4()

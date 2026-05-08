@@ -154,6 +154,7 @@ def list_ideas_payload(
     records = _collect_idea_records(service)
     durable_ideas = service.list_therapy_ideas(
         TherapyIdeaLibraryRequest(
+            source_program_id=_uuid_param(params, "program_id"),
             source_brief_id=_uuid_param(params, "brief_id"),
             source_evaluation_id=_uuid_param(params, "evaluation_id"),
             topic_query=_str_param(params, "query"),
@@ -1028,6 +1029,7 @@ def _command_center_therapy_idea_record(record: dict[str, Any]) -> dict[str, Any
         "disease_scope": record.get("disease_scope"),
         "origin_agent_run_id": record.get("agent_run_id"),
         "committee_run_id": record.get("committee_run_id"),
+        "program_id": record.get("source_program_id"),
         "brief_id": record.get("source_brief_id"),
         "evaluation_id": record.get("source_evaluation_id"),
         "model_profile": (record.get("promotion_metadata") or {}).get("model_profile"),

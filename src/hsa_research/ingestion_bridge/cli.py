@@ -601,6 +601,7 @@ def main() -> None:
         help="Disease/scope guardrail for retrieval and synthesis",
     )
     therapy_committee.add_argument("--source", default=None, help="Optional source key filter")
+    therapy_committee.add_argument("--program-id", default=None, help="Run committee from a persisted research program")
     therapy_committee.add_argument("--max-chunks", type=int, default=10, help="Chunks per perspective search")
     therapy_committee.add_argument("--max-claims", type=int, default=20, help="Claims to include")
     therapy_committee.add_argument("--max-chunk-chars", type=int, default=2200, help="Maximum chars per cited chunk")
@@ -651,6 +652,7 @@ def main() -> None:
     )
     therapy_ideas.add_argument("--id", default=None, help="Therapy idea ID")
     therapy_ideas.add_argument("--status", default=None, help="Therapy idea status")
+    therapy_ideas.add_argument("--program-id", default=None, help="Source research program ID")
     therapy_ideas.add_argument("--brief-id", default=None, help="Source brief ID")
     therapy_ideas.add_argument("--evaluation-id", default=None, help="Source evaluation ID")
     therapy_ideas.add_argument("--committee-run-id", default=None, help="Committee run ID")
@@ -1879,6 +1881,7 @@ def main() -> None:
                 topic=args.topic,
                 disease_scope=args.disease_scope,
                 source_key=args.source,
+                program_id=UUID(args.program_id) if args.program_id else None,
                 max_chunks_per_perspective=args.max_chunks,
                 max_claims=args.max_claims,
                 max_chunk_chars=args.max_chunk_chars,
@@ -2066,6 +2069,7 @@ def main() -> None:
             TherapyIdeaLibraryRequest(
                 therapy_idea_id=UUID(args.id) if args.id else None,
                 status=args.status,
+                source_program_id=UUID(args.program_id) if args.program_id else None,
                 source_brief_id=UUID(args.brief_id) if args.brief_id else None,
                 source_evaluation_id=UUID(args.evaluation_id) if args.evaluation_id else None,
                 committee_run_id=UUID(args.committee_run_id) if args.committee_run_id else None,

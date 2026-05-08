@@ -1431,6 +1431,7 @@ class TherapyCommitteeRequest(StrictBaseModel):
     )
     disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
     source_key: str | None = None
+    program_id: UUID | None = None
     brief_id: UUID | None = None
     evaluation_id: UUID | None = None
     max_chunks_per_perspective: int = Field(default=10, ge=1, le=30)
@@ -1500,6 +1501,7 @@ class TherapyCommitteeResult(StrictBaseModel):
     agent_name: str = "therapy_committee_chair_agent"
     topic: str
     disease_scope: str
+    source_program_id: UUID | None = None
     source_brief_id: UUID | None = None
     source_evaluation_id: UUID | None = None
     model_profile: str = "therapy_committee"
@@ -1633,6 +1635,7 @@ class TherapyIdeaRecord(StrictBaseModel):
     idea: TherapyIdea
     committee_run_id: UUID | None = None
     agent_run_id: UUID | None = None
+    source_program_id: UUID | None = None
     source_brief_id: UUID | None = None
     source_evaluation_id: UUID | None = None
     topic: str = Field(default="", max_length=1000)
@@ -1671,6 +1674,7 @@ class TherapyIdeaLibraryRequest(StrictBaseModel):
     therapy_idea_id: UUID | None = None
     status: TherapyIdeaStatus | None = None
     statuses: list[TherapyIdeaStatus] = Field(default_factory=list, max_length=10)
+    source_program_id: UUID | None = None
     source_brief_id: UUID | None = None
     source_evaluation_id: UUID | None = None
     committee_run_id: UUID | None = None

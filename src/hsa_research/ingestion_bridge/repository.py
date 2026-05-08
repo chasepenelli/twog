@@ -282,6 +282,7 @@ class ResearchRepository(Protocol):
         *,
         status: str | None = None,
         statuses: list[str] | None = None,
+        source_program_id: UUID | None = None,
         source_brief_id: UUID | None = None,
         source_evaluation_id: UUID | None = None,
         committee_run_id: UUID | None = None,
@@ -1130,6 +1131,7 @@ class InMemoryResearchRepository:
         *,
         status: str | None = None,
         statuses: list[str] | None = None,
+        source_program_id: UUID | None = None,
         source_brief_id: UUID | None = None,
         source_evaluation_id: UUID | None = None,
         committee_run_id: UUID | None = None,
@@ -1142,6 +1144,8 @@ class InMemoryResearchRepository:
         if statuses:
             allowed = set(statuses)
             records = [record for record in records if record.status in allowed]
+        if source_program_id:
+            records = [record for record in records if record.source_program_id == source_program_id]
         if source_brief_id:
             records = [record for record in records if record.source_brief_id == source_brief_id]
         if source_evaluation_id:

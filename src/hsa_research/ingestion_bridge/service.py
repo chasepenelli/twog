@@ -832,6 +832,7 @@ class HSAResearchService:
             records = self.repository.list_therapy_ideas(
                 status=request.status,
                 statuses=list(request.statuses) if request.statuses else None,
+                source_program_id=request.source_program_id,
                 source_brief_id=request.source_brief_id,
                 source_evaluation_id=request.source_evaluation_id,
                 committee_run_id=request.committee_run_id,
@@ -4578,6 +4579,7 @@ def _therapy_idea_record_from_result(
         idea=idea,
         committee_run_id=result.committee_run_id,
         agent_run_id=result.agent_run_id,
+        source_program_id=result.source_program_id or request.program_id,
         source_brief_id=result.source_brief_id or request.brief_id,
         source_evaluation_id=result.source_evaluation_id or request.evaluation_id,
         topic=result.topic,
@@ -4596,6 +4598,11 @@ def _therapy_idea_record_from_result(
             "review_mode": request.review_mode,
             "model_profile": request.model_profile,
             "source_brief_id": str(result.source_brief_id or request.brief_id) if result.source_brief_id or request.brief_id else None,
+            "source_program_id": (
+                str(result.source_program_id or request.program_id)
+                if result.source_program_id or request.program_id
+                else None
+            ),
             "source_evaluation_id": (
                 str(result.source_evaluation_id or request.evaluation_id)
                 if result.source_evaluation_id or request.evaluation_id
@@ -4607,6 +4614,9 @@ def _therapy_idea_record_from_result(
             "therapy_committee": {
                 "committee_run_id": str(result.committee_run_id),
                 "agent_run_id": str(result.agent_run_id) if result.agent_run_id else None,
+                "source_program_id": str(result.source_program_id or request.program_id)
+                if result.source_program_id or request.program_id
+                else None,
             }
         },
     )
