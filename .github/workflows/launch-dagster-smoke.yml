@@ -85,6 +85,11 @@ on:
         type: string
         required: true
         default: "prod"
+      location:
+        description: "Dagster Cloud code location to launch against"
+        type: string
+        required: true
+        default: "twog"
       x_linked_article_urls:
         description: "Optional comma/newline/JSON-list URLs for x_linked_article_followup_job manual validation"
         type: string
@@ -101,7 +106,7 @@ jobs:
       DAGSTER_CLOUD_URL: "https://twogbio.dagster.cloud"
       DAGSTER_CLOUD_DEPLOYMENT: ${{ inputs.deployment }}
       DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
-      DAGSTER_CLOUD_LOCATION: "hsa-dagster"
+      DAGSTER_CLOUD_LOCATION: ${{ inputs.location }}
       DAGSTER_CLOUD_JOB: ${{ inputs.job }}
       DAGSTER_CLOUD_CONFIG_JSON: ${{ inputs.config_json }}
       DAGSTER_CLOUD_RUN_TIMEOUT_SECONDS: ${{ inputs.timeout_seconds }}
@@ -207,9 +212,19 @@ jobs:
           locations = code_locations.get("items", [])
           job_items = jobs.get("items", [])
           job_names = sorted(str(item.get("name") or "") for item in job_items)
+          matching_jobs = [item for item in job_items if str(item.get("name") or "") == requested_job]
           found_job = any(name == requested_job for name in job_names)
           found_location = any(
               str(item.get("location_name") or "") == requested_location for item in locations
+          )
+          matching_origins = sorted(
+              str(item.get("repository_origin") or "") for item in matching_jobs
+          )
+          matching_origins = [origin for origin in matching_origins if origin]
+          found_job_in_location = (
+              found_job
+              if not matching_origins
+              else any(requested_location in origin for origin in matching_origins)
           )
 
           print("Registered Dagster code locations:")
@@ -226,6 +241,10 @@ jobs:
           print(f"Registered Dagster jobs: {len(job_names)}")
           if requested_job in job_names:
               print(f"Requested job is registered: {requested_job}")
+              if matching_origins:
+                  print("Requested job repository origins:")
+                  for origin in matching_origins:
+                      print(f"- {origin}")
           else:
               matches = difflib.get_close_matches(requested_job, job_names, n=8, cutoff=0.2)
               print(f"::error::Requested Dagster job is not registered: {requested_job}")
@@ -241,6 +260,11 @@ jobs:
 
           if not found_location:
               print(f"::error::Requested Dagster code location is not registered: {requested_location}")
+          if found_job and not found_job_in_location:
+              print(
+                  "::error::Requested Dagster job is registered, but not in the requested "
+                  f"code location: {requested_location}"
+              )
 
           summary_path = os.getenv("GITHUB_STEP_SUMMARY")
           if summary_path:
@@ -252,8 +276,9 @@ jobs:
                   summary.write(f"- Jobs: `{len(job_names)}`\n")
                   summary.write(f"- Job registered: `{found_job}`\n")
                   summary.write(f"- Location registered: `{found_location}`\n")
+                  summary.write(f"- Job registered in location: `{found_job_in_location}`\n")
 
-          if not found_job or not found_location:
+          if not found_job or not found_location or not found_job_in_location:
               sys.exit(1)
           PY
         shell: bash
