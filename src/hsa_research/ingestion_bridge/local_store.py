@@ -3445,8 +3445,6 @@ class SQLiteResearchRepository(ResearchRepository):
               on therapy_ideas(source_evaluation_id, updated_at desc);
             create index if not exists therapy_ideas_committee_idx
               on therapy_ideas(committee_run_id, updated_at desc);
-            create index if not exists therapy_ideas_program_idx
-              on therapy_ideas(source_program_id, updated_at desc);
 
             create table if not exists research_programs (
               program_id text primary key,

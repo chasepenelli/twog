@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
@@ -570,6 +571,38 @@ def test_therapy_idea_source_program_filter_round_trips_in_memory_and_sqlite(tmp
         assert HSAResearchService(repo).list_therapy_ideas(
             TherapyIdeaLibraryRequest(source_program_id=other_program.program_id)
         ).idea_count == 0
+
+
+def test_sqlite_therapy_ideas_schema_adds_source_program_id_to_existing_table(tmp_path):
+    db_path = tmp_path / "legacy-therapy-ideas.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            create table therapy_ideas (
+              therapy_idea_id text primary key,
+              committee_run_id text,
+              agent_run_id text,
+              source_brief_id text,
+              source_evaluation_id text,
+              topic text not null,
+              source_key text,
+              status text not null,
+              promotion_state text,
+              score real not null default 0.5,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp
+            )
+            """
+        )
+
+    repo = SQLiteResearchRepository(db_path, seed=False)
+    columns = {
+        str(row["name"])
+        for row in repo.conn.execute("pragma table_info(therapy_ideas)").fetchall()
+    }
+
+    assert "source_program_id" in columns
 
 
 def test_therapy_committee_blocks_missing_or_unready_research_program(tmp_path):
