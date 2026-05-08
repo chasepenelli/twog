@@ -8,6 +8,8 @@ from .contracts import SourceQuery
 
 _COMMON_SCHOLARLY_QUERY_PARAMS = {
     "comparative_policy",
+    "exact_identifier",
+    "exact_identifier_type",
     "require_policy_match",
     "published_after",
     "published_before",
@@ -78,7 +80,10 @@ _SOURCE_QUERY_PARAM_ALLOWLISTS: dict[str, set[str]] = {
     },
     "unpaywall": {
         "email",
+        "exact_identifier",
+        "exact_identifier_type",
         "is_oa",
+        "require_policy_match",
     },
     "clinicaltrials_gov": {
         "require_policy_match",
@@ -111,6 +116,9 @@ _SOURCE_QUERY_PARAM_ALLOWLISTS: dict[str, set[str]] = {
         "api_key",
         "db",
         "email",
+        "exact_identifier",
+        "exact_identifier_type",
+        "require_policy_match",
         "retstart",
         "sort",
         "tool",
@@ -119,6 +127,9 @@ _SOURCE_QUERY_PARAM_ALLOWLISTS: dict[str, set[str]] = {
         "api_key",
         "db",
         "email",
+        "exact_identifier",
+        "exact_identifier_type",
+        "require_policy_match",
         "retstart",
         "sort",
         "tool",
@@ -140,9 +151,11 @@ _SOURCE_QUERY_PARAM_ALLOWLISTS: dict[str, set[str]] = {
 _INTERNAL_QUERY_PARAM_KEYS = {
     "evidence_refs",
     "followup_lane",
+    "gene_symbols",
     "include_human_angiosarcoma",
     "lane",
     "lead_id",
+    "metadata",
     "operator",
     "origin_agent_run_id",
     "origin_evaluator_agent_run_id",
@@ -151,6 +164,7 @@ _INTERNAL_QUERY_PARAM_KEYS = {
     "priority",
     "queue_item_id",
     "required_terms",
+    "research_program_id",
     "refinement_attempt",
     "refinement_source",
     "source_pack_request",
@@ -162,7 +176,7 @@ _INTERNAL_QUERY_PARAM_KEYS = {
 def with_source_safe_query_params(query: SourceQuery) -> SourceQuery:
     """Return a query whose params are safe to pass to the external source API."""
 
-    if query.track not in {"validation_gap", "research_followup"}:
+    if query.track not in {"validation_gap", "research_followup", "omics_accession_hunt", "source_followup"}:
         return query
     safe_params = source_safe_query_params(query)
     if safe_params == query.query_params:

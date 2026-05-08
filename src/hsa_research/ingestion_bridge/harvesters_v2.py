@@ -249,12 +249,13 @@ class UnpaywallHarvesterV2(HarvesterV2):
 
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         params = dict(params)
+        exact_type, exact_identifier = _pop_exact_identifier(params)
         email = params.pop("email", None) or UNPAYWALL_EMAIL
         is_oa = params.pop("is_oa", True)
         require_policy_match = params.pop("require_policy_match", True)
         timeout_seconds = float(params.pop("timeout_seconds", DEFAULT_REQUEST_TIMEOUT_SECONDS))
         attempts = int(params.pop("attempts", DEFAULT_REQUEST_ATTEMPTS))
-        doi = _normalize_doi(query_text)
+        doi = exact_identifier if exact_type == "doi" else _normalize_doi(query_text)
         if _looks_like_doi(doi):
             data = _get_json(
                 f"https://api.unpaywall.org/v2/{urllib.parse.quote(str(doi), safe='')}",
@@ -366,7 +367,17 @@ class CrossrefHarvesterV2(ScholarlyHarvesterV2):
 
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         query_text, params = self.prepare_query(query_text, params)
+        exact_type, exact_identifier = _pop_exact_identifier(params)
         require_policy_match = params.pop("require_policy_match", True)
+        if exact_type == "doi" and _looks_like_doi(exact_identifier):
+            data = _get_json(
+                f"https://api.crossref.org/works/{urllib.parse.quote(str(exact_identifier), safe='')}",
+                {key: value for key, value in params.items() if key in {"mailto", "select"}},
+            )
+            message = data.get("message")
+            records = [self.normalize(message)] if isinstance(message, dict) else []
+            records = _filter_exact_identifier(records, exact_type, exact_identifier)
+            return self.filter_relevant(records, {"require_policy_match": require_policy_match})
         data = _get_json(
             "https://api.crossref.org/works",
             {
@@ -376,8 +387,10 @@ class CrossrefHarvesterV2(ScholarlyHarvesterV2):
             },
         )
         items = (data.get("message") or {}).get("items", [])
+        records = [self.normalize(item) for item in items]
+        records = _filter_exact_identifier(records, exact_type, exact_identifier)
         return self.filter_relevant(
-            [self.normalize(item) for item in items],
+            records,
             {"require_policy_match": require_policy_match},
         )
 
@@ -419,6 +432,7 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
 
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         query_text, params = self.prepare_query(query_text, params)
+        exact_type, exact_identifier = _pop_exact_identifier(params)
         open_access = params.pop("open_access", False)
         fetch_full_text = params.pop("fetch_full_text", open_access)
         published_after = params.pop("published_after", None)
@@ -431,6 +445,8 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
         require_policy_match = params.pop("require_policy_match", True)
         if open_access and "OPEN_ACCESS:" not in query_text.upper():
             query_text = f"({query_text}) AND OPEN_ACCESS:Y"
+        if exact_identifier:
+            query_text = _europe_pmc_exact_query(exact_type, exact_identifier)
         query_text = _europe_pmc_date_query(query_text, published_after, published_before)
         data = _get_json(
             "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
@@ -460,6 +476,7 @@ class EuropePMCHarvesterV2(ScholarlyHarvesterV2):
                     else None,
                 )
             )
+        records = _filter_exact_identifier(records, exact_type, exact_identifier)
         return self.filter_relevant(records, {"require_policy_match": require_policy_match})
 
     def filter_relevant(
@@ -567,25 +584,32 @@ class PubMedHarvesterV2(ScholarlyHarvesterV2):
 
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         query_text, params = self.prepare_query(query_text, params)
+        exact_type, exact_identifier = _pop_exact_identifier(params)
         require_policy_match = params.pop("require_policy_match", True)
-        search = _get_json(
-            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
-            {
-                "db": "pubmed",
-                "term": query_text,
-                "retmode": "json",
-                "retmax": min(limit, 200),
-                **params,
-            },
-        )
-        ids = (search.get("esearchresult") or {}).get("idlist", [])
+        if exact_type == "pmid" and exact_identifier:
+            ids = [exact_identifier]
+            efetch_params = _ncbi_identity_params(params)
+        else:
+            search = _get_json(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+                {
+                    "db": "pubmed",
+                    "term": query_text,
+                    "retmode": "json",
+                    "retmax": min(limit, 200),
+                    **params,
+                },
+            )
+            ids = (search.get("esearchresult") or {}).get("idlist", [])
+            efetch_params = _ncbi_identity_params(params)
         if not ids:
             return []
         xml = _get_text(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
-            {"db": "pubmed", "id": ",".join(ids), "retmode": "xml"},
+            {"db": "pubmed", "id": ",".join(ids), "retmode": "xml", **efetch_params},
         )
         records = [self.normalize(article) for article in ET.fromstring(xml).findall(".//PubmedArticle")]
+        records = _filter_exact_identifier(records, exact_type, exact_identifier)
         return self.filter_relevant(records, {"require_policy_match": require_policy_match})
 
     def normalize(self, article: ET.Element) -> HarvestedRecord:
@@ -644,6 +668,7 @@ class PMCOAHarvesterV2(ScholarlyHarvesterV2):
 
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         query_text, params = self.prepare_query(query_text, params)
+        exact_type, exact_identifier = _pop_exact_identifier(params)
         license_required = params.pop("license_required", True)
         skip_retracted = params.pop("skip_retracted", True)
         full_text_timeout_seconds = float(params.pop("full_text_timeout_seconds", FULL_TEXT_REQUEST_TIMEOUT_SECONDS))
@@ -655,6 +680,37 @@ class PMCOAHarvesterV2(ScholarlyHarvesterV2):
         published_after = params.pop("published_after", None)
         published_before = params.pop("published_before", None)
         require_policy_match = params.pop("require_policy_match", True)
+        exact_pmcid = _normalize_pmcid(exact_identifier) if exact_type == "pmcid" else None
+        if exact_pmcid:
+            try:
+                oa_metadata = _pmc_oa_metadata(
+                    exact_pmcid,
+                    timeout_seconds=full_text_timeout_seconds,
+                    attempts=full_text_attempts,
+                )
+                if not oa_metadata:
+                    return []
+                if license_required and not oa_metadata.get("oa_license"):
+                    return []
+                if skip_retracted and oa_metadata.get("retracted") == "yes":
+                    return []
+                xml = _get_text(
+                    "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/",
+                    {
+                        "verb": "GetRecord",
+                        "identifier": f"oai:pubmedcentral.nih.gov:{_pmcid_numeric(exact_pmcid)}",
+                        "metadataPrefix": "pmc",
+                    },
+                    timeout_seconds=full_text_timeout_seconds,
+                    attempts=full_text_attempts,
+                )
+                record = self.normalize(xml, pmcid=exact_pmcid, oa_metadata=oa_metadata, source_query=query_text)
+            except (ET.ParseError, RuntimeError, ValueError):
+                return []
+            records = _filter_exact_identifier([record], exact_type, exact_identifier)
+            if require_policy_match:
+                records = [record for record in records if _pmc_record_matches_policy(record)]
+            return records
         if license_required and "open access" not in query_text.lower():
             query_text = f"({query_text}) AND \"open access\"[filter]"
         params = _ncbi_date_params(params, published_after, published_before)
@@ -847,6 +903,7 @@ class ClinicalTrialsGovHarvesterV2(HarvesterV2):
 
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         params = dict(params)
+        _pop_exact_identifier(params)
         params.pop("comparative_policy", None)
         search_area = params.pop("search_area", "term")
         require_policy_match = params.pop("require_policy_match", True)
@@ -1350,6 +1407,9 @@ class GEOHarvesterV2(HarvesterV2):
 
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         params = dict(params)
+        exact_type, exact_identifier = _pop_exact_identifier(params)
+        require_policy_match = params.pop("require_policy_match", True)
+        params.pop("comparative_policy", None)
         db = params.pop("db", "gds")
         search = _get_json(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
@@ -1364,6 +1424,9 @@ class GEOHarvesterV2(HarvesterV2):
         )
         result = summary.get("result") or {}
         records = [self.normalize(result[uid]) for uid in result.get("uids", []) if uid in result]
+        records = _filter_exact_identifier(records, exact_type, exact_identifier)
+        if not require_policy_match:
+            return records
         return [
             record
             for record in records
@@ -1450,6 +1513,9 @@ class SRAHarvesterV2(HarvesterV2):
 
     def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
         params = dict(params)
+        exact_type, exact_identifier = _pop_exact_identifier(params)
+        require_policy_match = params.pop("require_policy_match", True)
+        params.pop("comparative_policy", None)
         db = params.pop("db", "sra")
         search = _get_json(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
@@ -1464,6 +1530,9 @@ class SRAHarvesterV2(HarvesterV2):
         )
         result = summary.get("result") or {}
         records = [self.normalize(result[uid]) for uid in result.get("uids", []) if uid in result]
+        records = _filter_exact_identifier(records, exact_type, exact_identifier)
+        if not require_policy_match:
+            return records
         return [
             record
             for record in records
@@ -2484,11 +2553,99 @@ def _normalize_doi(value: str | None) -> str | None:
         return None
     doi = value.strip()
     doi = re.sub(r"^https?://(dx\.)?doi\.org/", "", doi, flags=re.I)
-    return doi.lower() or None
+    doi = doi.split("?", 1)[0].split("#", 1)[0].rstrip(").,;:&")
+    for suffix in ("/full", "/abstract", "/pdf", "/epdf", "/html"):
+        if doi.lower().endswith(suffix):
+            doi = doi[: -len(suffix)]
+            break
+    return doi.lower().strip(".") or None
 
 
 def _looks_like_doi(value: str | None) -> bool:
     return bool(value and re.match(r"^10\.\d{4,9}/\S+$", value, flags=re.I))
+
+
+def _pop_exact_identifier(params: dict[str, Any]) -> tuple[str | None, str | None]:
+    identifier_type = str(params.pop("exact_identifier_type", "") or "").strip().lower() or None
+    raw_identifier = params.pop("exact_identifier", None)
+    if raw_identifier is None:
+        return identifier_type, None
+    return identifier_type, _normalize_exact_identifier(identifier_type, str(raw_identifier))
+
+
+def _normalize_exact_identifier(identifier_type: str | None, identifier: str | None) -> str | None:
+    if not identifier:
+        return None
+    text = str(identifier).strip()
+    if not text:
+        return None
+    if identifier_type == "doi":
+        return _normalize_doi(text)
+    if identifier_type == "pmcid":
+        return _normalize_pmcid(text)
+    if identifier_type in {"geo", "sra", "nct", "bioproject", "biosample"}:
+        return text.upper()
+    return text
+
+
+def _filter_exact_identifier(
+    records: list[HarvestedRecord],
+    identifier_type: str | None,
+    identifier: str | None,
+) -> list[HarvestedRecord]:
+    if not identifier_type or not identifier:
+        return records
+    return [
+        record
+        for record in records
+        if _record_matches_exact_identifier(record, identifier_type, identifier)
+    ]
+
+
+def _record_matches_exact_identifier(
+    record: HarvestedRecord,
+    identifier_type: str,
+    identifier: str,
+) -> bool:
+    identifiers = record.research_object.identifiers or {}
+    target = _normalize_exact_identifier(identifier_type, identifier)
+    if not target:
+        return False
+    if identifier_type == "doi":
+        return any(_normalize_doi(str(value)) == target for key, value in identifiers.items() if key.lower() == "doi")
+    if identifier_type == "pmcid":
+        return any(
+            _normalize_pmcid(str(value)) == target
+            for key, value in identifiers.items()
+            if key.lower() in {"pmcid", "pmc"}
+        )
+    if identifier_type == "pmid":
+        return str(identifiers.get("pmid") or "").strip() == target
+    if identifier_type == "geo":
+        keys = {"geo_accession", "gse", "gds", "geo_uid"}
+        return any(str(value).strip().upper() == target for key, value in identifiers.items() if key in keys)
+    if identifier_type == "sra":
+        keys = {"sra_experiment", "sra_study", "sra_sample", "sra_run", "sra_uid", "bioproject", "biosample"}
+        return any(str(value).strip().upper() == target for key, value in identifiers.items() if key in keys)
+    return any(str(value).strip().casefold() == target.casefold() for value in identifiers.values())
+
+
+def _europe_pmc_exact_query(identifier_type: str | None, identifier: str) -> str:
+    if identifier_type == "doi":
+        return f'DOI:"{identifier}"'
+    if identifier_type == "pmid":
+        return f"EXT_ID:{identifier}"
+    if identifier_type == "pmcid":
+        return f'PMCID:"{identifier}"'
+    return identifier
+
+
+def _ncbi_identity_params(params: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in params.items()
+        if key in {"api_key", "tool", "email"} and value is not None
+    }
 
 
 def _strip_url_id(value: str | None) -> str | None:

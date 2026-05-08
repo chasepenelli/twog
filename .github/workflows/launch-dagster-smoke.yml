@@ -30,6 +30,7 @@ on:
           - "research_program_board_job"
           - "research_program_library_job"
           - "research_program_evidence_loop_job"
+          - "omics_accession_hunt_job"
           - "research_brief_agent_job"
           - "therapy_committee_job"
           - "therapy_committee_validation_queue_job"
@@ -651,6 +652,65 @@ jobs:
                   summary.write(f"- Source queries: `{payload['source_query_count']}`\n")
                   for item in payload["queue_items"][:5]:
                       summary.write(f"- Brief `{item['status']}` `{item['queue_item_id']}`: {item['topic']}\n")
+          PY
+        shell: bash
+
+      - name: Print hosted omics accession hunt summary
+        if: ${{ always() && inputs.job == 'omics_accession_hunt_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+
+          from hsa_research.ingestion_bridge.contracts import OmicsAccessionHuntRequest
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          raw_config = os.getenv("DAGSTER_CLOUD_CONFIG_JSON") or "{}"
+          try:
+              config = json.loads(raw_config)
+          except json.JSONDecodeError:
+              config = {}
+          report_config = (
+              (config.get("ops") or {})
+              .get("omics_accession_hunt_report", {})
+              .get("config", {})
+          )
+          service = HSAResearchService(build_research_repository())
+          report = service.run_omics_accession_hunt(
+              OmicsAccessionHuntRequest(
+                  program_id=report_config.get("program_id") or None,
+                  topic_query=report_config.get("topic_query")
+                  or "canine hemangiosarcoma human angiosarcoma VIM vimentin transcriptome RNA-seq expression",
+                  disease_terms=report_config.get("disease_terms") or [
+                      "canine hemangiosarcoma",
+                      "dog hemangiosarcoma",
+                      "human angiosarcoma",
+                      "angiosarcoma",
+                  ],
+                  gene_symbols=report_config.get("gene_symbols") or ["VIM", "vimentin"],
+                  source_keys=report_config.get("source_keys") or ["geo", "sra"],
+                  query_texts=report_config.get("query_texts") or [],
+                  limit_per_query=int(report_config.get("limit_per_query") or 5),
+                  max_queries=int(report_config.get("max_queries") or 8),
+                  persist_queries=False,
+                  dry_run=True,
+              )
+          )
+          payload = {
+              "dagster_run_id": os.getenv("DAGSTER_CLOUD_RUN_ID"),
+              "planned_query_count": report.query_count,
+              "planned_source_queries": [
+                  {
+                      "source_key": query.source_key,
+                      "query_name": query.query_name,
+                      "query_text": query.query_text,
+                  }
+                  for query in report.source_queries
+              ],
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
           PY
         shell: bash
 

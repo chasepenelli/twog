@@ -4048,6 +4048,74 @@ class ResearchProgramEvidenceLoopResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class OmicsAccessionHit(StrictBaseModel):
+    source_key: str
+    accession: str
+    identifier_type: Literal["geo", "sra", "bioproject", "biosample"]
+    research_object_id: UUID | None = None
+    title: str | None = None
+    canonical_url: str | None = None
+    organism: str | None = None
+    sample_count: int | None = None
+    library_strategy: str | None = None
+    bioproject: str | None = None
+    pmid: str | None = None
+    matched_terms: list[str] = Field(default_factory=list)
+    source_query_name: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class OmicsAccessionHuntRequest(StrictBaseModel):
+    topic_query: str = (
+        "canine hemangiosarcoma human angiosarcoma VIM vimentin transcriptome RNA-seq expression"
+    )
+    program_id: UUID | None = None
+    disease_terms: list[str] = Field(
+        default_factory=lambda: [
+            "canine hemangiosarcoma",
+            "dog hemangiosarcoma",
+            "human angiosarcoma",
+            "angiosarcoma",
+        ],
+        max_length=25,
+    )
+    gene_symbols: list[str] = Field(default_factory=lambda: ["VIM", "vimentin"], max_length=25)
+    source_keys: list[str] = Field(default_factory=lambda: ["geo", "sra"], max_length=5)
+    query_texts: list[str] = Field(default_factory=list, max_length=25)
+    limit_per_query: int = Field(default=5, ge=1, le=50)
+    max_queries: int = Field(default=8, ge=1, le=50)
+    persist_queries: bool = True
+    dry_run: bool = False
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_omics_accession_hunt_request(self) -> "OmicsAccessionHuntRequest":
+        self.topic_query = self.topic_query.strip()
+        self.disease_terms = _dedupe_strings(self.disease_terms)
+        self.gene_symbols = _dedupe_strings(self.gene_symbols)
+        self.source_keys = _dedupe_lower_tokens(self.source_keys) or ["geo", "sra"]
+        self.query_texts = _dedupe_strings(self.query_texts)
+        return self
+
+
+class OmicsAccessionHuntResult(StrictBaseModel):
+    program_id: UUID | None = None
+    dry_run: bool = False
+    query_count: int = 0
+    source_query_count: int = 0
+    raw_records: int = 0
+    research_objects: int = 0
+    document_chunks: int = 0
+    accession_hit_count: int = 0
+    source_queries: list[SourceQuery] = Field(default_factory=list)
+    ingestion_results: list[IngestionResult] = Field(default_factory=list)
+    accession_hits: list[OmicsAccessionHit] = Field(default_factory=list)
+    negative_queries: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ValidationAutopilotRequest(StrictBaseModel):
     enabled: bool = True
     dry_run: bool = True

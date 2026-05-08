@@ -108,6 +108,8 @@ from .contracts import (
     ResearchObject,
     ResearchObjectReadRequest,
     ResearchObjectReadResult,
+    OmicsAccessionHuntRequest,
+    OmicsAccessionHuntResult,
     ResearchProgramBoardRequest,
     ResearchProgramBoardResult,
     ResearchProgramEvidenceTask,
@@ -199,6 +201,7 @@ from .evidence_gap_resolver import (
 from .full_text_ops import FULL_TEXT_OPS_AGENT_NAME, FULL_TEXT_OPS_AGENT_VERSION, FullTextOpsAgent
 from .full_text_triage import FullTextTriageAgent
 from .model_policy import BIG_IDEA_OPENROUTER_MODEL, DEFAULT_OPENROUTER_MODEL
+from .omics_accession_hunt import run_omics_accession_hunt
 from .research_brief_agent import (
     PERSPECTIVE_ORDER,
     RESEARCH_BRIEF_AGENT_VERSION,
@@ -1141,6 +1144,12 @@ class HSAResearchService:
             program=updated_program,
             errors=[error for task_result in task_results for error in task_result.errors],
         )
+
+    def run_omics_accession_hunt(
+        self,
+        request: OmicsAccessionHuntRequest | None = None,
+    ) -> OmicsAccessionHuntResult:
+        return run_omics_accession_hunt(self.repository, request or OmicsAccessionHuntRequest())
 
     def _select_research_program_for_evidence_loop(
         self,
@@ -8222,9 +8231,9 @@ def _research_hunt_source_followup_items_for_identifier(
     if not identifier:
         return []
     source_keys_by_identifier = {
-        "doi": ["unpaywall", "crossref"],
-        "pmid": ["pubmed"],
-        "pmcid": ["pmc_oa"],
+        "doi": ["europe_pmc", "unpaywall", "crossref"],
+        "pmid": ["europe_pmc", "pubmed"],
+        "pmcid": ["pmc_oa", "europe_pmc"],
         "nct": ["clinicaltrials_gov"],
     }
     source_keys = source_keys_by_identifier.get(identifier_type, [])
@@ -8903,6 +8912,9 @@ def _source_followup_items_for_research_object(
         ("pmcid", "pmc_oa", "pmcid_full_text"),
         ("pmid", "pubmed", "pubmed_metadata_fallback"),
         ("doi", "unpaywall", "doi_open_access_fallback"),
+        ("pmcid", "europe_pmc", "pmcid_europe_pmc_fallback"),
+        ("pmid", "europe_pmc", "pmid_europe_pmc_fallback"),
+        ("doi", "europe_pmc", "doi_europe_pmc_full_text_fallback"),
         ("doi", "crossref", "doi_metadata_fallback"),
     ]
     for identifier_type, source_key, fallback_type in identifier_targets:

@@ -26,6 +26,7 @@ from .contracts import (
     FullTextTriageRequest,
     FullTextOpsRequest,
     HypothesisPromotionReportRequest,
+    OmicsAccessionHuntRequest,
     PubMedIdentifierRepairRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
@@ -802,6 +803,25 @@ def main() -> None:
         help="OpenRouter model id; repeatable",
     )
     research_program_evidence_loop.add_argument("--dry-run", action="store_true", help="Preview without persisting")
+
+    omics_accession_hunt = subparsers.add_parser(
+        "omics-accession-hunt",
+        help="Run a bounded GEO/SRA accession hunt for omics evidence gaps",
+    )
+    omics_accession_hunt.add_argument("--program-id", default=None, help="Research program ID")
+    omics_accession_hunt.add_argument(
+        "--query",
+        default="canine hemangiosarcoma human angiosarcoma VIM vimentin transcriptome RNA-seq expression",
+        help="Fallback topic query",
+    )
+    omics_accession_hunt.add_argument("--source", action="append", default=[], help="Source key; repeatable")
+    omics_accession_hunt.add_argument("--disease-term", action="append", default=[], help="Disease term; repeatable")
+    omics_accession_hunt.add_argument("--gene", action="append", default=[], help="Gene/term; repeatable")
+    omics_accession_hunt.add_argument("--query-text", action="append", default=[], help="Exact source query; repeatable")
+    omics_accession_hunt.add_argument("--limit-per-query", type=int, default=5)
+    omics_accession_hunt.add_argument("--max-queries", type=int, default=8)
+    omics_accession_hunt.add_argument("--no-persist-queries", action="store_true")
+    omics_accession_hunt.add_argument("--dry-run", action="store_true")
 
     x_topic_monitor = subparsers.add_parser(
         "x-topic-monitor",
@@ -2166,6 +2186,26 @@ def main() -> None:
                 model_profile=args.model_profile,
                 review_mode=args.review_mode,
                 review_models=args.review_model,
+                dry_run=args.dry_run,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "omics-accession-hunt":
+        output = HSAResearchService(repo).run_omics_accession_hunt(
+            OmicsAccessionHuntRequest(
+                program_id=UUID(args.program_id) if args.program_id else None,
+                topic_query=args.query,
+                source_keys=args.source or ["geo", "sra"],
+                disease_terms=args.disease_term or [
+                    "canine hemangiosarcoma",
+                    "dog hemangiosarcoma",
+                    "human angiosarcoma",
+                    "angiosarcoma",
+                ],
+                gene_symbols=args.gene or ["VIM", "vimentin"],
+                query_texts=args.query_text,
+                limit_per_query=args.limit_per_query,
+                max_queries=args.max_queries,
+                persist_queries=not args.no_persist_queries,
                 dry_run=args.dry_run,
             )
         ).model_dump(mode="json")

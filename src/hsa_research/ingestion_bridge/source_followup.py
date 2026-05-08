@@ -26,10 +26,13 @@ from .repository import ResearchRepository
 
 SUPPORTED_FOLLOWUP_SOURCES = {
     "crossref": {"doi"},
+    "europe_pmc": {"doi", "pmid", "pmcid"},
     "pubmed": {"pmid"},
     "pmc_oa": {"pmcid"},
     "clinicaltrials_gov": {"nct"},
     "unpaywall": {"doi"},
+    "geo": {"geo"},
+    "sra": {"sra"},
 }
 X_LINKED_ARTICLE_REVIEW_AGENT_NAME = "x_linked_article_review_agent"
 X_TOPIC_REVIEW_AGENT_NAME = "x_topic_review_agent"
@@ -172,6 +175,7 @@ def ingest_source_followups(
             result.raw_records += ingestion.raw_records
             result.research_objects += ingestion.research_objects
             result.document_chunks += ingestion.document_chunks
+            exact_match_count = _exact_identifier_match_count(repository, item)
             if ingestion.errors or ingestion.raw_records < 1:
                 message = "; ".join(ingestion.errors) or "No records returned for follow-up identifier"
                 fallback_items = _queue_pmc_metadata_fallbacks(repository, item, approved_by=request.approved_by)
@@ -200,12 +204,32 @@ def ingest_source_followups(
                 result.errors.append(f"{item.source_key}:{item.identifier}: {message}")
                 result.items.append(_item_result(updated or item, error=message, report=item_report))
                 continue
+            if exact_match_count == 0:
+                message = (
+                    "Exact identifier retrieval returned records, but none matched "
+                    f"{item.identifier_type}:{item.identifier}; refusing substituted source."
+                )
+                updated = repository.update_source_followup(
+                    item.followup_id,
+                    status="failed",
+                    attempts=attempts,
+                    last_error=message,
+                    metadata={"last_ingestion_report": item_report, "exact_identifier_match_count": 0},
+                )
+                result.failed += 1
+                result.errors.append(f"{item.source_key}:{item.identifier}: {message}")
+                result.items.append(_item_result(updated or item, error=message, report=item_report))
+                continue
             updated = repository.update_source_followup(
                 item.followup_id,
                 status="ingested",
                 attempts=attempts,
                 last_error=None,
-                metadata={"last_ingestion_report": item_report, "approved_by": request.approved_by},
+                metadata={
+                    "last_ingestion_report": item_report,
+                    "approved_by": request.approved_by,
+                    "exact_identifier_match_count": exact_match_count,
+                },
             )
             result.ingested += 1
             ingested_sources.add(item.source_key)
@@ -571,9 +595,15 @@ def _find_existing_followup(
 
 
 def _query_for_followup(item: SourceFollowupQueueItem) -> SourceQuery:
-    query_params: dict[str, Any] = {"require_policy_match": False}
-    if item.source_key in {"crossref", "pubmed", "pmc_oa"}:
+    query_params: dict[str, Any] = {
+        "require_policy_match": False,
+        "exact_identifier_type": item.identifier_type,
+        "exact_identifier": item.identifier,
+    }
+    if item.source_key in {"crossref", "europe_pmc", "geo", "pubmed", "pmc_oa", "sra"}:
         query_params["comparative_policy"] = "disabled"
+    if item.source_key == "europe_pmc":
+        query_params["fetch_full_text"] = True
     if item.source_key == "pmc_oa":
         query_params["license_required"] = True
         query_params["max_candidate_records"] = 5
@@ -583,13 +613,69 @@ def _query_for_followup(item: SourceFollowupQueueItem) -> SourceQuery:
         query_text=item.identifier,
         query_params=query_params,
         track="source_followup",
-        object_type=(
-            ResearchObjectType.CLINICAL_TRIAL
-            if item.source_key == "clinicaltrials_gov"
-            else ResearchObjectType.PUBLICATION
-        ),
+        object_type=_followup_object_type(item.source_key),
         active=False,
     )
+
+
+def _followup_object_type(source_key: str) -> ResearchObjectType:
+    if source_key == "clinicaltrials_gov":
+        return ResearchObjectType.CLINICAL_TRIAL
+    if source_key in {"geo", "sra"}:
+        return ResearchObjectType.DATASET
+    return ResearchObjectType.PUBLICATION
+
+
+def _exact_identifier_match_count(repository: ResearchRepository, item: SourceFollowupQueueItem) -> int:
+    if item.identifier_type == "unknown":
+        return 0
+    objects = repository.list_research_objects(source_key=item.source_key, limit=1000)
+    return sum(1 for obj in objects if _research_object_matches_identifier(obj, item.identifier_type, item.identifier))
+
+
+def _research_object_matches_identifier(
+    obj: ResearchObject,
+    identifier_type: str,
+    identifier: str,
+) -> bool:
+    target = _normalize_identifier_for_match(identifier_type, identifier)
+    if not target:
+        return False
+    identifiers = obj.identifiers or {}
+    if identifier_type == "doi":
+        return any(
+            _normalize_identifier_for_match("doi", str(value)) == target
+            for key, value in identifiers.items()
+            if key.lower() == "doi"
+        )
+    if identifier_type == "pmcid":
+        return any(
+            _normalize_identifier_for_match("pmcid", str(value)) == target
+            for key, value in identifiers.items()
+            if key.lower() in {"pmcid", "pmc"}
+        )
+    if identifier_type == "pmid":
+        return str(identifiers.get("pmid") or "").strip() == target
+    if identifier_type == "geo":
+        keys = {"geo_accession", "gse", "gds", "geo_uid"}
+        return any(str(value).strip().upper() == target for key, value in identifiers.items() if key in keys)
+    if identifier_type == "sra":
+        keys = {"sra_experiment", "sra_study", "sra_sample", "sra_run", "sra_uid", "bioproject", "biosample"}
+        return any(str(value).strip().upper() == target for key, value in identifiers.items() if key in keys)
+    return any(str(value).strip().casefold() == target.casefold() for value in identifiers.values())
+
+
+def _normalize_identifier_for_match(identifier_type: str, identifier: str) -> str | None:
+    if not identifier:
+        return None
+    if identifier_type == "doi":
+        return _normalize_doi(identifier)
+    if identifier_type == "pmcid":
+        text = identifier.strip().upper()
+        return text if text.startswith("PMC") else f"PMC{text}"
+    if identifier_type in {"geo", "sra", "nct"}:
+        return identifier.strip().upper()
+    return identifier.strip()
 
 
 def _item_result(

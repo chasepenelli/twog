@@ -23,6 +23,7 @@ from .contracts import (
     EvidenceGapResolverRequest,
     FullTextOpsRequest,
     HypothesisPromotionReportRequest,
+    OmicsAccessionHuntRequest,
     PubMedIdentifierRepairRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
@@ -326,6 +327,18 @@ _RESEARCH_PROGRAM_EVIDENCE_LOOP_TABLE_COLUMNS = (
     "selected_source_keys",
     "source_query_count",
     "errors",
+)
+_OMICS_ACCESSION_HUNT_TABLE_COLUMNS = (
+    "source_key",
+    "accession",
+    "identifier_type",
+    "organism",
+    "sample_count",
+    "library_strategy",
+    "bioproject",
+    "pmid",
+    "matched_terms",
+    "title",
 )
 _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS = (
     "brief_id",
@@ -1279,6 +1292,37 @@ if dg is not None:
             "brief_queue_count": dg.MetadataValue.int(int(report.get("brief_queue_count", 0))),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "task_results": _metadata_table(rows, _RESEARCH_PROGRAM_EVIDENCE_LOOP_TABLE_COLUMNS),
+        }
+
+    def _omics_accession_hunt_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = []
+        for hit in report.get("accession_hits", []):
+            rows.append(
+                {
+                    "source_key": hit.get("source_key"),
+                    "accession": hit.get("accession"),
+                    "identifier_type": hit.get("identifier_type"),
+                    "organism": hit.get("organism"),
+                    "sample_count": hit.get("sample_count"),
+                    "library_strategy": hit.get("library_strategy"),
+                    "bioproject": hit.get("bioproject"),
+                    "pmid": hit.get("pmid"),
+                    "matched_terms": ", ".join(hit.get("matched_terms") or []),
+                    "title": str(hit.get("title") or "")[:300],
+                }
+            )
+        return {
+            "program_id": report.get("program_id"),
+            "dry_run": bool(report.get("dry_run", False)),
+            "query_count": dg.MetadataValue.int(int(report.get("query_count", 0))),
+            "raw_records": dg.MetadataValue.int(int(report.get("raw_records", 0))),
+            "research_objects": dg.MetadataValue.int(int(report.get("research_objects", 0))),
+            "document_chunks": dg.MetadataValue.int(int(report.get("document_chunks", 0))),
+            "accession_hit_count": dg.MetadataValue.int(int(report.get("accession_hit_count", 0))),
+            "negative_query_count": dg.MetadataValue.int(len(report.get("negative_queries", []))),
+            "negative_queries": dg.MetadataValue.json(report.get("negative_queries", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "accession_hits": _metadata_table(rows, _OMICS_ACCESSION_HUNT_TABLE_COLUMNS),
         }
 
     def _research_brief_library_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -3704,6 +3748,60 @@ if dg is not None:
             value=report,
             metadata=_research_program_evidence_loop_metadata(report),
         )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "program_id": dg.Field(str, is_required=False),
+            "topic_query": dg.Field(
+                str,
+                default_value=(
+                    "canine hemangiosarcoma human angiosarcoma VIM vimentin "
+                    "transcriptome RNA-seq expression"
+                ),
+            ),
+            "disease_terms": dg.Field([str], default_value=[]),
+            "gene_symbols": dg.Field([str], default_value=[]),
+            "source_keys": dg.Field([str], default_value=["geo", "sra"]),
+            "query_texts": dg.Field([str], default_value=[]),
+            "limit_per_query": dg.Field(int, default_value=5),
+            "max_queries": dg.Field(int, default_value=8),
+            "persist_queries": dg.Field(bool, default_value=True),
+            "dry_run": dg.Field(bool, default_value=False),
+        },
+    )
+    def omics_accession_hunt_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual bounded GEO/SRA accession hunt for omics evidence gaps."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).run_omics_accession_hunt(
+            OmicsAccessionHuntRequest(
+                program_id=UUID(config["program_id"]) if config.get("program_id") else None,
+                topic_query=config["topic_query"],
+                disease_terms=config.get("disease_terms") or [
+                    "canine hemangiosarcoma",
+                    "dog hemangiosarcoma",
+                    "human angiosarcoma",
+                    "angiosarcoma",
+                ],
+                gene_symbols=config.get("gene_symbols") or ["VIM", "vimentin"],
+                source_keys=config.get("source_keys") or ["geo", "sra"],
+                query_texts=config.get("query_texts") or [],
+                limit_per_query=config["limit_per_query"],
+                max_queries=config["max_queries"],
+                persist_queries=config["persist_queries"],
+                dry_run=config["dry_run"],
+                dagster_run_id=context.run_id,
+                metadata={"dagster_omics_accession_hunt_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_omics_accession_hunt_metadata(report))
 
     @dg.asset(
         group_name="ai_research",
@@ -6397,6 +6495,7 @@ if dg is not None:
         research_program_board_report,
         research_program_library_report,
         research_program_evidence_loop_report,
+        omics_accession_hunt_report,
         therapy_committee_validation_queue_report,
         research_brief_library_report,
         research_brief_evaluation_report,
@@ -6575,6 +6674,10 @@ if dg is not None:
     research_program_evidence_loop_job = dg.define_asset_job(
         "research_program_evidence_loop_job",
         selection=dg.AssetSelection.assets(research_program_evidence_loop_report),
+    )
+    omics_accession_hunt_job = dg.define_asset_job(
+        "omics_accession_hunt_job",
+        selection=dg.AssetSelection.assets(omics_accession_hunt_report),
     )
     therapy_committee_validation_queue_job = dg.define_asset_job(
         "therapy_committee_validation_queue_job",
@@ -6926,6 +7029,7 @@ if dg is not None:
             research_program_board_job,
             research_program_library_job,
             research_program_evidence_loop_job,
+            omics_accession_hunt_job,
             therapy_committee_validation_queue_job,
             research_brief_library_job,
             research_brief_evaluation_job,
@@ -7025,6 +7129,7 @@ else:
     research_program_board_job = None
     research_program_library_job = None
     research_program_evidence_loop_job = None
+    omics_accession_hunt_job = None
     therapy_committee_validation_queue_job = None
     research_brief_library_job = None
     research_brief_evaluation_job = None

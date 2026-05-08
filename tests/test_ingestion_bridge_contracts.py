@@ -50,6 +50,8 @@ from hsa_research.ingestion_bridge.contracts import (
     HypothesisPromotionReportRequest,
     HypothesisProposalRequest,
     IngestionResult,
+    OmicsAccessionHuntRequest,
+    OmicsAccessionHuntResult,
     RawSourceRecord,
     ResearchChunkSearchRequest,
     ResearchObject,
@@ -173,6 +175,7 @@ from hsa_research.ingestion_bridge import full_text_ops
 from hsa_research.ingestion_bridge import research_brief_evaluation
 from hsa_research.ingestion_bridge import research_followup_resolver
 from hsa_research.ingestion_bridge import pubmed_identifier_repair
+from hsa_research.ingestion_bridge import omics_accession_hunt
 from hsa_research.ingestion_bridge import research_brief_agent
 from hsa_research.ingestion_bridge import model_policy
 from hsa_research.ingestion_bridge import research_program_board
@@ -1069,6 +1072,76 @@ def test_research_program_evidence_loop_dry_run_and_max_loop_block():
     )
     assert blocked.blocked is True
     assert "max_evidence_loops" in blocked.errors[0]
+
+
+def test_omics_accession_hunt_ingests_and_reports_accessions(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "omics-hunt.sqlite3", seed=False)
+
+    class FakePipeline:
+        def __init__(self, repository):
+            self.repository = repository
+
+        def ingest_query(self, query, limit=5, persist_query=True):
+            if persist_query:
+                self.repository.upsert_source_query(query)
+            if query.source_key == "geo":
+                raw_id = self.repository.upsert_raw_record(
+                    RawSourceRecord(
+                        source_key="geo",
+                        source_record_id="GSE310480",
+                        content_hash="geo-hunt",
+                        raw_payload={"accession": "GSE310480"},
+                    )
+                )
+                self.repository.upsert_research_object(
+                    ResearchObject(
+                        object_type=ResearchObjectType.DATASET,
+                        title="MicroRNA biomarkers for canine visceral hemangiosarcoma",
+                        abstract="Canine visceral hemangiosarcoma RNA-seq expression data.",
+                        source_key="geo",
+                        dedupe_key="geo_accession:gse310480",
+                        identifiers={"geo_accession": "GSE310480", "bioproject": "PRJNA1366394"},
+                        metadata={"taxon": "Canis lupus familiaris", "sample_count": 36},
+                    ),
+                    raw_id,
+                )
+                return IngestionResult(
+                    source_key=query.source_key,
+                    query_name=query.query_name,
+                    query_text=query.query_text,
+                    fetch_run_id=uuid4(),
+                    raw_records=1,
+                    research_objects=1,
+                    document_chunks=1,
+                )
+            return IngestionResult(
+                source_key=query.source_key,
+                query_name=query.query_name,
+                query_text=query.query_text,
+                fetch_run_id=uuid4(),
+                raw_records=0,
+                research_objects=0,
+                document_chunks=0,
+            )
+
+    monkeypatch.setattr(omics_accession_hunt, "LocalIngestionPipeline", FakePipeline)
+
+    result = HSAResearchService(repo).run_omics_accession_hunt(
+        OmicsAccessionHuntRequest(
+            source_keys=["geo", "sra"],
+            query_texts=["canine hemangiosarcoma RNA-seq"],
+            limit_per_query=2,
+            max_queries=2,
+        )
+    )
+
+    assert isinstance(result, OmicsAccessionHuntResult)
+    assert result.query_count == 2
+    assert result.raw_records == 1
+    assert result.accession_hit_count == 1
+    assert result.accession_hits[0].accession == "GSE310480"
+    assert result.accession_hits[0].bioproject == "PRJNA1366394"
+    assert result.negative_queries[0]["source_key"] == "sra"
 
 
 def test_model_policy_uses_sonnet_for_operations_and_opus_for_big_ideas(monkeypatch):
@@ -10203,12 +10276,19 @@ def test_research_followup_loop_queues_identifier_followups_and_records_claims(m
             self.repository = repository
 
         def ingest_query(self, query, limit, persist_query=True):
+            identifier_type = str(query.query_params.get("exact_identifier_type") or "pmid").lower()
+            identifier = str(query.query_params.get("exact_identifier") or "33110170")
+            identifiers = {identifier_type: identifier}
+            if identifier_type == "pmcid":
+                identifiers["pmcid"] = identifier
+            if identifier_type == "doi":
+                identifiers["doi"] = identifier
             fetch_run_id = persist_record(
                 self.repository,
                 query.source_key,
                 query.query_name,
                 f"Identifier fallback {query.source_key}",
-                {"pmid": "33110170"},
+                identifiers,
                 "full_text" if query.source_key == "pmc_oa" else "metadata",
             )
             return IngestionResult(
@@ -11015,11 +11095,14 @@ def test_research_hunt_source_followup_task_queues_identifier_followups(monkeypa
     queued_identities = {item.identity_key for item in queued}
 
     assert result.completed_count == 1
-    assert result.items[0]["source_followup"]["queued_count"] == 4
-    assert len(captured["request"].followup_ids) == 4
+    assert result.items[0]["source_followup"]["queued_count"] == 7
+    assert len(captured["request"].followup_ids) == 7
     assert "pubmed:pmid:26062540" in queued_identities
+    assert "europe_pmc:pmid:26062540" in queued_identities
     assert "pmc_oa:pmcid:pmc3837095" in queued_identities
+    assert "europe_pmc:pmcid:pmc3837095" in queued_identities
     assert "crossref:doi:10.1186/s12917-015-0446-1" in queued_identities
+    assert "europe_pmc:doi:10.1186/s12917-015-0446-1" in queued_identities
     assert "unpaywall:doi:10.1186/s12917-015-0446-1" in queued_identities
 
 
@@ -14367,6 +14450,45 @@ def test_geo_v2_normalizer_extracts_dataset_metadata():
     assert "Cancer spleen 1" in harvester.text_for_chunking(record)
 
 
+def test_geo_v2_exact_identifier_filters_substitutions(monkeypatch):
+    calls = []
+
+    def fake_get_json(url, params):
+        calls.append((url, params))
+        if "esearch.fcgi" in url:
+            return {"esearchresult": {"idlist": ["1", "2"]}}
+        return {
+            "result": {
+                "uids": ["1", "2"],
+                "1": {
+                    "uid": "1",
+                    "accession": "GSE111111",
+                    "title": "Nearby canine hemangiosarcoma dataset",
+                    "summary": "Canine hemangiosarcoma RNA-seq.",
+                },
+                "2": {
+                    "uid": "2",
+                    "accession": "GSE222222",
+                    "title": "Requested canine hemangiosarcoma dataset",
+                    "summary": "Canine hemangiosarcoma RNA-seq.",
+                },
+            }
+        }
+
+    monkeypatch.setattr(harvesters_v2, "_get_json", fake_get_json)
+
+    records = GEOHarvesterV2().fetch(
+        "GSE222222",
+        limit=5,
+        exact_identifier_type="geo",
+        exact_identifier="GSE222222",
+        require_policy_match=False,
+    )
+
+    assert [record.research_object.identifiers["geo_accession"] for record in records] == ["GSE222222"]
+    assert calls[0][1]["term"] == "GSE222222"
+
+
 def test_sra_v2_normalizer_extracts_run_metadata():
     item = {
         "uid": "42394755",
@@ -14409,6 +14531,45 @@ def test_sra_v2_normalizer_extracts_run_metadata():
     assert record.research_object.metadata["statistics"]["total_spots"] == "26421116"
     assert record.research_object.metadata["ingestion_policy"]["matched_concepts"] == ["canine_hsa"]
     assert "SRR36719144" in harvester.text_for_chunking(record)
+
+
+def test_sra_v2_exact_identifier_matches_runs_and_experiments(monkeypatch):
+    def fake_get_json(url, params):
+        if "esearch.fcgi" in url:
+            return {"esearchresult": {"idlist": ["1"]}}
+        return {
+            "result": {
+                "uids": ["1"],
+                "1": {
+                    "uid": "1",
+                    "expxml": """
+                      <Summary><Title>Canine hemangiosarcoma RNA-seq</Title></Summary>
+                      <Experiment acc="SRX31723477" name="Canine hemangiosarcoma"/>
+                      <Study acc="SRP660537" name="Canine hemangiosarcoma primary cell RNA sequencing"/>
+                      <Organism taxid="9615" ScientificName="Canis lupus familiaris"/>
+                      <Sample acc="SRS27692090"/>
+                      <Library_descriptor><LIBRARY_STRATEGY>RNA-Seq</LIBRARY_STRATEGY></Library_descriptor>
+                      <Bioproject>PRJNA1399620</Bioproject>
+                    """,
+                    "runs": '<Run acc="SRR36719144" total_spots="1"/>',
+                    "createdate": "2026/03/31",
+                    "updatedate": "2026/01/07",
+                },
+            }
+        }
+
+    monkeypatch.setattr(harvesters_v2, "_get_json", fake_get_json)
+
+    records = SRAHarvesterV2().fetch(
+        "SRR36719144",
+        limit=5,
+        exact_identifier_type="sra",
+        exact_identifier="SRR36719144",
+        require_policy_match=False,
+    )
+
+    assert len(records) == 1
+    assert records[0].research_object.identifiers["sra_run"] == "SRR36719144"
 
 
 def test_geo_and_sra_v2_are_registered_harvesters():
@@ -17312,6 +17473,64 @@ def test_source_followup_ingest_dry_run_lists_queue_items(tmp_path):
     assert repo.list_source_followups(source_key="pubmed")[0].status == "queued"
 
 
+def test_source_followup_ingest_fails_closed_on_identifier_substitution(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "followups-exact.sqlite3", seed=False)
+    followup = repo.upsert_source_followup(
+        SourceFollowupQueueItem(
+            source_key="crossref",
+            identifier_type="doi",
+            identifier="10.1234/requested",
+            origin_source_key="x_linked_article",
+        )
+    )
+
+    class FakePipeline:
+        def __init__(self, repository):
+            self.repository = repository
+
+        def ingest_query(self, query, limit=1, persist_query=False):
+            raw_id = self.repository.upsert_raw_record(
+                RawSourceRecord(
+                    source_key="crossref",
+                    source_record_id="10.1234/nearby",
+                    content_hash="nearby",
+                    raw_payload={"doi": "10.1234/nearby"},
+                )
+            )
+            self.repository.upsert_research_object(
+                ResearchObject(
+                    object_type=ResearchObjectType.PUBLICATION,
+                    title="Nearby substituted paper",
+                    source_key="crossref",
+                    dedupe_key="doi:10.1234/nearby",
+                    identifiers={"doi": "10.1234/nearby"},
+                ),
+                raw_id,
+            )
+            return IngestionResult(
+                source_key=query.source_key,
+                query_name=query.query_name,
+                query_text=query.query_text,
+                fetch_run_id=uuid4(),
+                raw_records=1,
+                research_objects=1,
+                document_chunks=0,
+            )
+
+    monkeypatch.setattr(source_followup, "LocalIngestionPipeline", FakePipeline)
+
+    result = HSAResearchService(repo).ingest_source_followups(
+        SourceFollowupIngestRequest(followup_ids=[followup.followup_id], run_claim_extraction=False)
+    )
+
+    updated = repo.get_source_followup(followup.followup_id)
+    assert result.failed == 1
+    assert updated is not None
+    assert updated.status == "failed"
+    assert "refusing substituted source" in (updated.last_error or "")
+    assert updated.metadata["exact_identifier_match_count"] == 0
+
+
 def test_source_followup_pmc_oa_fallback_queues_pubmed_and_crossref(tmp_path, monkeypatch):
     repo = SQLiteResearchRepository(tmp_path / "pmc-fallback.sqlite3", seed=False)
     item = repo.upsert_source_followup(
@@ -17408,9 +17627,15 @@ def test_source_followup_query_params_are_source_safe():
 
     assert crossref_query.query_params == {
         "comparative_policy": "disabled",
+        "exact_identifier": "10.1234/test",
+        "exact_identifier_type": "doi",
         "require_policy_match": False,
     }
-    assert clinical_query.query_params == {"require_policy_match": False}
+    assert clinical_query.query_params == {
+        "exact_identifier": "NCT12345678",
+        "exact_identifier_type": "nct",
+        "require_policy_match": False,
+    }
 
     unpaywall_query = source_followup._query_for_followup(
         SourceFollowupQueueItem(
@@ -17423,6 +17648,7 @@ def test_source_followup_query_params_are_source_safe():
     assert unpaywall_query.source_key == "unpaywall"
     assert unpaywall_query.query_text == "10.1234/hsa.oa"
     assert unpaywall_query.query_name == "source_followup_doi_10_1234_hsa_oa"
+    assert unpaywall_query.query_params["exact_identifier"] == "10.1234/hsa.oa"
 
 
 def test_followup_internal_policy_params_do_not_reach_external_apis(monkeypatch):
@@ -17432,13 +17658,9 @@ def test_followup_internal_policy_params_do_not_reach_external_apis(monkeypatch)
         crossref_calls.append((url, params))
         return {
             "message": {
-                "items": [
-                    {
-                        "DOI": "10.1234/test",
-                        "title": ["Follow-up article without local policy terms"],
-                        "URL": "https://doi.org/10.1234/test",
-                    }
-                ]
+                "DOI": "10.1234/test",
+                "title": ["Follow-up article without local policy terms"],
+                "URL": "https://doi.org/10.1234/test",
             }
         }
 
@@ -17447,14 +17669,16 @@ def test_followup_internal_policy_params_do_not_reach_external_apis(monkeypatch)
         "10.1234/test",
         limit=1,
         comparative_policy="disabled",
+        exact_identifier_type="doi",
+        exact_identifier="10.1234/test",
         require_policy_match=False,
     )
 
     assert len(crossref_records) == 1
     assert crossref_calls == [
         (
-            "https://api.crossref.org/works",
-            {"query": "10.1234/test", "rows": 1},
+            "https://api.crossref.org/works/10.1234%2Ftest",
+            {},
         )
     ]
 
