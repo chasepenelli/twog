@@ -1172,6 +1172,118 @@ def test_research_program_board_openrouter_success_records_model_and_program(mon
     assert repo.list_research_programs(gate_decision="ready_for_therapy_ideas", limit=10)
 
 
+def test_research_program_board_forces_gate_at_evidence_loop_cap(monkeypatch, tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-program-board-loop-cap.sqlite3", seed=False)
+    existing_program = repo.upsert_research_program(
+        _research_program_fixture().model_copy(update={"evidence_loop_count": 2, "max_evidence_loops": 2})
+    )
+    brief = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            topic="loop-capped program evidence brief",
+            status="completed",
+            final_brief="The program remains plausible but still needs primary evidence [C1].",
+            citation_count=1,
+            hypothesis_count=1,
+            evidence_limitation_count=1,
+            result_payload={"citations": [{"citation_id": "C1", "title": "Loop capped evidence"}]},
+        )
+    )
+    evaluation = repo.upsert_research_brief_evaluation(
+        ResearchBriefEvaluationRecord(
+            brief_id=brief.brief_id,
+            topic=brief.topic,
+            overall_score=0.61,
+            passes_quality_bar=False,
+            readiness="needs_more_evidence",
+            summary={"verdict": "not ready"},
+        )
+    )
+
+    def fake_review_model(model_name, review_payload):
+        assert review_payload["evidence_payload"]["existing_program"]["evidence_loop_count"] == 2
+        return {
+            "text": json.dumps(
+                {
+                    "programs": [
+                        {
+                            "title": "Loop capped vascular program",
+                            "thesis": "The program is plausible but should not request an endless loop.",
+                            "disease_model": "Canine HSA vascular ecology.",
+                            "thesis_area": "vascular_ecology",
+                            "therapy_families": ["biomarker-stratified vascular therapy"],
+                            "modality_families": ["combination strategy"],
+                            "decisive_questions": [
+                                {
+                                    "question": "Does the signal justify child therapy ideas?",
+                                    "metric_plan": ["confidence"],
+                                    "tool_hints": ["expert_review"],
+                                    "evidence_refs": ["evaluated_brief:1"],
+                                },
+                                {
+                                    "question": "Is validation strategy ready?",
+                                    "metric_plan": ["evidence density"],
+                                    "tool_hints": ["safety_signal_review"],
+                                    "evidence_refs": ["evaluated_brief:1"],
+                                },
+                            ],
+                            "evidence_tasks": [
+                                {
+                                    "task_type": "literature_search",
+                                    "title": "Do not persist another pass at cap",
+                                    "objective": "This should be converted by the parser.",
+                                    "source_keys": ["pubmed"],
+                                    "tool_hints": ["literature_review"],
+                                    "metrics": ["primary evidence"],
+                                    "pass_values": ["direct evidence"],
+                                    "fail_values": ["no direct evidence"],
+                                    "evidence_refs": ["evaluated_brief:1"],
+                                }
+                            ],
+                            "metric_plan": ["confidence"],
+                            "recommended_tools": ["expert_review"],
+                            "stop_criteria": ["Stop after two loops."],
+                            "downstream_therapy_opportunities": ["narrow biomarker-stratified child ideas"],
+                            "status": "active",
+                            "gate_decision": "needs_one_more_pass",
+                            "biological_plausibility_score": 0.75,
+                            "cross_species_support_score": 0.7,
+                            "evidence_density_score": 0.45,
+                            "novelty_score": 0.6,
+                            "testability_score": 0.75,
+                            "therapeutic_leverage_score": 0.55,
+                            "failure_risk_score": 0.6,
+                            "confidence_score": 0.6,
+                            "review_summary": "The model incorrectly requested another pass at the loop cap.",
+                            "evidence_refs": ["evaluated_brief:1"],
+                        }
+                    ]
+                }
+            ),
+            "metadata": {"requested_model": model_name, "model_name": "resolved/opus"},
+        }
+
+    monkeypatch.setattr(research_program_board, "_openrouter_review_model", fake_review_model)
+
+    result = HSAResearchService(repo).run_research_program_board(
+        ResearchProgramReviewRequest(
+            program_id=existing_program.program_id,
+            evaluation_ids=[evaluation.evaluation_id],
+            review_mode="openrouter_required",
+            review_models=["test/opus"],
+            max_packets=0,
+            max_chunks=0,
+            max_evidence_loops=2,
+        )
+    )
+
+    program = result.programs[0]
+    assert program.evidence_loop_count == 2
+    assert program.gate_decision == "ready_for_therapy_ideas"
+    assert program.status == "ready_for_therapy_ideas"
+    assert "max evidence loop cap" in program.errors[0]
+    assert program.metadata["gate_override_reason"] == program.errors[0]
+
+
 def test_research_program_board_invalid_openrouter_json_records_failed_run(monkeypatch, tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "research-program-board-invalid.sqlite3", seed=False)
 

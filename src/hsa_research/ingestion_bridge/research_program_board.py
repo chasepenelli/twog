@@ -489,11 +489,43 @@ def _program_from_payload(
         for item in raw.get("evidence_tasks", [])
         if isinstance(item, Mapping)
     ][:25]
-    gate = _gate_decision(raw.get("gate_decision"))
-    status = _status_from_gate(raw.get("status"), gate)
     model_metadata = review.get("metadata") if isinstance(review.get("metadata"), Mapping) else {}
     existing_program = evidence.get("existing_program") if isinstance(evidence.get("existing_program"), Mapping) else {}
     existing_loop_count = existing_program.get("evidence_loop_count", 0)
+    biological_plausibility_score = _score(raw, "biological_plausibility_score", 0.5)
+    cross_species_support_score = _score(raw, "cross_species_support_score", 0.5)
+    evidence_density_score = _score(raw, "evidence_density_score", 0.5)
+    novelty_score = _score(raw, "novelty_score", 0.5)
+    testability_score = _score(raw, "testability_score", 0.5)
+    therapeutic_leverage_score = _score(raw, "therapeutic_leverage_score", 0.5)
+    failure_risk_score = _score(raw, "failure_risk_score", 0.5)
+    confidence_score = _score(raw, "confidence_score", 0.5)
+    downstream_therapy_opportunities = _string_list(raw.get("downstream_therapy_opportunities"))
+    evidence_loop_count = min(
+        int(raw.get("evidence_loop_count") or existing_loop_count or 0),
+        request.max_evidence_loops,
+    )
+    gate = _gate_decision(raw.get("gate_decision"))
+    gate, gate_override_reason = _enforce_loop_cap_gate(
+        gate=gate,
+        evidence_loop_count=evidence_loop_count,
+        max_evidence_loops=request.max_evidence_loops,
+        confidence_score=confidence_score,
+        evidence_density_score=evidence_density_score,
+        testability_score=testability_score,
+        therapeutic_leverage_score=therapeutic_leverage_score,
+        failure_risk_score=failure_risk_score,
+        downstream_therapy_opportunities=downstream_therapy_opportunities,
+    )
+    status = _status_from_gate(None if gate_override_reason else raw.get("status"), gate)
+    errors = _string_list(raw.get("errors"))
+    if gate_override_reason:
+        errors.append(gate_override_reason)
+    review_summary = str(raw.get("review_summary") or raw.get("summary") or "").strip()
+    if gate_override_reason:
+        review_summary = (
+            f"{review_summary} Loop-cap enforcement: {gate_override_reason}".strip()
+        )[:3000]
     return ResearchProgramRecord(
         program_id=request.program_id or _program_id(title, thesis),
         title=title,
@@ -512,32 +544,33 @@ def _program_from_payload(
         ],
         confidence_increase_criteria=_string_list(raw.get("confidence_increase_criteria")),
         confidence_decrease_criteria=_string_list(raw.get("confidence_decrease_criteria")),
-        downstream_therapy_opportunities=_string_list(raw.get("downstream_therapy_opportunities")),
+        downstream_therapy_opportunities=downstream_therapy_opportunities,
         status=status,
         gate_decision=gate,
-        biological_plausibility_score=_score(raw, "biological_plausibility_score", 0.5),
-        cross_species_support_score=_score(raw, "cross_species_support_score", 0.5),
-        evidence_density_score=_score(raw, "evidence_density_score", 0.5),
-        novelty_score=_score(raw, "novelty_score", 0.5),
-        testability_score=_score(raw, "testability_score", 0.5),
-        therapeutic_leverage_score=_score(raw, "therapeutic_leverage_score", 0.5),
-        failure_risk_score=_score(raw, "failure_risk_score", 0.5),
-        confidence_score=_score(raw, "confidence_score", 0.5),
+        biological_plausibility_score=biological_plausibility_score,
+        cross_species_support_score=cross_species_support_score,
+        evidence_density_score=evidence_density_score,
+        novelty_score=novelty_score,
+        testability_score=testability_score,
+        therapeutic_leverage_score=therapeutic_leverage_score,
+        failure_risk_score=failure_risk_score,
+        confidence_score=confidence_score,
         max_evidence_loops=request.max_evidence_loops,
-        evidence_loop_count=min(int(raw.get("evidence_loop_count") or existing_loop_count or 0), request.max_evidence_loops),
+        evidence_loop_count=evidence_loop_count,
         source_query=evidence.get("topic_query"),
         source_packet_ids=[
             packet.get("packet_id") for packet in evidence.get("validation_packets", []) if packet.get("packet_id")
         ],
         evidence_refs=_valid_refs(raw.get("evidence_refs"), evidence),
-        review_summary=str(raw.get("review_summary") or raw.get("summary") or "").strip(),
-        errors=_string_list(raw.get("errors")),
+        review_summary=review_summary,
+        errors=errors,
         metadata={
             "review_mode": request.review_mode,
             "requested_model": model_metadata.get("requested_model"),
             "model_name": model_metadata.get("model_name"),
             "usage": model_metadata.get("usage", {}),
             "evidence": _evidence_summary(evidence),
+            "gate_override_reason": gate_override_reason,
         },
     )
 
@@ -551,6 +584,8 @@ def _review_payload(request: ResearchProgramReviewRequest, evidence: Mapping[str
             "Each program must have 2 to 4 decisive questions.",
             "Each program must include stop criteria and a gate decision.",
             "Use evaluated brief scores, quality-bar failures, and evaluator weaknesses when deciding whether to promote, narrow, or request one final bounded evidence pass.",
+            "If existing_program.evidence_loop_count is greater than or equal to max_evidence_loops, gate_decision must not be needs_one_more_pass.",
+            "At the loop cap choose archive, ready_for_therapy_ideas, or ready_for_validation_strategy.",
             "Do not recommend validation dispatch or treatment use.",
         ],
         "response_contract": _response_contract(),
@@ -734,6 +769,52 @@ def _gate_decision(value: Any) -> str:
     if text in {"archive", "needs_one_more_pass", "ready_for_therapy_ideas", "ready_for_validation_strategy"}:
         return text
     return "needs_one_more_pass"
+
+
+def _enforce_loop_cap_gate(
+    *,
+    gate: str,
+    evidence_loop_count: int,
+    max_evidence_loops: int,
+    confidence_score: float,
+    evidence_density_score: float,
+    testability_score: float,
+    therapeutic_leverage_score: float,
+    failure_risk_score: float,
+    downstream_therapy_opportunities: Sequence[str],
+) -> tuple[str, str | None]:
+    if gate != "needs_one_more_pass" or evidence_loop_count < max_evidence_loops:
+        return gate, None
+
+    if (
+        confidence_score >= 0.72
+        and evidence_density_score >= 0.65
+        and testability_score >= 0.65
+        and failure_risk_score <= 0.55
+    ):
+        return (
+            "ready_for_validation_strategy",
+            "Model requested another evidence pass after the max evidence loop cap; "
+            "gate forced to ready_for_validation_strategy by score thresholds.",
+        )
+
+    if (
+        confidence_score >= 0.5
+        and testability_score >= 0.55
+        and therapeutic_leverage_score >= 0.45
+        and downstream_therapy_opportunities
+    ):
+        return (
+            "ready_for_therapy_ideas",
+            "Model requested another evidence pass after the max evidence loop cap; "
+            "gate forced to ready_for_therapy_ideas so downstream therapy candidates can be narrowed.",
+        )
+
+    return (
+        "archive",
+        "Model requested another evidence pass after the max evidence loop cap; "
+        "gate forced to archive because scores did not justify promotion.",
+    )
 
 
 def _status_from_gate(status_value: Any, gate: str) -> str:
