@@ -384,6 +384,22 @@ jobs:
                 --deployment "$DAGSTER_CLOUD_DEPLOYMENT" || true
         shell: bash
 
+      - name: Print hosted Dagster event diagnostics
+        if: ${{ always() && steps.launch.outputs.run_id != '' }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          uv run python .github/scripts/dagster_cloud_run_control.py \
+            --url "$DAGSTER_CLOUD_URL" \
+            --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+            --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
+            --timeout-seconds "$DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS" \
+            events \
+            --run-id "$DAGSTER_CLOUD_RUN_ID" \
+            --limit 500 \
+            --tail 40
+        shell: bash
+
       - name: Print hosted research program summary
         if: ${{ always() && (inputs.job == 'research_program_board_job' || inputs.job == 'research_program_library_job' || inputs.job == 'research_program_evidence_loop_job') }}
         continue-on-error: true
@@ -1286,6 +1302,85 @@ jobs:
           uv run python -m hsa_research.ingestion_bridge.cli model-review-summary \
             --agent-name therapy_committee_chair_agent \
             --limit 3
+        shell: bash
+
+      - name: Print hosted therapy idea summary
+        if: ${{ always() && (inputs.job == 'therapy_committee_job' || inputs.job == 'therapy_committee_validation_queue_job') }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          from uuid import UUID
+
+          from hsa_research.ingestion_bridge.contracts import TherapyIdeaLibraryRequest
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          def _configured_program_id() -> UUID | None:
+              raw_config = os.getenv("DAGSTER_CLOUD_CONFIG_JSON") or ""
+              if not raw_config:
+                  return None
+              try:
+                  config = json.loads(raw_config)
+              except json.JSONDecodeError:
+                  return None
+              report_config = (
+                  (config.get("ops") or {})
+                  .get("therapy_committee_report", {})
+                  .get("config", {})
+              )
+              program_id = report_config.get("program_id")
+              return UUID(program_id) if program_id else None
+
+          service = HSAResearchService(build_research_repository())
+          program_id = _configured_program_id()
+          report = service.list_therapy_ideas(
+              TherapyIdeaLibraryRequest(
+                  source_program_id=program_id,
+                  limit=10,
+              )
+          )
+          rows = []
+          for idea in report.ideas:
+              rows.append(
+                  {
+                      "therapy_idea_id": str(idea.therapy_idea_id),
+                      "committee_run_id": str(idea.committee_run_id),
+                      "agent_run_id": str(idea.agent_run_id) if idea.agent_run_id else None,
+                      "source_program_id": str(idea.source_program_id) if idea.source_program_id else None,
+                      "status": idea.status,
+                      "score": idea.score,
+                      "title": idea.title,
+                      "candidate_therapies": idea.candidate_therapies,
+                      "targets": idea.targets,
+                      "biomarkers": idea.biomarkers,
+                      "risks": idea.risks[:5],
+                      "next_experiments": idea.next_experiments[:5],
+                      "updated_at": idea.updated_at.isoformat(),
+                  }
+              )
+          payload = {
+              "program_id": str(program_id) if program_id else None,
+              "idea_count": report.idea_count,
+              "status_counts": report.status_counts,
+              "ideas": rows,
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Therapy idea summary\n")
+                  summary.write(f"- Program filter: `{payload['program_id'] or 'none'}`\n")
+                  summary.write(f"- Ideas sampled: `{payload['idea_count']}`\n")
+                  summary.write(f"- Status counts: `{payload['status_counts']}`\n")
+                  for row in rows[:5]:
+                      summary.write(
+                          f"- `{row['status']}` `{row['therapy_idea_id']}`: "
+                          f"{row['title']} (score={row['score']})\n"
+                      )
+          PY
         shell: bash
 
       - name: Print hosted research follow-up resolver summary

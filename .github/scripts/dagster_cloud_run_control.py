@@ -37,6 +37,77 @@ query CliGetRunStatus($runId: ID!) {
 }
 """
 
+RUN_EVENTS_QUERY = """
+query CliGetRunEvents($runId: ID!, $limit: Int) {
+  runOrError(runId: $runId) {
+    __typename
+    ... on Run {
+      runId
+      jobName
+      status
+      canTerminate
+      stepStats {
+        stepKey
+        status
+        startTime
+        endTime
+      }
+    }
+    ... on RunNotFoundError {
+      runId
+      message
+    }
+    ... on PythonError {
+      message
+      stack
+    }
+  }
+  logsForRun(runId: $runId, limit: $limit) {
+    __typename
+    ... on EventConnection {
+      cursor
+      hasMore
+      events {
+        __typename
+        ... on MessageEvent {
+          message
+          timestamp
+          level
+          stepKey
+          eventType
+        }
+        ... on ErrorEvent {
+          error {
+            message
+            className
+            stack
+            causes {
+              message
+              className
+              stack
+            }
+          }
+        }
+        ... on LogsCapturedEvent {
+          fileKey
+          externalUrl
+          externalStdoutUrl
+          externalStderrUrl
+        }
+      }
+    }
+    ... on RunNotFoundError {
+      runId
+      message
+    }
+    ... on PythonError {
+      message
+      stack
+    }
+  }
+}
+"""
+
 TERMINATE_RUNS_MUTATION = """
 mutation GithubActionsTerminateRuns(
   $runIds: [String!]!
@@ -157,6 +228,17 @@ def _run_status(args: argparse.Namespace, run_id: str) -> dict[str, Any]:
     return result
 
 
+def _run_events(args: argparse.Namespace, run_id: str) -> dict[str, Any]:
+    return _execute_graphql(
+        url=args.url,
+        api_token=args.api_token,
+        deployment=args.deployment,
+        query=RUN_EVENTS_QUERY,
+        variables={"runId": run_id, "limit": args.limit},
+        timeout_seconds=args.timeout_seconds,
+    )
+
+
 def _terminate_runs(args: argparse.Namespace, run_ids: list[str]) -> list[dict[str, Any]]:
     data = _execute_graphql(
         url=args.url,
@@ -186,6 +268,121 @@ def status_command(args: argparse.Namespace) -> int:
             print(f"{run_id}: ERROR {error}", file=sys.stderr)
             continue
         print(f"{run_id}: {status['status']} canTerminate={status['canTerminate']}")
+    return 1 if failed else 0
+
+
+def _print_error(error: dict[str, Any] | None, *, stack_lines: int) -> None:
+    if not error:
+        return
+    class_name = error.get("className") or "PythonError"
+    message = str(error.get("message") or "").strip()
+    print(f"  error: {class_name}: {message}")
+    stack = [line.rstrip() for line in error.get("stack") or [] if str(line).strip()]
+    if stack_lines > 0 and stack:
+        print("  stack:")
+        for line in stack[-stack_lines:]:
+            print(f"    {line}")
+    causes = error.get("causes") or []
+    for cause in causes[:2]:
+        cause_class = cause.get("className") or "PythonError"
+        cause_message = str(cause.get("message") or "").strip()
+        print(f"  caused_by: {cause_class}: {cause_message}")
+
+
+def events_command(args: argparse.Namespace) -> int:
+    run_ids = _split_run_ids(args.run_id)
+    if not run_ids:
+        raise RuntimeError("At least one --run-id value is required.")
+
+    failed = False
+    for run_id in run_ids:
+        try:
+            data = _run_events(args, run_id)
+        except Exception as error:
+            failed = True
+            print(f"{run_id}: ERROR {error}", file=sys.stderr)
+            continue
+
+        run = data.get("runOrError") or {}
+        run_type = run.get("__typename")
+        if run_type != "Run":
+            failed = True
+            print(f"{run_id}: unable_to_fetch_run {json.dumps(run)}", file=sys.stderr)
+            continue
+
+        print(
+            f"{run_id}: status={run.get('status')} job={run.get('jobName')} "
+            f"canTerminate={run.get('canTerminate')}"
+        )
+        step_stats = run.get("stepStats") or []
+        if step_stats:
+            print("step_stats:")
+            for stat in step_stats:
+                print(
+                    "  "
+                    f"{stat.get('stepKey')}: status={stat.get('status')} "
+                    f"start={stat.get('startTime')} end={stat.get('endTime')}"
+                )
+
+        logs = data.get("logsForRun") or {}
+        if logs.get("__typename") != "EventConnection":
+            failed = True
+            print(f"{run_id}: unable_to_fetch_events {json.dumps(logs)}", file=sys.stderr)
+            continue
+
+        events = logs.get("events") or []
+        print(
+            f"events: count={len(events)} cursor={logs.get('cursor')} "
+            f"hasMore={logs.get('hasMore')}"
+        )
+        interesting_types = {
+            "ExecutionStepFailureEvent",
+            "RunFailureEvent",
+            "ResourceInitFailureEvent",
+            "EngineEvent",
+            "LogMessageEvent",
+        }
+        interesting = [
+            event
+            for event in events
+            if event.get("__typename") in interesting_types
+            or event.get("level") in {"ERROR", "CRITICAL", "WARNING"}
+        ]
+        if interesting:
+            print("interesting_events:")
+            for event in interesting[-args.tail:]:
+                event_type = event.get("__typename")
+                level = event.get("level") or ""
+                step = event.get("stepKey") or ""
+                timestamp = event.get("timestamp") or ""
+                message = str(event.get("message") or "").replace("\n", " ").strip()
+                print(f"- {timestamp} {level} {event_type} {step}: {message}")
+                _print_error(event.get("error"), stack_lines=args.stack_lines)
+
+        if args.include_tail:
+            print("event_tail:")
+            for event in events[-args.tail:]:
+                event_type = event.get("__typename")
+                level = event.get("level") or ""
+                step = event.get("stepKey") or ""
+                timestamp = event.get("timestamp") or ""
+                message = str(event.get("message") or "").replace("\n", " ").strip()
+                print(f"- {timestamp} {level} {event_type} {step}: {message}")
+
+        captured_events = [
+            event for event in events if event.get("__typename") == "LogsCapturedEvent"
+        ]
+        if captured_events:
+            print("captured_logs:")
+            for event in captured_events[-args.tail:]:
+                print(
+                    "- "
+                    f"fileKey={event.get('fileKey')} "
+                    f"url={event.get('externalUrl') or ''} "
+                    f"stdout={event.get('externalStdoutUrl') or ''} "
+                    f"stderr={event.get('externalStderrUrl') or ''}"
+                )
+
     return 1 if failed else 0
 
 
@@ -244,6 +441,34 @@ def _build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="Print run status.")
     status_parser.add_argument("--run-id", action="append", required=True)
     status_parser.set_defaults(func=status_command)
+
+    events_parser = subparsers.add_parser("events", help="Print run event diagnostics.")
+    events_parser.add_argument("--run-id", action="append", required=True)
+    events_parser.add_argument(
+        "--limit",
+        type=int,
+        default=300,
+        help="Maximum Dagster event records to fetch.",
+    )
+    events_parser.add_argument(
+        "--tail",
+        type=int,
+        default=30,
+        help="Maximum interesting/tail events to print.",
+    )
+    events_parser.add_argument(
+        "--stack-lines",
+        type=int,
+        default=12,
+        help="Stack trace lines to print for error events.",
+    )
+    events_parser.add_argument(
+        "--include-tail",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Print a tail of all fetched events in addition to error-focused events.",
+    )
+    events_parser.set_defaults(func=events_command)
 
     terminate_parser = subparsers.add_parser("terminate", help="Terminate one or more runs.")
     terminate_parser.add_argument("--run-id", action="append", required=True)
