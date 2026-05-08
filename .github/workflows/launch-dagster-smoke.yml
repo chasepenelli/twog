@@ -166,6 +166,98 @@ jobs:
       - name: Install project dependencies
         run: uv sync
 
+      - name: Verify hosted Dagster job registration
+        id: verify_job
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+
+          code_locations_json="$(
+            uv run dg api code-location list \
+              --organization "$DAGSTER_CLOUD_ORGANIZATION" \
+              --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
+              --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+              --json
+          )"
+          jobs_json="$(
+            uv run dg api job list \
+              --organization "$DAGSTER_CLOUD_ORGANIZATION" \
+              --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
+              --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+              --json
+          )"
+
+          printf '%s' "$code_locations_json" > /tmp/dagster_code_locations.json
+          printf '%s' "$jobs_json" > /tmp/dagster_jobs.json
+
+          python - <<'PY'
+          import difflib
+          import json
+          import os
+          import sys
+
+          requested_job = os.environ["DAGSTER_CLOUD_JOB"]
+          requested_location = os.environ["DAGSTER_CLOUD_LOCATION"]
+
+          with open("/tmp/dagster_code_locations.json", "r", encoding="utf-8") as handle:
+              code_locations = json.load(handle)
+          with open("/tmp/dagster_jobs.json", "r", encoding="utf-8") as handle:
+              jobs = json.load(handle)
+
+          locations = code_locations.get("items", [])
+          job_items = jobs.get("items", [])
+          job_names = sorted(str(item.get("name") or "") for item in job_items)
+          found_job = any(name == requested_job for name in job_names)
+          found_location = any(
+              str(item.get("location_name") or "") == requested_location for item in locations
+          )
+
+          print("Registered Dagster code locations:")
+          for item in locations:
+              source = item.get("code_source") or {}
+              print(
+                  "- {name} status={status} module={module}".format(
+                      name=item.get("location_name"),
+                      status=item.get("status"),
+                      module=source.get("module_name") or source.get("autoload_defs_module_name"),
+                  )
+              )
+
+          print(f"Registered Dagster jobs: {len(job_names)}")
+          if requested_job in job_names:
+              print(f"Requested job is registered: {requested_job}")
+          else:
+              matches = difflib.get_close_matches(requested_job, job_names, n=8, cutoff=0.2)
+              print(f"::error::Requested Dagster job is not registered: {requested_job}")
+              if matches:
+                  print("Closest registered job names:")
+                  for name in matches:
+                      print(f"- {name}")
+              else:
+                  print("No similar registered job names found.")
+              print("First 40 registered job names:")
+              for name in job_names[:40]:
+                  print(f"- {name}")
+
+          if not found_location:
+              print(f"::error::Requested Dagster code location is not registered: {requested_location}")
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Hosted Dagster registration\n")
+                  summary.write(f"- Requested location: `{requested_location}`\n")
+                  summary.write(f"- Requested job: `{requested_job}`\n")
+                  summary.write(f"- Code locations: `{len(locations)}`\n")
+                  summary.write(f"- Jobs: `{len(job_names)}`\n")
+                  summary.write(f"- Job registered: `{found_job}`\n")
+                  summary.write(f"- Location registered: `{found_location}`\n")
+
+          if not found_job or not found_location:
+              sys.exit(1)
+          PY
+        shell: bash
+
       - name: Launch smoke job
         id: launch
         timeout-minutes: 5
