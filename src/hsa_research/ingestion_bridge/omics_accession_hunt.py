@@ -87,11 +87,14 @@ def run_omics_accession_hunt(
 
 def _build_source_queries(request: OmicsAccessionHuntRequest) -> list[SourceQuery]:
     query_texts = request.query_texts or _default_query_texts(request)
+    source_keys = [
+        source_key
+        for source_key in (request.source_keys or list(DEFAULT_OMICS_SOURCES))
+        if source_key in DEFAULT_OMICS_SOURCES
+    ]
     queries: list[SourceQuery] = []
-    for source_key in request.source_keys or list(DEFAULT_OMICS_SOURCES):
-        if source_key not in DEFAULT_OMICS_SOURCES:
-            continue
-        for index, query_text in enumerate(query_texts, start=1):
+    for index, query_text in enumerate(query_texts, start=1):
+        for source_key in source_keys:
             queries.append(
                 SourceQuery(
                     source_key=source_key,

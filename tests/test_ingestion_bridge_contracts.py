@@ -1144,6 +1144,30 @@ def test_omics_accession_hunt_ingests_and_reports_accessions(tmp_path, monkeypat
     assert result.negative_queries[0]["source_key"] == "sra"
 
 
+def test_omics_accession_hunt_interleaves_sources_under_query_cap():
+    repo = InMemoryResearchRepository()
+    result = HSAResearchService(repo).run_omics_accession_hunt(
+        OmicsAccessionHuntRequest(
+            source_keys=["geo", "sra"],
+            query_texts=[
+                "canine hemangiosarcoma RNA-seq",
+                "human angiosarcoma RNA-seq",
+                "vimentin angiosarcoma",
+            ],
+            max_queries=4,
+            dry_run=True,
+        )
+    )
+
+    assert [query.source_key for query in result.source_queries] == ["geo", "sra", "geo", "sra"]
+    assert [query.query_text for query in result.source_queries] == [
+        "canine hemangiosarcoma RNA-seq",
+        "canine hemangiosarcoma RNA-seq",
+        "human angiosarcoma RNA-seq",
+        "human angiosarcoma RNA-seq",
+    ]
+
+
 def test_model_policy_uses_sonnet_for_operations_and_opus_for_big_ideas(monkeypatch):
     monkeypatch.delenv("HSA_DEFAULT_OPENROUTER_MODEL", raising=False)
     monkeypatch.delenv("HSA_BIG_IDEA_OPENROUTER_MODEL", raising=False)
