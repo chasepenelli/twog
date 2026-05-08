@@ -1351,7 +1351,7 @@ jobs:
                       "source_program_id": str(idea.source_program_id) if idea.source_program_id else None,
                       "status": idea.status,
                       "score": idea.score,
-                      "title": idea.title,
+                      "title": idea.idea.title,
                       "candidate_therapies": idea.candidate_therapies,
                       "targets": idea.targets,
                       "biomarkers": idea.biomarkers,
