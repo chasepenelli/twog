@@ -4116,6 +4116,143 @@ class OmicsAccessionHuntResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class OmicsEvidenceDataset(StrictBaseModel):
+    source_key: str
+    accession: str
+    identifier_type: Literal["geo", "sra", "bioproject", "biosample"]
+    research_object_id: UUID | None = None
+    title: str | None = None
+    canonical_url: str | None = None
+    organism: str | None = None
+    disease_context: Literal["canine_hsa", "human_angiosarcoma", "comparative_context", "unknown"] = "unknown"
+    evidence_role: Literal["direct", "analog", "context"] = "context"
+    sample_count: int | None = None
+    library_strategy: str | None = None
+    bioproject: str | None = None
+    pmid: str | None = None
+    run_accessions: list[str] = Field(default_factory=list, max_length=250)
+    sample_accessions: list[str] = Field(default_factory=list, max_length=500)
+    platform_accessions: list[str] = Field(default_factory=list, max_length=100)
+    supplementary_file_types: list[str] = Field(default_factory=list, max_length=50)
+    matched_terms: list[str] = Field(default_factory=list, max_length=50)
+    readout_hints: list[str] = Field(default_factory=list, max_length=50)
+    limitations: list[str] = Field(default_factory=list, max_length=50)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_omics_evidence_dataset(self) -> "OmicsEvidenceDataset":
+        self.source_key = self.source_key.strip().lower()
+        self.accession = self.accession.strip()
+        self.run_accessions = _dedupe_strings(self.run_accessions)
+        self.sample_accessions = _dedupe_strings(self.sample_accessions)
+        self.platform_accessions = _dedupe_strings(self.platform_accessions)
+        self.supplementary_file_types = _dedupe_strings(self.supplementary_file_types)
+        self.matched_terms = _dedupe_strings(self.matched_terms)
+        self.readout_hints = _dedupe_strings(self.readout_hints)
+        self.limitations = _dedupe_strings(self.limitations)
+        return self
+
+
+class OmicsEvidencePacket(StrictBaseModel):
+    packet_id: str = Field(min_length=3, max_length=260)
+    packet_key: str = Field(min_length=3, max_length=120)
+    program_id: UUID | None = None
+    title: str = Field(min_length=3, max_length=500)
+    topic_query: str = Field(min_length=3, max_length=1000)
+    disease_scope: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
+    target_terms: list[str] = Field(default_factory=list, max_length=50)
+    disease_terms: list[str] = Field(default_factory=list, max_length=50)
+    source_keys: list[str] = Field(default_factory=list, max_length=10)
+    datasets: list[OmicsEvidenceDataset] = Field(default_factory=list, max_length=250)
+    dataset_count: int = 0
+    direct_dataset_count: int = 0
+    analog_dataset_count: int = 0
+    total_sample_count: int | None = None
+    accessions: list[str] = Field(default_factory=list, max_length=500)
+    bioprojects: list[str] = Field(default_factory=list, max_length=200)
+    pmids: list[str] = Field(default_factory=list, max_length=200)
+    decisive_questions: list[str] = Field(default_factory=list, max_length=25)
+    proposed_readouts: list[str] = Field(default_factory=list, max_length=50)
+    quality_gates: list[str] = Field(default_factory=list, max_length=50)
+    dispatch_blockers: list[str] = Field(default_factory=list, max_length=50)
+    negative_coverage: list[str] = Field(default_factory=list, max_length=50)
+    next_actions: list[str] = Field(default_factory=list, max_length=50)
+    readiness: Literal["ready_for_omics_review", "needs_matrix_retrieval", "needs_more_accessions"] = "needs_matrix_retrieval"
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def normalize_omics_evidence_packet(self) -> "OmicsEvidencePacket":
+        self.packet_id = self.packet_id.strip()
+        self.packet_key = self.packet_key.strip()
+        self.title = self.title.strip()
+        self.topic_query = self.topic_query.strip()
+        self.target_terms = _dedupe_strings(self.target_terms)
+        self.disease_terms = _dedupe_strings(self.disease_terms)
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        self.accessions = _dedupe_strings(self.accessions)
+        self.bioprojects = _dedupe_strings(self.bioprojects)
+        self.pmids = _dedupe_strings(self.pmids)
+        self.decisive_questions = _dedupe_strings(self.decisive_questions)
+        self.proposed_readouts = _dedupe_strings(self.proposed_readouts)
+        self.quality_gates = _dedupe_strings(self.quality_gates)
+        self.dispatch_blockers = _dedupe_strings(self.dispatch_blockers)
+        self.negative_coverage = _dedupe_strings(self.negative_coverage)
+        self.next_actions = _dedupe_strings(self.next_actions)
+        return self
+
+
+class OmicsEvidencePacketRequest(StrictBaseModel):
+    program_id: UUID | None = None
+    topic_query: str = (
+        "canine hemangiosarcoma human angiosarcoma VIM vimentin transcriptome RNA-seq expression"
+    )
+    disease_terms: list[str] = Field(
+        default_factory=lambda: [
+            "canine hemangiosarcoma",
+            "dog hemangiosarcoma",
+            "human angiosarcoma",
+            "angiosarcoma",
+        ],
+        max_length=25,
+    )
+    gene_symbols: list[str] = Field(default_factory=lambda: ["VIM", "vimentin"], max_length=25)
+    source_keys: list[str] = Field(default_factory=lambda: ["geo", "sra"], max_length=5)
+    accessions: list[str] = Field(default_factory=list, max_length=200)
+    limit: int = Field(default=100, ge=1, le=1000)
+    min_datasets_per_packet: int = Field(default=1, ge=1, le=50)
+    include_context_packet: bool = True
+    dry_run: bool = False
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_omics_evidence_packet_request(self) -> "OmicsEvidencePacketRequest":
+        self.topic_query = self.topic_query.strip()
+        self.disease_terms = _dedupe_strings(self.disease_terms)
+        self.gene_symbols = _dedupe_strings(self.gene_symbols)
+        self.source_keys = _dedupe_lower_tokens(self.source_keys) or ["geo", "sra"]
+        self.accessions = _dedupe_strings(self.accessions)
+        return self
+
+
+class OmicsEvidencePacketResult(StrictBaseModel):
+    program_id: UUID | None = None
+    dry_run: bool = False
+    scanned_dataset_count: int = 0
+    selected_dataset_count: int = 0
+    packet_count: int = 0
+    direct_dataset_count: int = 0
+    analog_dataset_count: int = 0
+    context_dataset_count: int = 0
+    packets: list[OmicsEvidencePacket] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ValidationAutopilotRequest(StrictBaseModel):
     enabled: bool = True
     dry_run: bool = True

@@ -110,6 +110,8 @@ from .contracts import (
     ResearchObjectReadResult,
     OmicsAccessionHuntRequest,
     OmicsAccessionHuntResult,
+    OmicsEvidencePacketRequest,
+    OmicsEvidencePacketResult,
     ResearchProgramBoardRequest,
     ResearchProgramBoardResult,
     ResearchProgramEvidenceTask,
@@ -202,6 +204,7 @@ from .full_text_ops import FULL_TEXT_OPS_AGENT_NAME, FULL_TEXT_OPS_AGENT_VERSION
 from .full_text_triage import FullTextTriageAgent
 from .model_policy import BIG_IDEA_OPENROUTER_MODEL, DEFAULT_OPENROUTER_MODEL
 from .omics_accession_hunt import run_omics_accession_hunt
+from .omics_evidence_packets import build_omics_evidence_packets
 from .research_brief_agent import (
     PERSPECTIVE_ORDER,
     RESEARCH_BRIEF_AGENT_VERSION,
@@ -1150,6 +1153,12 @@ class HSAResearchService:
         request: OmicsAccessionHuntRequest | None = None,
     ) -> OmicsAccessionHuntResult:
         return run_omics_accession_hunt(self.repository, request or OmicsAccessionHuntRequest())
+
+    def build_omics_evidence_packets(
+        self,
+        request: OmicsEvidencePacketRequest | None = None,
+    ) -> OmicsEvidencePacketResult:
+        return build_omics_evidence_packets(self.repository, request or OmicsEvidencePacketRequest())
 
     def _select_research_program_for_evidence_loop(
         self,

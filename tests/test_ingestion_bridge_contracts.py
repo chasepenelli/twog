@@ -52,6 +52,8 @@ from hsa_research.ingestion_bridge.contracts import (
     IngestionResult,
     OmicsAccessionHuntRequest,
     OmicsAccessionHuntResult,
+    OmicsEvidencePacketRequest,
+    OmicsEvidencePacketResult,
     RawSourceRecord,
     ResearchChunkSearchRequest,
     ResearchObject,
@@ -1166,6 +1168,154 @@ def test_omics_accession_hunt_interleaves_sources_under_query_cap():
         "human angiosarcoma RNA-seq",
         "human angiosarcoma RNA-seq",
     ]
+
+
+def test_omics_evidence_packets_package_direct_and_analog_accessions(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "omics-packets.sqlite3", seed=False)
+    geo_raw_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="geo",
+            source_record_id="GSE150705",
+            content_hash="geo-packet",
+            raw_payload={"accession": "GSE150705"},
+        )
+    )
+    geo_object_id = repo.upsert_research_object(
+        ResearchObject(
+            object_type=ResearchObjectType.DATASET,
+            title="Canine hemangiosarcoma ChRO-seq and VIM expression dataset",
+            abstract=(
+                "Canine hemangiosarcoma transcriptome evidence for VIM/vimentin, angiogenesis, "
+                "coagulation, and vascular injury programs."
+            ),
+            source_key="geo",
+            raw_record_id=geo_raw_id,
+            dedupe_key="geo_accession:gse150705",
+            identifiers={
+                "geo_accession": "GSE150705",
+                "bioproject": "PRJNA633277",
+                "pmid": "34023294",
+            },
+            metadata={
+                "organism": "Canis lupus familiaris",
+                "sample_count": 21,
+                "library_strategy": "ChRO-seq",
+                "sample_accessions": ["GSM4550001", "GSM4550002"],
+                "supplementary_file_types": ["TXT"],
+            },
+        ),
+        geo_raw_id,
+    )
+    sra_raw_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="sra",
+            source_record_id="SRX31723468",
+            content_hash="sra-packet",
+            raw_payload={"accession": "SRX31723468"},
+        )
+    )
+    repo.upsert_research_object(
+        ResearchObject(
+            object_type=ResearchObjectType.DATASET,
+            title="Primary canine hemangiosarcoma cells RNA-Seq VIM expression",
+            abstract="RNA-seq run from canine hemangiosarcoma primary cells with vimentin biology context.",
+            source_key="sra",
+            raw_record_id=sra_raw_id,
+            dedupe_key="sra_experiment:srx31723468",
+            identifiers={
+                "sra_experiment": "SRX31723468",
+                "bioproject": "PRJNA1399620",
+            },
+            metadata={
+                "organism": "Canis lupus familiaris",
+                "sample_count": 1,
+                "library_strategy": "RNA-Seq",
+                "run_accessions": ["SRR36719153"],
+                "sample_accessions": ["SRS25058134"],
+            },
+        ),
+        sra_raw_id,
+    )
+    human_raw_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="geo",
+            source_record_id="GSE203215",
+            content_hash="geo-human-packet",
+            raw_payload={"accession": "GSE203215"},
+        )
+    )
+    repo.upsert_research_object(
+        ResearchObject(
+            object_type=ResearchObjectType.DATASET,
+            title="Human angiosarcoma RNA-seq VIM expression cohort",
+            abstract="Human angiosarcoma transcriptome dataset with VIM/vimentin and angiogenesis signals.",
+            source_key="geo",
+            raw_record_id=human_raw_id,
+            dedupe_key="geo_accession:gse203215",
+            identifiers={"geo_accession": "GSE203215"},
+            metadata={
+                "organism": "Homo sapiens",
+                "sample_count": 12,
+                "library_strategy": "RNA-seq",
+                "sample_accessions": ["GSM6170001"],
+                "supplementary_file_types": ["TSV"],
+            },
+        ),
+        human_raw_id,
+    )
+    off_topic_raw_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="geo",
+            source_record_id="GSE30723",
+            content_hash="geo-off-topic-packet",
+            raw_payload={"accession": "GSE30723"},
+        )
+    )
+    repo.upsert_research_object(
+        ResearchObject(
+            object_type=ResearchObjectType.DATASET,
+            title="Human primary alveolar cells after influenza infection",
+            abstract="Background text mentions canine hemangiosarcoma, but this dataset is not an angiosarcoma cohort.",
+            source_key="geo",
+            raw_record_id=off_topic_raw_id,
+            dedupe_key="geo_accession:gse30723",
+            identifiers={"geo_accession": "GSE30723"},
+            metadata={
+                "organism": "Homo sapiens",
+                "sample_count": 24,
+                "library_strategy": "Expression profiling by array",
+                "sample_accessions": ["GSM762702"],
+                "supplementary_file_types": ["CEL"],
+            },
+        ),
+        off_topic_raw_id,
+    )
+
+    result = HSAResearchService(repo).build_omics_evidence_packets(
+        OmicsEvidencePacketRequest(
+            source_keys=["geo", "sra"],
+            gene_symbols=["VIM", "vimentin"],
+            min_datasets_per_packet=1,
+        )
+    )
+
+    assert isinstance(result, OmicsEvidencePacketResult)
+    assert result.scanned_dataset_count == 4
+    assert result.selected_dataset_count == 4
+    assert result.direct_dataset_count == 2
+    assert result.analog_dataset_count == 1
+    packets = {packet.packet_key: packet for packet in result.packets}
+    assert {"canine_hsa", "human_angiosarcoma"} <= set(packets)
+    canine_packet = packets["canine_hsa"]
+    assert canine_packet.readiness == "ready_for_omics_review"
+    assert canine_packet.direct_dataset_count == 2
+    assert geo_object_id in {dataset.research_object_id for dataset in canine_packet.datasets}
+    assert "GSE150705" in canine_packet.accessions
+    assert "SRX31723468" in canine_packet.accessions
+    assert "GSE30723" not in canine_packet.accessions
+    assert "expression_matrix_or_raw_counts_required" in canine_packet.dispatch_blockers
+    assert "VIM_or_vimentin_readout_computed_with_direction_and_effect_size" in canine_packet.quality_gates
+    assert packets["human_angiosarcoma"].analog_dataset_count == 1
 
 
 def test_model_policy_uses_sonnet_for_operations_and_opus_for_big_ideas(monkeypatch):

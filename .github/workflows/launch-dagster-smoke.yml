@@ -31,6 +31,7 @@ on:
           - "research_program_library_job"
           - "research_program_evidence_loop_job"
           - "omics_accession_hunt_job"
+          - "omics_evidence_packet_job"
           - "research_brief_agent_job"
           - "therapy_committee_job"
           - "therapy_committee_validation_queue_job"
@@ -825,6 +826,74 @@ jobs:
                       "query_text": query.query_text,
                   }
                   for query in report.source_queries
+              ],
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+        shell: bash
+
+      - name: Print hosted omics evidence packet summary
+        if: ${{ always() && inputs.job == 'omics_evidence_packet_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+
+          from hsa_research.ingestion_bridge.contracts import OmicsEvidencePacketRequest
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          raw_config = os.getenv("DAGSTER_CLOUD_CONFIG_JSON") or "{}"
+          try:
+              config = json.loads(raw_config)
+          except json.JSONDecodeError:
+              config = {}
+          report_config = (
+              (config.get("ops") or {})
+              .get("omics_evidence_packet_report", {})
+              .get("config", {})
+          )
+          def bool_config(name, default):
+              value = report_config.get(name, default)
+              if isinstance(value, bool):
+                  return value
+              return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+          service = HSAResearchService(build_research_repository())
+          report = service.build_omics_evidence_packets(
+              OmicsEvidencePacketRequest(
+                  topic_query=report_config.get("topic_query")
+                  or "canine hemangiosarcoma human angiosarcoma VIM vimentin transcriptome RNA-seq expression",
+                  disease_terms=report_config.get("disease_terms") or [
+                      "canine hemangiosarcoma",
+                      "dog hemangiosarcoma",
+                      "human angiosarcoma",
+                      "angiosarcoma",
+                  ],
+                  gene_symbols=report_config.get("gene_symbols") or ["VIM", "vimentin"],
+                  source_keys=report_config.get("source_keys") or ["geo", "sra"],
+                  accessions=report_config.get("accessions") or [],
+                  limit=int(report_config.get("limit") or 100),
+                  min_datasets_per_packet=int(report_config.get("min_datasets_per_packet") or 1),
+                  include_context_packet=bool_config("include_context_packet", True),
+                  dry_run=True,
+              )
+          )
+          payload = {
+              "dagster_run_id": os.getenv("DAGSTER_CLOUD_RUN_ID"),
+              "packet_count": report.packet_count,
+              "scanned_dataset_count": report.scanned_dataset_count,
+              "selected_dataset_count": report.selected_dataset_count,
+              "packets": [
+                  {
+                      "packet_key": packet.packet_key,
+                      "readiness": packet.readiness,
+                      "score": packet.score,
+                      "dataset_count": packet.dataset_count,
+                      "accessions": packet.accessions[:8],
+                  }
+                  for packet in report.packets
               ],
           }
           print(json.dumps(payload, indent=2, sort_keys=True))

@@ -27,6 +27,7 @@ from .contracts import (
     FullTextOpsRequest,
     HypothesisPromotionReportRequest,
     OmicsAccessionHuntRequest,
+    OmicsEvidencePacketRequest,
     PubMedIdentifierRepairRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
@@ -822,6 +823,25 @@ def main() -> None:
     omics_accession_hunt.add_argument("--max-queries", type=int, default=8)
     omics_accession_hunt.add_argument("--no-persist-queries", action="store_true")
     omics_accession_hunt.add_argument("--dry-run", action="store_true")
+
+    omics_evidence_packets = subparsers.add_parser(
+        "omics-evidence-packets",
+        help="Build omics evidence packets from stored GEO/SRA accession metadata",
+    )
+    omics_evidence_packets.add_argument("--program-id", default=None, help="Research program ID")
+    omics_evidence_packets.add_argument(
+        "--query",
+        default="canine hemangiosarcoma human angiosarcoma VIM vimentin transcriptome RNA-seq expression",
+        help="Fallback topic query",
+    )
+    omics_evidence_packets.add_argument("--source", action="append", default=[], help="Source key; repeatable")
+    omics_evidence_packets.add_argument("--disease-term", action="append", default=[], help="Disease term; repeatable")
+    omics_evidence_packets.add_argument("--gene", action="append", default=[], help="Gene/term; repeatable")
+    omics_evidence_packets.add_argument("--accession", action="append", default=[], help="Specific accession; repeatable")
+    omics_evidence_packets.add_argument("--limit", type=int, default=100)
+    omics_evidence_packets.add_argument("--min-datasets-per-packet", type=int, default=1)
+    omics_evidence_packets.add_argument("--no-context-packet", action="store_true")
+    omics_evidence_packets.add_argument("--dry-run", action="store_true")
 
     x_topic_monitor = subparsers.add_parser(
         "x-topic-monitor",
@@ -2206,6 +2226,26 @@ def main() -> None:
                 limit_per_query=args.limit_per_query,
                 max_queries=args.max_queries,
                 persist_queries=not args.no_persist_queries,
+                dry_run=args.dry_run,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "omics-evidence-packets":
+        output = HSAResearchService(repo).build_omics_evidence_packets(
+            OmicsEvidencePacketRequest(
+                program_id=UUID(args.program_id) if args.program_id else None,
+                topic_query=args.query,
+                source_keys=args.source or ["geo", "sra"],
+                disease_terms=args.disease_term or [
+                    "canine hemangiosarcoma",
+                    "dog hemangiosarcoma",
+                    "human angiosarcoma",
+                    "angiosarcoma",
+                ],
+                gene_symbols=args.gene or ["VIM", "vimentin"],
+                accessions=args.accession,
+                limit=args.limit,
+                min_datasets_per_packet=args.min_datasets_per_packet,
+                include_context_packet=not args.no_context_packet,
                 dry_run=args.dry_run,
             )
         ).model_dump(mode="json")

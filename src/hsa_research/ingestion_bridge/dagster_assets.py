@@ -24,6 +24,7 @@ from .contracts import (
     FullTextOpsRequest,
     HypothesisPromotionReportRequest,
     OmicsAccessionHuntRequest,
+    OmicsEvidencePacketRequest,
     PubMedIdentifierRepairRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
@@ -338,6 +339,19 @@ _OMICS_ACCESSION_HUNT_TABLE_COLUMNS = (
     "bioproject",
     "pmid",
     "matched_terms",
+    "title",
+)
+_OMICS_EVIDENCE_PACKET_TABLE_COLUMNS = (
+    "packet_key",
+    "readiness",
+    "score",
+    "dataset_count",
+    "direct_dataset_count",
+    "analog_dataset_count",
+    "total_sample_count",
+    "source_keys",
+    "accessions",
+    "dispatch_blockers",
     "title",
 )
 _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS = (
@@ -1323,6 +1337,38 @@ if dg is not None:
             "negative_queries": dg.MetadataValue.json(report.get("negative_queries", [])),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "accession_hits": _metadata_table(rows, _OMICS_ACCESSION_HUNT_TABLE_COLUMNS),
+        }
+
+    def _omics_evidence_packet_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = []
+        for packet in report.get("packets", []):
+            rows.append(
+                {
+                    "packet_key": packet.get("packet_key"),
+                    "readiness": packet.get("readiness"),
+                    "score": packet.get("score"),
+                    "dataset_count": packet.get("dataset_count", 0),
+                    "direct_dataset_count": packet.get("direct_dataset_count", 0),
+                    "analog_dataset_count": packet.get("analog_dataset_count", 0),
+                    "total_sample_count": packet.get("total_sample_count"),
+                    "source_keys": ", ".join(packet.get("source_keys") or []),
+                    "accessions": ", ".join((packet.get("accessions") or [])[:12]),
+                    "dispatch_blockers": ", ".join((packet.get("dispatch_blockers") or [])[:8]),
+                    "title": str(packet.get("title") or "")[:300],
+                }
+            )
+        return {
+            "program_id": report.get("program_id"),
+            "dry_run": bool(report.get("dry_run", False)),
+            "packet_count": dg.MetadataValue.int(int(report.get("packet_count", 0))),
+            "scanned_dataset_count": dg.MetadataValue.int(int(report.get("scanned_dataset_count", 0))),
+            "selected_dataset_count": dg.MetadataValue.int(int(report.get("selected_dataset_count", 0))),
+            "direct_dataset_count": dg.MetadataValue.int(int(report.get("direct_dataset_count", 0))),
+            "analog_dataset_count": dg.MetadataValue.int(int(report.get("analog_dataset_count", 0))),
+            "context_dataset_count": dg.MetadataValue.int(int(report.get("context_dataset_count", 0))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "skipped": dg.MetadataValue.json((report.get("skipped") or [])[:25]),
+            "packets": _metadata_table(rows, _OMICS_EVIDENCE_PACKET_TABLE_COLUMNS),
         }
 
     def _research_brief_library_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -3802,6 +3848,60 @@ if dg is not None:
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_omics_accession_hunt_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "program_id": dg.Field(str, is_required=False),
+            "topic_query": dg.Field(
+                str,
+                default_value=(
+                    "canine hemangiosarcoma human angiosarcoma VIM vimentin "
+                    "transcriptome RNA-seq expression"
+                ),
+            ),
+            "disease_terms": dg.Field([str], default_value=[]),
+            "gene_symbols": dg.Field([str], default_value=[]),
+            "source_keys": dg.Field([str], default_value=["geo", "sra"]),
+            "accessions": dg.Field([str], default_value=[]),
+            "limit": dg.Field(int, default_value=100),
+            "min_datasets_per_packet": dg.Field(int, default_value=1),
+            "include_context_packet": dg.Field(bool, default_value=True),
+            "dry_run": dg.Field(bool, default_value=False),
+        },
+    )
+    def omics_evidence_packet_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual packet builder from stored GEO/SRA omics accessions."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_omics_evidence_packets(
+            OmicsEvidencePacketRequest(
+                program_id=UUID(config["program_id"]) if config.get("program_id") else None,
+                topic_query=config["topic_query"],
+                disease_terms=config.get("disease_terms") or [
+                    "canine hemangiosarcoma",
+                    "dog hemangiosarcoma",
+                    "human angiosarcoma",
+                    "angiosarcoma",
+                ],
+                gene_symbols=config.get("gene_symbols") or ["VIM", "vimentin"],
+                source_keys=config.get("source_keys") or ["geo", "sra"],
+                accessions=config.get("accessions") or [],
+                limit=config["limit"],
+                min_datasets_per_packet=config["min_datasets_per_packet"],
+                include_context_packet=config["include_context_packet"],
+                dry_run=config["dry_run"],
+                dagster_run_id=context.run_id,
+                metadata={"dagster_omics_evidence_packet_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_omics_evidence_packet_metadata(report))
 
     @dg.asset(
         group_name="ai_research",
@@ -6496,6 +6596,7 @@ if dg is not None:
         research_program_library_report,
         research_program_evidence_loop_report,
         omics_accession_hunt_report,
+        omics_evidence_packet_report,
         therapy_committee_validation_queue_report,
         research_brief_library_report,
         research_brief_evaluation_report,
@@ -6678,6 +6779,10 @@ if dg is not None:
     omics_accession_hunt_job = dg.define_asset_job(
         "omics_accession_hunt_job",
         selection=dg.AssetSelection.assets(omics_accession_hunt_report),
+    )
+    omics_evidence_packet_job = dg.define_asset_job(
+        "omics_evidence_packet_job",
+        selection=dg.AssetSelection.assets(omics_evidence_packet_report),
     )
     therapy_committee_validation_queue_job = dg.define_asset_job(
         "therapy_committee_validation_queue_job",
@@ -7030,6 +7135,7 @@ if dg is not None:
             research_program_library_job,
             research_program_evidence_loop_job,
             omics_accession_hunt_job,
+            omics_evidence_packet_job,
             therapy_committee_validation_queue_job,
             research_brief_library_job,
             research_brief_evaluation_job,
@@ -7130,6 +7236,7 @@ else:
     research_program_library_job = None
     research_program_evidence_loop_job = None
     omics_accession_hunt_job = None
+    omics_evidence_packet_job = None
     therapy_committee_validation_queue_job = None
     research_brief_library_job = None
     research_brief_evaluation_job = None
