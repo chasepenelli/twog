@@ -21,6 +21,7 @@ from .contracts import (
     ClaimCurationRequest,
     CommandCenterRequest,
     DoiOpenAccessFollowupQueueRequest,
+    EvidenceRefRepairRequest,
     EvidenceGapResolverRequest,
     EntityResolutionRequest,
     FullTextTriageRequest,
@@ -28,6 +29,9 @@ from .contracts import (
     HypothesisPromotionReportRequest,
     OmicsAccessionHuntRequest,
     OmicsEvidencePacketRequest,
+    OmicsFollowupRequest,
+    OmicsLocusSignalRequest,
+    OmicsReadoutRequest,
     PubMedIdentifierRepairRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
@@ -66,6 +70,7 @@ from .contracts import (
     ValidationAutopilotRequest,
     ValidationGapSourceIngestRequest,
     ValidationGapSourcePackRequest,
+    ValidationDecisionReportRequest,
     ValidationPacketRequest,
     ValidationPlanRequest,
     ValidationRequestQueueRequest,
@@ -607,7 +612,18 @@ def main() -> None:
     therapy_committee.add_argument("--max-chunks", type=int, default=10, help="Chunks per perspective search")
     therapy_committee.add_argument("--max-claims", type=int, default=20, help="Claims to include")
     therapy_committee.add_argument("--max-chunk-chars", type=int, default=2200, help="Maximum chars per cited chunk")
-    therapy_committee.add_argument("--max-ideas", type=int, default=4, help="Ideas per committee perspective")
+    therapy_committee.add_argument(
+        "--max-ideas",
+        type=int,
+        default=None,
+        help="Ideas per committee perspective; when explicit, also caps final ranked ideas unless --max-ranked-ideas is set",
+    )
+    therapy_committee.add_argument(
+        "--max-ranked-ideas",
+        type=int,
+        default=None,
+        help="Maximum final deduped ideas to persist from the committee run",
+    )
     therapy_committee.add_argument("--model-profile", default="therapy_committee", help="Logical model profile")
     therapy_committee.add_argument(
         "--review-mode",
@@ -704,6 +720,67 @@ def main() -> None:
     validation_packets.add_argument("--max-tasks", type=int, default=8, help="Maximum packet tasks")
     validation_packets.add_argument("--priority", type=int, default=40, help="Queue priority when queueing")
     validation_packets.add_argument("--limit", type=int, default=10, help="Maximum packets to return")
+
+    validation_decisions = subparsers.add_parser(
+        "validation-decision-report",
+        help="Choose promote-broader, narrow, or archive outcomes for validation packets",
+    )
+    validation_decisions.add_argument("--candidate-id", default=None, help="Promotion candidate ID")
+    validation_decisions.add_argument("--therapy-idea-id", default=None, help="Therapy idea ID")
+    validation_decisions.add_argument("--plan-id", default=None, help="Validation plan ID")
+    validation_decisions.add_argument("--queue-item-id", default=None, help="Validation request queue item ID")
+    validation_decisions.add_argument("--brief-id", default=None, help="Source brief ID")
+    validation_decisions.add_argument("--evaluation-id", default=None, help="Source evaluation ID")
+    validation_decisions.add_argument("--query", default=None, help="Topic/title/hypothesis search")
+    validation_decisions.add_argument("--source", default=None, help="Source key filter")
+    validation_decisions.add_argument("--hide-queue-items", action="store_true", help="Do not include queue item payloads")
+    validation_decisions.add_argument(
+        "--hide-evidence-addendum",
+        action="store_true",
+        help="Do not include validation-gap follow-up brief/evaluation addendum",
+    )
+    validation_decisions.add_argument(
+        "--include-source-packets",
+        action="store_true",
+        help="Include full source validation packet payloads in each decision row",
+    )
+    validation_decisions.add_argument("--no-persist", action="store_true", help="Do not persist decision records")
+    validation_decisions.add_argument("--addendum-limit", type=int, default=25, help="Maximum follow-up rows")
+    validation_decisions.add_argument("--limit", type=int, default=10, help="Maximum decisions to return")
+
+    validation_decision_records = subparsers.add_parser(
+        "validation-decisions",
+        help="List persisted finite validation decision records",
+    )
+    validation_decision_records.add_argument("--id", default=None, help="Stable validation decision ID")
+    validation_decision_records.add_argument("--outcome", default=None, help="Decision outcome filter")
+    validation_decision_records.add_argument("--therapy-idea-id", default=None, help="Therapy idea ID")
+    validation_decision_records.add_argument("--candidate-id", default=None, help="Promotion candidate ID")
+    validation_decision_records.add_argument("--limit", type=int, default=50, help="Maximum records to return")
+
+    evidence_ref_repair = subparsers.add_parser(
+        "evidence-ref-repair-report",
+        help="Audit validation packet and brief evidence refs for stale or unresolved citation tokens",
+    )
+    evidence_ref_repair.add_argument("--therapy-idea-id", default=None, help="Therapy idea ID")
+    evidence_ref_repair.add_argument("--plan-id", default=None, help="Validation plan ID")
+    evidence_ref_repair.add_argument("--queue-item-id", default=None, help="Validation request queue item ID")
+    evidence_ref_repair.add_argument("--brief-id", default=None, help="Source brief ID")
+    evidence_ref_repair.add_argument("--evaluation-id", default=None, help="Source evaluation ID")
+    evidence_ref_repair.add_argument("--query", default=None, help="Topic/title/hypothesis search")
+    evidence_ref_repair.add_argument("--source", default=None, help="Source key filter")
+    evidence_ref_repair.add_argument(
+        "--no-validation-packet",
+        action="store_true",
+        help="Audit only supplied brief/evaluation refs without building validation packets",
+    )
+    evidence_ref_repair.add_argument(
+        "--no-text-refs",
+        action="store_true",
+        help="Do not scan free-text blockers/weaknesses for C# citation tokens",
+    )
+    evidence_ref_repair.add_argument("--addendum-limit", type=int, default=25, help="Maximum follow-up rows")
+    evidence_ref_repair.add_argument("--limit", type=int, default=10, help="Maximum packets to inspect")
 
     research_program_board = subparsers.add_parser(
         "research-program-board",
@@ -842,6 +919,100 @@ def main() -> None:
     omics_evidence_packets.add_argument("--min-datasets-per-packet", type=int, default=1)
     omics_evidence_packets.add_argument("--no-context-packet", action="store_true")
     omics_evidence_packets.add_argument("--dry-run", action="store_true")
+
+    omics_readouts = subparsers.add_parser(
+        "omics-readouts",
+        help="Compute VIM and vascular-state readouts from processed omics matrices",
+    )
+    omics_readouts.add_argument("--program-id", default=None, help="Research program ID")
+    omics_readouts.add_argument("--therapy-idea-id", default=None, help="Therapy idea ID")
+    omics_readouts.add_argument("--packet-id", default=None, help="Specific omics evidence packet ID")
+    omics_readouts.add_argument("--packet-key", default=None, help="Packet key, e.g. canine_hsa")
+    omics_readouts.add_argument(
+        "--query",
+        default="canine hemangiosarcoma human angiosarcoma VIM vimentin transcriptome RNA-seq expression",
+        help="Fallback topic query",
+    )
+    omics_readouts.add_argument("--source", action="append", default=[], help="Source key; repeatable")
+    omics_readouts.add_argument("--disease-term", action="append", default=[], help="Disease term; repeatable")
+    omics_readouts.add_argument("--gene", action="append", default=[], help="Gene/term; repeatable")
+    omics_readouts.add_argument("--accession", action="append", default=[], help="Specific accession; repeatable")
+    omics_readouts.add_argument(
+        "--matrix-uri",
+        action="append",
+        default=[],
+        help="Processed matrix URI as ACCESSION=URI; repeatable",
+    )
+    omics_readouts.add_argument(
+        "--sample-groups-json",
+        default=None,
+        help="JSON mapping accession -> sample -> tumor/control group",
+    )
+    omics_readouts.add_argument("--limit", type=int, default=100)
+    omics_readouts.add_argument("--max-datasets", type=int, default=5)
+    omics_readouts.add_argument("--artifact-dir", default=None)
+    omics_readouts.add_argument("--run-agent", action="store_true", help="Run omics_validation_agent after compute")
+    omics_readouts.add_argument("--model-profile", default="openrouter_required")
+    omics_readouts.add_argument("--dry-run", action="store_true")
+
+    omics_locus_signals = subparsers.add_parser(
+        "omics-locus-signals",
+        help="Extract target-locus signal from ChRO-seq or related bigWig tracks",
+    )
+    omics_locus_signals.add_argument("--packet-id", default=None, help="Specific omics evidence packet ID")
+    omics_locus_signals.add_argument("--packet-key", default=None, help="Packet key, e.g. canine_hsa")
+    omics_locus_signals.add_argument(
+        "--query",
+        default="canine hemangiosarcoma human angiosarcoma VIM vimentin ChRO-seq bigWig locus signal",
+    )
+    omics_locus_signals.add_argument("--source", action="append", default=[], help="Source key; repeatable")
+    omics_locus_signals.add_argument("--disease-term", action="append", default=[], help="Disease term; repeatable")
+    omics_locus_signals.add_argument("--gene", action="append", default=[], help="Gene symbol; repeatable")
+    omics_locus_signals.add_argument("--accession", action="append", default=[], help="Specific accession; repeatable")
+    omics_locus_signals.add_argument("--limit", type=int, default=100)
+    omics_locus_signals.add_argument("--max-datasets", type=int, default=5)
+    omics_locus_signals.add_argument("--max-samples-per-group", type=int, default=2)
+    omics_locus_signals.add_argument("--remote-extract-timeout-seconds", type=int, default=600)
+    omics_locus_signals.add_argument("--artifact-dir", default=None)
+    omics_locus_signals.add_argument(
+        "--bigwig-json",
+        default=None,
+        help="JSON mapping sample -> {plus: URI, minus: URI}; optional override",
+    )
+    omics_locus_signals.add_argument(
+        "--sample-groups-json",
+        default=None,
+        help="JSON mapping accession -> sample -> tumor/control group",
+    )
+    omics_locus_signals.add_argument(
+        "--target-loci-json",
+        default=None,
+        help="JSON mapping gene -> locus object with chromosome/start/end/strand/genome_build",
+    )
+    omics_locus_signals.add_argument("--run-agent", action="store_true", help="Run omics_validation_agent after compute")
+    omics_locus_signals.add_argument("--model-profile", default="openrouter_required")
+    omics_locus_signals.add_argument("--dry-run", action="store_true")
+
+    omics_followups = subparsers.add_parser(
+        "omics-followups",
+        help="Generate focused follow-up evidence tasks from omics readout gaps",
+    )
+    omics_followups.add_argument(
+        "--query",
+        default="canine hemangiosarcoma human angiosarcoma VIM vimentin omics follow-up evidence",
+    )
+    omics_followups.add_argument("--gene", action="append", default=[], help="Gene symbol; repeatable")
+    omics_followups.add_argument("--accession", action="append", default=[], help="Specific accession; repeatable")
+    omics_followups.add_argument("--source", action="append", default=[], help="Source key; repeatable")
+    omics_followups.add_argument("--max-tasks", type=int, default=8)
+    omics_followups.add_argument("--readout-report-json", default=None, help="JSON payload from omics-readouts")
+    omics_followups.add_argument("--locus-report-json", default=None, help="JSON payload from omics-locus-signals")
+    omics_followups.add_argument("--validation-agent-json", default=None, help="JSON validation_agent_result payload")
+    omics_followups.add_argument("--include-locus-signals", action="store_true", help="Run locus signal compute first")
+    omics_followups.add_argument("--locus-signal-request-json", default=None, help="Additional JSON args for locus signal compute")
+    omics_followups.add_argument("--no-research-leads", action="store_true")
+    omics_followups.add_argument("--no-source-queries", action="store_true")
+    omics_followups.add_argument("--apply", action="store_true", help="Persist research leads/source queries")
 
     x_topic_monitor = subparsers.add_parser(
         "x-topic-monitor",
@@ -1450,6 +1621,12 @@ def main() -> None:
     )
     validation_gap_ingest.add_argument("--source", action="append", default=[], help="Source key to ingest; repeat for multiple.")
     validation_gap_ingest.add_argument("--query-name", action="append", default=[], help="Specific query name; repeat for multiple.")
+    validation_gap_ingest.add_argument(
+        "--track",
+        action="append",
+        default=[],
+        help="SourceQuery track to ingest; defaults to validation_gap. Repeat for multiple tracks.",
+    )
     validation_gap_ingest.add_argument("--followup-lane", default=None, help="Internal follow-up lane filter.")
     validation_gap_ingest.add_argument("--origin-review-id", action="append", default=[], help="Origin evaluator review ID filter.")
     validation_gap_ingest.add_argument("--origin-agent-run-id", action="append", default=[], help="Origin agent run ID filter.")
@@ -1917,11 +2094,10 @@ def main() -> None:
         ).model_dump(mode="json")
     elif args.command == "research-brief":
         output = HSAResearchService(repo).run_research_brief(
-                ResearchBriefRequest(
+            ResearchBriefRequest(
                 topic=args.topic,
                 disease_scope=args.disease_scope,
                 source_key=args.source,
-                program_id=UUID(args.program_id) if args.program_id else None,
                 max_chunks_per_perspective=args.max_chunks,
                 max_claims=args.max_claims,
                 max_chunk_chars=args.max_chunk_chars,
@@ -2071,10 +2247,14 @@ def main() -> None:
                 max_chunks_per_perspective=args.max_chunks,
                 max_claims=args.max_claims,
                 max_chunk_chars=args.max_chunk_chars,
-                max_ideas_per_perspective=args.max_ideas,
+                max_ideas_per_perspective=args.max_ideas if args.max_ideas is not None else 4,
+                max_ranked_ideas=(
+                    args.max_ranked_ideas if args.max_ranked_ideas is not None else args.max_ideas
+                ),
                 model_profile=args.model_profile,
                 review_mode=args.review_mode,
                 review_models=args.review_model,
+                program_id=UUID(args.program_id) if args.program_id else None,
                 brief_id=UUID(args.brief_id) if args.brief_id else None,
                 evaluation_id=UUID(args.evaluation_id) if args.evaluation_id else None,
             )
@@ -2149,6 +2329,56 @@ def main() -> None:
                 dry_run=not args.apply,
                 max_tasks=args.max_tasks,
                 priority=args.priority,
+                limit=args.limit,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "validation-decision-report":
+        output = HSAResearchService(repo).build_validation_decision_report(
+            ValidationDecisionReportRequest(
+                candidate_id=args.candidate_id,
+                therapy_idea_id=UUID(args.therapy_idea_id) if args.therapy_idea_id else None,
+                plan_id=UUID(args.plan_id) if args.plan_id else None,
+                queue_item_id=UUID(args.queue_item_id) if args.queue_item_id else None,
+                brief_id=UUID(args.brief_id) if args.brief_id else None,
+                evaluation_id=UUID(args.evaluation_id) if args.evaluation_id else None,
+                topic_query=args.query,
+                source_key=args.source,
+                include_queue_items=not args.hide_queue_items,
+                include_evidence_addendum=not args.hide_evidence_addendum,
+                include_source_packets=args.include_source_packets,
+                persist_decisions=not args.no_persist,
+                addendum_limit=args.addendum_limit,
+                limit=args.limit,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "validation-decisions":
+        service = HSAResearchService(repo)
+        if args.id:
+            record = service.get_validation_decision(args.id)
+            output = record.model_dump(mode="json") if record else {}
+        else:
+            output = [
+                record.model_dump(mode="json")
+                for record in service.list_validation_decisions(
+                    outcome=args.outcome,
+                    therapy_idea_id=UUID(args.therapy_idea_id) if args.therapy_idea_id else None,
+                    candidate_id=args.candidate_id,
+                    limit=args.limit,
+                )
+            ]
+    elif args.command == "evidence-ref-repair-report":
+        output = HSAResearchService(repo).build_evidence_ref_repair_report(
+            EvidenceRefRepairRequest(
+                therapy_idea_id=UUID(args.therapy_idea_id) if args.therapy_idea_id else None,
+                plan_id=UUID(args.plan_id) if args.plan_id else None,
+                queue_item_id=UUID(args.queue_item_id) if args.queue_item_id else None,
+                brief_id=UUID(args.brief_id) if args.brief_id else None,
+                evaluation_id=UUID(args.evaluation_id) if args.evaluation_id else None,
+                topic_query=args.query,
+                source_key=args.source,
+                include_validation_packet=not args.no_validation_packet,
+                include_text_refs=not args.no_text_refs,
+                addendum_limit=args.addendum_limit,
                 limit=args.limit,
             )
         ).model_dump(mode="json")
@@ -2247,6 +2477,89 @@ def main() -> None:
                 min_datasets_per_packet=args.min_datasets_per_packet,
                 include_context_packet=not args.no_context_packet,
                 dry_run=args.dry_run,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "omics-readouts":
+        matrix_uri_by_accession = {}
+        for item in args.matrix_uri:
+            if "=" not in item:
+                raise ValueError("--matrix-uri must be formatted as ACCESSION=URI")
+            accession, uri = item.split("=", 1)
+            matrix_uri_by_accession[accession.strip()] = uri.strip()
+        sample_group_overrides = json.loads(args.sample_groups_json) if args.sample_groups_json else {}
+        output = HSAResearchService(repo).build_omics_readouts(
+            OmicsReadoutRequest(
+                packet_id=args.packet_id,
+                packet_key=args.packet_key,
+                program_id=UUID(args.program_id) if args.program_id else None,
+                therapy_idea_id=UUID(args.therapy_idea_id) if args.therapy_idea_id else None,
+                topic_query=args.query,
+                source_keys=args.source or ["geo", "sra"],
+                disease_terms=args.disease_term or [
+                    "canine hemangiosarcoma",
+                    "dog hemangiosarcoma",
+                    "human angiosarcoma",
+                    "angiosarcoma",
+                ],
+                gene_symbols=args.gene or ["VIM", "vimentin"],
+                accessions=args.accession,
+                limit=args.limit,
+                max_datasets=args.max_datasets,
+                matrix_uri_by_accession=matrix_uri_by_accession,
+                sample_group_overrides=sample_group_overrides,
+                artifact_dir=args.artifact_dir,
+                run_validation_agent=args.run_agent,
+                model_profile=args.model_profile,
+                dry_run=args.dry_run,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "omics-locus-signals":
+        bigwig_uri_by_sample = json.loads(args.bigwig_json) if args.bigwig_json else {}
+        sample_group_overrides = json.loads(args.sample_groups_json) if args.sample_groups_json else {}
+        target_loci = json.loads(args.target_loci_json) if args.target_loci_json else {}
+        output = HSAResearchService(repo).build_omics_locus_signals(
+            OmicsLocusSignalRequest(
+                packet_id=args.packet_id,
+                packet_key=args.packet_key,
+                topic_query=args.query,
+                source_keys=args.source or ["geo"],
+                disease_terms=args.disease_term or [
+                    "canine hemangiosarcoma",
+                    "dog hemangiosarcoma",
+                    "human angiosarcoma",
+                    "angiosarcoma",
+                ],
+                gene_symbols=args.gene or ["VIM"],
+                accessions=args.accession,
+                limit=args.limit,
+                max_datasets=args.max_datasets,
+                max_samples_per_group=args.max_samples_per_group,
+                remote_extract_timeout_seconds=args.remote_extract_timeout_seconds,
+                artifact_dir=args.artifact_dir,
+                bigwig_uri_by_sample=bigwig_uri_by_sample,
+                sample_group_overrides=sample_group_overrides,
+                target_loci=target_loci,
+                run_validation_agent=args.run_agent,
+                model_profile=args.model_profile,
+                dry_run=args.dry_run,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "omics-followups":
+        output = HSAResearchService(repo).build_omics_followups(
+            OmicsFollowupRequest(
+                topic_query=args.query,
+                gene_symbols=args.gene or ["VIM"],
+                accessions=args.accession,
+                source_keys=args.source or ["geo", "sra", "pubmed", "europe_pmc"],
+                omics_readout_report=json.loads(args.readout_report_json) if args.readout_report_json else None,
+                omics_locus_signal_report=json.loads(args.locus_report_json) if args.locus_report_json else None,
+                validation_agent_result=json.loads(args.validation_agent_json) if args.validation_agent_json else None,
+                include_locus_signal_report=args.include_locus_signals,
+                locus_signal_request=json.loads(args.locus_signal_request_json) if args.locus_signal_request_json else {},
+                max_tasks=args.max_tasks,
+                create_research_leads=not args.no_research_leads,
+                create_source_queries=not args.no_source_queries,
+                dry_run=not args.apply,
             )
         ).model_dump(mode="json")
     elif args.command == "x-topic-monitor":
@@ -2693,6 +3006,7 @@ def main() -> None:
             ValidationGapSourceIngestRequest(
                 source_keys=args.source,
                 query_names=args.query_name,
+                tracks=args.track or ["validation_gap"],
                 followup_lane=args.followup_lane,
                 origin_review_ids=[UUID(value) for value in args.origin_review_id],
                 origin_agent_run_ids=[UUID(value) for value in args.origin_agent_run_id],

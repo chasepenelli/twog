@@ -50,6 +50,7 @@ from .contracts import (
     TextEmbeddingSearchRequest,
     TextEmbeddingSearchResult,
     TherapyIdeaRecord,
+    ValidationDecisionRecord,
     ValidationPlanRecord,
     ValidationRequest,
     ValidationRequestQueueItem,
@@ -2007,6 +2008,99 @@ class SQLiteResearchRepository(ResearchRepository):
             for row in self.conn.execute(sql, params).fetchall()
         ]
 
+    def upsert_validation_decision(self, record: ValidationDecisionRecord) -> ValidationDecisionRecord:
+        existing = self.get_validation_decision(record.decision_id)
+        if existing:
+            record = record.model_copy(
+                update={
+                    "decision_record_id": existing.decision_record_id,
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **record.metadata},
+                }
+            )
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into validation_decisions (
+              decision_record_id, decision_id, packet_id, candidate_id, source_type,
+              source_id, therapy_idea_id, title, outcome, confidence,
+              validation_ready, created_at, updated_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(decision_id) do update set
+              packet_id = excluded.packet_id,
+              candidate_id = excluded.candidate_id,
+              source_type = excluded.source_type,
+              source_id = excluded.source_id,
+              therapy_idea_id = excluded.therapy_idea_id,
+              title = excluded.title,
+              outcome = excluded.outcome,
+              confidence = excluded.confidence,
+              validation_ready = excluded.validation_ready,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(record.decision_record_id),
+                record.decision_id,
+                record.packet_id,
+                record.candidate_id,
+                record.source_type,
+                record.source_id,
+                str(record.therapy_idea_id) if record.therapy_idea_id else None,
+                record.title,
+                record.outcome,
+                record.confidence,
+                int(record.validation_ready),
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_validation_decision(self, decision_id: str) -> ValidationDecisionRecord | None:
+        row = self.conn.execute(
+            "select payload from validation_decisions where decision_id = ?",
+            (decision_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return ValidationDecisionRecord.model_validate(json.loads(row["payload"]))
+
+    def list_validation_decisions(
+        self,
+        *,
+        outcome: str | None = None,
+        therapy_idea_id: UUID | None = None,
+        candidate_id: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ValidationDecisionRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if outcome:
+            clauses.append("outcome = ?")
+            params.append(outcome)
+        if therapy_idea_id:
+            clauses.append("therapy_idea_id = ?")
+            params.append(str(therapy_idea_id))
+        if candidate_id:
+            clauses.append("candidate_id = ?")
+            params.append(candidate_id)
+        sql = "select payload from validation_decisions"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by updated_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            ValidationDecisionRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
     def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:
         payload = record.model_dump(mode="json")
         self.conn.execute(
@@ -3470,6 +3564,32 @@ class SQLiteResearchRepository(ResearchRepository):
               on research_programs(thesis_area, updated_at desc);
             create index if not exists research_programs_agent_run_idx
               on research_programs(agent_run_id, updated_at desc);
+
+            create table if not exists validation_decisions (
+              decision_record_id text primary key,
+              decision_id text not null unique,
+              packet_id text not null,
+              candidate_id text not null,
+              source_type text not null,
+              source_id text not null,
+              therapy_idea_id text,
+              title text not null,
+              outcome text not null,
+              confidence real not null default 0.5,
+              validation_ready integer not null default 0,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp
+            );
+
+            create index if not exists validation_decisions_outcome_idx
+              on validation_decisions(outcome, confidence desc, updated_at desc);
+            create index if not exists validation_decisions_therapy_idx
+              on validation_decisions(therapy_idea_id, updated_at desc);
+            create index if not exists validation_decisions_candidate_idx
+              on validation_decisions(candidate_id, updated_at desc);
+            create index if not exists validation_decisions_packet_idx
+              on validation_decisions(packet_id, updated_at desc);
 
             create table if not exists validation_plans (
               plan_id text primary key,

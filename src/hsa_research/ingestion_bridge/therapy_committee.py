@@ -107,7 +107,7 @@ def run_therapy_committee(
 
     evidence = _build_evidence(repository, request)
     reports = _run_perspectives(request, evidence)
-    idea_limit = 3 if request.program_id else 12
+    idea_limit = request.max_ranked_ideas or (3 if request.program_id else 12)
     ranked_ideas = _rank_ideas([idea for report in reports for idea in report.ideas])[:idea_limit]
     errors = _dedupe_strings([*evidence["errors"], *[error for report in reports for error in report.errors]])
     limitations = _dedupe_strings(
@@ -1056,7 +1056,7 @@ def _select_models(request: TherapyCommitteeRequest) -> list[str]:
 def _rank_ideas(ideas: Sequence[TherapyIdea]) -> list[TherapyIdea]:
     deduped: dict[str, TherapyIdea] = {}
     for idea in ideas:
-        key = re.sub(r"[^a-z0-9]+", "-", idea.title.lower()).strip("-")
+        key = _idea_family_key(idea)
         existing = deduped.get(key)
         if existing is None or idea.priority_score > existing.priority_score:
             deduped[key] = idea
@@ -1064,6 +1064,62 @@ def _rank_ideas(ideas: Sequence[TherapyIdea]) -> list[TherapyIdea]:
         deduped.values(),
         key=lambda idea: (-idea.priority_score, idea.title.lower()),
     )
+
+
+def _idea_family_key(idea: TherapyIdea) -> str:
+    """Collapse committee variants that describe the same therapy family."""
+
+    text = " ".join(
+        [
+            idea.title,
+            idea.hypothesis,
+            " ".join(idea.candidate_therapies),
+            " ".join(idea.targets),
+            " ".join(idea.biomarkers),
+        ]
+    )
+    normalized = _normalize_idea_text(text)
+    therapy_family = _therapy_family(normalized)
+    target_family = _target_family(normalized)
+    if therapy_family:
+        return f"{therapy_family}:{target_family or 'unspecified'}"
+    return re.sub(r"[^a-z0-9]+", "-", idea.title.lower()).strip("-")
+
+
+def _normalize_idea_text(text: str) -> str:
+    return (
+        text.lower()
+        .replace("β", "beta")
+        .replace("α", "alpha")
+        .replace("γ", "gamma")
+        .replace("-", "")
+        .replace("/", "")
+        .replace("_", "")
+    )
+
+
+def _therapy_family(text: str) -> str | None:
+    if "sorafenib" in text:
+        return "sorafenib"
+    if any(term in text for term in ("toceranib", "masitinib")):
+        return "vegfr_tki"
+    if any(term in text for term in ("alpelisib", "copanlisib", "buparlisib", "bkm120")):
+        return "pi3k_inhibitor"
+    if any(term in text for term in ("anti pd1", "antipd1", "anti pdl1", "antipdl1", "checkpoint")):
+        return "checkpoint_modulation"
+    return None
+
+
+def _target_family(text: str) -> str | None:
+    if any(term in text for term in ("vegfr", "kdr", "pdgfr", "raf")):
+        return "vegfr_pdgfr_raf_axis"
+    if any(term in text for term in ("pik3ca", "pi3k", "pten", "akt", "mtor")):
+        return "pi3k_akt_mtor_axis"
+    if any(term in text for term in ("pd1", "pdl1", "cd274", "cd279")):
+        return "pd1_pdl1_axis"
+    if "vimentin" in text or "vim" in text:
+        return "vimentin_axis"
+    return None
 
 
 def _decision_summary(ideas: Sequence[TherapyIdea], limitations: Sequence[str]) -> str:

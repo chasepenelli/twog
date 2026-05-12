@@ -25,6 +25,9 @@ from .contracts import (
     HypothesisPromotionReportRequest,
     OmicsAccessionHuntRequest,
     OmicsEvidencePacketRequest,
+    OmicsFollowupRequest,
+    OmicsLocusSignalRequest,
+    OmicsReadoutRequest,
     PubMedIdentifierRepairRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
@@ -54,6 +57,7 @@ from .contracts import (
     ValidationAutopilotRequest,
     ValidationGapSourceIngestRequest,
     ValidationGapSourcePackRequest,
+    ValidationDecisionReportRequest,
     ValidationPacketRequest,
     ValidationPlanRequest,
     ValidationRequestQueueRequest,
@@ -303,6 +307,18 @@ _VALIDATION_PACKET_TABLE_COLUMNS = (
     "evaluated_follow_up_count",
     "passing_follow_up_count",
 )
+_VALIDATION_DECISION_TABLE_COLUMNS = (
+    "decision_id",
+    "packet_id",
+    "outcome",
+    "confidence",
+    "validation_ready",
+    "specific_claim_viability",
+    "broader_program_signal",
+    "title",
+    "recommended_downstream_action",
+    "blocking_reason_count",
+)
 _RESEARCH_PROGRAM_TABLE_COLUMNS = (
     "program_id",
     "status",
@@ -353,6 +369,41 @@ _OMICS_EVIDENCE_PACKET_TABLE_COLUMNS = (
     "accessions",
     "dispatch_blockers",
     "title",
+)
+_OMICS_READOUT_TABLE_COLUMNS = (
+    "accession",
+    "status",
+    "sample_count",
+    "gene_count",
+    "tumor_sample_count",
+    "control_sample_count",
+    "target_support",
+    "target_effect_size",
+    "matrix_uri",
+    "limitations",
+)
+_OMICS_LOCUS_SIGNAL_TABLE_COLUMNS = (
+    "accession",
+    "status",
+    "sample_count",
+    "computed_sample_count",
+    "tumor_sample_count",
+    "control_sample_count",
+    "support_level",
+    "effect_size",
+    "tumor_control_delta",
+    "comparison_p_value",
+    "normalization_status",
+    "limitations",
+)
+_OMICS_FOLLOWUP_TASK_TABLE_COLUMNS = (
+    "task_type",
+    "priority",
+    "title",
+    "source_keys",
+    "target_genes",
+    "accessions",
+    "query_text",
 )
 _RESEARCH_BRIEF_LIBRARY_TABLE_COLUMNS = (
     "brief_id",
@@ -1239,6 +1290,32 @@ if dg is not None:
             "packets": _metadata_table(rows, _VALIDATION_PACKET_TABLE_COLUMNS),
         }
 
+    def _validation_decision_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = [
+            {
+                "decision_id": decision.get("decision_id"),
+                "packet_id": decision.get("packet_id"),
+                "outcome": decision.get("outcome"),
+                "confidence": decision.get("confidence"),
+                "validation_ready": decision.get("validation_ready"),
+                "specific_claim_viability": decision.get("specific_claim_viability"),
+                "broader_program_signal": decision.get("broader_program_signal"),
+                "title": str(decision.get("title") or "")[:300],
+                "recommended_downstream_action": str(decision.get("recommended_downstream_action") or "")[:500],
+                "blocking_reason_count": len(decision.get("blocking_reasons") or []),
+            }
+            for decision in report.get("decisions", [])
+        ]
+        return {
+            "decision_count": dg.MetadataValue.int(int(report.get("decision_count", 0))),
+            "packet_count": dg.MetadataValue.int(int(report.get("packet_count", 0))),
+            "persisted_decision_count": dg.MetadataValue.int(int(report.get("persisted_decision_count", 0))),
+            "validation_ready_count": dg.MetadataValue.int(int(report.get("validation_ready_count", 0))),
+            "outcome_counts": dg.MetadataValue.json(report.get("outcome_counts", {})),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "decisions": _metadata_table(rows, _VALIDATION_DECISION_TABLE_COLUMNS),
+        }
+
     def _research_program_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
         rows = []
         for program in report.get("programs", []):
@@ -1369,6 +1446,102 @@ if dg is not None:
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "skipped": dg.MetadataValue.json((report.get("skipped") or [])[:25]),
             "packets": _metadata_table(rows, _OMICS_EVIDENCE_PACKET_TABLE_COLUMNS),
+        }
+
+    def _omics_readout_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = []
+        for item in report.get("datasets", []):
+            dataset = item.get("dataset") or {}
+            target = item.get("target_expression") or {}
+            rows.append(
+                {
+                    "accession": dataset.get("accession"),
+                    "status": item.get("status"),
+                    "sample_count": item.get("sample_count", 0),
+                    "gene_count": item.get("gene_count", 0),
+                    "tumor_sample_count": item.get("tumor_sample_count", 0),
+                    "control_sample_count": item.get("control_sample_count", 0),
+                    "target_support": target.get("support_level"),
+                    "target_effect_size": target.get("effect_size"),
+                    "matrix_uri": str(item.get("matrix_uri") or "")[:300],
+                    "limitations": ", ".join((item.get("limitations") or [])[:8]),
+                }
+            )
+        validation = report.get("validation_agent_result") or {}
+        return {
+            "program_id": report.get("program_id"),
+            "therapy_idea_id": report.get("therapy_idea_id"),
+            "packet_id": report.get("packet_id"),
+            "packet_key": report.get("packet_key"),
+            "dry_run": bool(report.get("dry_run", False)),
+            "dataset_count": dg.MetadataValue.int(int(report.get("dataset_count", 0))),
+            "computed_count": dg.MetadataValue.int(int(report.get("computed_count", 0))),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0))),
+            "failed_count": dg.MetadataValue.int(int(report.get("failed_count", 0))),
+            "artifact_ids": dg.MetadataValue.json(report.get("artifact_ids", [])),
+            "validation_agent_decision": validation.get("decision"),
+            "validation_agent_confidence": validation.get("confidence"),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "datasets": _metadata_table(rows, _OMICS_READOUT_TABLE_COLUMNS),
+        }
+
+    def _omics_locus_signal_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = []
+        for item in report.get("datasets", []):
+            dataset = item.get("dataset") or {}
+            rows.append(
+                {
+                    "accession": dataset.get("accession"),
+                    "status": item.get("status"),
+                    "sample_count": item.get("sample_count", 0),
+                    "computed_sample_count": item.get("computed_sample_count", 0),
+                    "tumor_sample_count": item.get("tumor_sample_count", 0),
+                    "control_sample_count": item.get("control_sample_count", 0),
+                    "support_level": item.get("support_level"),
+                    "effect_size": item.get("effect_size"),
+                    "tumor_control_delta": item.get("tumor_control_delta"),
+                    "comparison_p_value": item.get("comparison_p_value"),
+                    "normalization_status": item.get("normalization_status"),
+                    "limitations": ", ".join((item.get("limitations") or [])[:8]),
+                }
+            )
+        validation = report.get("validation_agent_result") or {}
+        return {
+            "dry_run": bool(report.get("dry_run", False)),
+            "dataset_count": dg.MetadataValue.int(int(report.get("dataset_count", 0))),
+            "computed_count": dg.MetadataValue.int(int(report.get("computed_count", 0))),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0))),
+            "failed_count": dg.MetadataValue.int(int(report.get("failed_count", 0))),
+            "validation_agent_decision": validation.get("decision"),
+            "validation_agent_confidence": validation.get("confidence"),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "datasets": _metadata_table(rows, _OMICS_LOCUS_SIGNAL_TABLE_COLUMNS),
+        }
+
+    def _omics_followup_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = []
+        for item in report.get("tasks", []):
+            rows.append(
+                {
+                    "task_type": item.get("task_type"),
+                    "priority": item.get("priority"),
+                    "title": item.get("title"),
+                    "source_keys": ", ".join(item.get("source_keys") or []),
+                    "target_genes": ", ".join(item.get("target_genes") or []),
+                    "accessions": ", ".join((item.get("accessions") or [])[:5]),
+                    "query_text": str(item.get("query_text") or "")[:300],
+                }
+            )
+        return {
+            "dry_run": bool(report.get("dry_run", True)),
+            "scanned_dataset_count": dg.MetadataValue.int(int(report.get("scanned_dataset_count", 0))),
+            "generated_task_count": dg.MetadataValue.int(int(report.get("generated_task_count", 0))),
+            "persisted_research_lead_count": dg.MetadataValue.int(
+                int(report.get("persisted_research_lead_count", 0))
+            ),
+            "persisted_source_query_count": dg.MetadataValue.int(int(report.get("persisted_source_query_count", 0))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "tasks": _metadata_table(rows, _OMICS_FOLLOWUP_TASK_TABLE_COLUMNS),
         }
 
     def _research_brief_library_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -3434,6 +3607,7 @@ if dg is not None:
             "max_claims": dg.Field(int, default_value=20),
             "max_chunk_chars": dg.Field(int, default_value=2200),
             "max_ideas_per_perspective": dg.Field(int, default_value=4),
+            "max_ranked_ideas": dg.Field(int, is_required=False),
             "review_mode": dg.Field(
                 str,
                 default_value="openrouter_required",
@@ -3464,6 +3638,7 @@ if dg is not None:
                 max_claims=config["max_claims"],
                 max_chunk_chars=config["max_chunk_chars"],
                 max_ideas_per_perspective=config["max_ideas_per_perspective"],
+                max_ranked_ideas=config.get("max_ranked_ideas"),
                 review_mode=config["review_mode"],
                 review_models=config["review_models"],
                 program_id=_uuid_or_none(config.get("program_id")),
@@ -3646,6 +3821,56 @@ if dg is not None:
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_validation_packet_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "candidate_id": dg.Field(str, is_required=False),
+            "therapy_idea_id": dg.Field(str, is_required=False),
+            "plan_id": dg.Field(str, is_required=False),
+            "queue_item_id": dg.Field(str, is_required=False),
+            "brief_id": dg.Field(str, is_required=False),
+            "evaluation_id": dg.Field(str, is_required=False),
+            "topic_query": dg.Field(str, is_required=False),
+            "source_key": dg.Field(str, is_required=False),
+            "include_queue_items": dg.Field(bool, default_value=True),
+            "include_evidence_addendum": dg.Field(bool, default_value=True),
+            "include_source_packets": dg.Field(bool, default_value=False),
+            "persist_decisions": dg.Field(bool, default_value=True),
+            "addendum_limit": dg.Field(int, default_value=25),
+            "limit": dg.Field(int, default_value=10),
+        },
+    )
+    def validation_decision_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual finite decision report for blocked or uncertain validation packets."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_validation_decision_report(
+            ValidationDecisionReportRequest(
+                candidate_id=config.get("candidate_id"),
+                therapy_idea_id=_uuid_or_none(config.get("therapy_idea_id")),
+                plan_id=_uuid_or_none(config.get("plan_id")),
+                queue_item_id=_uuid_or_none(config.get("queue_item_id")),
+                brief_id=_uuid_or_none(config.get("brief_id")),
+                evaluation_id=_uuid_or_none(config.get("evaluation_id")),
+                topic_query=config.get("topic_query"),
+                source_key=config.get("source_key"),
+                include_queue_items=config.get("include_queue_items", True),
+                include_evidence_addendum=config.get("include_evidence_addendum", True),
+                include_source_packets=config.get("include_source_packets", False),
+                persist_decisions=config.get("persist_decisions", True),
+                addendum_limit=config.get("addendum_limit", 25),
+                limit=config.get("limit", 10),
+                metadata={"dagster_decision_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_validation_decision_metadata(report))
 
     @dg.asset(
         group_name="ai_research",
@@ -3902,6 +4127,196 @@ if dg is not None:
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_omics_evidence_packet_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "program_id": dg.Field(str, is_required=False),
+            "therapy_idea_id": dg.Field(str, is_required=False),
+            "packet_id": dg.Field(str, is_required=False),
+            "packet_key": dg.Field(str, is_required=False),
+            "topic_query": dg.Field(
+                str,
+                default_value=(
+                    "canine hemangiosarcoma human angiosarcoma VIM vimentin "
+                    "transcriptome RNA-seq expression"
+                ),
+            ),
+            "disease_terms": dg.Field([str], default_value=[]),
+            "gene_symbols": dg.Field([str], default_value=[]),
+            "source_keys": dg.Field([str], default_value=["geo", "sra"]),
+            "accessions": dg.Field([str], default_value=[]),
+            "limit": dg.Field(int, default_value=100),
+            "max_datasets": dg.Field(int, default_value=5),
+            "matrix_uri_by_accession": dg.Field(dict, default_value={}),
+            "sample_group_overrides": dg.Field(dict, default_value={}),
+            "artifact_dir": dg.Field(str, is_required=False),
+            "run_validation_agent": dg.Field(bool, default_value=False),
+            "model_profile": dg.Field(str, default_value="openrouter_required"),
+            "dry_run": dg.Field(bool, default_value=False),
+        },
+    )
+    def omics_readout_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual processed-matrix readout compute for VIM and vascular-state programs."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_omics_readouts(
+            OmicsReadoutRequest(
+                packet_id=config.get("packet_id") or None,
+                packet_key=config.get("packet_key") or None,
+                program_id=UUID(config["program_id"]) if config.get("program_id") else None,
+                therapy_idea_id=UUID(config["therapy_idea_id"]) if config.get("therapy_idea_id") else None,
+                topic_query=config["topic_query"],
+                disease_terms=config.get("disease_terms") or [
+                    "canine hemangiosarcoma",
+                    "dog hemangiosarcoma",
+                    "human angiosarcoma",
+                    "angiosarcoma",
+                ],
+                gene_symbols=config.get("gene_symbols") or ["VIM", "vimentin"],
+                source_keys=config.get("source_keys") or ["geo", "sra"],
+                accessions=config.get("accessions") or [],
+                limit=config["limit"],
+                max_datasets=config["max_datasets"],
+                matrix_uri_by_accession=config.get("matrix_uri_by_accession") or {},
+                sample_group_overrides=config.get("sample_group_overrides") or {},
+                artifact_dir=config.get("artifact_dir") or None,
+                run_validation_agent=config["run_validation_agent"],
+                model_profile=config["model_profile"],
+                dry_run=config["dry_run"],
+                dagster_run_id=context.run_id,
+                metadata={"dagster_omics_readout_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_omics_readout_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "packet_id": dg.Field(str, is_required=False),
+            "packet_key": dg.Field(str, is_required=False),
+            "topic_query": dg.Field(
+                str,
+                default_value=(
+                    "canine hemangiosarcoma human angiosarcoma VIM vimentin "
+                    "ChRO-seq bigWig locus signal"
+                ),
+            ),
+            "disease_terms": dg.Field([str], default_value=[]),
+            "gene_symbols": dg.Field([str], default_value=["VIM"]),
+            "source_keys": dg.Field([str], default_value=["geo"]),
+            "accessions": dg.Field([str], default_value=[]),
+            "limit": dg.Field(int, default_value=100),
+            "max_datasets": dg.Field(int, default_value=5),
+            "max_samples_per_group": dg.Field(int, default_value=2),
+            "remote_extract_timeout_seconds": dg.Field(int, default_value=600),
+            "artifact_dir": dg.Field(str, is_required=False),
+            "target_loci": dg.Field(dict, default_value={}),
+            "bigwig_uri_by_sample": dg.Field(dict, default_value={}),
+            "sample_group_overrides": dg.Field(dict, default_value={}),
+            "run_validation_agent": dg.Field(bool, default_value=False),
+            "model_profile": dg.Field(str, default_value="openrouter_required"),
+            "dry_run": dg.Field(bool, default_value=False),
+        },
+    )
+    def omics_locus_signal_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual VIM locus signal extraction from ChRO-seq bigWig tracks."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_omics_locus_signals(
+            OmicsLocusSignalRequest(
+                packet_id=config.get("packet_id") or None,
+                packet_key=config.get("packet_key") or None,
+                topic_query=config["topic_query"],
+                disease_terms=config.get("disease_terms") or [
+                    "canine hemangiosarcoma",
+                    "dog hemangiosarcoma",
+                    "human angiosarcoma",
+                    "angiosarcoma",
+                ],
+                gene_symbols=config.get("gene_symbols") or ["VIM"],
+                source_keys=config.get("source_keys") or ["geo"],
+                accessions=config.get("accessions") or [],
+                limit=config["limit"],
+                max_datasets=config["max_datasets"],
+                max_samples_per_group=config["max_samples_per_group"],
+                remote_extract_timeout_seconds=config["remote_extract_timeout_seconds"],
+                artifact_dir=config.get("artifact_dir") or None,
+                target_loci=config.get("target_loci") or {},
+                bigwig_uri_by_sample=config.get("bigwig_uri_by_sample") or {},
+                sample_group_overrides=config.get("sample_group_overrides") or {},
+                run_validation_agent=config["run_validation_agent"],
+                model_profile=config["model_profile"],
+                dry_run=config["dry_run"],
+                dagster_run_id=context.run_id,
+                metadata={"dagster_omics_locus_signal_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_omics_locus_signal_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "topic_query": dg.Field(
+                str,
+                default_value="canine hemangiosarcoma human angiosarcoma VIM vimentin omics follow-up evidence",
+            ),
+            "gene_symbols": dg.Field([str], default_value=["VIM"]),
+            "accessions": dg.Field([str], default_value=[]),
+            "source_keys": dg.Field([str], default_value=["geo", "sra", "pubmed", "europe_pmc"]),
+            "omics_readout_report": dg.Field(dict, default_value={}),
+            "omics_locus_signal_report": dg.Field(dict, default_value={}),
+            "validation_agent_result": dg.Field(dict, default_value={}),
+            "include_locus_signal_report": dg.Field(bool, default_value=False),
+            "locus_signal_request": dg.Field(dict, default_value={}),
+            "max_tasks": dg.Field(int, default_value=8),
+            "create_research_leads": dg.Field(bool, default_value=True),
+            "create_source_queries": dg.Field(bool, default_value=True),
+            "dry_run": dg.Field(bool, default_value=True),
+        },
+    )
+    def omics_followup_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Generate bounded omics follow-up tasks from null/held readouts."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_omics_followups(
+            OmicsFollowupRequest(
+                topic_query=config["topic_query"],
+                gene_symbols=config.get("gene_symbols") or ["VIM"],
+                accessions=config.get("accessions") or [],
+                source_keys=config.get("source_keys") or ["geo", "sra", "pubmed", "europe_pmc"],
+                omics_readout_report=config.get("omics_readout_report") or None,
+                omics_locus_signal_report=config.get("omics_locus_signal_report") or None,
+                validation_agent_result=config.get("validation_agent_result") or None,
+                include_locus_signal_report=config["include_locus_signal_report"],
+                locus_signal_request=config.get("locus_signal_request") or {},
+                max_tasks=config["max_tasks"],
+                create_research_leads=config["create_research_leads"],
+                create_source_queries=config["create_source_queries"],
+                dry_run=config["dry_run"],
+                dagster_run_id=context.run_id,
+                metadata={"dagster_omics_followup_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_omics_followup_metadata(report))
 
     @dg.asset(
         group_name="ai_research",
@@ -5312,6 +5727,7 @@ if dg is not None:
         config_schema={
             "source_keys": dg.Field([str], default_value=[], description="Optional validation-gap source keys."),
             "query_names": dg.Field([str], default_value=[], description="Optional validation-gap query names."),
+            "tracks": dg.Field([str], default_value=["validation_gap"], description="SourceQuery tracks to ingest."),
             "followup_lane": dg.Field(str, default_value="", description="Optional internal follow-up lane filter."),
             "origin_review_ids": dg.Field([str], default_value=[], description="Optional origin evaluator review IDs."),
             "origin_agent_run_ids": dg.Field([str], default_value=[], description="Optional origin agent run IDs."),
@@ -5336,6 +5752,7 @@ if dg is not None:
             ValidationGapSourceIngestRequest(
                 source_keys=config["source_keys"],
                 query_names=config["query_names"],
+                tracks=config.get("tracks") or ["validation_gap"],
                 followup_lane=config.get("followup_lane") or None,
                 origin_review_ids=[UUID(value) for value in config.get("origin_review_ids", [])],
                 origin_agent_run_ids=[UUID(value) for value in config.get("origin_agent_run_ids", [])],
@@ -6592,11 +7009,15 @@ if dg is not None:
         therapy_idea_library_report,
         hypothesis_promotion_report,
         validation_packet_report,
+        validation_decision_report,
         research_program_board_report,
         research_program_library_report,
         research_program_evidence_loop_report,
         omics_accession_hunt_report,
         omics_evidence_packet_report,
+        omics_readout_report,
+        omics_locus_signal_report,
+        omics_followup_report,
         therapy_committee_validation_queue_report,
         research_brief_library_report,
         research_brief_evaluation_report,
@@ -6764,6 +7185,10 @@ if dg is not None:
         "validation_packet_job",
         selection=dg.AssetSelection.assets(validation_packet_report),
     )
+    validation_decision_job = dg.define_asset_job(
+        "validation_decision_job",
+        selection=dg.AssetSelection.assets(validation_decision_report),
+    )
     research_program_board_job = dg.define_asset_job(
         "research_program_board_job",
         selection=dg.AssetSelection.assets(research_program_board_report),
@@ -6783,6 +7208,18 @@ if dg is not None:
     omics_evidence_packet_job = dg.define_asset_job(
         "omics_evidence_packet_job",
         selection=dg.AssetSelection.assets(omics_evidence_packet_report),
+    )
+    omics_readout_job = dg.define_asset_job(
+        "omics_readout_job",
+        selection=dg.AssetSelection.assets(omics_readout_report),
+    )
+    omics_locus_signal_job = dg.define_asset_job(
+        "omics_locus_signal_job",
+        selection=dg.AssetSelection.assets(omics_locus_signal_report),
+    )
+    omics_followup_job = dg.define_asset_job(
+        "omics_followup_job",
+        selection=dg.AssetSelection.assets(omics_followup_report),
     )
     therapy_committee_validation_queue_job = dg.define_asset_job(
         "therapy_committee_validation_queue_job",
@@ -7131,11 +7568,15 @@ if dg is not None:
             therapy_idea_library_job,
             hypothesis_promotion_job,
             validation_packet_job,
+            validation_decision_job,
             research_program_board_job,
             research_program_library_job,
             research_program_evidence_loop_job,
             omics_accession_hunt_job,
             omics_evidence_packet_job,
+            omics_readout_job,
+            omics_locus_signal_job,
+            omics_followup_job,
             therapy_committee_validation_queue_job,
             research_brief_library_job,
             research_brief_evaluation_job,
@@ -7232,11 +7673,15 @@ else:
     therapy_idea_library_job = None
     hypothesis_promotion_job = None
     validation_packet_job = None
+    validation_decision_job = None
     research_program_board_job = None
     research_program_library_job = None
     research_program_evidence_loop_job = None
     omics_accession_hunt_job = None
     omics_evidence_packet_job = None
+    omics_readout_job = None
+    omics_locus_signal_job = None
+    omics_followup_job = None
     therapy_committee_validation_queue_job = None
     research_brief_library_job = None
     research_brief_evaluation_job = None

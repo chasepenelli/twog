@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 from uuid import uuid4
+import zipfile
 
 import pytest
 from pydantic import ValidationError
@@ -36,6 +37,9 @@ from hsa_research.ingestion_bridge.contracts import (
     CommitHypothesisRequest,
     DoiOpenAccessFollowupQueueRequest,
     DocumentChunk,
+    EvidenceRefRepairItem,
+    EvidenceRefRepairReport,
+    EvidenceRefRepairRequest,
     EvidenceFitAssessment,
     EvidenceGapResolverRequest,
     EvidenceGapResolverResult,
@@ -54,6 +58,14 @@ from hsa_research.ingestion_bridge.contracts import (
     OmicsAccessionHuntResult,
     OmicsEvidencePacketRequest,
     OmicsEvidencePacketResult,
+    OmicsFollowupRequest,
+    OmicsFollowupResult,
+    OmicsFollowupTask,
+    OmicsLocusSignalRequest,
+    OmicsLocusSignalResult,
+    OmicsGeneSetScore,
+    OmicsReadoutRequest,
+    OmicsReadoutResult,
     RawSourceRecord,
     ResearchChunkSearchRequest,
     ResearchObject,
@@ -132,6 +144,11 @@ from hsa_research.ingestion_bridge.contracts import (
     TherapyIdeaLibraryRequest,
     TherapyIdeaRecord,
     ValidationAgentResult,
+    ValidationPacketAddendumBrief,
+    ValidationDecisionPacket,
+    ValidationDecisionRecord,
+    ValidationDecisionReportRequest,
+    ValidationDecisionReportResult,
     ValidationPlanRecord,
     ValidationPlanRequest,
     ValidationPlanResult,
@@ -545,6 +562,52 @@ def test_therapy_committee_from_research_program_persists_three_linked_ideas(tmp
     assert all(idea.source_brief_id is None for idea in ideas.ideas)
 
 
+def test_program_to_validation_decision_end_to_end(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "program-validation-decision-e2e.sqlite3", seed=False)
+    _seed_program_committee_corpus(repo)
+    program = repo.upsert_research_program(_ready_for_therapy_ideas_program())
+    service = HSAResearchService(repo)
+
+    committee = service.run_therapy_committee(
+        TherapyCommitteeRequest(
+            program_id=program.program_id,
+            review_mode="deterministic_only",
+            max_claims=0,
+            max_ideas_per_perspective=3,
+        )
+    )
+    library = service.list_therapy_ideas(
+        TherapyIdeaLibraryRequest(source_program_id=program.program_id, limit=10)
+    )
+    target_idea = library.ideas[0]
+    promotion = service.build_hypothesis_promotion_report(
+        HypothesisPromotionReportRequest(therapy_idea_id=target_idea.therapy_idea_id)
+    )
+    packets = service.build_validation_packets(
+        ValidationPacketRequest(therapy_idea_id=target_idea.therapy_idea_id, limit=1)
+    )
+    decision_report = service.build_validation_decision_report(
+        ValidationDecisionReportRequest(therapy_idea_id=target_idea.therapy_idea_id, limit=1)
+    )
+
+    assert committee.source_program_id == program.program_id
+    assert len(committee.ranked_ideas) == 3
+    assert library.idea_count == 3
+    assert promotion.candidate_count == 1
+    assert promotion.candidates[0].source_type == "therapy_idea"
+    assert packets.packet_count == 1
+    assert packets.packets[0].therapy_idea_id == target_idea.therapy_idea_id
+    assert decision_report.decision_count == 1
+    decision = decision_report.decisions[0]
+    assert decision.therapy_idea_id == target_idea.therapy_idea_id
+    assert decision.outcome == "promote_broader_program"
+    assert decision.validation_ready is False
+    assert decision.broader_program_signal == "strong"
+    assert decision.recommended_program_thesis
+    assert "Research Program Board" in decision.recommended_downstream_action
+    assert decision.evidence_summary["packet_readiness"] == packets.packets[0].readiness
+
+
 def test_therapy_idea_source_program_filter_round_trips_in_memory_and_sqlite(tmp_path):
     for repo in [
         InMemoryResearchRepository(),
@@ -780,6 +843,344 @@ def test_validation_packets_build_from_ready_therapy_idea(tmp_path):
         ValidationPacket.model_validate(payload)
 
 
+def test_validation_packet_truncates_long_safety_context(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-packet-long-risk.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief, evaluation = _seed_evaluated_brief(repo, topic="Long risk packet", duplicate_count=0)
+    idea = TherapyIdea(
+        title="Long safety context strategy",
+        hypothesis="A candidate therapy should be reviewed despite verbose risk annotations.",
+        rationale="The packet builder should keep assay context fields inside contract limits.",
+        candidate_therapies=["sorafenib"],
+        targets=["KDR"],
+        biomarkers=["VEGFR2"],
+        evidence_refs=["C1"],
+        evidence_strength="medium",
+        risks=["safety risk " * 120],
+        priority_score=0.7,
+    )
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            source_brief_id=brief.brief_id,
+            source_evaluation_id=evaluation.evaluation_id,
+            topic=brief.topic,
+            status="ready_for_promotion",
+            score=0.7,
+        )
+    )
+
+    result = service.build_validation_packets(
+        ValidationPacketRequest(therapy_idea_id=idea.idea_id, limit=1)
+    )
+
+    safety_context = result.packets[0].validation_tasks[0].validation_request.assay_context.safety_context
+    assert safety_context
+    assert len(safety_context) <= 500
+
+
+def test_validation_packet_addendum_includes_research_hunt_synthesis_followups(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-packet-hunt-addendum.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief, evaluation = _seed_evaluated_brief(repo, topic="Therapy idea source brief", duplicate_count=0)
+    idea = TherapyIdea(
+        title="Hunt addendum strategy",
+        hypothesis="A therapy idea should carry research-hunt synthesis follow-up evidence.",
+        rationale="Research hunt synthesis rows are validation-gap follow-ups.",
+        candidate_therapies=["sorafenib"],
+        targets=["KDR"],
+        biomarkers=["VEGFR2"],
+        evidence_refs=["C1"],
+        evidence_strength="medium",
+        risks=["primary evidence remains unresolved"],
+        priority_score=0.7,
+    )
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            source_brief_id=brief.brief_id,
+            source_evaluation_id=evaluation.evaluation_id,
+            topic=brief.topic,
+            status="ready_for_promotion",
+            score=0.7,
+        )
+    )
+    followup_brief, followup_eval = _seed_evaluated_brief(
+        repo,
+        topic="Research hunt synthesis follow-up",
+        duplicate_count=0,
+    )
+    origin_queue_item_id = uuid4()
+    lead_id = uuid4()
+    repo.upsert_research_brief_queue_item(
+        ResearchBriefQueueItem(
+            topic=followup_brief.topic,
+            status="completed",
+            priority=15,
+            last_brief_id=followup_brief.brief_id,
+            last_agent_run_id=followup_brief.agent_run_id,
+            metadata={
+                "research_hunt_synthesis_queue": {
+                    "lead_id": str(lead_id),
+                    "origin_record_id": str(origin_queue_item_id),
+                    "origin": "research_hunt_ready_lead",
+                    "control_status": "ready_for_synthesis",
+                }
+            },
+        )
+    )
+
+    result = service.build_validation_packets(
+        ValidationPacketRequest(
+            therapy_idea_id=idea.idea_id,
+            queue_item_id=origin_queue_item_id,
+            limit=1,
+        )
+    )
+
+    addendum = result.packets[0].evidence_addendum
+    assert followup_eval.evaluation_id
+    assert addendum.follow_up_count == 1
+    assert addendum.follow_up_briefs[0].brief_id == followup_brief.brief_id
+    assert addendum.follow_up_briefs[0].evaluation_id == followup_eval.evaluation_id
+    assert addendum.follow_up_briefs[0].lead_id == lead_id
+    assert addendum.follow_up_briefs[0].origin_queue_item_id == origin_queue_item_id
+    assert "research_hunt_synthesis_queue" in addendum.follow_up_briefs[0].metadata
+
+
+def test_validation_decision_contract_rejects_invalid_outcome():
+    candidate = HypothesisPromotionCandidate(
+        candidate_id="therapy_idea:test",
+        source_type="therapy_idea",
+        source_id=str(uuid4()),
+        title="Decision candidate",
+        hypothesis="A candidate should be decided.",
+        promotion_state="needs_more_evidence",
+    )
+    packet = ValidationPacket(
+        packet_id="validation_packet:test",
+        candidate_id=candidate.candidate_id,
+        source_type="therapy_idea",
+        source_id=candidate.source_id,
+        promotion_candidate=candidate,
+        title=candidate.title,
+        hypothesis=candidate.hypothesis,
+    )
+    decision = ValidationDecisionPacket(
+        decision_id="validation_decision:test",
+        packet_id=packet.packet_id,
+        candidate_id=packet.candidate_id,
+        source_type=packet.source_type,
+        source_id=packet.source_id,
+        title=packet.title,
+        outcome="narrow_to_preclinical_question",
+        rationale="Keep the decision finite.",
+        recommended_downstream_action="Narrow the question.",
+        decisive_questions=["What evidence changes confidence?"],
+        evidence_tasks=["Collect one decisive evidence packet."],
+    )
+    payload = decision.model_dump(mode="json")
+    payload["outcome"] = "keep_iterating_forever"
+    with pytest.raises(ValueError):
+        ValidationDecisionPacket.model_validate(payload)
+
+
+def test_validation_decision_record_round_trips_in_memory_and_sqlite(tmp_path):
+    decision = ValidationDecisionPacket(
+        decision_id="validation_decision:record-test",
+        packet_id="validation_packet:record-test",
+        candidate_id="therapy_idea:record-test",
+        source_type="therapy_idea",
+        source_id=str(uuid4()),
+        title="Decision record",
+        outcome="promote_broader_program",
+        rationale="Persist finite decisions for audit.",
+        recommended_downstream_action="Create or update the research program.",
+        decisive_questions=["Which evidence changes confidence?"],
+        evidence_tasks=["Acquire one decisive evidence packet."],
+    )
+    record = ValidationDecisionRecord.from_decision(decision)
+    memory_repo = InMemoryResearchRepository()
+    sqlite_repo = SQLiteResearchRepository(tmp_path / "validation-decision-record.sqlite3", seed=False)
+
+    for repo in (memory_repo, sqlite_repo):
+        saved = repo.upsert_validation_decision(record)
+        assert saved.decision_id == decision.decision_id
+        assert repo.get_validation_decision(decision.decision_id).decision.packet_id == decision.packet_id
+        assert repo.list_validation_decisions(outcome="promote_broader_program", limit=10)[0].decision_id == (
+            decision.decision_id
+        )
+
+
+def test_validation_decision_report_promotes_broader_program_for_weak_specific_claim(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-decision.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief, evaluation = _seed_evaluated_brief(repo, topic="Sorafenib source brief", duplicate_count=0)
+    idea = TherapyIdea(
+        title="Biomarker-stratified vascular TKI strategy",
+        hypothesis=(
+            "A genomics-guided vascular/TKI strategy may be stronger than sorafenib monotherapy "
+            "for canine HSA."
+        ),
+        rationale="The broader program should not be reduced to one weak drug claim.",
+        candidate_therapies=["sorafenib"],
+        targets=["KDR", "PDGFRB"],
+        biomarkers=["VEGFR2", "PDGFR-beta"],
+        evidence_refs=["C1", "C2"],
+        evidence_strength="medium",
+        risks=[
+            "sorafenib canine HSA signal is non-significant p=0.079 and canine PK/PD is absent",
+        ],
+        priority_score=0.74,
+    )
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            source_brief_id=brief.brief_id,
+            source_evaluation_id=evaluation.evaluation_id,
+            topic=brief.topic,
+            status="ready_for_promotion",
+            score=0.74,
+        )
+    )
+    followup_brief, followup_eval = _seed_evaluated_brief(
+        repo,
+        topic="Genomics-guided targeted therapy follow-up",
+        duplicate_count=0,
+        evaluation_weaknesses=[
+            "Drug-specific sorafenib evidence remains weak, but targeted therapy subgroup evidence supports a broader biomarker program.",
+        ],
+    )
+    origin_queue_item_id = uuid4()
+    repo.upsert_research_brief_queue_item(
+        ResearchBriefQueueItem(
+            topic=followup_brief.topic,
+            status="completed",
+            priority=15,
+            last_brief_id=followup_brief.brief_id,
+            last_agent_run_id=followup_brief.agent_run_id,
+            metadata={
+                "research_hunt_synthesis_queue": {
+                    "origin_record_id": str(origin_queue_item_id),
+                    "therapy_idea_id": str(idea.idea_id),
+                    "control_status": "ready_for_synthesis",
+                }
+            },
+        )
+    )
+
+    result = service.build_validation_decision_report(
+        ValidationDecisionReportRequest(
+            therapy_idea_id=idea.idea_id,
+            queue_item_id=origin_queue_item_id,
+            limit=1,
+        )
+    )
+
+    assert isinstance(result, ValidationDecisionReportResult)
+    assert followup_eval.evaluation_id
+    assert result.decision_count == 1
+    assert result.outcome_counts == {"promote_broader_program": 1}
+    decision = result.decisions[0]
+    assert decision.outcome == "promote_broader_program"
+    assert decision.validation_ready is False
+    assert decision.recommended_program_thesis
+    assert "Research Program Board" in decision.recommended_downstream_action
+    assert decision.evidence_summary["evaluated_follow_up_count"] == 1
+    assert result.persisted_decision_count == 1
+    persisted = repo.get_validation_decision(decision.decision_id)
+    assert persisted is not None
+    assert persisted.outcome == "promote_broader_program"
+
+
+def test_evidence_ref_repair_contract_rejects_invalid_status():
+    item = EvidenceRefRepairItem(
+        ref="C1",
+        normalized_ref="C1",
+        status="resolved",
+        source_context="validation_packet:test",
+        evidence_path="packets[0].evidence_refs[0]",
+    )
+    payload = item.model_dump(mode="json")
+    payload["status"] = "bad"
+
+    with pytest.raises(ValidationError):
+        EvidenceRefRepairItem.model_validate(payload)
+
+
+def test_evidence_ref_repair_report_resolves_and_blocks_stale_refs(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "evidence-ref-repair.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief, evaluation = _seed_evaluated_brief(repo, topic="Sorafenib VEGFR repair packet", duplicate_count=0)
+    idea = TherapyIdea(
+        title="Sorafenib VEGFR repair lane",
+        hypothesis="Sorafenib should be reviewed in VEGFR-positive canine HSA.",
+        rationale="The committee cited direct and analog VEGFR evidence.",
+        candidate_therapies=["sorafenib"],
+        targets=["KDR", "PDGFRB"],
+        biomarkers=["VEGFR2"],
+        evidence_refs=["C1", "C3"],
+        evidence_strength="medium",
+        risks=["C4 citation traceability remains unresolved for one risk annotation."],
+        next_experiments=["Repair stale citation refs before validation."],
+        priority_score=0.78,
+    )
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            source_brief_id=brief.brief_id,
+            source_evaluation_id=evaluation.evaluation_id,
+            topic=brief.topic,
+            status="ready_for_promotion",
+            score=0.78,
+        )
+    )
+
+    report = service.build_evidence_ref_repair_report(
+        EvidenceRefRepairRequest(therapy_idea_id=idea.idea_id, limit=1)
+    )
+
+    assert isinstance(report, EvidenceRefRepairReport)
+    assert report.packet_count == 1
+    assert report.item_count >= 2
+    assert any(
+        item.normalized_ref == "C1" and item.status == "resolved" and item.matched_title
+        for item in report.items
+    )
+    assert any(item.normalized_ref == "C3" and item.status == "stale" for item in report.items)
+    assert any(item.normalized_ref == "C4" and item.status == "stale" for item in report.items)
+    assert report.blocker_count >= 2
+    assert any("C3 unresolved" in blocker for blocker in report.unresolved_blockers)
+    assert report.suggested_queries
+
+
+def test_evidence_ref_repair_report_resolves_source_qualified_text_refs(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "evidence-ref-repair-qualified.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief, _evaluation = _seed_evaluated_brief(repo, topic="Qualified citation packet", duplicate_count=0)
+    explicit_ref = f"research_brief:{brief.brief_id}#C2"
+    repo.upsert_research_brief(
+        brief.model_copy(
+            update={
+                "final_brief": f"Use the source-qualified comparator ref {explicit_ref}.",
+                "updated_at": datetime.now(UTC),
+            }
+        )
+    )
+
+    report = service.build_evidence_ref_repair_report(
+        EvidenceRefRepairRequest(brief_id=brief.brief_id, include_validation_packet=False)
+    )
+
+    assert any(
+        item.normalized_ref == explicit_ref
+        and item.status == "resolved"
+        and item.matched_citation_id == "C2"
+        for item in report.items
+    )
+    assert not any(item.ref == "C2" and item.evidence_snippet == explicit_ref for item in report.items)
+
+
 def test_validation_packet_includes_followup_brief_addendum(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "validation-packet-addendum.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -925,9 +1326,14 @@ def test_validation_packet_includes_followup_brief_addendum(tmp_path):
     addendum = result.packets[0].evidence_addendum
     packet = result.packets[0]
     assert isinstance(addendum, ValidationPacketEvidenceAddendum)
-    assert packet.discovery_readiness == "ready_for_validation_strategy"
-    assert packet.validation_strategy_readiness == "queued_for_validation_strategy"
+    assert result.ready_count == 0
+    assert result.blocked_count == 1
+    assert packet.status == "blocked"
+    assert packet.readiness == "needs_more_evidence"
+    assert packet.discovery_readiness == "needs_more_evidence"
+    assert packet.validation_strategy_readiness == "blocked"
     assert packet.protocol_readiness == "needs_protocol_inputs"
+    assert "validation_follow_up_needs_more_evidence" in packet.dispatch_blockers
     assert "No canine pazopanib PK or adverse-event profile was found." in packet.protocol_blockers
     assert addendum.follow_up_count == 2
     assert addendum.evaluated_follow_up_count == 2
@@ -939,6 +1345,145 @@ def test_validation_packet_includes_followup_brief_addendum(tmp_path):
     }
     assert any("Explicit dose route schedule" in update for update in addendum.material_updates)
     assert "No canine pazopanib PK or adverse-event profile was found." in addendum.unresolved_blockers
+
+
+def test_validation_packet_skips_superseded_evidence_ref_repair_followup(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-packet-superseded-repair.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief, evaluation = _seed_evaluated_brief(repo, topic="Pazopanib KDR repair packet", duplicate_count=0)
+    idea = TherapyIdea(
+        title="KDR repair lane",
+        hypothesis="Pazopanib should be reviewed in KDR-enriched canine splenic HSA.",
+        rationale="The cited evidence supports a recommend-only validation plan.",
+        candidate_therapies=["pazopanib"],
+        targets=["KDR"],
+        biomarkers=["VEGFR2"],
+        evidence_refs=["C1", "C2"],
+        evidence_strength="medium",
+        risks=["C3 was superseded by C2 after provenance repair."],
+        priority_score=0.78,
+    )
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            source_brief_id=brief.brief_id,
+            source_evaluation_id=evaluation.evaluation_id,
+            topic=brief.topic,
+            status="ready_for_promotion",
+            score=0.78,
+        )
+    )
+    plan = repo.upsert_validation_plan(
+        ValidationPlanRecord(
+            brief_id=brief.brief_id,
+            evaluation_id=evaluation.evaluation_id,
+            topic="Pazopanib validation plan",
+            status="ready_for_review",
+            readiness="ready_for_expert_review",
+            task_count=0,
+            metadata={"therapy_idea_id": str(idea.idea_id)},
+        )
+    )
+    queue_item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=plan.plan_id,
+            task_id=uuid4(),
+            brief_id=brief.brief_id,
+            topic="Expert review",
+            task_type="expert_review",
+            title="Expert review",
+            objective="Review pazopanib evidence.",
+            rationale="Evidence needs review.",
+            validation_request=ValidationRequest(validation_type="expert_review", objective="Review pazopanib evidence."),
+        )
+    )
+    followup_brief, followup_eval = _seed_evaluated_brief(
+        repo,
+        topic="C3 stale citation repair follow-up",
+        duplicate_count=0,
+    )
+    repo.upsert_research_brief_queue_item(
+        ResearchBriefQueueItem(
+            topic=followup_brief.topic,
+            source_key="pubmed",
+            status="completed",
+            priority=20,
+            last_brief_id=followup_brief.brief_id,
+            metadata={
+                "evidence_gap_resolver": {
+                    "plan_id": str(plan.plan_id),
+                    "queue_item_id": str(queue_item.queue_item_id),
+                    "origin": "validation_agent_gap",
+                    "superseded_by_evidence_ref_repair": True,
+                },
+                "evidence_ref_repair": {
+                    "superseded": True,
+                    "replacement_ref": "C2",
+                },
+            },
+        )
+    )
+
+    result = service.build_validation_packets(
+        ValidationPacketRequest(therapy_idea_id=idea.idea_id, plan_id=plan.plan_id, limit=1)
+    )
+
+    assert followup_eval.evaluation_id
+    assert result.packets[0].evidence_addendum.follow_up_count == 0
+
+
+def test_validation_packet_addendum_blockers_flag_citation_traceability():
+    addendum = ValidationPacketEvidenceAddendum(
+        follow_up_count=1,
+        completed_follow_up_count=1,
+        evaluated_follow_up_count=1,
+        needs_more_evidence_count=1,
+        unresolved_blockers=["C21 citation traceability is unresolved."],
+        follow_up_briefs=[
+            ValidationPacketAddendumBrief(
+                queue_item_id=uuid4(),
+                topic="C21 provenance repair",
+                status="completed",
+                readiness="needs_human_review",
+                passes_quality_bar=False,
+                key_weaknesses=["C21 is cited but absent from the supplied evidence payload."],
+            )
+        ],
+    )
+
+    blockers = service_module._validation_packet_addendum_blockers(addendum)
+    status, readiness = service_module._validation_packet_status_after_addendum(
+        "queued_for_validation",
+        "queued_for_validation",
+        addendum_blockers=blockers,
+    )
+
+    assert "validation_follow_up_needs_more_evidence" in blockers
+    assert "validation_follow_up_needs_human_review" in blockers
+    assert "validation_citation_provenance_unresolved" in blockers
+    assert status == "blocked"
+    assert readiness == "needs_more_evidence"
+
+
+def test_validation_packet_addendum_blockers_ignore_generic_citation_quality_text():
+    addendum = ValidationPacketEvidenceAddendum(
+        follow_up_count=1,
+        completed_follow_up_count=1,
+        evaluated_follow_up_count=1,
+        needs_more_evidence_count=1,
+        unresolved_blockers=[
+            "All citations are title/abstract level only and need stronger primary evidence before planning.",
+            "All 14 citations are missing DOI, PMID, PMCID, source identifiers, and publication year metadata.",
+            "Carry research_brief:79dca761-4c4f-4589-b206-d534bf3cd908#C22 as source-qualified provenance.",
+            "C8's immune microenvironment finding leaves unresolved questions in the translational framework.",
+            "The absence of negative evidence leaves the safety and futility gates unresolved despite a citation set.",
+        ],
+    )
+
+    blockers = service_module._validation_packet_addendum_blockers(addendum)
+
+    assert "validation_follow_up_needs_more_evidence" in blockers
+    assert "validation_citation_provenance_unresolved" not in blockers
 
 
 def _research_program_fixture() -> ResearchProgramRecord:
@@ -1316,6 +1861,805 @@ def test_omics_evidence_packets_package_direct_and_analog_accessions(tmp_path):
     assert "expression_matrix_or_raw_counts_required" in canine_packet.dispatch_blockers
     assert "VIM_or_vimentin_readout_computed_with_direction_and_effect_size" in canine_packet.quality_gates
     assert packets["human_angiosarcoma"].analog_dataset_count == 1
+
+
+def test_omics_readout_contracts_reject_invalid_gene_set_key():
+    with pytest.raises(ValidationError):
+        OmicsGeneSetScore(gene_set_key="not_a_gene_set")  # type: ignore[arg-type]
+
+
+def test_omics_readouts_compute_vim_and_gene_set_scores_from_processed_matrix(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "omics-readouts.sqlite3", seed=False)
+    matrix_text = "\n".join(
+        [
+            "gene\tcontrol_1\tcontrol_2\thsa_tumor_1\thsa_tumor_2",
+            "VIM\t4.1\t4.0\t8.2\t8.4",
+            "FN1\t4.4\t4.2\t7.8\t8.0",
+            "COL1A1\t3.9\t4.1\t7.4\t7.5",
+            "VEGFA\t3.0\t3.1\t6.5\t6.7",
+            "KDR\t3.2\t3.0\t6.1\t6.4",
+            "F3\t2.8\t2.9\t5.9\t6.1",
+            "SERPINE1\t2.7\t2.8\t5.7\t5.8",
+        ]
+    )
+    raw_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="geo",
+            source_record_id="GSEVIMREADOUT",
+            content_hash="omics-readout-raw",
+            raw_payload={"accession": "GSEVIMREADOUT"},
+        )
+    )
+    repo.upsert_research_object(
+        ResearchObject(
+            object_type=ResearchObjectType.DATASET,
+            title="Canine hemangiosarcoma processed RNA-seq VIM expression matrix",
+            abstract="Canine hemangiosarcoma transcriptome evidence for VIM/vimentin and angiogenesis.",
+            source_key="geo",
+            raw_record_id=raw_id,
+            dedupe_key="geo_accession:gsevimreadout",
+            identifiers={"geo_accession": "GSEVIMREADOUT"},
+            metadata={
+                "organism": "Canis lupus familiaris",
+                "sample_count": 4,
+                "library_strategy": "RNA-seq",
+                "sample_accessions": ["control_1", "control_2", "hsa_tumor_1", "hsa_tumor_2"],
+                "supplementary_file_types": ["TSV"],
+                "matrix_text": matrix_text,
+            },
+        ),
+        raw_id,
+    )
+
+    result = HSAResearchService(repo).build_omics_readouts(
+        OmicsReadoutRequest(packet_key="canine_hsa", accessions=["GSEVIMREADOUT"], max_datasets=1)
+    )
+
+    assert isinstance(result, OmicsReadoutResult)
+    assert result.computed_count == 1
+    assert result.skipped_count == 0
+    dataset_result = result.datasets[0]
+    assert dataset_result.status == "computed"
+    assert dataset_result.normalized_kind == "processed_expression"
+    assert dataset_result.target_expression is not None
+    assert dataset_result.target_expression.detected is True
+    assert dataset_result.target_expression.support_level == "differential_support"
+    assert dataset_result.target_expression.tumor_control_delta is not None
+    assert dataset_result.target_expression.tumor_control_delta > 0
+    gene_sets = {score.gene_set_key: score for score in dataset_result.gene_set_scores}
+    assert gene_sets["mesenchymal_ecm"].support_level == "differential_support"
+    assert gene_sets["angiogenesis_endothelial"].detected_gene_count == 2
+    assert gene_sets["coagulation_vascular_injury"].detected_gene_count == 2
+    assert dataset_result.result_artifact_id is not None
+    assert repo.get_artifact(dataset_result.result_artifact_id) is not None
+
+
+def test_omics_readouts_map_platform_probe_ids_before_scoring(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "omics-probe-map.sqlite3", seed=False)
+    matrix_text = "\n".join(
+        [
+            "ID_REF\tcontrol_1\thsa_tumor_1",
+            "probe_vim\t4.0\t8.0",
+            "probe_fn1\t4.0\t7.0",
+            "probe_kdr\t3.0\t6.0",
+            "probe_f3\t2.0\t5.0",
+        ]
+    )
+    raw_id = repo.upsert_raw_record(
+        RawSourceRecord(
+            source_key="geo",
+            source_record_id="GSEPROBEMAP",
+            content_hash="omics-probe-map-raw",
+            raw_payload={"accession": "GSEPROBEMAP"},
+        )
+    )
+    repo.upsert_research_object(
+        ResearchObject(
+            object_type=ResearchObjectType.DATASET,
+            title="Canine hemangiosarcoma probe matrix with VIM expression",
+            abstract="Canine hemangiosarcoma transcriptome evidence for VIM/vimentin expression.",
+            source_key="geo",
+            raw_record_id=raw_id,
+            dedupe_key="geo_accession:gseprobemap",
+            identifiers={"geo_accession": "GSEPROBEMAP"},
+            metadata={
+                "organism": "Canis lupus familiaris",
+                "sample_count": 2,
+                "sample_accessions": ["control_1", "hsa_tumor_1"],
+                "supplementary_file_types": ["TSV"],
+                "matrix_text": matrix_text,
+                "platform_probe_map": {
+                    "probe_vim": "VIM",
+                    "probe_fn1": "FN1",
+                    "probe_kdr": "KDR",
+                    "probe_f3": "F3",
+                },
+            },
+        ),
+        raw_id,
+    )
+
+    result = HSAResearchService(repo).build_omics_readouts(
+        OmicsReadoutRequest(packet_key="canine_hsa", accessions=["GSEPROBEMAP"], max_datasets=1)
+    )
+
+    dataset_result = result.datasets[0]
+    assert dataset_result.target_expression is not None
+    assert dataset_result.target_expression.detected is True
+    assert dataset_result.target_expression.detected_gene_symbols == ["VIM"]
+    gene_sets = {score.gene_set_key: score for score in dataset_result.gene_set_scores}
+    assert gene_sets["mesenchymal_ecm"].detected_gene_symbols == ["VIM", "FN1"]
+    assert gene_sets["angiogenesis_endothelial"].detected_gene_symbols == ["KDR"]
+    assert gene_sets["coagulation_vascular_injury"].detected_gene_symbols == ["F3"]
+    assert dataset_result.metadata["platform_probe_mapping_count"] == 4
+
+
+def test_omics_readouts_map_explicit_gene_identifiers_before_scoring(tmp_path):
+    repo = InMemoryResearchRepository()
+    matrix_text = "\n".join(
+        [
+            "\tHSA_25mMGlc_1.genes.results\tHSA_0mMGlc_1.genes.results",
+            "ENSCAFG00000004529\t7.5\t8.2",
+            "ENSCAFG00000099999\t4.0\t5.0",
+        ]
+    )
+    obj = ResearchObject(
+        object_type=ResearchObjectType.DATASET,
+        title="Canine HSA RNA-seq matrix with legacy Ensembl IDs",
+        abstract="Canine hemangiosarcoma RNA-seq expression matrix.",
+        source_key="geo",
+        dedupe_key="geo_accession:gselegacyid",
+        identifiers={"geo_accession": "GSELEGACYID"},
+        metadata={
+            "organism": "Canis lupus familiaris",
+            "sample_count": 2,
+            "sample_accessions": ["GSM1", "GSM2"],
+            "supplementary_file_types": ["TSV"],
+            "matrix_text": matrix_text,
+            "gene_symbol_map": {"ENSCAFG00000004529": "VIM"},
+        },
+    )
+    repo.research_objects[obj.id] = obj
+
+    result = HSAResearchService(repo).build_omics_readouts(
+        OmicsReadoutRequest(packet_key="canine_hsa", accessions=["GSELEGACYID"], max_datasets=1)
+    )
+
+    dataset_result = result.datasets[0]
+    assert dataset_result.target_expression is not None
+    assert dataset_result.target_expression.detected is True
+    assert dataset_result.target_expression.detected_gene_symbols == ["VIM"]
+    assert dataset_result.metadata["sample_roles"]["HSA_0mMGlc_1.genes.results"] == (
+        "hsa_glucose_deprivation_cell_line"
+    )
+
+
+def test_omics_readouts_exclude_numeric_gene_metadata_columns(tmp_path):
+    repo = InMemoryResearchRepository()
+    matrix_text = "\n".join(
+        [
+            "Gene\tTarget\ttumor_1\ttumor_2\tENTREZ_GENE_ID\tNCBI_NAME",
+            "VIM\tVIM_1\t8.0\t8.2\t7431\tvimentin",
+            "FN1\tFN1_1\t7.0\t7.2\t2335\tfibronectin",
+        ]
+    )
+    obj = ResearchObject(
+        object_type=ResearchObjectType.DATASET,
+        title="Human angiosarcoma targeted RNA-seq expression matrix",
+        abstract="Human angiosarcoma targeted RNA-seq matrix with gene metadata columns.",
+        source_key="geo",
+        dedupe_key="geo_accession:gsetargetedmatrix",
+        identifiers={"geo_accession": "GSETARGETEDMATRIX"},
+        metadata={
+            "organism": "Homo sapiens",
+            "sample_count": 2,
+            "sample_accessions": ["GSM1", "GSM2"],
+            "supplementary_file_types": ["TXT"],
+            "matrix_text": matrix_text,
+        },
+    )
+    repo.research_objects[obj.id] = obj
+
+    result = HSAResearchService(repo).build_omics_readouts(
+        OmicsReadoutRequest(packet_key="human_angiosarcoma", accessions=["GSETARGETEDMATRIX"], max_datasets=1)
+    )
+
+    dataset_result = result.datasets[0]
+    assert dataset_result.status == "computed"
+    assert dataset_result.sample_count == 2
+    assert set(dataset_result.sample_groups) == {"tumor_1", "tumor_2"}
+    assert dataset_result.target_expression is not None
+    assert dataset_result.target_expression.detected is True
+
+
+def test_omics_readouts_parse_xlsx_processed_matrix_uri(tmp_path):
+    repo = InMemoryResearchRepository()
+    xlsx_path = tmp_path / "processed_matrix.xlsx"
+    _write_minimal_xlsx(
+        xlsx_path,
+        [
+            ["gene", "control_1", "control_2", "hsa_tumor_1", "hsa_tumor_2"],
+            ["VIM", "4.0", "4.1", "8.0", "8.2"],
+            ["FN1", "4.0", "4.2", "7.0", "7.2"],
+            ["VEGFA", "3.0", "3.1", "6.0", "6.2"],
+            ["F3", "2.0", "2.2", "5.0", "5.1"],
+        ],
+    )
+    obj = ResearchObject(
+        object_type=ResearchObjectType.DATASET,
+        title="Canine hemangiosarcoma supplementary XLSX VIM expression",
+        abstract="Canine hemangiosarcoma transcriptome evidence for VIM/vimentin expression.",
+        source_key="geo",
+        dedupe_key="geo_accession:gsexlsxmatrix",
+        identifiers={"geo_accession": "GSEXLSXMATRIX"},
+        metadata={
+            "organism": "Canis lupus familiaris",
+            "sample_count": 4,
+            "sample_accessions": ["control_1", "control_2", "hsa_tumor_1", "hsa_tumor_2"],
+            "supplementary_file_types": ["XLSX"],
+        },
+    )
+    repo.research_objects[obj.id] = obj
+
+    result = HSAResearchService(repo).build_omics_readouts(
+        OmicsReadoutRequest(
+            packet_key="canine_hsa",
+            accessions=["GSEXLSXMATRIX"],
+            matrix_uri_by_accession={"GSEXLSXMATRIX": str(xlsx_path)},
+            max_datasets=1,
+        )
+    )
+
+    assert result.computed_count == 1
+    dataset_result = result.datasets[0]
+    assert dataset_result.target_expression is not None
+    assert dataset_result.target_expression.detected is True
+    assert dataset_result.target_expression.support_level == "differential_support"
+
+
+def test_omics_readouts_low_comparator_count_does_not_make_differential_claim(tmp_path):
+    repo = InMemoryResearchRepository()
+    xlsx_path = tmp_path / "low_comparator_matrix.xlsx"
+    _write_minimal_xlsx(
+        xlsx_path,
+        [
+            ["gene", "normal_endothelial_1", "hsa_tumor_1", "hsa_tumor_2"],
+            ["VIM", "4.0", "8.0", "7.8"],
+            ["FN1", "4.0", "7.0", "7.2"],
+            ["VEGFA", "3.0", "6.0", "6.1"],
+            ["F3", "2.0", "5.0", "5.2"],
+        ],
+    )
+    obj = ResearchObject(
+        object_type=ResearchObjectType.DATASET,
+        title="Canine hemangiosarcoma tissue processed XLSX VIM expression",
+        abstract="Canine hemangiosarcoma tumor tissue compared to normal endothelial context.",
+        source_key="geo",
+        dedupe_key="geo_accession:gselowcomparator",
+        identifiers={"geo_accession": "GSELOWCOMPARATOR"},
+        metadata={
+            "organism": "Canis lupus familiaris",
+            "sample_count": 3,
+            "sample_accessions": ["normal_endothelial_1", "hsa_tumor_1", "hsa_tumor_2"],
+            "supplementary_file_types": ["XLSX"],
+        },
+    )
+    repo.research_objects[obj.id] = obj
+
+    result = HSAResearchService(repo).build_omics_readouts(
+        OmicsReadoutRequest(
+            packet_key="canine_hsa",
+            accessions=["GSELOWCOMPARATOR"],
+            matrix_uri_by_accession={"GSELOWCOMPARATOR": str(xlsx_path)},
+            max_datasets=1,
+        )
+    )
+
+    dataset_result = result.datasets[0]
+    assert dataset_result.target_expression is not None
+    assert dataset_result.target_expression.support_level == "insufficient_labels"
+    assert dataset_result.target_expression.effect_size is None
+    assert "control_sample_count_low" in dataset_result.limitations
+    assert "cell_line_expression_context_not_primary_tissue" not in dataset_result.limitations
+    roles = dataset_result.metadata["sample_roles"]
+    assert roles["hsa_tumor_1"] == "hsa_tumor_context"
+
+
+def test_omics_readouts_repair_disease_comparator_sample_roles(tmp_path):
+    repo = InMemoryResearchRepository()
+    matrix_text = "\n".join(
+        [
+            "gene\tGSM_HSA_1\tGSM_HSA_2\tGSM_OS_1\tGSM_HEM_1",
+            "VIM\t8.0\t8.2\t4.0\t4.1",
+            "FN1\t7.0\t7.2\t4.0\t4.2",
+        ]
+    )
+    obj = ResearchObject(
+        object_type=ResearchObjectType.DATASET,
+        title="Canine hemangiosarcoma and disease-comparator expression profiling",
+        abstract="Canine hemangiosarcoma expression profiling with osteosarcoma and splenic hematoma comparators.",
+        source_key="geo",
+        dedupe_key="geo_accession:gsecomparator",
+        identifiers={"geo_accession": "GSECOMPARATOR"},
+        metadata={
+            "organism": "Canis lupus familiaris",
+            "sample_count": 4,
+            "sample_accessions": ["GSM_HSA_1", "GSM_HSA_2", "GSM_OS_1", "GSM_HEM_1"],
+            "sample_titles": {
+                "GSM_HSA_1": "Golden Retriever hemangiosarcoma",
+                "GSM_HSA_2": "Dalmatian hemangiosarcoma",
+                "GSM_OS_1": "Golden Retriever osteosarcoma",
+                "GSM_HEM_1": "Keeshond splenic hematoma",
+            },
+            "supplementary_file_types": ["TSV"],
+            "matrix_text": matrix_text,
+        },
+    )
+    repo.research_objects[obj.id] = obj
+
+    result = HSAResearchService(repo).build_omics_readouts(
+        OmicsReadoutRequest(packet_key="canine_hsa", accessions=["GSECOMPARATOR"], max_datasets=1)
+    )
+
+    dataset_result = result.datasets[0]
+    assert dataset_result.sample_groups["GSM_HSA_1"] == "tumor"
+    assert dataset_result.sample_groups["GSM_OS_1"] == "control"
+    assert dataset_result.metadata["sample_roles"]["GSM_OS_1"] == "disease_comparator_control"
+    assert dataset_result.metadata["comparison_design"] == "hsa_vs_other_disease_comparator"
+    assert "disease_comparator_not_normal_control" in dataset_result.limitations
+
+
+def test_omics_readouts_sample_title_zip_does_not_override_parsed_sample_names(tmp_path):
+    repo = InMemoryResearchRepository()
+    xlsx_path = tmp_path / "knockdown_matrix.xlsx"
+    _write_minimal_xlsx(
+        xlsx_path,
+        [
+            ["gene", "shA_1.genes.results", "scr1_1.genes.results"],
+            ["VIM", "8.0", "4.0"],
+        ],
+    )
+    obj = ResearchObject(
+        object_type=ResearchObjectType.DATASET,
+        title="Canine hemangiosarcoma supplementary XLSX VIM expression",
+        abstract="Canine hemangiosarcoma transcriptome evidence for VIM/vimentin expression.",
+        source_key="geo",
+        dedupe_key="geo_accession:gseknockdownmatrix",
+        identifiers={"geo_accession": "GSEKNOCKDOWNMATRIX"},
+        metadata={
+            "organism": "Canis lupus familiaris",
+            "sample_count": 2,
+            "sample_accessions": ["GSM1", "GSM2"],
+            "sample_titles": ["scr1_1", "shA_1"],
+            "supplementary_file_types": ["XLSX"],
+        },
+    )
+    repo.research_objects[obj.id] = obj
+
+    result = HSAResearchService(repo).build_omics_readouts(
+        OmicsReadoutRequest(
+            packet_key="canine_hsa",
+            accessions=["GSEKNOCKDOWNMATRIX"],
+            matrix_uri_by_accession={"GSEKNOCKDOWNMATRIX": str(xlsx_path)},
+            max_datasets=1,
+        )
+    )
+
+    groups = result.datasets[0].sample_groups
+    assert groups["shA_1.genes.results"] == "tumor"
+    assert groups["scr1_1.genes.results"] == "tumor"
+    roles = result.datasets[0].metadata["sample_roles"]
+    assert roles["shA_1.genes.results"] == "hsa_knockdown_cell_line"
+    assert roles["scr1_1.genes.results"] == "hsa_scramble_control_cell_line"
+    assert "perturbation_context_present_not_primary_tumor_normal" in result.datasets[0].limitations
+
+
+def test_omics_readouts_skip_chro_seq_bigwig_for_locus_extractor():
+    repo = InMemoryResearchRepository()
+    obj = ResearchObject(
+        object_type=ResearchObjectType.DATASET,
+        title="Canine hemangiosarcoma ChRO-seq bigWig signal dataset",
+        abstract="ChRO-seq signal files for canine hemangiosarcoma tumor tissue and normal tissue.",
+        source_key="geo",
+        dedupe_key="geo_accession:gsechrobw",
+        identifiers={"geo_accession": "GSECHROBW"},
+        metadata={
+            "organism": "Canis lupus familiaris",
+            "sample_count": 6,
+            "library_strategy": "ChRO-seq",
+            "sample_accessions": ["GSM1", "GSM2"],
+            "supplementary_file_types": ["BW"],
+        },
+    )
+    repo.research_objects[obj.id] = obj
+
+    result = HSAResearchService(repo).build_omics_readouts(
+        OmicsReadoutRequest(packet_key="canine_hsa", accessions=["GSECHROBW"], max_datasets=1)
+    )
+
+    assert result.computed_count == 0
+    assert result.skipped_count == 1
+    assert result.datasets[0].skipped_reason == "chro_seq_bigwig_locus_extraction_required"
+    assert result.datasets[0].metadata["recommended_next_path"] == "bigwig_locus_signal_extractor"
+    assert result.datasets[0].sample_count == 2
+    assert result.datasets[0].metadata["locus_signal_metadata"]["runner_status"] == "recommend_only"
+
+
+def test_omics_locus_signals_compute_bigwig_target_signal(monkeypatch, tmp_path):
+    from hsa_research.ingestion_bridge import omics_locus_signals
+
+    class FakeBigWig:
+        def __init__(self, path):
+            self.path = str(path)
+
+        def chroms(self):
+            return {"chr2": 1000000}
+
+        def stats(self, chrom, start, end, type="mean", exact=True):
+            if "tumor_1_minus" in self.path:
+                return [-10.0]
+            if "tumor_2_minus" in self.path:
+                return [-12.0]
+            if "normal_1_minus" in self.path:
+                return [-3.0]
+            if "normal_2_minus" in self.path:
+                return [-4.0]
+            return [1.0]
+
+        def close(self):
+            return None
+
+    class FakePyBigWig:
+        @staticmethod
+        def open(path):
+            return FakeBigWig(path)
+
+    captured = {}
+
+    def fake_run_validation_agent(item, *, model_profile):
+        captured["brief_id"] = item.brief_id
+        captured["model_profile"] = model_profile
+        return ValidationAgentResult(
+            queue_item_id=item.queue_item_id,
+            plan_id=item.plan_id,
+            task_id=item.task_id,
+            task_type=item.task_type,
+            validation_type=item.validation_request.validation_type,
+            agent_name="omics_validation_agent",
+            model_profile=model_profile,
+            decision="hold",
+            confidence=0.7,
+            summary="VIM locus signal was computed and should be interpreted with ChRO-seq limitations.",
+            missing_evidence=["independent RNA expression matrix"],
+        )
+
+    monkeypatch.setattr(omics_locus_signals, "_load_pybigwig", lambda: FakePyBigWig)
+    monkeypatch.setattr(omics_locus_signals, "run_validation_agent", fake_run_validation_agent)
+    repo = InMemoryResearchRepository()
+    obj = ResearchObject(
+        object_type=ResearchObjectType.DATASET,
+        title="Canine hemangiosarcoma ChRO-seq bigWig VIM signal dataset",
+        abstract="Canine hemangiosarcoma ChRO-seq signal tracks for tumor and normal tissue.",
+        source_key="geo",
+        dedupe_key="geo_accession:gsebigwigsignal",
+        identifiers={"geo_accession": "GSEBIGWIGSIGNAL"},
+        metadata={
+            "organism": "Canis lupus familiaris",
+            "sample_count": 4,
+            "library_strategy": "ChRO-seq",
+            "sample_accessions": ["tumor_1", "tumor_2", "normal_1", "normal_2"],
+            "sample_titles": {
+                "tumor_1": "canine HSA tumor",
+                "tumor_2": "canine HSA tumor",
+                "normal_1": "canine normal tissue",
+                "normal_2": "canine normal tissue",
+            },
+            "supplementary_file_types": ["BW"],
+        },
+    )
+    repo.research_objects[obj.id] = obj
+    bigwig_uri_by_sample = {
+        sample: {
+            "plus": (tmp_path / f"{sample}_plus.bw").as_uri(),
+            "minus": (tmp_path / f"{sample}_minus.bw").as_uri(),
+        }
+        for sample in ["tumor_1", "tumor_2", "normal_1", "normal_2"]
+    }
+
+    result = HSAResearchService(repo).build_omics_locus_signals(
+        OmicsLocusSignalRequest(
+            accessions=["GSEBIGWIGSIGNAL"],
+            bigwig_uri_by_sample=bigwig_uri_by_sample,
+            max_samples_per_group=2,
+            run_validation_agent=True,
+        )
+    )
+
+    assert isinstance(result, OmicsLocusSignalResult)
+    assert result.computed_count == 1
+    dataset_result = result.datasets[0]
+    assert dataset_result.status == "computed"
+    assert dataset_result.tumor_sample_count == 2
+    assert dataset_result.control_sample_count == 2
+    assert dataset_result.tumor_control_delta is not None
+    assert dataset_result.tumor_control_delta > 0
+    assert dataset_result.effect_size is not None
+    assert dataset_result.tumor_standard_deviation is not None
+    assert dataset_result.control_standard_deviation is not None
+    assert dataset_result.comparison_method == "welch_t_normal_approximation"
+    assert dataset_result.comparison_p_value is not None
+    assert dataset_result.comparison_p_value < 0.1
+    assert dataset_result.normalization_method == "bigwig_target_locus_mean_signal"
+    assert dataset_result.normalization_status == "not_verified"
+    assert "bigwig_normalization_not_verified" in dataset_result.limitations
+    assert dataset_result.metadata["statistical_test"]["status"] == "computed"
+    assert dataset_result.metadata["normalization"]["status"] == "not_verified"
+    assert dataset_result.support_level == "differential_support"
+    assert dataset_result.sample_results[0].target_strand_mean is not None
+    assert dataset_result.sample_results[0].target_strand_mean > 0
+    assert dataset_result.sample_results[0].minus_mean is not None
+    assert dataset_result.sample_results[0].minus_mean < 0
+    assert dataset_result.sample_results[0].metadata["derived_signal"] == "strand_magnitude"
+    assert captured["brief_id"] is not None
+    assert captured["model_profile"] == "openrouter_required"
+    assert result.validation_agent_result is not None
+    assert result.validation_agent_result.agent_name == "omics_validation_agent"
+    assert OmicsLocusSignalRequest().remote_extract_timeout_seconds == 600
+
+
+def test_omics_locus_signals_report_missing_pybigwig(monkeypatch):
+    from hsa_research.ingestion_bridge import omics_locus_signals
+
+    monkeypatch.setattr(omics_locus_signals, "_load_pybigwig", lambda: None)
+    repo = InMemoryResearchRepository()
+    obj = ResearchObject(
+        object_type=ResearchObjectType.DATASET,
+        title="Canine hemangiosarcoma ChRO-seq bigWig VIM signal dataset",
+        abstract="Canine hemangiosarcoma ChRO-seq signal tracks for tumor and normal tissue.",
+        source_key="geo",
+        dedupe_key="geo_accession:gsemissingpybigwig",
+        identifiers={"geo_accession": "GSEMISSINGPYBIGWIG"},
+        metadata={
+            "organism": "Canis lupus familiaris",
+            "sample_count": 2,
+            "library_strategy": "ChRO-seq",
+            "sample_accessions": ["tumor_1", "normal_1"],
+            "sample_titles": {
+                "tumor_1": "canine HSA tumor",
+                "normal_1": "canine normal tissue",
+            },
+            "supplementary_file_types": ["BW"],
+        },
+    )
+    repo.research_objects[obj.id] = obj
+
+    result = HSAResearchService(repo).build_omics_locus_signals(
+        OmicsLocusSignalRequest(
+            accessions=["GSEMISSINGPYBIGWIG"],
+            bigwig_uri_by_sample={
+                "tumor_1": {"minus": "file:///tmp/tumor_1_minus.bw"},
+                "normal_1": {"minus": "file:///tmp/normal_1_minus.bw"},
+            },
+        )
+    )
+
+    assert result.computed_count == 0
+    assert result.skipped_count == 1
+    assert result.datasets[0].skipped_reason == "pybigwig_missing"
+    assert "pybigwig_dependency_required" in result.datasets[0].limitations
+
+
+def test_omics_followup_contracts_reject_invalid_task_type():
+    task = OmicsFollowupTask(
+        task_type="steady_state_expression",
+        title="Find RNA expression",
+        objective="Find steady-state RNA expression evidence.",
+        rationale="ChRO-seq signal does not prove steady-state RNA abundance.",
+        query_text="canine hemangiosarcoma VIM RNA-seq expression",
+        source_keys=["GEO", "PubMed", "GEO"],
+        target_genes=["vim", "VIM"],
+    )
+
+    assert task.source_keys == ["geo", "pubmed"]
+    assert task.target_genes == ["VIM"]
+    assert task.identity_key is not None
+
+    with pytest.raises(ValidationError):
+        OmicsFollowupTask(
+            task_type="bad",
+            title="Bad",
+            objective="Bad objective",
+            rationale="Bad rationale",
+            query_text="bad query",
+        )
+
+
+def test_omics_followup_generator_creates_bounded_leads_and_queries():
+    repo = InMemoryResearchRepository()
+    locus_report = {
+        "datasets": [
+            {
+                "dataset": {
+                    "accession": "GSE150705",
+                    "source_key": "geo",
+                    "title": "Canine HSA ChRO-seq",
+                },
+                "sample_count": 8,
+                "computed_sample_count": 8,
+                "tumor_sample_count": 4,
+                "control_sample_count": 4,
+                "support_level": "differential_null",
+                "tumor_control_delta": 0.0435,
+                "effect_size": 0.2191,
+                "comparison_p_value": 0.7566,
+                "normalization_status": "not_verified",
+                "limitations": [
+                    "bigwig_locus_signal_extractor_first_pass",
+                    "bigwig_normalization_not_verified",
+                    "chro_seq_signal_not_steady_state_mrna",
+                ],
+                "metadata": {
+                    "manifest_sample_count": 21,
+                    "comparison_design": "primary_tumor_vs_normal_tissue",
+                    "sample_groups": {
+                        "GSM4556970": "tumor",
+                        "GSM4556971": "control",
+                    },
+                },
+            }
+        ],
+        "validation_agent_result": {
+            "decision": "hold",
+            "missing_evidence": [
+                "Verified cross-sample bigWig normalization.",
+                "Steady-state mRNA or protein-level VIM evidence.",
+                "Human angiosarcoma cross-species comparator.",
+            ],
+        },
+    }
+
+    preview = HSAResearchService(repo).build_omics_followups(
+        OmicsFollowupRequest(
+            accessions=["GSE150705"],
+            gene_symbols=["VIM"],
+            omics_locus_signal_report=locus_report,
+            max_tasks=6,
+            dry_run=True,
+        )
+    )
+
+    assert isinstance(preview, OmicsFollowupResult)
+    assert preview.generated_task_count == 6
+    assert preview.persisted_research_lead_count == 0
+    task_types = {task.task_type for task in preview.tasks}
+    assert "steady_state_expression" in task_types
+    assert "protein_expression" in task_types
+    assert "normalization_review" in task_types
+    assert "sample_metadata_review" in task_types
+    assert "cross_species_comparator" in task_types
+    assert all("VIM" in task.target_genes for task in preview.tasks)
+
+    applied = HSAResearchService(repo).build_omics_followups(
+        OmicsFollowupRequest(
+            accessions=["GSE150705"],
+            gene_symbols=["VIM"],
+            omics_locus_signal_report=locus_report,
+            max_tasks=3,
+            dry_run=False,
+        )
+    )
+
+    assert applied.generated_task_count == 3
+    assert applied.persisted_research_lead_count == 3
+    assert applied.persisted_source_query_count >= 3
+    assert all("omics_followup" in lead.topic_tags for lead in applied.research_leads)
+    stored_leads = repo.list_research_leads(status="followup")
+    assert len(stored_leads) == 3
+    stored_queries = repo.list_source_queries(active_only=True)
+    assert all(query.track == "omics_followup" for query in stored_queries)
+
+
+def _write_minimal_xlsx(path, rows):
+    sheet_rows = []
+    for row_index, row in enumerate(rows, start=1):
+        cells = []
+        for column_index, value in enumerate(row):
+            reference = f"{_xlsx_column_name(column_index)}{row_index}"
+            cells.append(
+                f'<c r="{reference}" t="inlineStr"><is><t>{value}</t></is></c>'
+            )
+        sheet_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<sheetData>{"".join(sheet_rows)}</sheetData></worksheet>'
+    )
+    with zipfile.ZipFile(path, "w") as workbook:
+        workbook.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+
+
+def _xlsx_column_name(index):
+    name = ""
+    index += 1
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(ord("A") + remainder) + name
+    return name
+
+
+def test_omics_readouts_skip_raw_sra_without_processed_matrix():
+    repo = InMemoryResearchRepository()
+    obj = ResearchObject(
+        object_type=ResearchObjectType.DATASET,
+        title="Primary canine hemangiosarcoma cells RNA-Seq VIM expression",
+        abstract="RNA-seq run from canine hemangiosarcoma primary cells with vimentin context.",
+        source_key="sra",
+        dedupe_key="sra_experiment:srxrawonly",
+        identifiers={"sra_experiment": "SRXRAWONLY"},
+        metadata={
+            "organism": "Canis lupus familiaris",
+            "sample_count": 1,
+            "library_strategy": "RNA-seq",
+            "run_accessions": ["SRRRAWONLY"],
+            "sample_accessions": ["SRSRAWONLY"],
+        },
+    )
+    repo.research_objects[obj.id] = obj
+
+    result = HSAResearchService(repo).build_omics_readouts(
+        OmicsReadoutRequest(packet_key="canine_hsa", accessions=["SRXRAWONLY"])
+    )
+
+    assert result.computed_count == 0
+    assert result.skipped_count == 1
+    assert result.datasets[0].skipped_reason == "raw_sra_reprocessing_required"
+    assert "raw_sra_reprocessing_required" in result.datasets[0].limitations
+
+
+def test_omics_readouts_can_route_computed_packet_to_deterministic_omics_agent():
+    repo = InMemoryResearchRepository()
+    matrix_text = "\n".join(
+        [
+            "gene\tcontrol_sample\thsa_tumor_sample",
+            "VIM\t4.0\t8.0",
+            "FN1\t4.0\t8.0",
+            "VEGFA\t3.0\t7.0",
+            "F3\t2.0\t6.0",
+        ]
+    )
+    obj = ResearchObject(
+        object_type=ResearchObjectType.DATASET,
+        title="Canine hemangiosarcoma VIM processed matrix",
+        abstract="Canine hemangiosarcoma transcriptome evidence for VIM/vimentin expression.",
+        source_key="geo",
+        dedupe_key="geo_accession:gseagentreadout",
+        identifiers={"geo_accession": "GSEAGENTREADOUT"},
+        metadata={
+            "organism": "Canis lupus familiaris",
+            "sample_count": 2,
+            "sample_accessions": ["control_sample", "hsa_tumor_sample"],
+            "supplementary_file_types": ["TSV"],
+            "matrix_text": matrix_text,
+        },
+    )
+    repo.research_objects[obj.id] = obj
+
+    result = HSAResearchService(repo).build_omics_readouts(
+        OmicsReadoutRequest(
+            packet_key="canine_hsa",
+            accessions=["GSEAGENTREADOUT"],
+            max_datasets=1,
+            run_validation_agent=True,
+            model_profile="deterministic_only",
+        )
+    )
+
+    assert result.validation_agent_result is not None
+    assert result.validation_agent_result.agent_name == "omics_validation_agent"
+    assert result.validation_agent_result.decision in {"promote", "hold"}
+    agent_runs = repo.list_agent_runs(agent_name="omics_validation_agent", limit=10)
+    assert len(agent_runs) == 1
+    assert agent_runs[0].status == "completed"
 
 
 def test_model_policy_uses_sonnet_for_operations_and_opus_for_big_ideas(monkeypatch):
@@ -3867,6 +5211,81 @@ def test_dagster_validation_packet_asset_uses_injected_repository(monkeypatch):
     assert result.value["packet_count"] == 1
     assert result.metadata["packet_count"].value == 1
     assert result.metadata["ready_count"].value == 1
+
+
+def test_dagster_validation_decision_asset_uses_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+    therapy_idea_id = uuid4()
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    class FakeService:
+        def __init__(self, repository):
+            assert repository is sentinel_repository
+
+        def build_validation_decision_report(self, request):
+            assert isinstance(request, ValidationDecisionReportRequest)
+            assert request.therapy_idea_id == therapy_idea_id
+            assert request.metadata["dagster_decision_run_id"] == "dagster-validation-decision-test"
+            return ValidationDecisionReportResult(
+                decision_count=1,
+                packet_count=1,
+                outcome_counts={"promote_broader_program": 1},
+                decisions=[
+                    ValidationDecisionPacket(
+                        decision_id="validation_decision:test",
+                        packet_id="validation_packet:test",
+                        candidate_id=f"therapy_idea:{therapy_idea_id}",
+                        source_type="therapy_idea",
+                        source_id=str(therapy_idea_id),
+                        therapy_idea_id=therapy_idea_id,
+                        title="Sorafenib decision",
+                        outcome="promote_broader_program",
+                        confidence=0.72,
+                        validation_ready=False,
+                        specific_claim_viability="uncertain",
+                        broader_program_signal="strong",
+                        rationale="Promote the broader program.",
+                        recommended_downstream_action="Create a Research Program Board item.",
+                        recommended_program_thesis="Biomarker-stratified vascular/TKI program.",
+                        decisive_questions=["Which subgroup benefits?"],
+                        evidence_tasks=["Trace direct canine evidence."],
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
+
+    result = dagster_asset_module.validation_decision_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "candidate_id": None,
+                "therapy_idea_id": str(therapy_idea_id),
+                "plan_id": None,
+                "queue_item_id": None,
+                "brief_id": None,
+                "evaluation_id": None,
+                "topic_query": None,
+                "source_key": None,
+                "include_queue_items": True,
+                "include_evidence_addendum": True,
+                "include_source_packets": False,
+                "addendum_limit": 25,
+                "limit": 10,
+            },
+            run_id="dagster-validation-decision-test",
+        ),
+        FakeRepositoryResource(),
+    )
+
+    assert calls == ["build_repository"]
+    assert result.value["decision_count"] == 1
+    assert result.metadata["decision_count"].value == 1
+    assert result.metadata["outcome_counts"].data == {"promote_broader_program": 1}
 
 
 def test_dagster_research_program_assets_use_injected_repository(monkeypatch):
@@ -6449,6 +7868,52 @@ def test_research_brief_followup_queue_routes_failed_evaluation_feedback(tmp_pat
     assert f"research_brief_evaluation:{evaluation.evaluation_id}" in focused.evidence_refs
 
 
+def test_research_brief_followup_queue_keeps_focused_evidence_topic_specific(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "research-brief-vim-followup-queue.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    brief = repo.upsert_research_brief(
+        ResearchBriefRecord(
+            agent_run_id=uuid4(),
+            topic="VIM/vimentin target availability in canine splenic HSA",
+            disease_scope="canine hemangiosarcoma and human angiosarcoma",
+            status="completed",
+            review_mode="openrouter_required",
+            final_brief="Stored synthesis [C1].",
+            citation_count=4,
+            finding_count=3,
+            hypothesis_count=1,
+            result_payload={"errors": []},
+        )
+    )
+    evaluation = repo.upsert_research_brief_evaluation(
+        ResearchBriefEvaluationRecord(
+            brief_id=brief.brief_id,
+            agent_run_id=uuid4(),
+            topic=brief.topic,
+            overall_score=0.52,
+            passes_quality_bar=False,
+            readiness="needs_more_evidence",
+            result_payload={
+                "recommendations": [
+                    "Initiate targeted retrieval for primary VIM/vimentin expression studies in canine HSA.",
+                    "Retrieve the full eVim vaccine trial publication and tumor-level vimentin expression data.",
+                ],
+            },
+        )
+    )
+
+    result = service.queue_research_brief_followups(
+        ResearchBriefFollowupQueueRequest(evaluation_ids=[evaluation.evaluation_id], max_limitations_per_brief=10)
+    )
+    lead = result.followup_leads[0]
+
+    assert result.queued_count == 1
+    assert lead.metadata["research_followup_queue"]["followup_kind"] == "focused_evidence_acquisition"
+    assert "VIM/vimentin" in lead.title
+    assert "toceranib" not in lead.title.lower()
+    assert "vegfr" not in lead.summary.lower()
+
+
 def test_validation_plan_repository_roundtrip_sqlite_and_memory(tmp_path):
     for repo in (
         SQLiteResearchRepository(tmp_path / "validation-plans.sqlite3", seed=False),
@@ -8444,6 +9909,45 @@ def test_therapy_committee_openrouter_perspective_repairs_invalid_model_json(mon
     assert report.evidence["model_review"]["json_repair_attempted"] is True
 
 
+def test_therapy_committee_ranking_dedupes_same_therapy_family():
+    ideas = [
+        TherapyIdea(
+            title="Biomarker-gated sorafenib for VEGFR-2-high HSA",
+            hypothesis="Sorafenib may help VEGFR-2-high canine HSA.",
+            rationale="The idea depends on VEGFR-2 expression.",
+            candidate_therapies=["sorafenib"],
+            targets=["VEGFR-2", "PDGFR-beta"],
+            evidence_refs=["C1"],
+            priority_score=0.74,
+        ),
+        TherapyIdea(
+            title="Sorafenib kinase-selectivity de-risking before translation",
+            hypothesis="Sorafenib should be tested against VEGFR-2 and PDGFR-beta before translation.",
+            rationale="This is the same VEGFR TKI family with a stronger de-risking plan.",
+            candidate_therapies=["sorafenib", "toceranib"],
+            targets=["KDR", "PDGFR-\u03b2"],
+            evidence_refs=["C1"],
+            priority_score=0.79,
+        ),
+        TherapyIdea(
+            title="PIK3CA-mutant HSA pathway inhibition",
+            hypothesis="PIK3CA-mutant HSA may expose a PI3K-AKT-mTOR vulnerability.",
+            rationale="This is a distinct pathway family.",
+            candidate_therapies=["alpelisib"],
+            targets=["PIK3CA", "PTEN", "mTOR"],
+            evidence_refs=["C2"],
+            priority_score=0.52,
+        ),
+    ]
+
+    ranked = therapy_committee._rank_ideas(ideas)
+
+    assert [idea.title for idea in ranked] == [
+        "Sorafenib kinase-selectivity de-risking before translation",
+        "PIK3CA-mutant HSA pathway inhibition",
+    ]
+
+
 def test_therapy_committee_runs_cited_idea_layer(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "therapy-committee.sqlite3", seed=False)
     raw_record_id = repo.upsert_raw_record(
@@ -8786,6 +10290,52 @@ def test_research_brief_synthesis_remaps_duplicate_citations_and_ranks_therapy_h
         "therapy_relevance_score"
     ]
     assert "[C2]" not in result.final_brief
+
+
+def test_research_brief_therapy_relevance_terms_filter_prompt_noise():
+    citation = ResearchBriefCitation(
+        citation_id="C1",
+        chunk_id=uuid4(),
+        research_object_id=uuid4(),
+        title="VEGFR inhibitor response in vascular sarcoma",
+        quote="Sorafenib VEGFR inhibitor evidence discusses response and survival.",
+        relevance="therapy validation",
+    )
+    finding = ResearchBriefFinding(
+        claim="Sorafenib and VEGFR response should be reviewed before validation.",
+        stance="opportunity",
+        citations=["C1"],
+        evidence_strength="medium",
+        reasoning="The signal is therapy-specific, not a generic citation traceability issue.",
+    )
+
+    _score, hits = research_brief_agent._therapy_relevance_score(
+        finding,
+        {"C1": citation},
+        ResearchBriefRequest(
+            topic=(
+                "C21 content and traceability: C21 is cited in the negative evidence needs "
+                "and is not included in the core evidence refs packet."
+            ),
+            disease_scope="canine hemangiosarcoma and human angiosarcoma",
+        ),
+    )
+
+    assert {"sorafenib", "vegfr", "response"}.issubset(set(hits))
+    assert not {
+        "and",
+        "but",
+        "c21",
+        "cited",
+        "content",
+        "core",
+        "correlation",
+        "findings",
+        "for",
+        "formally",
+        "inconsistency",
+        "resolve",
+    } & set(hits)
 
 
 def test_research_brief_perspective_queries_stay_within_chunk_search_contract():
@@ -10247,6 +11797,59 @@ def test_validation_gap_ingest_filters_agent_evaluator_followup_lane(monkeypatch
     assert result.query_count == 1
     assert result.source_queries == [selected]
     assert calls == [("agent_eval_selected", {})]
+
+
+def test_validation_gap_ingest_can_select_omics_followup_track(monkeypatch):
+    repo = InMemoryResearchRepository()
+    selected = SourceQuery(
+        source_key="pubmed",
+        query_name="omics_followup_protein_expression",
+        query_text="canine hemangiosarcoma vimentin immunohistochemistry",
+        query_params={"task_type": "protein_expression"},
+        track="omics_followup",
+    )
+    repo.upsert_source_query(selected)
+    repo.upsert_source_query(
+        SourceQuery(
+            source_key="pubmed",
+            query_name="validation_gap_safety",
+            query_text="sorafenib canine safety",
+            track="validation_gap",
+        )
+    )
+    calls = []
+
+    class FakePipeline:
+        def __init__(self, repository):
+            self.repository = repository
+
+        def ingest_query(self, query, limit, persist_query=True):
+            calls.append((query.query_name, query.query_params))
+            return IngestionResult(
+                source_key=query.source_key,
+                query_name=query.query_name,
+                query_text=query.query_text,
+                fetch_run_id=uuid4(),
+                status=RunStatus.COMPLETED,
+            )
+
+    monkeypatch.setattr(validation_gap_ingest, "LocalIngestionPipeline", FakePipeline)
+
+    default_preview = HSAResearchService(repo).ingest_validation_gap_source_queries(
+        ValidationGapSourceIngestRequest(source_keys=["pubmed"])
+    )
+    omics_result = HSAResearchService(repo).ingest_validation_gap_source_queries(
+        ValidationGapSourceIngestRequest(
+            source_keys=["pubmed"],
+            tracks=["omics_followup"],
+            dry_run=False,
+        )
+    )
+
+    assert [query.query_name for query in default_preview.source_queries] == ["validation_gap_safety"]
+    assert omics_result.query_count == 1
+    assert omics_result.source_queries == [selected]
+    assert calls == [("omics_followup_protein_expression", {"task_type": "protein_expression"})]
 
 
 def test_research_followup_loop_runs_search_and_updates_status(monkeypatch):

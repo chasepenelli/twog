@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import Enum
+import hashlib
 import re
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -38,6 +39,10 @@ def _normalize_optional_url(value: str | None) -> str | None:
 
 def _identity_slug(value: str) -> str:
     return "-".join(re.findall(r"[a-z0-9]+", value.lower()))[:160] or "unknown"
+
+
+def _stable_short_digest(value: str) -> str:
+    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:16]
 
 
 def _dedupe_strings(values: list[str]) -> list[str]:
@@ -271,6 +276,12 @@ ValidationPacketReadiness = Literal[
     "needs_more_evidence",
     "needs_citation_repair",
     "blocked",
+]
+
+ValidationDecisionOutcome = Literal[
+    "promote_broader_program",
+    "narrow_to_preclinical_question",
+    "archive_specific_drug_claim",
 ]
 
 DiscoveryReadiness = Literal[
@@ -1438,6 +1449,7 @@ class TherapyCommitteeRequest(StrictBaseModel):
     max_claims: int = Field(default=20, ge=0, le=75)
     max_chunk_chars: int = Field(default=2200, ge=500, le=12000)
     max_ideas_per_perspective: int = Field(default=4, ge=1, le=10)
+    max_ranked_ideas: int | None = Field(default=None, ge=1, le=25)
     model_profile: str = "therapy_committee"
     review_mode: Literal[
         "external_required",
@@ -2341,6 +2353,7 @@ class ValidationGapSourcePackResult(StrictBaseModel):
 class ValidationGapSourceIngestRequest(StrictBaseModel):
     source_keys: list[str] = Field(default_factory=list, max_length=25)
     query_names: list[str] = Field(default_factory=list, max_length=100)
+    tracks: list[str] = Field(default_factory=lambda: ["validation_gap"], max_length=25)
     followup_lane: str | None = None
     origin_review_ids: list[UUID] = Field(default_factory=list, max_length=100)
     origin_agent_run_ids: list[UUID] = Field(default_factory=list, max_length=100)
@@ -2354,6 +2367,7 @@ class ValidationGapSourceIngestRequest(StrictBaseModel):
     def normalize_validation_gap_source_ingest_request(self) -> "ValidationGapSourceIngestRequest":
         self.source_keys = _dedupe_lower_tokens(self.source_keys)
         self.query_names = _normalized_unique_strings(self.query_names)
+        self.tracks = _dedupe_lower_tokens(self.tracks) or ["validation_gap"]
         self.followup_lane = self.followup_lane.strip() if self.followup_lane and self.followup_lane.strip() else None
         return self
 
@@ -3781,6 +3795,226 @@ class ValidationPacketResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ValidationDecisionReportRequest(StrictBaseModel):
+    candidate_id: str | None = Field(default=None, max_length=240)
+    therapy_idea_id: UUID | None = None
+    plan_id: UUID | None = None
+    queue_item_id: UUID | None = None
+    brief_id: UUID | None = None
+    evaluation_id: UUID | None = None
+    topic_query: str | None = None
+    source_key: str | None = None
+    include_queue_items: bool = True
+    include_evidence_addendum: bool = True
+    include_source_packets: bool = False
+    persist_decisions: bool = True
+    addendum_limit: int = Field(default=25, ge=0, le=200)
+    limit: int = Field(default=10, ge=1, le=100)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_validation_decision_report_request(self) -> "ValidationDecisionReportRequest":
+        if self.candidate_id:
+            self.candidate_id = self.candidate_id.strip() or None
+        if self.topic_query:
+            self.topic_query = self.topic_query.strip() or None
+        if self.source_key:
+            self.source_key = self.source_key.strip().lower() or None
+        return self
+
+
+class ValidationDecisionPacket(StrictBaseModel):
+    decision_id: str = Field(min_length=3, max_length=280)
+    packet_id: str = Field(min_length=3, max_length=260)
+    candidate_id: str = Field(min_length=3, max_length=240)
+    source_type: HypothesisPromotionSourceType
+    source_id: str = Field(min_length=1, max_length=200)
+    therapy_idea_id: UUID | None = None
+    title: str = Field(min_length=1, max_length=500)
+    outcome: ValidationDecisionOutcome
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    validation_ready: bool = False
+    specific_claim_viability: Literal["strong", "uncertain", "weak"] = "uncertain"
+    broader_program_signal: Literal["strong", "possible", "absent"] = "absent"
+    rationale: str = Field(min_length=1, max_length=3000)
+    recommended_downstream_action: str = Field(min_length=1, max_length=1000)
+    recommended_program_thesis: str | None = Field(default=None, max_length=1000)
+    decisive_questions: list[str] = Field(default_factory=list, min_length=1, max_length=8)
+    evidence_tasks: list[str] = Field(default_factory=list, min_length=1, max_length=12)
+    blocking_reasons: list[str] = Field(default_factory=list, max_length=50)
+    confidence_changers: list[str] = Field(default_factory=list, max_length=12)
+    evidence_summary: dict[str, Any] = Field(default_factory=dict)
+    source_packet: ValidationPacket | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_validation_decision_packet(self) -> "ValidationDecisionPacket":
+        self.decision_id = self.decision_id.strip()
+        self.packet_id = self.packet_id.strip()
+        self.candidate_id = self.candidate_id.strip()
+        self.source_id = self.source_id.strip()
+        self.title = self.title.strip()
+        self.rationale = self.rationale.strip()
+        self.recommended_downstream_action = self.recommended_downstream_action.strip()
+        if self.recommended_program_thesis:
+            self.recommended_program_thesis = self.recommended_program_thesis.strip() or None
+        self.decisive_questions = _dedupe_strings(self.decisive_questions)
+        self.evidence_tasks = _dedupe_strings(self.evidence_tasks)
+        self.blocking_reasons = _dedupe_strings(self.blocking_reasons)
+        self.confidence_changers = _dedupe_strings(self.confidence_changers)
+        return self
+
+
+class ValidationDecisionRecord(StrictBaseModel):
+    decision_record_id: UUID = Field(default_factory=uuid4)
+    decision_id: str = Field(min_length=3, max_length=280)
+    packet_id: str = Field(min_length=3, max_length=260)
+    candidate_id: str = Field(min_length=3, max_length=240)
+    source_type: HypothesisPromotionSourceType
+    source_id: str = Field(min_length=1, max_length=200)
+    therapy_idea_id: UUID | None = None
+    title: str = Field(min_length=1, max_length=500)
+    outcome: ValidationDecisionOutcome
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    validation_ready: bool = False
+    specific_claim_viability: Literal["strong", "uncertain", "weak"] = "uncertain"
+    broader_program_signal: Literal["strong", "possible", "absent"] = "absent"
+    decision: ValidationDecisionPacket
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_validation_decision_record(self) -> "ValidationDecisionRecord":
+        self.decision_id = self.decision_id.strip()
+        self.packet_id = self.packet_id.strip()
+        self.candidate_id = self.candidate_id.strip()
+        self.source_id = self.source_id.strip()
+        self.title = self.title.strip()
+        return self
+
+    @classmethod
+    def from_decision(
+        cls,
+        decision: ValidationDecisionPacket,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> "ValidationDecisionRecord":
+        return cls(
+            decision_id=decision.decision_id,
+            packet_id=decision.packet_id,
+            candidate_id=decision.candidate_id,
+            source_type=decision.source_type,
+            source_id=decision.source_id,
+            therapy_idea_id=decision.therapy_idea_id,
+            title=decision.title,
+            outcome=decision.outcome,
+            confidence=decision.confidence,
+            validation_ready=decision.validation_ready,
+            specific_claim_viability=decision.specific_claim_viability,
+            broader_program_signal=decision.broader_program_signal,
+            decision=decision,
+            metadata=metadata or {},
+        )
+
+
+class ValidationDecisionReportResult(StrictBaseModel):
+    decision_count: int = 0
+    outcome_counts: dict[str, int] = Field(default_factory=dict)
+    validation_ready_count: int = 0
+    packet_count: int = 0
+    persisted_decision_count: int = 0
+    decisions: list[ValidationDecisionPacket] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+EvidenceRefRepairStatus = Literal[
+    "resolved",
+    "stale",
+    "ambiguous",
+    "unsupported_format",
+]
+
+
+class EvidenceRefRepairRequest(StrictBaseModel):
+    therapy_idea_id: UUID | None = None
+    plan_id: UUID | None = None
+    queue_item_id: UUID | None = None
+    brief_id: UUID | None = None
+    evaluation_id: UUID | None = None
+    topic_query: str | None = None
+    source_key: str | None = None
+    include_validation_packet: bool = True
+    include_text_refs: bool = True
+    addendum_limit: int = Field(default=25, ge=0, le=200)
+    limit: int = Field(default=10, ge=1, le=100)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_evidence_ref_repair_request(self) -> "EvidenceRefRepairRequest":
+        if self.topic_query:
+            self.topic_query = self.topic_query.strip() or None
+        if self.source_key:
+            self.source_key = self.source_key.strip().lower() or None
+        return self
+
+
+class EvidenceRefRepairItem(StrictBaseModel):
+    ref: str = Field(min_length=1, max_length=200)
+    normalized_ref: str = Field(min_length=1, max_length=200)
+    status: EvidenceRefRepairStatus
+    source_context: str = Field(min_length=1, max_length=200)
+    evidence_path: str = Field(min_length=1, max_length=300)
+    source_brief_id: UUID | None = None
+    matched_brief_id: UUID | None = None
+    matched_citation_id: str | None = Field(default=None, max_length=100)
+    matched_chunk_id: UUID | None = None
+    matched_research_object_id: UUID | None = None
+    matched_title: str | None = Field(default=None, max_length=500)
+    matched_source_key: str | None = Field(default=None, max_length=100)
+    identifiers: dict[str, Any] = Field(default_factory=dict)
+    reason: str = Field(default="", max_length=1000)
+    replacement_refs: list[str] = Field(default_factory=list, max_length=10)
+    evidence_snippet: str | None = Field(default=None, max_length=1000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_evidence_ref_repair_item(self) -> "EvidenceRefRepairItem":
+        self.ref = self.ref.strip()
+        self.normalized_ref = self.normalized_ref.strip()
+        self.source_context = self.source_context.strip()
+        self.evidence_path = self.evidence_path.strip()
+        if self.matched_citation_id:
+            self.matched_citation_id = self.matched_citation_id.strip() or None
+        if self.matched_source_key:
+            self.matched_source_key = self.matched_source_key.strip().lower() or None
+        if self.reason:
+            self.reason = self.reason.strip()
+        self.replacement_refs = _dedupe_strings(self.replacement_refs)
+        if self.evidence_snippet:
+            self.evidence_snippet = self.evidence_snippet.strip() or None
+        return self
+
+
+class EvidenceRefRepairReport(StrictBaseModel):
+    request: EvidenceRefRepairRequest
+    packet_count: int = 0
+    item_count: int = 0
+    resolved_count: int = 0
+    stale_count: int = 0
+    ambiguous_count: int = 0
+    unsupported_count: int = 0
+    blocker_count: int = 0
+    validation_packet_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    unresolved_blockers: list[str] = Field(default_factory=list, max_length=50)
+    suggested_queries: list[str] = Field(default_factory=list, max_length=50)
+    items: list[EvidenceRefRepairItem] = Field(default_factory=list, max_length=500)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ResearchProgramQuestion(StrictBaseModel):
     question_id: UUID = Field(default_factory=uuid4)
     question: str = Field(min_length=3, max_length=1000)
@@ -4251,6 +4485,431 @@ class OmicsEvidencePacketResult(StrictBaseModel):
     skipped: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+OmicsReadoutSupportLevel = Literal[
+    "differential_support",
+    "differential_null",
+    "descriptive_presence",
+    "not_detected",
+    "insufficient_labels",
+]
+
+
+class OmicsTargetExpressionScore(StrictBaseModel):
+    target: str = Field(default="VIM", max_length=100)
+    detected: bool = False
+    detected_gene_symbols: list[str] = Field(default_factory=list, max_length=25)
+    sample_count: int = Field(default=0, ge=0)
+    tumor_sample_count: int = Field(default=0, ge=0)
+    control_sample_count: int = Field(default=0, ge=0)
+    normalized_mean: float | None = None
+    tumor_mean: float | None = None
+    control_mean: float | None = None
+    tumor_control_delta: float | None = None
+    effect_size: float | None = None
+    support_level: OmicsReadoutSupportLevel = "not_detected"
+    interpretation: str = Field(default="", max_length=1000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_omics_target_expression_score(self) -> "OmicsTargetExpressionScore":
+        self.target = self.target.strip().upper() or "VIM"
+        self.detected_gene_symbols = _normalized_unique_strings(self.detected_gene_symbols)
+        self.interpretation = self.interpretation.strip()
+        return self
+
+
+class OmicsGeneSetScore(StrictBaseModel):
+    gene_set_key: Literal[
+        "vimentin_target",
+        "mesenchymal_ecm",
+        "angiogenesis_endothelial",
+        "coagulation_vascular_injury",
+    ]
+    detected_gene_symbols: list[str] = Field(default_factory=list, max_length=100)
+    gene_count: int = Field(default=0, ge=0)
+    detected_gene_count: int = Field(default=0, ge=0)
+    coverage_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    sample_count: int = Field(default=0, ge=0)
+    tumor_sample_count: int = Field(default=0, ge=0)
+    control_sample_count: int = Field(default=0, ge=0)
+    mean_score: float | None = None
+    tumor_mean: float | None = None
+    control_mean: float | None = None
+    tumor_control_delta: float | None = None
+    effect_size: float | None = None
+    support_level: OmicsReadoutSupportLevel = "not_detected"
+    interpretation: str = Field(default="", max_length=1000)
+
+    @model_validator(mode="after")
+    def normalize_omics_gene_set_score(self) -> "OmicsGeneSetScore":
+        self.detected_gene_symbols = _normalized_unique_strings(self.detected_gene_symbols)
+        self.interpretation = self.interpretation.strip()
+        return self
+
+
+class OmicsReadoutDatasetResult(StrictBaseModel):
+    dataset: OmicsEvidenceDataset
+    status: Literal["computed", "skipped", "failed"] = "skipped"
+    skipped_reason: str | None = Field(default=None, max_length=500)
+    matrix_uri: str | None = Field(default=None, max_length=2000)
+    matrix_artifact_id: UUID | None = None
+    result_artifact_id: UUID | None = None
+    normalized_kind: Literal["counts_cpm_log1p", "processed_expression", "unknown"] = "unknown"
+    sample_count: int = Field(default=0, ge=0)
+    gene_count: int = Field(default=0, ge=0)
+    labeled_sample_count: int = Field(default=0, ge=0)
+    tumor_sample_count: int = Field(default=0, ge=0)
+    control_sample_count: int = Field(default=0, ge=0)
+    sample_groups: dict[str, str] = Field(default_factory=dict)
+    target_expression: OmicsTargetExpressionScore | None = None
+    gene_set_scores: list[OmicsGeneSetScore] = Field(default_factory=list, max_length=10)
+    limitations: list[str] = Field(default_factory=list, max_length=50)
+    errors: list[str] = Field(default_factory=list, max_length=25)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_omics_readout_dataset_result(self) -> "OmicsReadoutDatasetResult":
+        if self.skipped_reason:
+            self.skipped_reason = self.skipped_reason.strip() or None
+        self.sample_groups = {
+            str(key).strip(): str(value).strip().lower()
+            for key, value in self.sample_groups.items()
+            if str(key).strip() and str(value).strip()
+        }
+        self.limitations = _normalized_unique_strings(self.limitations)
+        self.errors = _normalized_unique_strings(self.errors)
+        return self
+
+
+class OmicsReadoutRequest(StrictBaseModel):
+    packet_id: str | None = Field(default=None, max_length=260)
+    packet_key: str | None = Field(default=None, max_length=120)
+    program_id: UUID | None = None
+    therapy_idea_id: UUID | None = None
+    topic_query: str = (
+        "canine hemangiosarcoma human angiosarcoma VIM vimentin transcriptome RNA-seq expression"
+    )
+    disease_terms: list[str] = Field(
+        default_factory=lambda: [
+            "canine hemangiosarcoma",
+            "dog hemangiosarcoma",
+            "human angiosarcoma",
+            "angiosarcoma",
+        ],
+        max_length=25,
+    )
+    gene_symbols: list[str] = Field(default_factory=lambda: ["VIM", "vimentin"], max_length=25)
+    source_keys: list[str] = Field(default_factory=lambda: ["geo", "sra"], max_length=5)
+    accessions: list[str] = Field(default_factory=list, max_length=200)
+    limit: int = Field(default=100, ge=1, le=1000)
+    max_datasets: int = Field(default=5, ge=1, le=50)
+    matrix_uri_by_accession: dict[str, str] = Field(default_factory=dict)
+    sample_group_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
+    artifact_dir: str | None = Field(default=None, max_length=1000)
+    run_validation_agent: bool = False
+    model_profile: str = "openrouter_required"
+    dry_run: bool = False
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_omics_readout_request(self) -> "OmicsReadoutRequest":
+        if self.packet_id:
+            self.packet_id = self.packet_id.strip() or None
+        if self.packet_key:
+            self.packet_key = self.packet_key.strip() or None
+        self.topic_query = self.topic_query.strip()
+        self.disease_terms = _dedupe_strings(self.disease_terms)
+        self.gene_symbols = _dedupe_strings(self.gene_symbols)
+        self.source_keys = _dedupe_lower_tokens(self.source_keys) or ["geo", "sra"]
+        self.accessions = _dedupe_strings(self.accessions)
+        self.matrix_uri_by_accession = {
+            str(key).strip(): str(value).strip()
+            for key, value in self.matrix_uri_by_accession.items()
+            if str(key).strip() and str(value).strip()
+        }
+        self.sample_group_overrides = {
+            str(accession).strip(): {
+                str(sample).strip(): str(group).strip().lower()
+                for sample, group in groups.items()
+                if str(sample).strip() and str(group).strip()
+            }
+            for accession, groups in self.sample_group_overrides.items()
+            if str(accession).strip()
+        }
+        if self.artifact_dir:
+            self.artifact_dir = self.artifact_dir.strip() or None
+        self.model_profile = self.model_profile.strip() or "openrouter_required"
+        return self
+
+
+class OmicsReadoutResult(StrictBaseModel):
+    program_id: UUID | None = None
+    therapy_idea_id: UUID | None = None
+    packet_id: str | None = None
+    packet_key: str | None = None
+    dry_run: bool = False
+    dataset_count: int = 0
+    computed_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    artifact_ids: list[UUID] = Field(default_factory=list, max_length=250)
+    datasets: list[OmicsReadoutDatasetResult] = Field(default_factory=list)
+    validation_agent_result: "ValidationAgentResult | None" = None
+    errors: list[str] = Field(default_factory=list, max_length=50)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class OmicsLocusTarget(StrictBaseModel):
+    gene_symbol: str = Field(default="VIM", max_length=100)
+    chromosome: str = Field(min_length=1, max_length=100)
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    strand: Literal["+", "-"] = "-"
+    genome_build: str = Field(default="unknown", max_length=100)
+    flank_bp: int = Field(default=0, ge=0, le=1_000_000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_omics_locus_target(self) -> "OmicsLocusTarget":
+        self.gene_symbol = self.gene_symbol.strip().upper() or "VIM"
+        self.chromosome = self.chromosome.strip()
+        self.genome_build = self.genome_build.strip() or "unknown"
+        if self.end <= self.start:
+            raise ValueError("end must be greater than start")
+        return self
+
+
+class OmicsLocusSignalSampleResult(StrictBaseModel):
+    sample_id: str = Field(min_length=1, max_length=200)
+    group: str = Field(default="unknown", max_length=80)
+    role: str = Field(default="unknown", max_length=120)
+    plus_uri: str | None = Field(default=None, max_length=2000)
+    minus_uri: str | None = Field(default=None, max_length=2000)
+    plus_mean: float | None = None
+    minus_mean: float | None = None
+    combined_mean: float | None = None
+    target_strand_mean: float | None = None
+    status: Literal["computed", "skipped", "failed"] = "skipped"
+    errors: list[str] = Field(default_factory=list, max_length=25)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_omics_locus_signal_sample_result(self) -> "OmicsLocusSignalSampleResult":
+        self.sample_id = self.sample_id.strip()
+        self.group = self.group.strip().lower() or "unknown"
+        self.role = self.role.strip() or "unknown"
+        self.errors = _normalized_unique_strings(self.errors)
+        return self
+
+
+class OmicsLocusSignalDatasetResult(StrictBaseModel):
+    dataset: OmicsEvidenceDataset
+    status: Literal["computed", "skipped", "failed"] = "skipped"
+    skipped_reason: str | None = Field(default=None, max_length=500)
+    target: OmicsLocusTarget | None = None
+    sample_count: int = Field(default=0, ge=0)
+    computed_sample_count: int = Field(default=0, ge=0)
+    tumor_sample_count: int = Field(default=0, ge=0)
+    control_sample_count: int = Field(default=0, ge=0)
+    tumor_mean: float | None = None
+    control_mean: float | None = None
+    tumor_standard_deviation: float | None = None
+    control_standard_deviation: float | None = None
+    tumor_control_delta: float | None = None
+    effect_size: float | None = None
+    comparison_statistic: float | None = None
+    comparison_p_value: float | None = Field(default=None, ge=0.0, le=1.0)
+    comparison_method: str | None = Field(default=None, max_length=200)
+    normalization_method: str | None = Field(default=None, max_length=200)
+    normalization_status: Literal["declared", "not_verified", "not_applicable"] = "not_verified"
+    support_level: OmicsReadoutSupportLevel = "not_detected"
+    sample_results: list[OmicsLocusSignalSampleResult] = Field(default_factory=list, max_length=100)
+    limitations: list[str] = Field(default_factory=list, max_length=50)
+    errors: list[str] = Field(default_factory=list, max_length=25)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_omics_locus_signal_dataset_result(self) -> "OmicsLocusSignalDatasetResult":
+        if self.skipped_reason:
+            self.skipped_reason = self.skipped_reason.strip() or None
+        self.limitations = _normalized_unique_strings(self.limitations)
+        self.errors = _normalized_unique_strings(self.errors)
+        return self
+
+
+class OmicsLocusSignalRequest(StrictBaseModel):
+    packet_id: str | None = Field(default=None, max_length=260)
+    packet_key: str | None = None
+    topic_query: str = (
+        "canine hemangiosarcoma human angiosarcoma VIM vimentin ChRO-seq bigWig locus signal"
+    )
+    disease_terms: list[str] = Field(
+        default_factory=lambda: [
+            "canine hemangiosarcoma",
+            "dog hemangiosarcoma",
+            "human angiosarcoma",
+            "angiosarcoma",
+        ],
+        max_length=25,
+    )
+    gene_symbols: list[str] = Field(default_factory=lambda: ["VIM"], max_length=25)
+    source_keys: list[str] = Field(default_factory=lambda: ["geo"], max_length=5)
+    accessions: list[str] = Field(default_factory=list, max_length=200)
+    limit: int = Field(default=100, ge=1, le=1000)
+    max_datasets: int = Field(default=5, ge=1, le=50)
+    max_samples_per_group: int = Field(default=2, ge=1, le=25)
+    remote_extract_timeout_seconds: int = Field(default=600, ge=10, le=3600)
+    artifact_dir: str | None = Field(default=None, max_length=1000)
+    target_loci: dict[str, OmicsLocusTarget] = Field(default_factory=dict)
+    bigwig_uri_by_sample: dict[str, dict[str, str]] = Field(default_factory=dict)
+    sample_group_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
+    run_validation_agent: bool = False
+    model_profile: str = "openrouter_required"
+    dry_run: bool = False
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_omics_locus_signal_request(self) -> "OmicsLocusSignalRequest":
+        self.topic_query = self.topic_query.strip()
+        self.disease_terms = _dedupe_strings(self.disease_terms)
+        self.gene_symbols = _dedupe_strings(self.gene_symbols) or ["VIM"]
+        self.source_keys = _dedupe_lower_tokens(self.source_keys) or ["geo"]
+        self.accessions = _dedupe_strings(self.accessions)
+        self.target_loci = {
+            str(key).strip().upper(): value
+            for key, value in self.target_loci.items()
+            if str(key).strip()
+        }
+        self.bigwig_uri_by_sample = {
+            str(sample).strip(): {
+                str(strand).strip().lower(): str(uri).strip()
+                for strand, uri in uris.items()
+                if str(strand).strip() and str(uri).strip()
+            }
+            for sample, uris in self.bigwig_uri_by_sample.items()
+            if str(sample).strip()
+        }
+        self.sample_group_overrides = {
+            str(accession).strip(): {
+                str(sample).strip(): str(group).strip().lower()
+                for sample, group in groups.items()
+                if str(sample).strip() and str(group).strip()
+            }
+            for accession, groups in self.sample_group_overrides.items()
+            if str(accession).strip()
+        }
+        if self.artifact_dir:
+            self.artifact_dir = self.artifact_dir.strip() or None
+        self.model_profile = self.model_profile.strip() or "openrouter_required"
+        return self
+
+
+class OmicsLocusSignalResult(StrictBaseModel):
+    dry_run: bool = False
+    dataset_count: int = 0
+    computed_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    datasets: list[OmicsLocusSignalDatasetResult] = Field(default_factory=list)
+    validation_agent_result: "ValidationAgentResult | None" = None
+    errors: list[str] = Field(default_factory=list, max_length=50)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+OmicsFollowupTaskType = Literal[
+    "steady_state_expression",
+    "protein_expression",
+    "cross_species_comparator",
+    "normalization_review",
+    "sample_metadata_review",
+    "negative_control_locus",
+    "gene_set_context",
+    "raw_reprocess_candidate",
+]
+
+
+class OmicsFollowupTask(StrictBaseModel):
+    task_id: UUID = Field(default_factory=uuid4)
+    identity_key: str | None = None
+    task_type: OmicsFollowupTaskType
+    title: str = Field(min_length=1, max_length=500)
+    objective: str = Field(min_length=1, max_length=2000)
+    rationale: str = Field(min_length=1, max_length=3000)
+    query_text: str = Field(min_length=1, max_length=2000)
+    source_keys: list[str] = Field(default_factory=list, max_length=25)
+    target_genes: list[str] = Field(default_factory=list, max_length=25)
+    accessions: list[str] = Field(default_factory=list, max_length=100)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=100)
+    priority: int = Field(default=100, ge=0, le=1000)
+    status: Literal["proposed", "queued"] = "proposed"
+    blockers: list[str] = Field(default_factory=list, max_length=50)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_omics_followup_task(self) -> "OmicsFollowupTask":
+        self.title = self.title.strip()
+        self.objective = self.objective.strip()
+        self.rationale = self.rationale.strip()
+        self.query_text = self.query_text.strip()
+        self.source_keys = _dedupe_lower_tokens(self.source_keys)
+        self.target_genes = _dedupe_strings([gene.upper() for gene in self.target_genes])
+        self.accessions = _dedupe_strings(self.accessions)
+        self.evidence_refs = _dedupe_strings(self.evidence_refs)
+        self.blockers = _normalized_unique_strings(self.blockers)
+        if not self.identity_key:
+            digest_text = "|".join([self.task_type, self.title, self.query_text])
+            self.identity_key = f"omics_followup:{_stable_short_digest(digest_text)}"
+        return self
+
+
+class OmicsFollowupRequest(StrictBaseModel):
+    topic_query: str = (
+        "canine hemangiosarcoma human angiosarcoma VIM vimentin omics follow-up evidence"
+    )
+    gene_symbols: list[str] = Field(default_factory=lambda: ["VIM"], max_length=25)
+    accessions: list[str] = Field(default_factory=list, max_length=200)
+    source_keys: list[str] = Field(default_factory=lambda: ["geo", "sra", "pubmed", "europe_pmc"], max_length=25)
+    omics_readout_report: dict[str, Any] | None = None
+    omics_locus_signal_report: dict[str, Any] | None = None
+    validation_agent_result: dict[str, Any] | None = None
+    include_locus_signal_report: bool = False
+    locus_signal_request: dict[str, Any] = Field(default_factory=dict)
+    max_tasks: int = Field(default=8, ge=1, le=25)
+    create_research_leads: bool = True
+    create_source_queries: bool = True
+    dry_run: bool = True
+    operator: str = Field(default="omics_followup_generator", max_length=200)
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_omics_followup_request(self) -> "OmicsFollowupRequest":
+        self.topic_query = self.topic_query.strip()
+        self.gene_symbols = _dedupe_strings([gene.upper() for gene in self.gene_symbols]) or ["VIM"]
+        self.accessions = _dedupe_strings(self.accessions)
+        self.source_keys = _dedupe_lower_tokens(self.source_keys) or ["geo", "sra", "pubmed", "europe_pmc"]
+        self.operator = self.operator.strip() or "omics_followup_generator"
+        return self
+
+
+class OmicsFollowupResult(StrictBaseModel):
+    dry_run: bool = True
+    scanned_dataset_count: int = Field(default=0, ge=0)
+    generated_task_count: int = Field(default=0, ge=0)
+    persisted_research_lead_count: int = Field(default=0, ge=0)
+    persisted_source_query_count: int = Field(default=0, ge=0)
+    tasks: list[OmicsFollowupTask] = Field(default_factory=list)
+    research_leads: list[ResearchLeadRecord] = Field(default_factory=list)
+    source_queries: list[SourceQuery] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list, max_length=100)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ValidationAutopilotRequest(StrictBaseModel):

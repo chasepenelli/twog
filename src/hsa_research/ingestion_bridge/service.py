@@ -44,6 +44,9 @@ from .contracts import (
     CommitHypothesisRequest,
     DoiOpenAccessFollowupQueueRequest,
     DocumentChunk,
+    EvidenceRefRepairItem,
+    EvidenceRefRepairReport,
+    EvidenceRefRepairRequest,
     EvidenceGapResolverRequest,
     EvidenceGapResolverResult,
     FullTextTriageRequest,
@@ -112,6 +115,12 @@ from .contracts import (
     OmicsAccessionHuntResult,
     OmicsEvidencePacketRequest,
     OmicsEvidencePacketResult,
+    OmicsFollowupRequest,
+    OmicsFollowupResult,
+    OmicsLocusSignalRequest,
+    OmicsLocusSignalResult,
+    OmicsReadoutRequest,
+    OmicsReadoutResult,
     ResearchProgramBoardRequest,
     ResearchProgramBoardResult,
     ResearchProgramEvidenceTask,
@@ -152,6 +161,10 @@ from .contracts import (
     ValidationGapSourceIngestResult,
     ValidationGapSourcePackRequest,
     ValidationGapSourcePackResult,
+    ValidationDecisionPacket,
+    ValidationDecisionRecord,
+    ValidationDecisionReportRequest,
+    ValidationDecisionReportResult,
     ValidationPacket,
     ValidationPacketAddendumBrief,
     ValidationPacketEvidenceAddendum,
@@ -205,6 +218,9 @@ from .full_text_triage import FullTextTriageAgent
 from .model_policy import BIG_IDEA_OPENROUTER_MODEL, DEFAULT_OPENROUTER_MODEL
 from .omics_accession_hunt import run_omics_accession_hunt
 from .omics_evidence_packets import build_omics_evidence_packets
+from .omics_followups import build_omics_followups
+from .omics_locus_signals import build_omics_locus_signals
+from .omics_readouts import build_omics_readouts
 from .research_brief_agent import (
     PERSPECTIVE_ORDER,
     RESEARCH_BRIEF_AGENT_VERSION,
@@ -345,6 +361,15 @@ class _SourceFollowupLinkStats:
     preexisting: int = 0
     already_ingested: int = 0
     pending: int = 0
+
+
+@dataclass(frozen=True)
+class _ObservedEvidenceRef:
+    ref: str
+    source_context: str
+    evidence_path: str
+    source_brief_id: UUID | None = None
+    snippet: str | None = None
 
 
 def _validation_request_quality_gates(request: ValidationRequest) -> list[str]:
@@ -870,6 +895,42 @@ class HSAResearchService:
             service=self,
         )
 
+    def build_validation_decision_report(
+        self,
+        request: ValidationDecisionReportRequest | None = None,
+    ) -> ValidationDecisionReportResult:
+        return _build_validation_decision_report(
+            self.repository,
+            request or ValidationDecisionReportRequest(),
+        )
+
+    def get_validation_decision(self, decision_id: str) -> ValidationDecisionRecord | None:
+        return self.repository.get_validation_decision(decision_id)
+
+    def list_validation_decisions(
+        self,
+        *,
+        outcome: str | None = None,
+        therapy_idea_id: UUID | None = None,
+        candidate_id: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ValidationDecisionRecord]:
+        return self.repository.list_validation_decisions(
+            outcome=outcome,
+            therapy_idea_id=therapy_idea_id,
+            candidate_id=candidate_id,
+            limit=limit,
+        )
+
+    def build_evidence_ref_repair_report(
+        self,
+        request: EvidenceRefRepairRequest | None = None,
+    ) -> EvidenceRefRepairReport:
+        return _build_evidence_ref_repair_report(
+            self.repository,
+            request or EvidenceRefRepairRequest(),
+        )
+
     def run_research_program_board(
         self,
         request: ResearchProgramReviewRequest,
@@ -1159,6 +1220,24 @@ class HSAResearchService:
         request: OmicsEvidencePacketRequest | None = None,
     ) -> OmicsEvidencePacketResult:
         return build_omics_evidence_packets(self.repository, request or OmicsEvidencePacketRequest())
+
+    def build_omics_readouts(
+        self,
+        request: OmicsReadoutRequest | None = None,
+    ) -> OmicsReadoutResult:
+        return build_omics_readouts(self.repository, request or OmicsReadoutRequest())
+
+    def build_omics_locus_signals(
+        self,
+        request: OmicsLocusSignalRequest | None = None,
+    ) -> OmicsLocusSignalResult:
+        return build_omics_locus_signals(self.repository, request or OmicsLocusSignalRequest())
+
+    def build_omics_followups(
+        self,
+        request: OmicsFollowupRequest | None = None,
+    ) -> OmicsFollowupResult:
+        return build_omics_followups(self.repository, request or OmicsFollowupRequest())
 
     def _select_research_program_for_evidence_loop(
         self,
@@ -4802,6 +4881,1048 @@ def _build_validation_packets(
     )
 
 
+def _build_validation_decision_report(
+    repository: ResearchRepository,
+    request: ValidationDecisionReportRequest,
+) -> ValidationDecisionReportResult:
+    packet_result = _build_validation_packets(
+        repository,
+        ValidationPacketRequest(
+            candidate_id=request.candidate_id,
+            therapy_idea_id=request.therapy_idea_id,
+            plan_id=request.plan_id,
+            queue_item_id=request.queue_item_id,
+            brief_id=request.brief_id,
+            evaluation_id=request.evaluation_id,
+            topic_query=request.topic_query,
+            source_key=request.source_key,
+            include_queue_items=request.include_queue_items,
+            include_evidence_addendum=request.include_evidence_addendum,
+            addendum_limit=request.addendum_limit,
+            queue_if_ready=False,
+            dry_run=True,
+            limit=request.limit,
+            metadata={
+                **request.metadata,
+                "decision_report": True,
+            },
+        ),
+    )
+    decisions = [
+        _validation_decision_from_packet(packet, include_source_packet=request.include_source_packets)
+        for packet in packet_result.packets
+    ]
+    errors = list(packet_result.errors)
+    persisted_decision_count = 0
+    if request.persist_decisions:
+        for decision in decisions:
+            try:
+                repository.upsert_validation_decision(
+                    ValidationDecisionRecord.from_decision(
+                        decision,
+                        metadata={
+                            **request.metadata,
+                            "persisted_from": "validation_decision_report",
+                        },
+                    )
+                )
+                persisted_decision_count += 1
+            except Exception as exc:  # pragma: no cover - defensive repository boundary
+                errors.append(f"Failed to persist validation decision {decision.decision_id}: {exc}")
+    return ValidationDecisionReportResult(
+        decision_count=len(decisions),
+        outcome_counts=dict(sorted(Counter(decision.outcome for decision in decisions).items())),
+        validation_ready_count=sum(1 for decision in decisions if decision.validation_ready),
+        packet_count=packet_result.packet_count,
+        persisted_decision_count=persisted_decision_count,
+        decisions=decisions,
+        errors=errors,
+    )
+
+
+_BROADER_PROGRAM_SIGNAL_PATTERN = re.compile(
+    r"\b(?:genomic|genomics|precision oncology|biomarker|stratified|subgroup|"
+    r"class-level|targeted therap|vascular|angiogenesis|vegfr|pdgfr|kdr|tki)\b",
+    re.IGNORECASE,
+)
+_SPECIFIC_CLAIM_WEAK_PATTERN = re.compile(
+    r"\b(?:non[- ]?significant|p\s*[=<>]\s*0\.\d+|absent|missing|no direct|no canine-specific|"
+    r"weak|modest|heterogeneous|failed|unverifiable|unresolved|not outcome-linked|not validation-ready)\b",
+    re.IGNORECASE,
+)
+_SPECIFIC_CLAIM_ARCHIVE_PATTERN = re.compile(
+    r"\b(?:negative|failed|no benefit|inferior|toxicity unacceptable|contraindicat|"
+    r"no detectable|not detected|unsupported)\b",
+    re.IGNORECASE,
+)
+
+
+def _validation_decision_from_packet(
+    packet: ValidationPacket,
+    *,
+    include_source_packet: bool = False,
+) -> ValidationDecisionPacket:
+    text = _validation_decision_text(packet)
+    broader_hits = len(_BROADER_PROGRAM_SIGNAL_PATTERN.findall(text))
+    weak_hits = len(_SPECIFIC_CLAIM_WEAK_PATTERN.findall(text))
+    archive_hits = len(_SPECIFIC_CLAIM_ARCHIVE_PATTERN.findall(text))
+    addendum = packet.evidence_addendum
+    validation_ready = (
+        packet.readiness in {"ready_for_validation_plan", "ready_for_validation_queue", "queued_for_validation"}
+        and packet.validation_strategy_readiness
+        in {"ready_for_validation_strategy", "queued_for_validation_strategy"}
+        and not packet.dispatch_blockers
+    )
+    specific_claim_viability = _validation_decision_specific_viability(
+        packet,
+        weak_hits=weak_hits,
+        archive_hits=archive_hits,
+    )
+    broader_program_signal = _validation_decision_broader_signal(packet, broader_hits=broader_hits)
+    outcome = _validation_decision_outcome(
+        packet,
+        broader_program_signal=broader_program_signal,
+        specific_claim_viability=specific_claim_viability,
+        archive_hits=archive_hits,
+    )
+    blockers = _validation_decision_blockers(packet)
+    confidence = _validation_decision_confidence(
+        packet,
+        outcome=outcome,
+        broader_hits=broader_hits,
+        weak_hits=weak_hits,
+        archive_hits=archive_hits,
+    )
+    evidence_summary = {
+        "packet_status": packet.status,
+        "packet_readiness": packet.readiness,
+        "discovery_readiness": packet.discovery_readiness,
+        "validation_strategy_readiness": packet.validation_strategy_readiness,
+        "protocol_readiness": packet.protocol_readiness,
+        "packet_score": packet.score,
+        "follow_up_count": addendum.follow_up_count,
+        "evaluated_follow_up_count": addendum.evaluated_follow_up_count,
+        "passing_follow_up_count": addendum.passing_follow_up_count,
+        "needs_more_evidence_count": addendum.needs_more_evidence_count,
+        "ready_for_hypothesis_review_count": addendum.ready_for_hypothesis_review_count,
+        "candidate_therapies": packet.candidate_therapies,
+        "targets": packet.targets,
+        "biomarkers": packet.biomarkers,
+    }
+    return ValidationDecisionPacket(
+        decision_id=f"validation_decision:{hashlib.sha1(packet.packet_id.encode('utf-8')).hexdigest()[:16]}",
+        packet_id=packet.packet_id,
+        candidate_id=packet.candidate_id,
+        source_type=packet.source_type,
+        source_id=packet.source_id,
+        therapy_idea_id=packet.therapy_idea_id,
+        title=packet.title,
+        outcome=outcome,
+        confidence=confidence,
+        validation_ready=validation_ready,
+        specific_claim_viability=specific_claim_viability,
+        broader_program_signal=broader_program_signal,
+        rationale=_validation_decision_rationale(
+            packet,
+            outcome=outcome,
+            specific_claim_viability=specific_claim_viability,
+            broader_program_signal=broader_program_signal,
+        ),
+        recommended_downstream_action=_validation_decision_downstream_action(outcome),
+        recommended_program_thesis=_validation_decision_program_thesis(packet, outcome),
+        decisive_questions=_validation_decision_questions(packet, outcome),
+        evidence_tasks=_validation_decision_evidence_tasks(packet, outcome),
+        blocking_reasons=blockers,
+        confidence_changers=_validation_decision_confidence_changers(packet, outcome),
+        evidence_summary=evidence_summary,
+        source_packet=packet if include_source_packet else None,
+        metadata={
+            "source": "validation_decision_report",
+            "broader_signal_hits": broader_hits,
+            "specific_claim_weak_hits": weak_hits,
+            "archive_signal_hits": archive_hits,
+            "dispatch_blocker_count": len(packet.dispatch_blockers),
+        },
+    )
+
+
+def _validation_decision_text(packet: ValidationPacket) -> str:
+    addendum = packet.evidence_addendum
+    values = [
+        packet.title,
+        packet.hypothesis,
+        " ".join(packet.candidate_therapies),
+        " ".join(packet.targets),
+        " ".join(packet.biomarkers),
+        " ".join(packet.missing_evidence),
+        " ".join(packet.safety_risks),
+        " ".join(packet.contradictions),
+        " ".join(packet.next_experiments),
+        " ".join(packet.dispatch_blockers),
+        " ".join(addendum.material_updates),
+        " ".join(addendum.unresolved_blockers),
+    ]
+    for row in addendum.follow_up_briefs:
+        values.extend(
+            [
+                row.topic,
+                " ".join(row.key_strengths),
+                " ".join(row.key_weaknesses),
+                " ".join(row.recommendations),
+                json.dumps(row.summary, sort_keys=True, default=str),
+            ]
+        )
+    return " ".join(str(value) for value in values if value)
+
+
+def _validation_decision_specific_viability(
+    packet: ValidationPacket,
+    *,
+    weak_hits: int,
+    archive_hits: int,
+) -> str:
+    if archive_hits >= 3 or (packet.score < 0.45 and packet.evidence_addendum.passing_follow_up_count == 0):
+        return "weak"
+    if weak_hits >= 2 or packet.readiness in {"needs_more_evidence", "blocked"}:
+        return "uncertain"
+    if packet.score >= 0.7 and packet.evidence_addendum.passing_follow_up_count > 0:
+        return "strong"
+    return "uncertain"
+
+
+def _validation_decision_broader_signal(packet: ValidationPacket, *, broader_hits: int) -> str:
+    if broader_hits >= 4 or packet.evidence_addendum.passing_follow_up_count >= 2:
+        return "strong"
+    if broader_hits >= 1 or packet.evidence_addendum.ready_for_hypothesis_review_count > 0:
+        return "possible"
+    return "absent"
+
+
+def _validation_decision_outcome(
+    packet: ValidationPacket,
+    *,
+    broader_program_signal: str,
+    specific_claim_viability: str,
+    archive_hits: int,
+) -> str:
+    if broader_program_signal == "strong" and specific_claim_viability in {"uncertain", "weak"}:
+        return "promote_broader_program"
+    if archive_hits >= 3 and broader_program_signal == "absent":
+        return "archive_specific_drug_claim"
+    if specific_claim_viability == "weak" and packet.evidence_addendum.passing_follow_up_count == 0:
+        return "archive_specific_drug_claim"
+    if broader_program_signal == "possible" and specific_claim_viability != "strong":
+        return "promote_broader_program"
+    return "narrow_to_preclinical_question"
+
+
+def _validation_decision_confidence(
+    packet: ValidationPacket,
+    *,
+    outcome: str,
+    broader_hits: int,
+    weak_hits: int,
+    archive_hits: int,
+) -> float:
+    confidence = 0.5
+    if packet.evidence_addendum.evaluated_follow_up_count:
+        confidence += 0.1
+    if packet.dispatch_blockers:
+        confidence += 0.05
+    if outcome == "promote_broader_program" and broader_hits:
+        confidence += min(0.15, broader_hits * 0.03)
+    if outcome == "archive_specific_drug_claim" and archive_hits:
+        confidence += min(0.15, archive_hits * 0.04)
+    if weak_hits:
+        confidence += min(0.1, weak_hits * 0.02)
+    if packet.evidence_addendum.follow_up_count == 0:
+        confidence -= 0.1
+    return round(max(0.25, min(0.9, confidence)), 3)
+
+
+def _validation_decision_blockers(packet: ValidationPacket) -> list[str]:
+    return _dedupe_quality_labels(
+        [
+            *packet.dispatch_blockers,
+            *packet.missing_evidence,
+            *packet.protocol_blockers,
+            *packet.evidence_addendum.unresolved_blockers,
+        ]
+    )[:50]
+
+
+def _validation_decision_rationale(
+    packet: ValidationPacket,
+    *,
+    outcome: str,
+    specific_claim_viability: str,
+    broader_program_signal: str,
+) -> str:
+    if outcome == "promote_broader_program":
+        return _truncate(
+            "The specific validation packet remains blocked, but the follow-up evidence points to a broader "
+            f"{broader_program_signal} program-level signal. Keep the drug-specific claim subordinate to a "
+            "biomarker-stratified therapeutic strategy instead of forcing protocol validation now.",
+            3000,
+        )
+    if outcome == "archive_specific_drug_claim":
+        return _truncate(
+            "The specific claim has weak viability after the available follow-up evidence and should not keep "
+            "consuming validation-loop budget unless a materially stronger primary source appears.",
+            3000,
+        )
+    return _truncate(
+        "The idea is not ready for broad validation, but it remains plausible enough to narrow into one "
+        "preclinical question with explicit readouts and stop criteria.",
+        3000,
+    )
+
+
+def _validation_decision_downstream_action(outcome: str) -> str:
+    return {
+        "promote_broader_program": (
+            "Create or update a Research Program Board item, then generate child therapy ideas from the broader "
+            "program rather than dispatching this specific packet."
+        ),
+        "narrow_to_preclinical_question": (
+            "Rewrite the packet as one bounded preclinical question with required inputs, readouts, and stop criteria."
+        ),
+        "archive_specific_drug_claim": (
+            "Archive or demote the specific claim; keep source evidence indexed for future comparative context."
+        ),
+    }[outcome]
+
+
+def _validation_decision_program_thesis(packet: ValidationPacket, outcome: str) -> str | None:
+    if outcome != "promote_broader_program":
+        return None
+    therapy_family = " / ".join(packet.candidate_therapies[:3]) or "targeted therapy"
+    targets = " / ".join(packet.targets[:4]) or "vascular and angiogenic targets"
+    return _truncate(
+        f"Biomarker-stratified vascular/TKI therapeutic strategy for canine HSA using {targets} context, "
+        f"with {therapy_family} treated as candidate evidence rather than the sole thesis.",
+        1000,
+    )
+
+
+def _validation_decision_questions(packet: ValidationPacket, outcome: str) -> list[str]:
+    if outcome == "archive_specific_drug_claim":
+        return [
+            "Is there any primary direct evidence strong enough to resurrect the specific drug claim?",
+            "Does the negative or null evidence generalize to the broader therapy family?",
+        ]
+    questions = [
+        "Which biomarker-defined subgroup is the therapy strategy actually intended to help?",
+        "Which direct canine HSA evidence separates drug-specific signal from class-level vascular/TKI signal?",
+        "What result would make us stop pursuing this specific claim?",
+    ]
+    if outcome == "narrow_to_preclinical_question":
+        questions[0] = "What single preclinical readout can test the core mechanism before protocol-level work?"
+    if packet.targets:
+        questions.append(f"Are {', '.join(packet.targets[:3])} predictive markers, prognostic markers, or only pathway context?")
+    return _dedupe_quality_labels(questions)[:8]
+
+
+def _validation_decision_evidence_tasks(packet: ValidationPacket, outcome: str) -> list[str]:
+    text = _validation_decision_text(packet)
+    tasks: list[str] = []
+    if re.search(r"\b(?:pk|pd|pharmacokinetic|pharmacodynamic|cmax|auc|mtd)\b", text, re.IGNORECASE):
+        tasks.append("Acquire canine PK/PD, exposure, MTD, and tolerability evidence for the candidate drug or closest analog.")
+    if re.search(r"\bp\s*[=<>]\s*0\.\d+|primary source|cohort|survival\b", text, re.IGNORECASE):
+        tasks.append("Trace the primary cohort/source behind survival or response claims and extract design, sample size, and endpoint details.")
+    if re.search(r"\b(?:biomarker|heterogeneous|stratified|subgroup|outcome-linked)\b", text, re.IGNORECASE):
+        tasks.append("Separate biomarker-positive and biomarker-negative evidence before treating expression as predictive.")
+    if re.search(r"\b(?:comparator|historical control|metronomic|doxorubicin)\b", text, re.IGNORECASE):
+        tasks.append("Define comparator and historical-control benchmarks before evaluating therapy benefit.")
+    if outcome == "promote_broader_program":
+        tasks.append("Create a Research Program Board evidence loop focused on the broader vascular/TKI strategy.")
+    elif outcome == "narrow_to_preclinical_question":
+        tasks.append("Draft one preclinical validation question with readout, model system, required evidence, and stop criteria.")
+    else:
+        tasks.append("Record the claim as demoted and retain the evidence as negative/comparator context.")
+    return _dedupe_quality_labels(tasks)[:12]
+
+
+def _validation_decision_confidence_changers(packet: ValidationPacket, outcome: str) -> list[str]:
+    changers = [
+        "A direct canine HSA study with source-traceable response or survival endpoints.",
+        "Drug exposure data showing canine concentrations reach the proposed mechanistic range.",
+        "Biomarker-linked response data separating predictive from merely prognostic evidence.",
+    ]
+    if outcome == "promote_broader_program":
+        changers.append("Evidence that a biomarker-stratified therapy family outperforms any single unstratified drug claim.")
+    elif outcome == "archive_specific_drug_claim":
+        changers.append("A stronger primary source contradicting the current null, weak, or negative evidence.")
+    else:
+        changers.append("A feasible preclinical assay result with predefined pass/fail thresholds.")
+    return _dedupe_quality_labels(changers)[:12]
+
+
+_CITATION_REF_TOKEN_PATTERN = re.compile(r"\[?\b(C\d{1,5})\b\]?", re.IGNORECASE)
+_DURABLE_EVIDENCE_REF_PATTERN = re.compile(r"^([a-z_]+):(.+)$", re.IGNORECASE)
+_EXPLICIT_BRIEF_CITATION_REF_PATTERN = re.compile(
+    r"\b(?:research_brief|brief):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}#C\d{1,5}\b",
+    re.IGNORECASE,
+)
+
+
+def _build_evidence_ref_repair_report(
+    repository: ResearchRepository,
+    request: EvidenceRefRepairRequest,
+) -> EvidenceRefRepairReport:
+    errors: list[str] = []
+    packets: list[ValidationPacket] = []
+    if request.include_validation_packet:
+        packet_result = _build_validation_packets(
+            repository,
+            ValidationPacketRequest(
+                therapy_idea_id=request.therapy_idea_id,
+                plan_id=request.plan_id,
+                queue_item_id=request.queue_item_id,
+                brief_id=request.brief_id,
+                evaluation_id=request.evaluation_id,
+                topic_query=request.topic_query,
+                source_key=request.source_key,
+                include_queue_items=True,
+                include_evidence_addendum=True,
+                addendum_limit=request.addendum_limit,
+                limit=request.limit,
+                metadata=request.metadata,
+            ),
+        )
+        packets = packet_result.packets
+        errors.extend(packet_result.errors)
+
+    briefs = _evidence_ref_repair_briefs(repository, request, packets)
+    citation_maps = {
+        brief_id: _citation_map_for_brief(brief)
+        for brief_id, brief in briefs.items()
+    }
+    observations = _dedupe_observed_evidence_refs(
+        _observe_evidence_refs_for_repair(packets, request, briefs)
+    )
+    items = [
+        _evidence_ref_repair_item(repository, observation, citation_maps)
+        for observation in observations
+    ]
+    stale_or_ambiguous = [
+        item for item in items if item.status in {"stale", "ambiguous"}
+    ]
+    unresolved_blockers = _dedupe_texts(
+        [
+            f"{item.normalized_ref} unresolved in {item.source_context} ({item.evidence_path}): {item.reason}"
+            for item in stale_or_ambiguous
+        ]
+    )[:50]
+    suggested_queries = _dedupe_texts(
+        [
+            _evidence_ref_repair_query(item)
+            for item in stale_or_ambiguous
+            if _evidence_ref_repair_query(item)
+        ]
+    )[:50]
+    status_counts = Counter(item.status for item in items)
+    return EvidenceRefRepairReport(
+        request=request,
+        packet_count=len(packets),
+        item_count=len(items),
+        resolved_count=status_counts.get("resolved", 0),
+        stale_count=status_counts.get("stale", 0),
+        ambiguous_count=status_counts.get("ambiguous", 0),
+        unsupported_count=status_counts.get("unsupported_format", 0),
+        blocker_count=len(stale_or_ambiguous),
+        validation_packet_summaries=[
+            {
+                "packet_id": packet.packet_id,
+                "candidate_id": packet.candidate_id,
+                "therapy_idea_id": str(packet.therapy_idea_id) if packet.therapy_idea_id else None,
+                "brief_id": str(packet.brief_id) if packet.brief_id else None,
+                "evaluation_id": str(packet.evaluation_id) if packet.evaluation_id else None,
+                "status": packet.status,
+                "readiness": packet.readiness,
+                "discovery_readiness": packet.discovery_readiness,
+                "dispatch_blockers": packet.dispatch_blockers,
+                "follow_up_count": packet.evidence_addendum.follow_up_count,
+            }
+            for packet in packets
+        ],
+        unresolved_blockers=unresolved_blockers,
+        suggested_queries=suggested_queries,
+        items=items,
+        errors=errors,
+    )
+
+
+def _evidence_ref_repair_briefs(
+    repository: ResearchRepository,
+    request: EvidenceRefRepairRequest,
+    packets: list[ValidationPacket],
+) -> dict[UUID, ResearchBriefRecord]:
+    brief_ids: set[UUID] = set()
+    if request.brief_id:
+        brief_ids.add(request.brief_id)
+    if request.evaluation_id:
+        evaluation = repository.get_research_brief_evaluation(request.evaluation_id)
+        if evaluation is not None:
+            brief_ids.add(evaluation.brief_id)
+    for packet in packets:
+        if packet.brief_id:
+            brief_ids.add(packet.brief_id)
+        if packet.therapy_idea is not None and packet.therapy_idea.source_brief_id:
+            brief_ids.add(packet.therapy_idea.source_brief_id)
+        for row in packet.evidence_addendum.follow_up_briefs:
+            if row.brief_id:
+                brief_ids.add(row.brief_id)
+    briefs: dict[UUID, ResearchBriefRecord] = {}
+    for brief_id in brief_ids:
+        brief = repository.get_research_brief(brief_id)
+        if brief is not None:
+            briefs[brief_id] = brief
+    return briefs
+
+
+def _observe_evidence_refs_for_repair(
+    packets: list[ValidationPacket],
+    request: EvidenceRefRepairRequest,
+    briefs: dict[UUID, ResearchBriefRecord],
+) -> list[_ObservedEvidenceRef]:
+    observations: list[_ObservedEvidenceRef] = []
+    if not packets:
+        for brief in briefs.values():
+            _append_brief_observations(observations, brief, include_text_refs=request.include_text_refs)
+        return observations
+
+    for packet_index, packet in enumerate(packets):
+        packet_path = f"packets[{packet_index}]"
+        source_brief_id = _packet_source_brief_id(packet)
+        source_brief_hints = _validation_packet_follow_up_text_source_hints(packet)
+        for field_name in ("evidence_refs", "direct_evidence_refs", "analog_evidence_refs"):
+            for ref_index, ref in enumerate(getattr(packet, field_name)):
+                observations.append(
+                    _ObservedEvidenceRef(
+                        ref=str(ref),
+                        source_context=f"validation_packet:{packet.packet_id}",
+                        evidence_path=f"{packet_path}.{field_name}[{ref_index}]",
+                        source_brief_id=source_brief_id,
+                        snippet=str(ref),
+                    )
+                )
+        if request.include_text_refs:
+            _append_text_ref_observations(
+                observations,
+                packet.missing_evidence,
+                f"validation_packet:{packet.packet_id}",
+                f"{packet_path}.missing_evidence",
+                source_brief_id,
+                source_brief_hints=source_brief_hints,
+            )
+            _append_text_ref_observations(
+                observations,
+                packet.risk_annotations,
+                f"validation_packet:{packet.packet_id}",
+                f"{packet_path}.risk_annotations",
+                source_brief_id,
+                source_brief_hints=source_brief_hints,
+            )
+            _append_text_ref_observations(
+                observations,
+                packet.protocol_blockers,
+                f"validation_packet:{packet.packet_id}",
+                f"{packet_path}.protocol_blockers",
+                source_brief_id,
+                source_brief_hints=source_brief_hints,
+            )
+            _append_text_ref_observations(
+                observations,
+                packet.quality_gates,
+                f"validation_packet:{packet.packet_id}",
+                f"{packet_path}.quality_gates",
+                source_brief_id,
+            )
+            _append_text_ref_observations(
+                observations,
+                packet.dispatch_blockers,
+                f"validation_packet:{packet.packet_id}",
+                f"{packet_path}.dispatch_blockers",
+                source_brief_id,
+            )
+            _append_text_ref_observations(
+                observations,
+                packet.evidence_addendum.unresolved_blockers,
+                f"validation_packet:{packet.packet_id}:evidence_addendum",
+                f"{packet_path}.evidence_addendum.unresolved_blockers",
+                source_brief_id,
+                source_brief_hints=source_brief_hints,
+            )
+
+        for task_index, task in enumerate(packet.validation_tasks):
+            for ref_index, ref in enumerate(task.evidence_refs):
+                observations.append(
+                    _ObservedEvidenceRef(
+                        ref=str(ref),
+                        source_context=f"validation_packet:{packet.packet_id}:task:{task_index}",
+                        evidence_path=f"{packet_path}.validation_tasks[{task_index}].evidence_refs[{ref_index}]",
+                        source_brief_id=source_brief_id,
+                        snippet=str(ref),
+                    )
+                )
+            validation_request = task.validation_request
+            if validation_request is None or validation_request.assay_context is None:
+                continue
+            assay_context = validation_request.assay_context
+            for ref_index, ref in enumerate(assay_context.evidence_refs):
+                observations.append(
+                    _ObservedEvidenceRef(
+                        ref=str(ref),
+                        source_context=f"validation_packet:{packet.packet_id}:assay_context:{task_index}",
+                        evidence_path=(
+                            f"{packet_path}.validation_tasks[{task_index}]"
+                            f".validation_request.assay_context.evidence_refs[{ref_index}]"
+                        ),
+                        source_brief_id=source_brief_id,
+                        snippet=str(ref),
+                    )
+                )
+            if request.include_text_refs:
+                _append_text_ref_observations(
+                    observations,
+                    assay_context.negative_evidence_needs,
+                    f"validation_packet:{packet.packet_id}:assay_context:{task_index}",
+                    (
+                        f"{packet_path}.validation_tasks[{task_index}]"
+                        ".validation_request.assay_context.negative_evidence_needs"
+                    ),
+                    source_brief_id,
+                )
+
+        for row_index, row in enumerate(packet.evidence_addendum.follow_up_briefs):
+            row_brief_id = row.brief_id
+            row_context = f"validation_follow_up:{row.queue_item_id}"
+            if request.include_text_refs:
+                _append_text_ref_observations(
+                    observations,
+                    [
+                        row.topic,
+                        *row.key_weaknesses,
+                        *row.recommendations,
+                        json.dumps(row.summary, sort_keys=True, default=str),
+                    ],
+                    row_context,
+                    f"{packet_path}.evidence_addendum.follow_up_briefs[{row_index}]",
+                    row_brief_id,
+                )
+    return observations
+
+
+def _append_brief_observations(
+    observations: list[_ObservedEvidenceRef],
+    brief: ResearchBriefRecord,
+    *,
+    include_text_refs: bool,
+) -> None:
+    payload = brief.result_payload if isinstance(brief.result_payload, dict) else {}
+    for finding_index, finding in enumerate(payload.get("ranked_hypotheses") or []):
+        if not isinstance(finding, dict):
+            continue
+        citations = finding.get("citations")
+        if not isinstance(citations, list):
+            continue
+        for ref_index, ref in enumerate(citations):
+            observations.append(
+                _ObservedEvidenceRef(
+                    ref=str(ref),
+                    source_context=f"research_brief:{brief.brief_id}",
+                    evidence_path=f"ranked_hypotheses[{finding_index}].citations[{ref_index}]",
+                    source_brief_id=brief.brief_id,
+                    snippet=str(ref),
+                )
+            )
+    if include_text_refs:
+        _append_text_ref_observations(
+            observations,
+            [brief.final_brief, json.dumps(payload, sort_keys=True, default=str)],
+            f"research_brief:{brief.brief_id}",
+            "research_brief.result_payload",
+            brief.brief_id,
+        )
+
+
+def _validation_packet_follow_up_text_source_hints(packet: ValidationPacket) -> dict[str, UUID]:
+    hints: dict[str, UUID] = {}
+    for row in packet.evidence_addendum.follow_up_briefs:
+        if row.brief_id is None:
+            continue
+        values = [
+            row.topic,
+            *row.key_weaknesses,
+            *row.recommendations,
+        ]
+        for value in values:
+            normalized = _normalize_provenance_text(value)
+            if normalized:
+                hints[normalized] = row.brief_id
+    return hints
+
+
+def _source_brief_id_for_text_ref(
+    text: str,
+    default_brief_id: UUID | None,
+    source_brief_hints: dict[str, UUID] | None,
+) -> UUID | None:
+    if not source_brief_hints:
+        return default_brief_id
+    normalized = _normalize_provenance_text(text)
+    if normalized in source_brief_hints:
+        return source_brief_hints[normalized]
+    return default_brief_id
+
+
+def _normalize_provenance_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value).strip()).casefold()
+
+
+def _append_text_ref_observations(
+    observations: list[_ObservedEvidenceRef],
+    values: list[Any],
+    source_context: str,
+    evidence_path: str,
+    source_brief_id: UUID | None,
+    *,
+    source_brief_hints: dict[str, UUID] | None = None,
+) -> None:
+    for value_index, value in enumerate(values):
+        text = str(value)
+        if not text.strip():
+            continue
+        text_brief_id = _source_brief_id_for_text_ref(text, source_brief_id, source_brief_hints)
+        for ref in _explicit_refs_in_text(text):
+            observations.append(
+                _ObservedEvidenceRef(
+                    ref=ref,
+                    source_context=source_context,
+                    evidence_path=f"{evidence_path}[{value_index}]",
+                    source_brief_id=text_brief_id,
+                    snippet=_truncate(text, 1000),
+                )
+            )
+        masked_text = _EXPLICIT_BRIEF_CITATION_REF_PATTERN.sub("", text)
+        for ref in _citation_refs_in_text(masked_text):
+            observations.append(
+                _ObservedEvidenceRef(
+                    ref=ref,
+                    source_context=source_context,
+                    evidence_path=f"{evidence_path}[{value_index}]",
+                    source_brief_id=text_brief_id,
+                    snippet=_truncate(text, 1000),
+                )
+            )
+
+
+def _dedupe_observed_evidence_refs(
+    observations: list[_ObservedEvidenceRef],
+) -> list[_ObservedEvidenceRef]:
+    deduped: list[_ObservedEvidenceRef] = []
+    seen: set[tuple[str, str, str, UUID | None]] = set()
+    for observation in observations:
+        ref = str(observation.ref).strip()
+        if not ref:
+            continue
+        key = (
+            _normalize_evidence_ref(ref),
+            observation.source_context,
+            observation.evidence_path,
+            observation.source_brief_id,
+        )
+        if key in seen:
+            continue
+        deduped.append(
+            _ObservedEvidenceRef(
+                ref=ref,
+                source_context=observation.source_context,
+                evidence_path=observation.evidence_path,
+                source_brief_id=observation.source_brief_id,
+                snippet=observation.snippet,
+            )
+        )
+        seen.add(key)
+    return deduped
+
+
+def _evidence_ref_repair_item(
+    repository: ResearchRepository,
+    observation: _ObservedEvidenceRef,
+    citation_maps: dict[UUID, dict[str, dict[str, Any]]],
+) -> EvidenceRefRepairItem:
+    normalized_ref = _normalize_evidence_ref(observation.ref)
+    explicit_match = _explicit_brief_citation_ref(normalized_ref)
+    if explicit_match is not None:
+        matched_brief_id, citation_ref = explicit_match
+        citation = citation_maps.get(matched_brief_id, {}).get(citation_ref)
+        if citation is not None:
+            return _resolved_citation_repair_item(
+                observation,
+                citation_ref,
+                matched_brief_id,
+                citation,
+                normalized_ref=normalized_ref,
+            )
+        return EvidenceRefRepairItem(
+            ref=observation.ref,
+            normalized_ref=normalized_ref,
+            status="stale",
+            source_context=observation.source_context,
+            evidence_path=observation.evidence_path,
+            source_brief_id=observation.source_brief_id,
+            matched_brief_id=matched_brief_id,
+            reason="Explicit source-qualified citation ref does not exist in that research brief.",
+            evidence_snippet=observation.snippet,
+        )
+    durable_status = _resolve_durable_evidence_ref(repository, normalized_ref)
+    if durable_status is not None:
+        status, reason = durable_status
+        return EvidenceRefRepairItem(
+            ref=observation.ref,
+            normalized_ref=normalized_ref,
+            status=status,
+            source_context=observation.source_context,
+            evidence_path=observation.evidence_path,
+            source_brief_id=observation.source_brief_id,
+            reason=reason,
+            evidence_snippet=observation.snippet,
+        )
+
+    if not _is_citation_ref(normalized_ref):
+        return EvidenceRefRepairItem(
+            ref=observation.ref,
+            normalized_ref=normalized_ref,
+            status="unsupported_format",
+            source_context=observation.source_context,
+            evidence_path=observation.evidence_path,
+            source_brief_id=observation.source_brief_id,
+            reason="Reference is not a C# citation token or a supported durable object reference.",
+            evidence_snippet=observation.snippet,
+        )
+
+    candidate_brief_ids = (
+        [observation.source_brief_id]
+        if observation.source_brief_id is not None
+        else list(citation_maps)
+    )
+    matches: list[tuple[UUID, dict[str, Any]]] = []
+    for brief_id in candidate_brief_ids:
+        if brief_id is None:
+            continue
+        citation = citation_maps.get(brief_id, {}).get(normalized_ref)
+        if citation is not None:
+            matches.append((brief_id, citation))
+
+    if len(matches) == 1:
+        matched_brief_id, citation = matches[0]
+        return _resolved_citation_repair_item(
+            observation,
+            normalized_ref,
+            matched_brief_id,
+            citation,
+        )
+    if len(matches) > 1:
+        return EvidenceRefRepairItem(
+            ref=observation.ref,
+            normalized_ref=normalized_ref,
+            status="ambiguous",
+            source_context=observation.source_context,
+            evidence_path=observation.evidence_path,
+            source_brief_id=observation.source_brief_id,
+            reason="Citation token appears in multiple related briefs; a source brief must be selected before validation.",
+            replacement_refs=[
+                f"research_brief:{brief_id}#{normalized_ref}"
+                for brief_id, _citation in matches[:10]
+            ],
+            evidence_snippet=observation.snippet,
+        )
+
+    source_map = citation_maps.get(observation.source_brief_id or UUID(int=0), {})
+    return EvidenceRefRepairItem(
+        ref=observation.ref,
+        normalized_ref=normalized_ref,
+        status="stale",
+        source_context=observation.source_context,
+        evidence_path=observation.evidence_path,
+        source_brief_id=observation.source_brief_id,
+        reason=(
+            "Citation token is not present in the source brief citation set."
+            if observation.source_brief_id
+            else "Citation token could not be resolved against any related brief citation set."
+        ),
+        replacement_refs=_nearby_citation_refs(normalized_ref, source_map),
+        evidence_snippet=observation.snippet,
+    )
+
+
+def _resolved_citation_repair_item(
+    observation: _ObservedEvidenceRef,
+    citation_ref: str,
+    matched_brief_id: UUID,
+    citation: dict[str, Any],
+    *,
+    normalized_ref: str | None = None,
+) -> EvidenceRefRepairItem:
+    normalized_ref = normalized_ref or citation_ref
+    return EvidenceRefRepairItem(
+        ref=observation.ref,
+        normalized_ref=normalized_ref,
+        status="resolved",
+        source_context=observation.source_context,
+        evidence_path=observation.evidence_path,
+        source_brief_id=observation.source_brief_id,
+        matched_brief_id=matched_brief_id,
+        matched_citation_id=str(citation.get("citation_id") or citation_ref),
+        matched_chunk_id=_uuid_or_none(citation.get("chunk_id")),
+        matched_research_object_id=_uuid_or_none(citation.get("research_object_id")),
+        matched_title=str(citation.get("title") or "") or None,
+        matched_source_key=str(citation.get("source_key") or "") or None,
+        identifiers=_citation_identifiers(citation),
+        reason="Citation token resolves to a source brief citation.",
+        evidence_snippet=observation.snippet,
+    )
+
+
+def _resolve_durable_evidence_ref(
+    repository: ResearchRepository,
+    ref: str,
+) -> tuple[str, str] | None:
+    match = _DURABLE_EVIDENCE_REF_PATTERN.match(ref)
+    if match is None:
+        return None
+    ref_type = match.group(1).lower()
+    raw_identifier = match.group(2).strip()
+    identifier = raw_identifier.split("#", 1)[0]
+    uuid_value = _uuid_or_none(identifier)
+    if uuid_value is None:
+        return ("unsupported_format", f"Durable reference '{ref_type}' does not contain a UUID identifier.")
+    resolvers = {
+        "research_brief": repository.get_research_brief,
+        "brief": repository.get_research_brief,
+        "research_brief_evaluation": repository.get_research_brief_evaluation,
+        "evaluation": repository.get_research_brief_evaluation,
+        "therapy_idea": repository.get_therapy_idea,
+        "validation_queue_item": repository.get_validation_request_queue_item,
+        "queue_item": repository.get_validation_request_queue_item,
+        "chunk": repository.get_document_chunk,
+        "document_chunk": repository.get_document_chunk,
+        "research_object": repository.get_research_object,
+        "object": repository.get_research_object,
+    }
+    resolver = resolvers.get(ref_type)
+    if resolver is None:
+        return None
+    if resolver(uuid_value) is None:
+        return ("stale", f"Durable reference '{ref_type}' points to an object that is not in the repository.")
+    return ("resolved", f"Durable reference '{ref_type}' resolves in the repository.")
+
+
+def _packet_source_brief_id(packet: ValidationPacket) -> UUID | None:
+    if packet.brief_id:
+        return packet.brief_id
+    if packet.therapy_idea is not None and packet.therapy_idea.source_brief_id:
+        return packet.therapy_idea.source_brief_id
+    return None
+
+
+def _citation_map_for_brief(brief: ResearchBriefRecord) -> dict[str, dict[str, Any]]:
+    payload = brief.result_payload if isinstance(brief.result_payload, dict) else {}
+    citation_map: dict[str, dict[str, Any]] = {}
+    citations = payload.get("citations")
+    if not isinstance(citations, list):
+        return citation_map
+    for raw in citations:
+        if not isinstance(raw, dict):
+            continue
+        citation_id = _normalize_evidence_ref(str(raw.get("citation_id") or ""))
+        if citation_id and _is_citation_ref(citation_id):
+            citation_map[citation_id] = raw
+    return citation_map
+
+
+def _normalize_evidence_ref(ref: str) -> str:
+    normalized = str(ref).strip()
+    match = _CITATION_REF_TOKEN_PATTERN.fullmatch(normalized)
+    if match:
+        return match.group(1).upper()
+    return normalized
+
+
+def _explicit_refs_in_text(text: str) -> list[str]:
+    return _dedupe_texts([match.group(0) for match in _EXPLICIT_BRIEF_CITATION_REF_PATTERN.finditer(text)])
+
+
+def _explicit_brief_citation_ref(ref: str) -> tuple[UUID, str] | None:
+    match = re.fullmatch(
+        r"(?:research_brief|brief):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})#(C\d{1,5})",
+        ref,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    return UUID(match.group(1)), match.group(2).upper()
+
+
+def _citation_refs_in_text(text: str) -> list[str]:
+    return _dedupe_texts([match.group(1).upper() for match in _CITATION_REF_TOKEN_PATTERN.finditer(text)])
+
+
+def _is_citation_ref(ref: str) -> bool:
+    return bool(re.fullmatch(r"C\d{1,5}", ref, re.IGNORECASE))
+
+
+def _nearby_citation_refs(ref: str, citation_map: dict[str, dict[str, Any]]) -> list[str]:
+    match = re.fullmatch(r"C(\d{1,5})", ref, re.IGNORECASE)
+    if match is None:
+        return []
+    number = int(match.group(1))
+    nearby = [
+        f"C{candidate}"
+        for candidate in range(max(1, number - 2), number + 3)
+        if f"C{candidate}" in citation_map and f"C{candidate}" != ref
+    ]
+    return nearby[:10]
+
+
+def _citation_identifiers(citation: dict[str, Any]) -> dict[str, Any]:
+    identifiers: dict[str, Any] = {}
+    containers = [
+        citation,
+        citation.get("metadata") if isinstance(citation.get("metadata"), dict) else {},
+    ]
+    metadata = containers[-1]
+    if isinstance(metadata, dict):
+        for key in ("provenance", "identifiers", "source_identifiers"):
+            nested = metadata.get(key)
+            if isinstance(nested, dict):
+                containers.append(nested)
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for key in ("doi", "pmid", "pmcid", "nct_id", "nct", "geo", "sra"):
+            value = container.get(key)
+            if value not in (None, ""):
+                identifiers[key] = value
+    return identifiers
+
+
+def _evidence_ref_repair_query(item: EvidenceRefRepairItem) -> str:
+    if item.status == "stale":
+        return (
+            f"Verify or replace {item.normalized_ref} in {item.source_context}; "
+            "retrieve the source citation with DOI, PMID, PMCID, title, and source object ID."
+        )
+    if item.status == "ambiguous":
+        return (
+            f"Select the source brief for {item.normalized_ref} in {item.source_context}; "
+            "then rewrite the evidence ref with explicit brief/citation provenance."
+        )
+    return ""
+
+
 def _validation_packet_from_candidate(
     repository: ResearchRepository,
     candidate: HypothesisPromotionCandidate,
@@ -4850,7 +5971,17 @@ def _validation_packet_from_candidate(
         if request.include_evidence_addendum
         else ValidationPacketEvidenceAddendum()
     )
+    addendum_blockers = _validation_packet_addendum_blockers(evidence_addendum)
+    if addendum_blockers:
+        quality_gates = _dedupe_quality_labels([*quality_gates, *addendum_blockers])
+        dispatch_blockers = _dedupe_quality_labels([*dispatch_blockers, *addendum_blockers])
+        missing_evidence = _dedupe_quality_labels([*missing_evidence, *evidence_addendum.unresolved_blockers])
     status, readiness = _validation_packet_status_and_readiness(candidate, plan, queue_items)
+    status, readiness = _validation_packet_status_after_addendum(
+        status,
+        readiness,
+        addendum_blockers=addendum_blockers,
+    )
     discovery_readiness = _validation_packet_discovery_readiness(candidate, evidence_addendum)
     validation_strategy_readiness = _validation_packet_strategy_readiness(
         candidate,
@@ -4913,6 +6044,7 @@ def _validation_packet_from_candidate(
             "matched_tool_count": len(candidate.matched_tools),
             "missing_evidence_count": len(missing_evidence),
             "dispatch_blocker_count": len(dispatch_blockers),
+            "addendum_blocker_count": len(addendum_blockers),
             "risk_annotation_count": len(risk_annotations),
             "protocol_blocker_count": len(protocol_blockers),
             "stage_model": "discovery_strategy_protocol_v1",
@@ -4995,18 +6127,30 @@ def _validation_packet_evidence_addendum(
         )
         evaluation = evaluations[0] if evaluations else None
         resolver = _metadata_dict(item.metadata.get("evidence_gap_resolver"))
+        hunt_queue = _metadata_dict(item.metadata.get("research_hunt_synthesis_queue"))
+        origin_metadata = resolver or hunt_queue
+        origin_queue_item_id = (
+            resolver.get("queue_item_id")
+            or hunt_queue.get("origin_record_id")
+            or hunt_queue.get("origin_queue_item_id")
+        )
+        row_metadata: dict[str, Any] = {}
+        if resolver:
+            row_metadata["evidence_gap_resolver"] = resolver
+        if hunt_queue:
+            row_metadata["research_hunt_synthesis_queue"] = hunt_queue
         row = ValidationPacketAddendumBrief(
             queue_item_id=item.queue_item_id,
             topic=item.topic,
             status=item.status,
             source_key=item.source_key,
             priority=item.priority,
-            lead_id=_uuid_or_none(resolver.get("lead_id")),
-            origin_queue_item_id=_uuid_or_none(resolver.get("queue_item_id")),
-            plan_id=_uuid_or_none(resolver.get("plan_id")),
-            lane=str(resolver.get("lane") or "") or None,
-            task_type=str(resolver.get("task_type") or "") or None,
-            validation_type=str(resolver.get("validation_type") or "") or None,
+            lead_id=_uuid_or_none(origin_metadata.get("lead_id")),
+            origin_queue_item_id=_uuid_or_none(origin_queue_item_id),
+            plan_id=_uuid_or_none(origin_metadata.get("plan_id")),
+            lane=str(origin_metadata.get("lane") or "") or None,
+            task_type=str(origin_metadata.get("task_type") or "") or None,
+            validation_type=str(origin_metadata.get("validation_type") or "") or None,
             brief_id=brief.brief_id if brief else item.last_brief_id,
             brief_agent_run_id=brief.agent_run_id if brief else item.last_agent_run_id,
             evaluation_id=evaluation.evaluation_id if evaluation else None,
@@ -5030,7 +6174,7 @@ def _validation_packet_evidence_addendum(
                     if value is not None
                 ]
             ),
-            metadata={"evidence_gap_resolver": resolver},
+            metadata=row_metadata,
         )
         rows.append(row)
         latest_updated_at = row.updated_at if latest_updated_at is None else max(latest_updated_at, row.updated_at)
@@ -5075,13 +6219,31 @@ def _research_brief_queue_item_matches_validation_packet(
     candidate: HypothesisPromotionCandidate,
 ) -> bool:
     resolver = _metadata_dict(item.metadata.get("evidence_gap_resolver"))
-    if not resolver:
+    repair = _metadata_dict(item.metadata.get("evidence_ref_repair"))
+    if repair.get("superseded") is True:
         return False
-    if str(resolver.get("plan_id") or "") in plan_ids:
+    if resolver:
+        if resolver.get("superseded_by_evidence_ref_repair") is True:
+            return False
+        if str(resolver.get("plan_id") or "") in plan_ids:
+            return True
+        if str(resolver.get("queue_item_id") or "") in origin_queue_item_ids:
+            return True
+        if candidate.therapy_idea_id and str(resolver.get("therapy_idea_id") or "") == str(candidate.therapy_idea_id):
+            return True
+
+    hunt_queue = _metadata_dict(item.metadata.get("research_hunt_synthesis_queue"))
+    if not hunt_queue:
+        return False
+    if hunt_queue.get("superseded_by_evidence_ref_repair") is True:
+        return False
+    if str(hunt_queue.get("plan_id") or "") in plan_ids:
         return True
-    if str(resolver.get("queue_item_id") or "") in origin_queue_item_ids:
+    if str(hunt_queue.get("origin_record_id") or "") in origin_queue_item_ids:
         return True
-    if candidate.therapy_idea_id and str(resolver.get("therapy_idea_id") or "") == str(candidate.therapy_idea_id):
+    if str(hunt_queue.get("origin_queue_item_id") or "") in origin_queue_item_ids:
+        return True
+    if candidate.therapy_idea_id and str(hunt_queue.get("therapy_idea_id") or "") == str(candidate.therapy_idea_id):
         return True
     return False
 
@@ -5314,7 +6476,7 @@ def _validation_packet_proposed_tasks(
                 assay_type=tool.display_name,
                 readout="go/no-go validation readiness, missing inputs, and confidence-changing evidence",
                 endpoint="recommend-only validation decision",
-                safety_context="; ".join(candidate.risks[:5]) or None,
+                safety_context=_truncate("; ".join(candidate.risks[:5]), 500) if candidate.risks else None,
                 evidence_refs=candidate.evidence_refs[:25],
                 negative_evidence_needs=candidate.blockers[:10],
                 provenance_requirements=["source-traceable citations", "direct-vs-analog evidence labeling"],
@@ -5390,12 +6552,87 @@ def _validation_packet_status_and_readiness(
     return "draft", "needs_more_evidence"
 
 
+def _validation_packet_addendum_blockers(
+    evidence_addendum: ValidationPacketEvidenceAddendum,
+) -> list[str]:
+    if evidence_addendum.follow_up_count == 0:
+        return []
+
+    blockers: list[str] = []
+    if evidence_addendum.failed_follow_up_count:
+        blockers.append("validation_follow_up_failed")
+    if evidence_addendum.completed_follow_up_count > evidence_addendum.evaluated_follow_up_count:
+        blockers.append("validation_follow_up_evaluation_incomplete")
+    if evidence_addendum.needs_more_evidence_count:
+        blockers.append("validation_follow_up_needs_more_evidence")
+    if any(row.readiness == "needs_human_review" for row in evidence_addendum.follow_up_briefs):
+        blockers.append("validation_follow_up_needs_human_review")
+
+    provenance_values = [
+        *evidence_addendum.unresolved_blockers,
+        *[
+            value
+            for row in evidence_addendum.follow_up_briefs
+            for value in [
+                row.topic,
+                *row.key_weaknesses,
+                *row.recommendations,
+            ]
+        ],
+    ]
+    if any(_has_unresolved_citation_provenance_text(value) for value in provenance_values):
+        blockers.append("validation_citation_provenance_unresolved")
+
+    return _dedupe_quality_labels(blockers)
+
+
+def _has_unresolved_citation_provenance_text(text: str) -> bool:
+    if not text.strip():
+        return False
+    text = _EXPLICIT_BRIEF_CITATION_REF_PATTERN.sub("", text)
+    citation_ref_problem = re.search(
+        r"\bC\d+\b.{0,120}\b(?:absent|dropped|inconsistent|not included|not present|"
+        r"not supplied|does not exist)\b"
+        r"|\b(?:absent|dropped|inconsistent|not included|not present|"
+        r"not supplied|does not exist)\b.{0,120}\bC\d+\b"
+        r"|\bC\d+\b.{0,120}\b(?:citation|reference|traceability|provenance)\b.{0,80}\b(?:repair required|unresolved|must be resolved)\b"
+        r"|\b(?:citation|reference|traceability|provenance)\b.{0,80}\b(?:repair required|unresolved|must be resolved)\b.{0,80}\bC\d+\b",
+        text,
+        re.IGNORECASE,
+    )
+    if citation_ref_problem:
+        return True
+    provenance_problem = re.search(
+        r"\b(?:traceability|provenance)\b.{0,120}\b(?:repair required|unresolved|must be resolved)\b"
+        r"|\b(?:repair required|unresolved|must be resolved)\b.{0,120}\b(?:traceability|provenance)\b"
+        r"|\b(?:citation|reference)\b.{0,120}\b(?:repair required|must be resolved)\b"
+        r"|\b(?:repair required|must be resolved)\b.{0,120}\b(?:citation|reference)\b",
+        text,
+        re.IGNORECASE,
+    )
+    return bool(provenance_problem)
+
+
+def _validation_packet_status_after_addendum(
+    status: str,
+    readiness: str,
+    *,
+    addendum_blockers: list[str],
+) -> tuple[str, str]:
+    if not addendum_blockers:
+        return status, readiness
+    return "blocked", "needs_more_evidence"
+
+
 def _validation_packet_discovery_readiness(
     candidate: HypothesisPromotionCandidate,
     evidence_addendum: ValidationPacketEvidenceAddendum,
 ) -> str:
     if candidate.promotion_state in {"needs_citation_repair", "blocked"}:
         return candidate.promotion_state
+    addendum_blockers = _validation_packet_addendum_blockers(evidence_addendum)
+    if addendum_blockers:
+        return "needs_more_evidence"
     if candidate.promotion_state in {"ready_for_committee", "ready_for_validation_plan", "queued_for_validation"}:
         return "ready_for_validation_strategy"
     if evidence_addendum.passing_follow_up_count > 0 and candidate.evidence_refs:
@@ -5412,6 +6649,8 @@ def _validation_packet_strategy_readiness(
 ) -> str:
     if candidate.promotion_state in {"needs_citation_repair", "blocked"}:
         return candidate.promotion_state
+    if status == "blocked" or readiness in {"needs_citation_repair", "blocked"}:
+        return readiness if readiness in {"needs_citation_repair", "blocked"} else "blocked"
     if queue_items or status == "queued_for_validation" or readiness == "queued_for_validation":
         return "queued_for_validation_strategy"
     if readiness in {"ready_for_committee", "ready_for_validation_plan", "ready_for_validation_queue"}:
@@ -6448,7 +7687,7 @@ def _research_brief_followup_leads_from_brief(
                         origin_record_id=str(brief.brief_id),
                         origin_agent_run_id=evaluation.agent_run_id or brief.agent_run_id,
                         reason=reason,
-                        summary=_research_brief_evaluation_followup_summary(followup_kind),
+                        summary=_research_brief_evaluation_followup_summary(followup_kind, brief),
                         evidence_refs=[
                             f"research_brief:{brief.brief_id}",
                             f"research_brief_evaluation:{evaluation.evaluation_id}",
@@ -6596,6 +7835,25 @@ def _research_brief_evaluation_followup_kind(text: str) -> str:
         )
     ):
         return "focused_evidence_acquisition"
+    if (
+        any(term in normalized for term in ("vim", "vimentin", "evim", "rna-seq", "qpcr", "ihc", "chro-seq", "bigwig", "expression"))
+        and any(
+            term in normalized
+            for term in (
+                "evidence",
+                "retrieval",
+                "retrieve",
+                "acquisition",
+                "primary",
+                "studies",
+                "datasets",
+                "data",
+                "publication",
+                "full",
+            )
+        )
+    ):
+        return "focused_evidence_acquisition"
     return "other"
 
 
@@ -6608,13 +7866,13 @@ def _research_brief_evaluation_followup_title(
     elif followup_kind == "citation_provenance_repair":
         prefix = "Strengthen citation provenance"
     elif followup_kind == "focused_evidence_acquisition":
-        return "Find toceranib/VEGFR inhibitor monotherapy outcomes in canine splenic HSA"
+        return f"Find focused evidence: {_clean_research_topic_label(brief.topic)}"[:240]
     else:
         prefix = "Follow up research brief evaluation"
     return f"{prefix}: {_clean_research_topic_label(brief.topic)}"[:240]
 
 
-def _research_brief_evaluation_followup_summary(followup_kind: str) -> str:
+def _research_brief_evaluation_followup_summary(followup_kind: str, brief: ResearchBriefRecord) -> str:
     if followup_kind == "citation_dedupe_repair":
         return (
             "Repair duplicate or inflated citations before downstream coverage scoring. "
@@ -6627,8 +7885,9 @@ def _research_brief_evaluation_followup_summary(followup_kind: str) -> str:
         )
     if followup_kind == "focused_evidence_acquisition":
         return (
-            "Run focused evidence acquisition for toceranib or VEGFR inhibitor monotherapy clinical "
-            "outcomes in canine splenic hemangiosarcoma."
+            "Run focused evidence acquisition for the evaluator-flagged unsupported claims in "
+            f"{_clean_research_topic_label(brief.topic)}. Prioritize primary studies, datasets, "
+            "direct target evidence, and durable identifiers."
         )
     return "Follow up evaluator feedback before promoting this brief."
 

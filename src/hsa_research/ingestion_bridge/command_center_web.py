@@ -285,6 +285,8 @@ def validation_packets_payload(
         topic_query=_str_param(params, "query"),
         source_key=_str_param(params, "source"),
         include_queue_items=_bool_param(params, "include_queue_items", True),
+        include_evidence_addendum=_bool_param(params, "include_evidence_addendum", True),
+        addendum_limit=_int_param(params, "addendum_limit", 25),
         queue_if_ready=_bool_param(params, "queue_if_ready", False),
         dry_run=_bool_param(params, "dry_run", True),
         max_tasks=_int_param(params, "max_tasks", 8),

@@ -65,6 +65,7 @@ def _select_validation_gap_queries(
 ) -> list[SourceQuery]:
     source_filter = set(request.source_keys)
     query_filter = set(request.query_names)
+    track_filter = set(request.tracks or ["validation_gap"])
     origin_review_filter = {str(value) for value in request.origin_review_ids}
     origin_run_filter = {str(value) for value in request.origin_agent_run_ids}
     queries = []
@@ -73,7 +74,7 @@ def _select_validation_gap_queries(
         queries.extend(
             query
             for query in source_queries
-            if query.track == "validation_gap"
+            if query.track in track_filter
             and (not source_filter or query.source_key in source_filter)
             and (not query_filter or query.query_name in query_filter)
             and (not request.followup_lane or str((query.query_params or {}).get("followup_lane") or "") == request.followup_lane)

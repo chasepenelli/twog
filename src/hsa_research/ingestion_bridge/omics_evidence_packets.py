@@ -226,6 +226,16 @@ def _dataset_from_object(
             "dedupe_key": obj.dedupe_key,
             "source_query": metadata.get("source_query"),
             "object_type": str(obj.object_type),
+            "sample_titles": metadata.get("sample_titles"),
+            "sample_groups": metadata.get("sample_groups"),
+            "matrix_uri": metadata.get("matrix_uri"),
+            "processed_matrix_uri": metadata.get("processed_matrix_uri"),
+            "matrix_url": metadata.get("matrix_url"),
+            "processed_matrix_url": metadata.get("processed_matrix_url"),
+            "matrix_artifact_id": metadata.get("matrix_artifact_id"),
+            "processed_matrix_artifact_id": metadata.get("processed_matrix_artifact_id"),
+            "supplementary_files": metadata.get("supplementary_files"),
+            "matrix_text": metadata.get("matrix_text"),
         },
     )
 

@@ -489,7 +489,7 @@ function validationTaskLabel(taskType) {
   const labels = {
     expert_review: "Evidence review",
     wet_lab: "Assay design",
-    safety: "Safety gate",
+    safety: "Safety risk review",
     target_validation: "Target validation",
     docking: "Docking",
     boltz: "Structure prediction",

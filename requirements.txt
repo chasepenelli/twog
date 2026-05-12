@@ -1,4 +1,6 @@
 dagster==1.13.2
 dagster-cloud==1.13.2
+numpy>=1.26,<3
 pydantic==2.12.5
 psycopg2-binary==2.9.11
+pyBigWig>=0.3.24,<0.4

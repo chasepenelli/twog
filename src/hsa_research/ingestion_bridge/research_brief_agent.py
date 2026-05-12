@@ -1456,8 +1456,18 @@ def _therapy_relevance_score(
     terms = _therapy_terms_for_request(request)
     hits = sorted(term for term in terms if term in haystack)
     score = min(len(hits) * 0.24, 2.4)
+    score += {
+        "high": 0.45,
+        "medium": 0.25,
+        "low": 0.0,
+        "unknown": -0.15,
+    }.get(str(finding.evidence_strength), 0.0)
     if finding.stance in {"opportunity", "supporting"}:
         score += 0.2
+    elif finding.stance == "risk":
+        score -= 0.25
+    elif finding.stance == "contradicting":
+        score -= 0.5
     if any(term in haystack for term in ("clinical", "trial", "survival", "response", "toxicity", "dose")):
         score += 0.35
     return score, hits
@@ -1465,20 +1475,77 @@ def _therapy_relevance_score(
 
 def _therapy_terms_for_request(request: ResearchBriefRequest) -> set[str]:
     stopwords = {
+        "about",
+        "absent",
+        "across",
+        "agent",
+        "agents",
+        "also",
+        "and",
         "angiosarcoma",
+        "are",
+        "before",
+        "brief",
+        "but",
         "canine",
+        "cited",
+        "citation",
+        "citations",
+        "clinical",
+        "content",
+        "core",
+        "correlation",
+        "data",
+        "does",
         "evidence",
+        "findings",
+        "formally",
+        "for",
+        "from",
+        "gap",
+        "gaps",
+        "has",
+        "have",
         "hemangiosarcoma",
         "human",
+        "included",
+        "inconsistency",
+        "into",
+        "its",
+        "lack",
+        "missing",
+        "must",
+        "needs",
+        "negative",
+        "not",
+        "packet",
+        "prior",
+        "reconciled",
+        "reference",
+        "refs",
         "research",
+        "resolve",
         "review",
+        "reviewed",
         "scope",
+        "supplied",
+        "that",
+        "the",
+        "their",
+        "there",
+        "this",
+        "through",
+        "traceability",
+        "translation",
+        "validation",
+        "were",
+        "will",
         "with",
     }
     request_terms = {
         term
         for term in re.findall(r"[a-z0-9][a-z0-9+/-]{2,}", f"{request.topic} {request.disease_scope}".lower())
-        if term not in stopwords
+        if term not in stopwords and not re.fullmatch(r"c\d+", term)
     }
     return _THERAPY_SIGNAL_TERMS | request_terms
 

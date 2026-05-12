@@ -36,6 +36,7 @@ from .contracts import (
     ResearchBriefRecord,
     ResearchLeadRecord,
     ResearchObject,
+    ValidationDecisionRecord,
     ValidationPlanRecord,
     ValidationRequestQueueItem,
     ResolvedEntity,
@@ -307,6 +308,22 @@ class ResearchRepository(Protocol):
     ) -> list[ResearchProgramRecord]:
         """Return persisted research programs by durable filters."""
 
+    def upsert_validation_decision(self, record: ValidationDecisionRecord) -> ValidationDecisionRecord:
+        """Persist a finite validation decision generated from a validation packet."""
+
+    def get_validation_decision(self, decision_id: str) -> ValidationDecisionRecord | None:
+        """Return a persisted validation decision by stable decision ID."""
+
+    def list_validation_decisions(
+        self,
+        *,
+        outcome: str | None = None,
+        therapy_idea_id: UUID | None = None,
+        candidate_id: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ValidationDecisionRecord]:
+        """Return persisted validation decisions by durable filters."""
+
     def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:
         """Persist a recommend-only validation plan derived from a research brief."""
 
@@ -522,6 +539,7 @@ class InMemoryResearchRepository:
         self.research_brief_evaluations: dict[UUID, ResearchBriefEvaluationRecord] = {}
         self.therapy_ideas: dict[UUID, TherapyIdeaRecord] = {}
         self.research_programs: dict[UUID, ResearchProgramRecord] = {}
+        self.validation_decisions: dict[str, ValidationDecisionRecord] = {}
         self.validation_plans: dict[UUID, ValidationPlanRecord] = {}
         self.validation_request_queue: dict[UUID, ValidationRequestQueueItem] = {}
         self.research_brief_queue: dict[UUID, ResearchBriefQueueItem] = {}
@@ -1203,6 +1221,41 @@ class InMemoryResearchRepository:
                 or normalized in record.disease_model.lower()
             ]
         records.sort(key=lambda record: (record.confidence_score, record.updated_at), reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def upsert_validation_decision(self, record: ValidationDecisionRecord) -> ValidationDecisionRecord:
+        existing = self.validation_decisions.get(record.decision_id)
+        if existing:
+            record = record.model_copy(
+                update={
+                    "decision_record_id": existing.decision_record_id,
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **record.metadata},
+                }
+            )
+        self.validation_decisions[record.decision_id] = record
+        return record
+
+    def get_validation_decision(self, decision_id: str) -> ValidationDecisionRecord | None:
+        return self.validation_decisions.get(decision_id)
+
+    def list_validation_decisions(
+        self,
+        *,
+        outcome: str | None = None,
+        therapy_idea_id: UUID | None = None,
+        candidate_id: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ValidationDecisionRecord]:
+        records = list(self.validation_decisions.values())
+        if outcome:
+            records = [record for record in records if record.outcome == outcome]
+        if therapy_idea_id:
+            records = [record for record in records if record.therapy_idea_id == therapy_idea_id]
+        if candidate_id:
+            records = [record for record in records if record.candidate_id == candidate_id]
+        records.sort(key=lambda record: record.updated_at, reverse=True)
         return records[:limit] if limit is not None else records
 
     def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:
