@@ -903,6 +903,105 @@ jobs:
           PY
         shell: bash
 
+      - name: Print hosted omics readout summary
+        if: ${{ always() && inputs.job == 'omics_readout_job' }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          raw_config = os.getenv("DAGSTER_CLOUD_CONFIG_JSON") or "{}"
+          try:
+              config = json.loads(raw_config)
+          except json.JSONDecodeError:
+              config = {}
+          report_config = (
+              (config.get("ops") or {})
+              .get("omics_readout_report", {})
+              .get("config", {})
+          )
+          requested_accessions = {
+              str(value)
+              for value in report_config.get("accessions", [])
+              if str(value).strip()
+          }
+
+          service = HSAResearchService(build_research_repository())
+          artifacts = service.repository.list_artifacts(
+              artifact_type="omics_readout_result",
+              limit=20,
+          )
+          if requested_accessions:
+              artifacts = [
+                  artifact
+                  for artifact in artifacts
+                  if str(artifact.metadata.get("accession") or "") in requested_accessions
+              ]
+          agent_runs = [
+              run
+              for run in service.list_agent_runs(source_key="omics_readouts", limit=10)
+              if not os.getenv("DAGSTER_CLOUD_RUN_ID")
+              or run.dagster_run_id == os.getenv("DAGSTER_CLOUD_RUN_ID")
+          ]
+
+          payload = {
+              "dagster_run_id": os.getenv("DAGSTER_CLOUD_RUN_ID"),
+              "requested_accessions": sorted(requested_accessions),
+              "artifact_count": len(artifacts),
+              "artifacts": [
+                  {
+                      "artifact_id": str(artifact.artifact_id),
+                      "uri": artifact.uri,
+                      "accession": artifact.metadata.get("accession"),
+                      "status": (artifact.metadata.get("result") or {}).get("status"),
+                      "target_support": (
+                          (artifact.metadata.get("result") or {})
+                          .get("target_expression", {})
+                          .get("support_level")
+                      ),
+                      "target_effect_size": (
+                          (artifact.metadata.get("result") or {})
+                          .get("target_expression", {})
+                          .get("effect_size")
+                      ),
+                      "limitations": (artifact.metadata.get("result") or {}).get("limitations", []),
+                  }
+                  for artifact in artifacts[:10]
+              ],
+              "validation_agent_runs": [
+                  {
+                      "agent_run_id": str(run.agent_run_id),
+                      "agent_name": run.agent_name,
+                      "status": run.status,
+                      "model_profile": run.model_profile,
+                      "summary": run.summary,
+                      "errors": run.errors,
+                  }
+                  for run in agent_runs
+              ],
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### Omics readout summary\n")
+                  summary.write(f"- Artifacts: `{payload['artifact_count']}`\n")
+                  summary.write(f"- Validation agent runs: `{len(agent_runs)}`\n")
+                  for artifact in payload["artifacts"][:5]:
+                      summary.write(
+                          "- "
+                          f"`{artifact['accession']}` status=`{artifact['status']}` "
+                          f"support=`{artifact['target_support']}` "
+                          f"effect=`{artifact['target_effect_size']}`\n"
+                      )
+          PY
+        shell: bash
+
       - name: Print hosted validation gap completion summary
         if: ${{ always() && inputs.job == 'validation_gap_completion_job' }}
         continue-on-error: true
