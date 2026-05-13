@@ -2,7 +2,7 @@
 
 ## Purpose
 
-TWOG must not submit live MD jobs to RunPod until the exact input packet has been reviewed by a qualified human expert. This keeps the GPU lane approval-first while the worker contract is still being hardened.
+TWOG must not submit live MD jobs to RunPod until the exact input packet has been reviewed and approved. The approval can come from a qualified human expert or the dedicated MD expert agent, but it must be tied to the exact packet hash being submitted. This keeps the GPU lane approval-first while the worker contract is still being hardened.
 
 ## Scope
 
@@ -29,7 +29,14 @@ Every live MD job must include:
 - `ligand_source`: provenance for the ligand identity.
 - `preparation_method`: how the protein/ligand inputs were prepared.
 
-Optional fields include `ph`, `box_padding`, `force_field`, and `solvent_model`.
+For the first smoke route, TWOG should also provide the formerly optional preparation settings explicitly:
+
+- `ph`: currently `7.4` for the pazopanib/KDR smoke.
+- `box_padding`: currently `10.0`.
+- `force_field`: currently `protein=amber14; ligand=worker_default_openff_or_gaff`.
+- `solvent_model`: currently `tip3p`.
+
+The current contract is that TWOG supplies a protein-only PDB and canonical SMILES. The RunPod worker is responsible for SMILES-to-3D conversion, protonation, ligand parameterization, ligand placement, and either a successful smoke result or a structured preparation failure.
 
 ## Workflow
 
@@ -60,8 +67,47 @@ The current worker contract discovered from live tests:
 - Missing `protein_pdb` fails with `protein_pdb is required`.
 - Missing `compound_smiles` fails with `compound_smiles is required`.
 - Minimal ligand smoke reached worker execution and failed during ligand preparation.
+- The first approved packet for pazopanib/KDR used a stripped protein-only PDB, explicit preparation settings, and packet hash `7601216eb7080b76f83e86262094f727a466d966ed8af0ee437d864faca75ed9`.
+- The first live RunPod submission created a RunPod job handle and persisted it in the compute ledger.
 
 That means the next live test should be a scientifically valid prepared packet, not another minimal placeholder.
+
+## Live Runbook
+
+Use this route for a single approved smoke test:
+
+1. Create or reuse the approved validation queue item.
+2. Create or reuse the compute job with `compute_job_job`.
+3. Generate the expert packet with `md_expert_review_packet_job`.
+4. Run the MD expert review agent with OpenRouter and persist the approval.
+5. Confirm the exact packet hash in the approval matches the packet hash in the compute job.
+6. Submit once with `compute_job_job` using `dry_run=false`, `submit=true`, and `poll=true`.
+7. For follow-up polling, use `submit=false` and `poll=true`.
+
+Do not submit again just to poll. If a compute job has already received a RunPod handle, follow-up runs must reuse that handle.
+
+## Polling And Recovery Rules
+
+The durable compute ledger is the source of truth for RunPod handles:
+
+- `runpod_job_id` and `external_run_id` must be preserved whenever an existing compute job is rebuilt from a queue item.
+- Poll-only jobs must never erase `runpod_job_id`.
+- Poll-only jobs should target an existing `compute_job_id` when possible.
+- If an earlier poll-only bug cleared the RunPod handle, use the `recover_runpod_job_id` field once, then poll with `submit=false`.
+
+Recovery exists only to reconnect TWOG to a job that was already submitted. It is not an alternate approval path and must not be used to invent or bypass RunPod job IDs.
+
+## Post-Smoke Decision Tree
+
+After the first live smoke reaches a terminal state:
+
+- `completed`: capture output artifacts, worker status payload, and any metrics. The next planning step is whether the worker output is scientifically interpretable or only operationally successful.
+- `failed` with structured ligand/protein prep error: keep the endpoint but create a worker-contract issue with exact missing dependency, preparation step, or input assumption.
+- `failed` with unstructured error: harden the worker image/logging before any larger run.
+- `running` or `submitted`: keep polling with `submit=false`.
+- `blocked`: inspect `last_error`; fix the local gate or ledger path before touching RunPod again.
+
+No larger MD, docking, Boltz, raw omics, or repeated GPU tests should run until this single smoke is understood.
 
 ## Expert Checklist
 

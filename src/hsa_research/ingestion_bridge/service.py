@@ -2575,20 +2575,31 @@ class HSAResearchService:
             validation_type=request.validation_type,
             title=item.title,
             objective=item.objective,
+            container_image=existing.container_image if existing else None,
+            entrypoint=existing.entrypoint if existing else [],
             input_payload={
                 "queue_item": item.model_dump(mode="json"),
                 "validation_request": request.model_dump(mode="json"),
             },
+            output_payload=existing.output_payload if existing else {},
             expected_outputs=[
                 "execution_manifest",
                 "computed_artifacts",
                 "quality_gate_report",
                 "validation_summary",
             ],
-            dagster_run_id=dagster_run_id,
+            artifact_ids=existing.artifact_ids if existing else [],
+            external_run_id=existing.external_run_id if existing else None,
+            dagster_run_id=dagster_run_id or (existing.dagster_run_id if existing else None),
+            runpod_job_id=existing.runpod_job_id if existing else None,
             cost_estimate_usd=_queue_item_cost_usd(item),
+            cost_actual_usd=existing.cost_actual_usd if existing else None,
             approved_by=approved_by or item.approved_by,
             approval_note=approval_note or item.approval_note,
+            submitted_at=existing.submitted_at if existing else None,
+            started_at=existing.started_at if existing else None,
+            completed_at=existing.completed_at if existing else None,
+            last_error=existing.last_error if existing else None,
             created_at=existing.created_at if existing else datetime.now(UTC),
             metadata={
                 **(existing.metadata if existing else {}),
@@ -2958,6 +2969,10 @@ class HSAResearchService:
         errors: list[str] = []
         created_job: ComputeJobRecord | None = None
         submitted_count = 0
+        if request.compute_job_id is not None:
+            created_job = self.repository.get_compute_job(request.compute_job_id)
+            if created_job is None:
+                errors.append("compute_job_not_found")
         if request.create_from_queue_item:
             if request.queue_item_id is None:
                 errors.append("queue_item_id_required")
@@ -2973,29 +2988,45 @@ class HSAResearchService:
                 )
                 if created_job is None:
                     errors.append("queue_item_not_found")
-                elif request.submit:
-                    submitted = self.submit_compute_job(
-                        created_job.compute_job_id,
-                        dry_run=request.dry_run,
-                        dagster_run_id=request.dagster_run_id,
-                    )
-                    if submitted is not None:
-                        created_job = submitted
-                        submitted_count = 1 if submitted.status == "submitted" else 0
-                if created_job is not None and request.poll:
-                    polled = self.poll_compute_job(
-                        created_job.compute_job_id,
-                        dagster_run_id=request.dagster_run_id,
-                    )
-                    if polled is not None:
-                        created_job = polled
-                if created_job is not None and request.cancel:
-                    cancelled = self.cancel_compute_job(
-                        created_job.compute_job_id,
-                        dagster_run_id=request.dagster_run_id,
-                    )
-                    if cancelled is not None:
-                        created_job = cancelled
+        if created_job is not None and request.recover_runpod_job_id:
+            recovered_status = "submitted" if created_job.status in {"approved", "blocked", "queued"} else created_job.status
+            recovered = self.repository.update_compute_job(
+                created_job.compute_job_id,
+                status=recovered_status,
+                external_run_id=request.recover_runpod_job_id,
+                runpod_job_id=request.recover_runpod_job_id,
+                dagster_run_id=request.dagster_run_id,
+                last_error=None,
+                metadata={
+                    "runpod_job_id_recovered_at": datetime.now(UTC).isoformat(),
+                    "runpod_job_id_recovered_from": "compute_job_report_request",
+                },
+            )
+            if recovered is not None:
+                created_job = recovered
+        if created_job is not None and request.submit:
+            submitted = self.submit_compute_job(
+                created_job.compute_job_id,
+                dry_run=request.dry_run,
+                dagster_run_id=request.dagster_run_id,
+            )
+            if submitted is not None:
+                created_job = submitted
+                submitted_count = 1 if submitted.status == "submitted" else 0
+        if created_job is not None and request.poll:
+            polled = self.poll_compute_job(
+                created_job.compute_job_id,
+                dagster_run_id=request.dagster_run_id,
+            )
+            if polled is not None:
+                created_job = polled
+        if created_job is not None and request.cancel:
+            cancelled = self.cancel_compute_job(
+                created_job.compute_job_id,
+                dagster_run_id=request.dagster_run_id,
+            )
+            if cancelled is not None:
+                created_job = cancelled
 
         jobs = self.repository.list_compute_jobs(
             status=request.status,

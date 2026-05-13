@@ -11647,6 +11647,176 @@ def test_runpod_compute_job_live_submit_and_poll_are_persisted(tmp_path, monkeyp
     assert requests_seen[-1]["url"].endswith("/v2/endpoint-test/cancel/rp-job-1")
 
 
+def test_compute_job_report_poll_only_preserves_existing_runpod_ids(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "runpod-compute-job-poll-only.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="RunPod poll-only queue compute job",
+            task_type="docking",
+            title="Poll candidate A against KDR",
+            objective="Poll a previously submitted RunPod serverless job.",
+            rationale="Poll-only runs must not erase persisted RunPod handles.",
+            validation_request=ValidationRequest(
+                validation_type="docking",
+                target_name="KDR",
+                candidate_name="candidate A",
+                objective="Poll candidate A against KDR.",
+                require_approval=True,
+                metadata={"runpod_input": {"protein_pdb": "ATOM test"}},
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma and human angiosarcoma",
+                    species=["canine", "human"],
+                    model_system="Computational target or structure model with explicit source provenance.",
+                    assay_type="in silico structural validation",
+                    readout="binding plausibility and failure modes",
+                    endpoint="computational plausibility",
+                ),
+            ),
+        )
+    )
+    service.approve_validation_request_queue_item(item.queue_item_id, approved_by="unit-test")
+    created = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            queue_item_id=item.queue_item_id,
+            create_from_queue_item=True,
+            approved_by="unit-test",
+        )
+    ).created_job
+    assert created is not None
+    repo.update_compute_job(
+        created.compute_job_id,
+        status="submitted",
+        external_run_id="rp-existing",
+        runpod_job_id="rp-existing",
+        output_payload={"runpod_submit_response": {"id": "rp-existing", "status": "IN_QUEUE"}},
+    )
+
+    requests_seen = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"id": "rp-existing", "status": "COMPLETED", "output": {"artifact": "ok"}}).encode("utf-8")
+
+    def fake_urlopen(request, timeout=60):
+        requests_seen.append({"url": request.full_url, "method": request.get_method()})
+        return FakeResponse()
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "temp-test-key")
+    monkeypatch.setenv("HSA_RUNPOD_ENDPOINT_ID", "endpoint-test")
+    monkeypatch.setattr(compute_runners.urllib.request, "urlopen", fake_urlopen)
+
+    report = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            queue_item_id=item.queue_item_id,
+            create_from_queue_item=True,
+            submit=False,
+            poll=True,
+            dry_run=False,
+            approved_by="unit-test",
+        )
+    )
+
+    assert report.created_job is not None
+    assert report.created_job.status == "completed"
+    assert report.created_job.runpod_job_id == "rp-existing"
+    assert report.created_job.output_payload["runpod_status_response"]["output"]["artifact"] == "ok"
+    assert requests_seen == [{"url": "https://api.runpod.ai/v2/endpoint-test/status/rp-existing", "method": "GET"}]
+
+
+def test_compute_job_report_recovers_runpod_id_before_poll(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "runpod-compute-job-recover.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="RunPod recovery queue compute job",
+            task_type="docking",
+            title="Recover candidate A against KDR",
+            objective="Restore a known RunPod job id and poll it.",
+            rationale="Recovery keeps a submitted worker from being orphaned after a poll-only ledger bug.",
+            validation_request=ValidationRequest(
+                validation_type="docking",
+                target_name="KDR",
+                candidate_name="candidate A",
+                objective="Recover candidate A against KDR.",
+                require_approval=True,
+                metadata={"runpod_input": {"protein_pdb": "ATOM test"}},
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma and human angiosarcoma",
+                    species=["canine", "human"],
+                    model_system="Computational target or structure model with explicit source provenance.",
+                    assay_type="in silico structural validation",
+                    readout="binding plausibility and failure modes",
+                    endpoint="computational plausibility",
+                ),
+            ),
+        )
+    )
+    service.approve_validation_request_queue_item(item.queue_item_id, approved_by="unit-test")
+    created = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            queue_item_id=item.queue_item_id,
+            create_from_queue_item=True,
+            approved_by="unit-test",
+        )
+    ).created_job
+    assert created is not None
+    repo.update_compute_job(
+        created.compute_job_id,
+        status="blocked",
+        last_error="Compute job has no RunPod job id to poll.",
+    )
+
+    requests_seen = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"id": "rp-recovered", "status": "COMPLETED", "output": {"artifact": "ok"}}).encode("utf-8")
+
+    def fake_urlopen(request, timeout=60):
+        requests_seen.append({"url": request.full_url, "method": request.get_method()})
+        return FakeResponse()
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "temp-test-key")
+    monkeypatch.setenv("HSA_RUNPOD_ENDPOINT_ID", "endpoint-test")
+    monkeypatch.setattr(compute_runners.urllib.request, "urlopen", fake_urlopen)
+
+    report = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            compute_job_id=created.compute_job_id,
+            recover_runpod_job_id="rp-recovered",
+            poll=True,
+            dry_run=False,
+        )
+    )
+
+    assert report.created_job is not None
+    assert report.created_job.status == "completed"
+    assert report.created_job.external_run_id == "rp-recovered"
+    assert report.created_job.runpod_job_id == "rp-recovered"
+    assert report.created_job.last_error is None
+    assert report.created_job.metadata["runpod_job_id_recovered_from"] == "compute_job_report_request"
+    assert requests_seen == [{"url": "https://api.runpod.ai/v2/endpoint-test/status/rp-recovered", "method": "GET"}]
+
+
 def test_omics_validation_request_dispatches_after_approval(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "omics-validation-request.sqlite3", seed=False)
     service = HSAResearchService(repo)

@@ -3544,6 +3544,7 @@ class ComputeJobRecord(StrictBaseModel):
 
 
 class ComputeJobReportRequest(StrictBaseModel):
+    compute_job_id: UUID | None = None
     queue_item_id: UUID | None = None
     status: ComputeJobStatus | None = None
     runner_kind: ComputeRunnerKind | None = None
@@ -3554,6 +3555,7 @@ class ComputeJobReportRequest(StrictBaseModel):
     cancel: bool = False
     dry_run: bool = True
     compute_profile: ComputeProfile = "gpu"
+    recover_runpod_job_id: str | None = Field(default=None, max_length=300)
     approved_by: str | None = Field(default=None, max_length=200)
     approval_note: str | None = Field(default=None, max_length=1000)
     dagster_run_id: str | None = None

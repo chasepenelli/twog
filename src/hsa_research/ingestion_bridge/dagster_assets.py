@@ -4517,6 +4517,11 @@ if dg is not None:
     @dg.asset(
         group_name="ai_research",
         config_schema={
+            "compute_job_id": dg.Field(
+                str,
+                is_required=False,
+                description="Optional existing compute job to submit, poll, cancel, or repair.",
+            ),
             "queue_item_id": dg.Field(
                 str,
                 is_required=False,
@@ -4559,6 +4564,11 @@ if dg is not None:
                 default_value=True,
                 description="Keep submission in dry-run mode. Live RunPod submission is blocked until configured.",
             ),
+            "recover_runpod_job_id": dg.Field(
+                str,
+                is_required=False,
+                description="Optional RunPod job ID to restore before polling an existing compute job.",
+            ),
             "approved_by": dg.Field(str, is_required=False, description="Optional operator approval identity."),
             "approval_note": dg.Field(str, is_required=False, description="Optional operator approval note."),
         },
@@ -4577,6 +4587,7 @@ if dg is not None:
         repository = research_repository.build_repository()
         result = HSAResearchService(repository).build_compute_job_report(
             ComputeJobReportRequest(
+                compute_job_id=UUID(config["compute_job_id"]) if config.get("compute_job_id") else None,
                 queue_item_id=UUID(config["queue_item_id"]) if config.get("queue_item_id") else None,
                 status=config.get("status"),
                 runner_kind=config.get("runner_kind") or None,
@@ -4587,6 +4598,7 @@ if dg is not None:
                 poll=config["poll"],
                 cancel=config["cancel"],
                 dry_run=config["dry_run"],
+                recover_runpod_job_id=config.get("recover_runpod_job_id"),
                 approved_by=config.get("approved_by"),
                 approval_note=config.get("approval_note"),
                 dagster_run_id=context.run_id,
