@@ -50,6 +50,8 @@ HSA_PMC_OA_MAX_CANDIDATE_RECORDS=20
 HSA_EMBEDDING_MODEL=openrouter:openai/text-embedding-3-large
 OPENROUTER_API_KEY=<required for hosted OpenRouter review modes>
 TWITTERAPI_IO_KEY=<optional for X/Twitter topic monitoring>
+RUNPOD_API_KEY=<required for approval-gated live RunPod compute>
+HSA_RUNPOD_ENDPOINT_ID=cbf4ffekmo36t9
 ```
 
 Do not commit or paste `HSA_DATABASE_URL` into chat. Store it directly in
@@ -65,7 +67,9 @@ The preferred automated path is:
    if hosted model-review comparison should run.
 4. Store the TwitterAPI.io key as the GitHub Actions secret `TWITTERAPI_IO_KEY`
    if X/Twitter topic monitoring should run.
-5. Run the `Configure Dagster Plus Environment` GitHub Actions workflow.
+5. Store the RunPod key and endpoint as `RUNPOD_API_KEY` and
+   `HSA_RUNPOD_ENDPOINT_ID` if approval-gated GPU compute should run.
+6. Run the `Configure Dagster Plus Environment` GitHub Actions workflow.
 
 That workflow uses `DAGSTER_PLUS_ENV_API_TOKEN` to write the production Dagster+
 environment variables with:
@@ -80,6 +84,8 @@ uv run dg plus create env HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS 120 --global -
 uv run dg plus create env TWITTERAPI_IO_KEY --from-local-env --global --scope full --yes
 uv run dg plus create env HSA_PMC_OA_MAX_CANDIDATE_RECORDS 20 --global --scope full --yes
 uv run dg plus create env OPENROUTER_API_KEY --from-local-env --global --scope full --yes
+uv run dg plus create env RUNPOD_API_KEY --from-local-env --global --scope full --yes
+uv run dg plus create env HSA_RUNPOD_ENDPOINT_ID cbf4ffekmo36t9 --global --scope full --yes
 ```
 
 ## GitHub Actions Settings

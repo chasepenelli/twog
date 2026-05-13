@@ -21,6 +21,8 @@ jobs:
       HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      HSA_RUNPOD_ENDPOINT_ID: ${{ secrets.HSA_RUNPOD_ENDPOINT_ID }}
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
       HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS: "8"
       HSA_FULL_TEXT_REQUEST_ATTEMPTS: "1"
@@ -104,6 +106,18 @@ jobs:
               create_env "$scope" TWITTERAPI_IO_KEY --from-local-env
             else
               echo "::warning::TWITTERAPI_IO_KEY is not configured as a GitHub Actions secret; X topic monitoring will stay disabled in Dagster+."
+            fi
+
+            if [ -n "$RUNPOD_API_KEY" ]; then
+              create_env "$scope" RUNPOD_API_KEY --from-local-env
+            else
+              echo "::warning::RUNPOD_API_KEY is not configured as a GitHub Actions secret; live RunPod compute will stay disabled in Dagster+."
+            fi
+
+            if [ -n "$HSA_RUNPOD_ENDPOINT_ID" ]; then
+              create_env "$scope" HSA_RUNPOD_ENDPOINT_ID "$HSA_RUNPOD_ENDPOINT_ID"
+            else
+              echo "::warning::HSA_RUNPOD_ENDPOINT_ID is not configured as a GitHub Actions secret; live RunPod compute will stay disabled in Dagster+."
             fi
           done
         shell: bash
