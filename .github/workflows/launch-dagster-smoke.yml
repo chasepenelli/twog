@@ -556,20 +556,34 @@ jobs:
           approval_rows = []
           for packet in packets[:10]:
               for approval in service.repository.list_md_expert_approvals(packet_hash=packet.packet_hash, limit=5):
+                  approval_metadata = approval.metadata or {}
                   approval_rows.append(
                       {
                           "approval_id": str(approval.approval_id),
                           "packet_id": str(approval.packet_id),
+                          "packet_hash": approval.packet_hash,
                           "decision": approval.decision,
                           "reviewer_type": approval.reviewer_type,
                           "reviewer_name": approval.reviewer_name,
                           "model_profile": approval.model_profile,
+                          "required_changes": approval.required_changes,
+                          "comments": approval.comments,
+                          "confidence": approval_metadata.get("confidence"),
+                          "rationale": approval_metadata.get("rationale"),
+                          "checklist_assessment": approval_metadata.get("checklist_assessment", []),
+                          "risk_flags": approval_metadata.get("risk_flags", []),
+                          "agent_run_id": approval_metadata.get("agent_run_id"),
                           "reviewed_at": approval.reviewed_at.isoformat(),
                       }
                   )
 
           payload = {
               "dagster_run_id": os.getenv("DAGSTER_CLOUD_RUN_ID"),
+              "runtime_readiness": {
+                  "runpod_api_key_configured": bool(os.getenv("RUNPOD_API_KEY")),
+                  "runpod_endpoint_id_configured": bool(os.getenv("HSA_RUNPOD_ENDPOINT_ID")),
+                  "openrouter_api_key_configured": bool(os.getenv("OPENROUTER_API_KEY")),
+              },
               "md_queue_items": [
                   {
                       "queue_item_id": str(item.queue_item_id),
@@ -636,6 +650,18 @@ jobs:
                           f"- `{packet['status']}` packet `{packet['packet_id']}` "
                           f"hash `{packet['packet_hash']}`\n"
                       )
+                  for approval in payload["md_expert_approvals"][:5]:
+                      summary.write(
+                          f"- `{approval['decision']}` approval `{approval['approval_id']}` "
+                          f"for packet `{approval['packet_id']}` "
+                          f"confidence `{approval['confidence']}`\n"
+                      )
+                      if approval.get("comments"):
+                          summary.write(f"  Summary: {approval['comments']}\n")
+                      for change in approval.get("required_changes", [])[:8]:
+                          summary.write(f"  Required change: {change}\n")
+                      for flag in approval.get("risk_flags", [])[:8]:
+                          summary.write(f"  Risk flag: {flag}\n")
           PY
         shell: bash
 
