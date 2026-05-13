@@ -15,6 +15,9 @@ import json
 import os
 import re
 from typing import Any
+import urllib.error
+import urllib.parse
+import urllib.request
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from .contracts import (
@@ -830,6 +833,89 @@ def _render_md_expert_review_document(
             "- If no, list exact required changes before live execution.",
         ]
     )
+
+
+def _fetch_text_url(url: str, *, timeout_seconds: int = 45) -> str:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "twog-md-smoke/1.0 (research validation smoke test)",
+            "Accept": "text/plain,application/json,*/*",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"HTTP {exc.code} while fetching {url}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Network error while fetching {url}: {exc.reason}") from exc
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        raise RuntimeError(f"Empty response while fetching {url}")
+    return text
+
+
+def _fetch_rcsb_pdb_text(pdb_id: str, *, timeout_seconds: int = 45) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9]", "", pdb_id or "").upper()
+    if len(normalized) != 4:
+        raise ValueError("pdb_id must be a 4-character RCSB PDB identifier")
+    url = f"https://files.rcsb.org/download/{normalized}.pdb"
+    text = _fetch_text_url(url, timeout_seconds=timeout_seconds)
+    if not any(line.startswith(("ATOM", "HETATM")) for line in text.splitlines()):
+        raise RuntimeError(f"RCSB response for {normalized} did not contain ATOM/HETATM records")
+    return text
+
+
+def _fetch_pubchem_canonical_smiles(compound_name: str, *, timeout_seconds: int = 45) -> str:
+    name = (compound_name or "").strip()
+    if not name:
+        raise ValueError("compound_name is required")
+    encoded = urllib.parse.quote(name, safe="")
+    url = (
+        "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/"
+        f"{encoded}/property/CanonicalSMILES/JSON"
+    )
+    payload = json.loads(_fetch_text_url(url, timeout_seconds=timeout_seconds))
+    properties = payload.get("PropertyTable", {}).get("Properties", [])
+    if not properties or not isinstance(properties[0], dict):
+        raise RuntimeError(f"PubChem response for {name!r} did not contain properties")
+    smiles = str(properties[0].get("CanonicalSMILES") or "").strip()
+    if not smiles:
+        raise RuntimeError(f"PubChem response for {name!r} did not contain CanonicalSMILES")
+    return smiles
+
+
+def _redacted_md_smoke_queue_item(item: ValidationRequestQueueItem) -> dict[str, Any]:
+    payload = item.model_dump(mode="json")
+    runpod_input = (
+        payload.get("validation_request", {})
+        .get("metadata", {})
+        .get("runpod_input", {})
+    )
+    if isinstance(runpod_input, dict) and isinstance(runpod_input.get("protein_pdb"), str):
+        protein_pdb = runpod_input.pop("protein_pdb")
+        runpod_input["protein_pdb_line_count"] = len(protein_pdb.splitlines())
+        runpod_input["protein_pdb_sha256"] = hashlib.sha256(protein_pdb.encode("utf-8")).hexdigest()
+    return payload
+
+
+def _redacted_md_smoke_compute_job(record: ComputeJobRecord | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    return {
+        "compute_job_id": str(record.compute_job_id),
+        "queue_item_id": str(record.queue_item_id) if record.queue_item_id else None,
+        "status": record.status,
+        "runner_kind": record.runner_kind,
+        "compute_profile": record.compute_profile,
+        "validation_type": record.validation_type,
+        "title": record.title,
+        "runpod_job_id": record.runpod_job_id,
+        "last_error": record.last_error,
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
+    }
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -2119,6 +2205,189 @@ class HSAResearchService:
                 "approval_note": approval_note,
             },
         )
+
+    def seed_md_smoke_compute_job(
+        self,
+        *,
+        pdb_id: str = "3VHE",
+        compound_name: str = "pazopanib",
+        target_name: str = "VEGFR2/KDR",
+        simulation_steps: int = 10,
+        temperature: float = 300.0,
+        priority: int = 40,
+        approve_queue_item: bool = True,
+        create_compute_job: bool = True,
+        approved_by: str = "md-smoke-seed",
+        approval_note: str | None = None,
+        protein_pdb: str | None = None,
+        compound_smiles: str | None = None,
+        timeout_seconds: int = 45,
+        dagster_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a real MD queue item from live structure/compound APIs.
+
+        This is intentionally narrow: it seeds one expert-gated MD smoke test,
+        then reuses the existing queue -> compute -> expert-review -> RunPod path.
+        """
+
+        normalized_pdb_id = re.sub(r"[^A-Za-z0-9]", "", pdb_id or "").upper()
+        if len(normalized_pdb_id) != 4:
+            raise ValueError("pdb_id must be a 4-character RCSB PDB identifier")
+        fetched_pdb = protein_pdb or _fetch_rcsb_pdb_text(normalized_pdb_id, timeout_seconds=timeout_seconds)
+        fetched_smiles = compound_smiles or _fetch_pubchem_canonical_smiles(
+            compound_name,
+            timeout_seconds=timeout_seconds,
+        )
+        input_packet = MDInputPacket(
+            protein_pdb=fetched_pdb,
+            compound_smiles=fetched_smiles,
+            target_name=target_name,
+            compound_name=compound_name,
+            simulation_steps=simulation_steps,
+            temperature=temperature,
+            protein_source=f"RCSB PDB {normalized_pdb_id}",
+            ligand_source=f"PubChem canonical SMILES for {compound_name}",
+            preparation_method=(
+                "API-derived smoke input; no docking pose, protonation review, or force-field "
+                "parameterization has been applied before expert gate review."
+            ),
+            metadata={
+                "pdb_id": normalized_pdb_id,
+                "compound_name": compound_name,
+                "source_route": "rcsb_pdb+pubchem",
+            },
+        )
+        identity_basis = (
+            f"md-smoke:{normalized_pdb_id}:{compound_name.strip().lower()}:"
+            f"{target_name.strip().lower()}:{simulation_steps}:{temperature}"
+        )
+        plan_id = uuid5(NAMESPACE_URL, f"{identity_basis}:plan")
+        task_id = uuid5(NAMESPACE_URL, f"{identity_basis}:task")
+        brief_id = uuid5(NAMESPACE_URL, f"{identity_basis}:brief")
+        approval = approval_note or (
+            "Seeded from live RCSB/PubChem APIs for one expert-gated RunPod MD smoke test. "
+            "Live submission still requires exact packet-hash MD expert approval."
+        )
+        queue_item = ValidationRequestQueueItem(
+            identity_key=identity_basis,
+            status="needs_approval",
+            plan_id=plan_id,
+            task_id=task_id,
+            brief_id=brief_id,
+            source_key="md_smoke_seed",
+            topic=f"MD smoke test for {compound_name} against {target_name}",
+            task_type="md",
+            title=f"MD smoke: {compound_name} against {target_name}",
+            objective=(
+                "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, "
+                "then send it through MD expert packet review before RunPod submission."
+            ),
+            rationale=(
+                "The hosted database currently has no durable MD queue item. This seed route "
+                "creates a reproducible, API-backed MD item without reusing docking records."
+            ),
+            validation_request=ValidationRequest(
+                validation_type="md",
+                target_name=target_name,
+                candidate_name=compound_name,
+                objective=f"Run one expert-approved smoke-scale MD worker test for {compound_name} / {target_name}.",
+                priority=priority,
+                require_approval=True,
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma and human angiosarcoma",
+                    species=["canine", "human"],
+                    model_system=(
+                        f"RCSB PDB {normalized_pdb_id} target structure with PubChem "
+                        f"{compound_name} canonical SMILES."
+                    ),
+                    assay_type="in silico MD smoke test",
+                    readout="RunPod worker contract acceptance and structured preparation/runtime failure modes.",
+                    endpoint="MD compute lane readiness",
+                ),
+                quality_gates=[
+                    "source_traceability_required",
+                    "md_input_packet_required",
+                    "md_expert_review_packet_required",
+                    "exact_packet_hash_approval_required",
+                    "single_smoke_job_only",
+                ],
+                metadata={
+                    "runpod_input": input_packet.model_dump(mode="json"),
+                    "api_sources": {
+                        "protein_pdb": f"https://files.rcsb.org/download/{normalized_pdb_id}.pdb",
+                        "compound_smiles": (
+                            "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/"
+                            f"{urllib.parse.quote(compound_name, safe='')}/property/CanonicalSMILES/JSON"
+                        ),
+                    },
+                    "dagster_run_id": dagster_run_id,
+                },
+            ),
+            priority=priority,
+            requires_human_approval=True,
+            quality_gates=[
+                "source_traceability_required",
+                "md_expert_review_packet_required",
+                "exact_packet_hash_approval_required",
+                "single_smoke_job_only",
+            ],
+            dispatch_blockers=["md_expert_approval_required"],
+            metadata={
+                "seed_route": "md_smoke_compute_job",
+                "pdb_id": normalized_pdb_id,
+                "compound_name": compound_name,
+                "target_name": target_name,
+                "dagster_run_id": dagster_run_id,
+            },
+        )
+        queue_item = self.repository.upsert_validation_request_queue_item(queue_item)
+        if approve_queue_item:
+            approved = self.approve_validation_request_queue_item(
+                queue_item.queue_item_id,
+                approved_by=approved_by,
+                approval_note=approval,
+            )
+            if approved is not None:
+                queue_item = approved
+
+        compute_job: ComputeJobRecord | None = None
+        if create_compute_job:
+            compute_job = self.create_compute_job_from_validation_queue_item(
+                queue_item.queue_item_id,
+                runner_kind="runpod",
+                compute_profile="gpu",
+                approved_by=approved_by if approve_queue_item else None,
+                approval_note=approval if approve_queue_item else None,
+                dagster_run_id=dagster_run_id,
+                metadata={
+                    "seed_route": "md_smoke_compute_job",
+                    "pdb_id": normalized_pdb_id,
+                    "compound_name": compound_name,
+                    "target_name": target_name,
+                    "simulation_steps": simulation_steps,
+                    "temperature": temperature,
+                },
+            )
+
+        protein_hash = hashlib.sha256(input_packet.protein_pdb.encode("utf-8")).hexdigest()
+        return {
+            "queue_item_id": str(queue_item.queue_item_id),
+            "queue_item_status": queue_item.status,
+            "compute_job_id": str(compute_job.compute_job_id) if compute_job else None,
+            "compute_job_status": compute_job.status if compute_job else None,
+            "pdb_id": normalized_pdb_id,
+            "compound_name": compound_name,
+            "target_name": target_name,
+            "compound_smiles": input_packet.compound_smiles,
+            "protein_pdb_line_count": len(input_packet.protein_pdb.splitlines()),
+            "protein_pdb_sha256": protein_hash,
+            "simulation_steps": input_packet.simulation_steps,
+            "temperature": input_packet.temperature,
+            "queue_item": _redacted_md_smoke_queue_item(queue_item),
+            "compute_job": _redacted_md_smoke_compute_job(compute_job),
+            "api_sources": queue_item.validation_request.metadata.get("api_sources", {}),
+            "created_at": datetime.now(UTC).isoformat(),
+        }
 
     def dispatch_validation_request_queue_item(
         self,

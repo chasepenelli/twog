@@ -3,7 +3,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
-from uuid import uuid4
+from uuid import UUID, uuid4
 import zipfile
 
 import pytest
@@ -11175,6 +11175,39 @@ def _md_queue_item(runpod_input=None) -> ValidationRequestQueueItem:
             ),
         ),
     )
+
+
+def test_md_smoke_seed_fetches_live_api_inputs_and_creates_compute_job(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "md-smoke-seed.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+
+    monkeypatch.setattr(service_module, "_fetch_rcsb_pdb_text", lambda pdb_id, timeout_seconds=45: _MINIMAL_MD_PDB)
+    monkeypatch.setattr(service_module, "_fetch_pubchem_canonical_smiles", lambda name, timeout_seconds=45: "CCO")
+
+    report = service.seed_md_smoke_compute_job(
+        pdb_id="1abc",
+        compound_name="ethanol",
+        target_name="KDR",
+        simulation_steps=10,
+        approved_by="unit-test",
+    )
+
+    queue_item_id = report["queue_item_id"]
+    compute_job_id = report["compute_job_id"]
+    item = repo.get_validation_request_queue_item(UUID(queue_item_id))
+    job = repo.get_compute_job(UUID(compute_job_id))
+
+    assert item is not None
+    assert item.status == "approved"
+    assert item.task_type == "md"
+    assert item.validation_request.validation_type == "md"
+    assert item.validation_request.metadata["runpod_input"]["protein_source"] == "RCSB PDB 1ABC"
+    assert item.validation_request.metadata["runpod_input"]["compound_smiles"] == "CCO"
+    assert job is not None
+    assert job.validation_type == "md"
+    assert job.status == "approved"
+    assert report["queue_item"]["validation_request"]["metadata"]["runpod_input"]["protein_pdb_sha256"]
+    assert "protein_pdb" not in report["queue_item"]["validation_request"]["metadata"]["runpod_input"]
 
 
 def test_md_input_packet_rejects_missing_or_malformed_inputs():

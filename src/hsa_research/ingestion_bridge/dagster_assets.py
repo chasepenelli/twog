@@ -1782,6 +1782,23 @@ if dg is not None:
             "jobs": _metadata_table(rows, _COMPUTE_JOB_TABLE_COLUMNS),
         }
 
+    def _md_smoke_compute_job_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        compute_job = report.get("compute_job") if isinstance(report.get("compute_job"), Mapping) else {}
+        return {
+            "queue_item_id": report.get("queue_item_id"),
+            "queue_item_status": report.get("queue_item_status"),
+            "compute_job_id": report.get("compute_job_id"),
+            "compute_job_status": report.get("compute_job_status"),
+            "pdb_id": report.get("pdb_id"),
+            "compound_name": report.get("compound_name"),
+            "target_name": report.get("target_name"),
+            "simulation_steps": dg.MetadataValue.int(int(report.get("simulation_steps", 0))),
+            "protein_pdb_line_count": dg.MetadataValue.int(int(report.get("protein_pdb_line_count", 0))),
+            "protein_pdb_sha256": report.get("protein_pdb_sha256"),
+            "api_sources": dg.MetadataValue.json(report.get("api_sources", {})),
+            "compute_job": dg.MetadataValue.json(compute_job),
+        }
+
     def _md_expert_review_packet_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
         input_packet = report.get("input_packet") if isinstance(report.get("input_packet"), Mapping) else {}
         return {
@@ -4442,6 +4459,59 @@ if dg is not None:
         return dg.MaterializeResult(
             value=report,
             metadata=_validation_request_queue_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "pdb_id": dg.Field(
+                str,
+                default_value="3VHE",
+                description="RCSB PDB identifier used to fetch protein PDB text.",
+            ),
+            "compound_name": dg.Field(
+                str,
+                default_value="pazopanib",
+                description="PubChem compound name used to fetch canonical SMILES.",
+            ),
+            "target_name": dg.Field(str, default_value="VEGFR2/KDR"),
+            "simulation_steps": dg.Field(int, default_value=10),
+            "temperature": dg.Field(float, default_value=300.0),
+            "priority": dg.Field(int, default_value=40),
+            "approve_queue_item": dg.Field(bool, default_value=True),
+            "create_compute_job": dg.Field(bool, default_value=True),
+            "approved_by": dg.Field(str, default_value="dagster-md-smoke"),
+            "approval_note": dg.Field(str, is_required=False),
+            "timeout_seconds": dg.Field(int, default_value=45),
+        },
+    )
+    def md_smoke_compute_job_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Seed one real MD validation queue item from RCSB/PubChem APIs."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).seed_md_smoke_compute_job(
+            pdb_id=config["pdb_id"],
+            compound_name=config["compound_name"],
+            target_name=config["target_name"],
+            simulation_steps=config["simulation_steps"],
+            temperature=config["temperature"],
+            priority=config["priority"],
+            approve_queue_item=config["approve_queue_item"],
+            create_compute_job=config["create_compute_job"],
+            approved_by=config["approved_by"],
+            approval_note=config.get("approval_note"),
+            timeout_seconds=config["timeout_seconds"],
+            dagster_run_id=context.run_id,
+        )
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_md_smoke_compute_job_metadata(report),
         )
 
     @dg.asset(
@@ -7277,6 +7347,7 @@ if dg is not None:
         validation_plan_library_report,
         validation_request_queue_report,
         validation_request_queue_library_report,
+        md_smoke_compute_job_report,
         compute_job_report,
         md_expert_review_packet_report,
         md_expert_agent_review_report,
@@ -7512,6 +7583,10 @@ if dg is not None:
     validation_request_queue_library_job = dg.define_asset_job(
         "validation_request_queue_library_job",
         selection=dg.AssetSelection.assets(validation_request_queue_library_report),
+    )
+    md_smoke_compute_job_job = dg.define_asset_job(
+        "md_smoke_compute_job_job",
+        selection=dg.AssetSelection.assets(md_smoke_compute_job_report),
     )
     compute_job_job = dg.define_asset_job(
         "compute_job_job",
@@ -7851,6 +7926,7 @@ if dg is not None:
             validation_plan_library_job,
             validation_request_queue_job,
             validation_request_queue_library_job,
+            md_smoke_compute_job_job,
             compute_job_job,
             md_expert_review_packet_job,
             md_expert_agent_review_job,
@@ -7959,6 +8035,7 @@ else:
     validation_plan_library_job = None
     validation_request_queue_job = None
     validation_request_queue_library_job = None
+    md_smoke_compute_job_job = None
     compute_job_job = None
     md_expert_review_packet_job = None
     md_expert_agent_review_job = None

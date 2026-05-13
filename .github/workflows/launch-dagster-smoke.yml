@@ -47,6 +47,7 @@ on:
           - "validation_plan_library_job"
           - "validation_request_queue_job"
           - "validation_request_queue_library_job"
+          - "md_smoke_compute_job_job"
           - "compute_job_job"
           - "md_expert_review_packet_job"
           - "md_expert_agent_review_job"
@@ -531,6 +532,111 @@ jobs:
             --run-id "$DAGSTER_CLOUD_RUN_ID" \
             --limit 500 \
             --tail 40
+        shell: bash
+
+      - name: Print hosted MD compute summary
+        if: ${{ always() && (inputs.job == 'md_smoke_compute_job_job' || inputs.job == 'compute_job_job' || inputs.job == 'md_expert_review_packet_job' || inputs.job == 'md_expert_agent_review_job') }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          service = HSAResearchService(build_research_repository())
+          queue_items = service.list_validation_request_queue_items(task_type="md", limit=10)
+          compute_jobs = [
+              job
+              for job in service.repository.list_compute_jobs(runner_kind="runpod", limit=25)
+              if job.validation_type == "md"
+          ][:10]
+          packets = service.repository.list_md_expert_review_packets(limit=10)
+          approval_rows = []
+          for packet in packets[:10]:
+              for approval in service.repository.list_md_expert_approvals(packet_hash=packet.packet_hash, limit=5):
+                  approval_rows.append(
+                      {
+                          "approval_id": str(approval.approval_id),
+                          "packet_id": str(approval.packet_id),
+                          "decision": approval.decision,
+                          "reviewer_type": approval.reviewer_type,
+                          "reviewer_name": approval.reviewer_name,
+                          "model_profile": approval.model_profile,
+                          "reviewed_at": approval.reviewed_at.isoformat(),
+                      }
+                  )
+
+          payload = {
+              "dagster_run_id": os.getenv("DAGSTER_CLOUD_RUN_ID"),
+              "md_queue_items": [
+                  {
+                      "queue_item_id": str(item.queue_item_id),
+                      "status": item.status,
+                      "task_type": item.task_type,
+                      "validation_type": item.validation_request.validation_type,
+                      "title": item.title,
+                      "target_name": item.validation_request.target_name,
+                      "candidate_name": item.validation_request.candidate_name,
+                      "approved_by": item.approved_by,
+                      "last_error": item.last_error,
+                      "updated_at": item.updated_at.isoformat(),
+                  }
+                  for item in queue_items
+              ],
+              "md_compute_jobs": [
+                  {
+                      "compute_job_id": str(job.compute_job_id),
+                      "queue_item_id": str(job.queue_item_id) if job.queue_item_id else None,
+                      "status": job.status,
+                      "validation_type": job.validation_type,
+                      "title": job.title,
+                      "runpod_job_id": job.runpod_job_id,
+                      "external_run_id": job.external_run_id,
+                      "last_error": job.last_error,
+                      "updated_at": job.updated_at.isoformat(),
+                  }
+                  for job in compute_jobs
+              ],
+              "md_expert_packets": [
+                  {
+                      "packet_id": str(packet.packet_id),
+                      "packet_hash": packet.packet_hash,
+                      "status": packet.status,
+                      "compute_job_id": str(packet.compute_job_id) if packet.compute_job_id else None,
+                      "queue_item_id": str(packet.queue_item_id) if packet.queue_item_id else None,
+                      "endpoint_id": packet.endpoint_id,
+                      "target_name": packet.input_packet.target_name,
+                      "compound_name": packet.input_packet.compound_name,
+                      "simulation_steps": packet.input_packet.simulation_steps,
+                      "updated_at": packet.updated_at.isoformat(),
+                  }
+                  for packet in packets
+              ],
+              "md_expert_approvals": approval_rows,
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("### MD compute summary\n")
+                  summary.write(f"- MD queue items sampled: `{len(payload['md_queue_items'])}`\n")
+                  summary.write(f"- MD compute jobs sampled: `{len(payload['md_compute_jobs'])}`\n")
+                  summary.write(f"- MD expert packets sampled: `{len(payload['md_expert_packets'])}`\n")
+                  summary.write(f"- MD expert approvals sampled: `{len(payload['md_expert_approvals'])}`\n")
+                  for job in payload["md_compute_jobs"][:5]:
+                      summary.write(
+                          f"- `{job['status']}` compute `{job['compute_job_id']}` "
+                          f"queue `{job['queue_item_id']}` runpod `{job['runpod_job_id']}`\n"
+                      )
+                  for packet in payload["md_expert_packets"][:5]:
+                      summary.write(
+                          f"- `{packet['status']}` packet `{packet['packet_id']}` "
+                          f"hash `{packet['packet_hash']}`\n"
+                      )
+          PY
         shell: bash
 
       - name: Print hosted research program summary
