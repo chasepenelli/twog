@@ -545,6 +545,17 @@ jobs:
           from hsa_research.ingestion_bridge.service import HSAResearchService
           from hsa_research.ingestion_bridge.storage import build_research_repository
 
+          def preview(value, limit=2500):
+              if value is None:
+                  return None
+              try:
+                  rendered = json.dumps(value, sort_keys=True)
+              except TypeError:
+                  rendered = str(value)
+              if len(rendered) > limit:
+                  return rendered[:limit] + "...<truncated>"
+              return rendered
+
           service = HSAResearchService(build_research_repository())
           queue_items = service.list_validation_request_queue_items(task_type="md", limit=10)
           compute_jobs = [
@@ -609,6 +620,8 @@ jobs:
                       "runpod_job_id": job.runpod_job_id,
                       "external_run_id": job.external_run_id,
                       "last_error": job.last_error,
+                      "runpod_submit_preview": preview(job.output_payload.get("runpod_submit_response")),
+                      "runpod_status_preview": preview(job.output_payload.get("runpod_status_response")),
                       "updated_at": job.updated_at.isoformat(),
                   }
                   for job in compute_jobs
