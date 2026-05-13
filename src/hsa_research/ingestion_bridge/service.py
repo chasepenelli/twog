@@ -699,6 +699,7 @@ def _md_input_packet_from_compute_job(record: ComputeJobRecord) -> MDInputPacket
         ligand_source=str(runpod_input["ligand_source"]),
         preparation_method=str(runpod_input["preparation_method"]),
         metadata={
+            **(runpod_input.get("metadata") if isinstance(runpod_input.get("metadata"), dict) else {}),
             "compute_job_id": str(record.compute_job_id),
             "queue_item_id": str(record.queue_item_id) if record.queue_item_id else None,
             "validation_type": record.validation_type,
@@ -809,10 +810,20 @@ def _render_md_expert_review_document(
             f"- Compound SMILES: `{input_packet.compound_smiles}`",
             f"- Simulation steps: {input_packet.simulation_steps}",
             f"- Temperature: {input_packet.temperature}",
+            f"- pH: {input_packet.ph}",
+            f"- Box padding: {input_packet.box_padding}",
+            f"- Force field: {input_packet.force_field}",
+            f"- Solvent model: {input_packet.solvent_model}",
             f"- Protein source: {input_packet.protein_source}",
             f"- Ligand source: {input_packet.ligand_source}",
             f"- Preparation method: {input_packet.preparation_method}",
             f"- PDB line count: {len(pdb_lines)}",
+            "",
+            "## Preparation Metadata",
+            "",
+            "```json",
+            json.dumps(input_packet.metadata.get("pdb_preparation", {}), indent=2, sort_keys=True),
+            "```",
             "",
             "```pdb",
             pdb_preview,
@@ -865,6 +876,50 @@ def _fetch_rcsb_pdb_text(pdb_id: str, *, timeout_seconds: int = 45) -> str:
     if not any(line.startswith(("ATOM", "HETATM")) for line in text.splitlines()):
         raise RuntimeError(f"RCSB response for {normalized} did not contain ATOM/HETATM records")
     return text
+
+
+def _prepare_md_smoke_pdb(pdb_text: str) -> tuple[str, dict[str, Any]]:
+    """Return protein-only PDB text plus preparation metadata for the MD smoke lane."""
+
+    retained_lines: list[str] = []
+    removed_hetatm = 0
+    removed_water = 0
+    original_line_count = 0
+    saw_end = False
+    for raw_line in pdb_text.splitlines():
+        line = raw_line.rstrip()
+        if not line:
+            continue
+        original_line_count += 1
+        record_type = line[:6].strip()
+        if record_type in {"ATOM", "TER"}:
+            retained_lines.append(line)
+            continue
+        if record_type == "END":
+            saw_end = True
+            continue
+        if record_type == "HETATM":
+            removed_hetatm += 1
+            residue_name = line[17:20].strip().upper()
+            if residue_name in {"HOH", "WAT", "H2O"}:
+                removed_water += 1
+            continue
+    if not any(line.startswith("ATOM") for line in retained_lines):
+        raise RuntimeError("Prepared MD smoke PDB did not retain any ATOM records")
+    if not any(line.startswith("TER") for line in retained_lines):
+        retained_lines.append("TER")
+    retained_lines.append("END")
+    prepared = "\n".join(retained_lines) + "\n"
+    return prepared, {
+        "preparation": "protein_only_strip_hetatm_waters_ligands",
+        "original_line_count": original_line_count,
+        "prepared_line_count": len(prepared.splitlines()),
+        "removed_hetatm_count": removed_hetatm,
+        "removed_water_count": removed_water,
+        "co_crystallized_ligands_removed": removed_hetatm - removed_water,
+        "original_had_end_record": saw_end,
+        "retained_records": ["ATOM", "TER", "END"],
+    }
 
 
 def _fetch_pubchem_canonical_smiles(compound_name: str, *, timeout_seconds: int = 45) -> str:
@@ -2244,27 +2299,41 @@ class HSAResearchService:
         if len(normalized_pdb_id) != 4:
             raise ValueError("pdb_id must be a 4-character RCSB PDB identifier")
         fetched_pdb = protein_pdb or _fetch_rcsb_pdb_text(normalized_pdb_id, timeout_seconds=timeout_seconds)
+        prepared_pdb, pdb_preparation_metadata = _prepare_md_smoke_pdb(fetched_pdb)
         fetched_smiles = compound_smiles or _fetch_pubchem_canonical_smiles(
             compound_name,
             timeout_seconds=timeout_seconds,
         )
         input_packet = MDInputPacket(
-            protein_pdb=fetched_pdb,
+            protein_pdb=prepared_pdb,
             compound_smiles=fetched_smiles,
             target_name=target_name,
             compound_name=compound_name,
             simulation_steps=simulation_steps,
             temperature=temperature,
-            protein_source=f"RCSB PDB {normalized_pdb_id}",
+            ph=7.4,
+            box_padding=10.0,
+            force_field="protein=amber14; ligand=worker_default_openff_or_gaff",
+            solvent_model="tip3p",
+            protein_source=f"RCSB PDB {normalized_pdb_id}; protein-only ATOM records prepared by TWOG seed route",
             ligand_source=f"PubChem canonical SMILES for {compound_name}",
             preparation_method=(
-                "API-derived smoke input; no docking pose, protonation review, or force-field "
-                "parameterization has been applied before expert gate review."
+                "TWOG supplies a protein-only PDB with HETATM records, crystallographic waters, and "
+                "co-crystallized ligands stripped before submission. TWOG supplies canonical SMILES only "
+                "for the ligand; no upstream docking pose is generated. The RunPod worker is expected to "
+                "perform SMILES-to-3D embedding, protonation at pH 7.4, and small-molecule force-field "
+                "parameterization, or return structured prepared_ligand_artifact_or_error."
             ),
             metadata={
                 "pdb_id": normalized_pdb_id,
                 "compound_name": compound_name,
                 "source_route": "rcsb_pdb+pubchem",
+                "pdb_preparation": pdb_preparation_metadata,
+                "co_crystallized_ligand_handling": "all HETATM records stripped before RunPod submission",
+                "worker_ligand_prep_contract": (
+                    "worker handles SMILES-to-3D, protonation, and ligand parameterization; structured "
+                    "failure is acceptable for this smoke-scale contract test"
+                ),
             },
         )
         identity_basis = (
@@ -2391,8 +2460,13 @@ class HSAResearchService:
             "compound_smiles": input_packet.compound_smiles,
             "protein_pdb_line_count": len(input_packet.protein_pdb.splitlines()),
             "protein_pdb_sha256": protein_hash,
+            "pdb_preparation": pdb_preparation_metadata,
             "simulation_steps": input_packet.simulation_steps,
             "temperature": input_packet.temperature,
+            "ph": input_packet.ph,
+            "box_padding": input_packet.box_padding,
+            "force_field": input_packet.force_field,
+            "solvent_model": input_packet.solvent_model,
             "queue_item": _redacted_md_smoke_queue_item(queue_item),
             "compute_job": _redacted_md_smoke_compute_job(compute_job),
             "api_sources": queue_item.validation_request.metadata.get("api_sources", {}),

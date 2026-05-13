@@ -11201,13 +11201,23 @@ def test_md_smoke_seed_fetches_live_api_inputs_and_creates_compute_job(tmp_path,
     assert item.status == "approved"
     assert item.task_type == "md"
     assert item.validation_request.validation_type == "md"
-    assert item.validation_request.metadata["runpod_input"]["protein_source"] == "RCSB PDB 1ABC"
+    assert item.validation_request.metadata["runpod_input"]["protein_source"].startswith("RCSB PDB 1ABC")
     assert item.validation_request.metadata["runpod_input"]["compound_smiles"] == "CCO"
+    assert item.validation_request.metadata["runpod_input"]["ph"] == 7.4
+    assert item.validation_request.metadata["runpod_input"]["box_padding"] == 10.0
+    assert item.validation_request.metadata["runpod_input"]["force_field"]
+    assert item.validation_request.metadata["runpod_input"]["solvent_model"] == "tip3p"
+    assert item.validation_request.metadata["runpod_input"]["metadata"]["pdb_preparation"]["retained_records"] == [
+        "ATOM",
+        "TER",
+        "END",
+    ]
     assert job is not None
     assert job.validation_type == "md"
     assert job.status == "approved"
     assert report["queue_item"]["validation_request"]["metadata"]["runpod_input"]["protein_pdb_sha256"]
     assert "protein_pdb" not in report["queue_item"]["validation_request"]["metadata"]["runpod_input"]
+    assert report["pdb_preparation"]["preparation"] == "protein_only_strip_hetatm_waters_ligands"
 
 
 def test_pubchem_smiles_resolver_accepts_smiles_field_variants(monkeypatch):
