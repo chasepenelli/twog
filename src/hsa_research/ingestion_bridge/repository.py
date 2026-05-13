@@ -21,6 +21,7 @@ from .contracts import (
     ClaimDirection,
     ClaimSearchRequest,
     ClaimSearchResult,
+    ComputeJobRecord,
     CommitHypothesisRequest,
     DocumentChunk,
     EmbeddingCoverageSummary,
@@ -28,6 +29,8 @@ from .contracts import (
     EntityMention,
     EvidenceLevel,
     HypothesisDraft,
+    MDExpertApprovalRecord,
+    MDExpertReviewPacketRecord,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
     ResearchProgramRecord,
@@ -383,6 +386,70 @@ class ResearchRepository(Protocol):
     ) -> ValidationRequestQueueItem | None:
         """Update queued validation request lifecycle fields."""
 
+    def upsert_compute_job(self, record: ComputeJobRecord) -> ComputeJobRecord:
+        """Persist a durable compute job record for approval-first execution lanes."""
+
+    def get_compute_job(self, compute_job_id: UUID) -> ComputeJobRecord | None:
+        """Return one compute job by ID."""
+
+    def list_compute_jobs(
+        self,
+        *,
+        status: str | None = None,
+        runner_kind: str | None = None,
+        queue_item_id: UUID | None = None,
+        limit: int | None = 50,
+    ) -> list[ComputeJobRecord]:
+        """Return compute jobs by durable filters."""
+
+    def update_compute_job(
+        self,
+        compute_job_id: UUID,
+        *,
+        status: str | None = None,
+        output_payload: dict | None = None,
+        external_run_id: str | None = None,
+        dagster_run_id: str | None = None,
+        runpod_job_id: str | None = None,
+        cost_actual_usd: float | None = None,
+        last_error: str | None = None,
+        metadata: dict | None = None,
+    ) -> ComputeJobRecord | None:
+        """Update compute job lifecycle fields."""
+
+    def upsert_md_expert_review_packet(
+        self,
+        record: MDExpertReviewPacketRecord,
+    ) -> MDExpertReviewPacketRecord:
+        """Persist an MD expert review packet for pre-run human approval."""
+
+    def get_md_expert_review_packet(self, packet_id: UUID) -> MDExpertReviewPacketRecord | None:
+        """Return one MD expert review packet."""
+
+    def get_md_expert_review_packet_by_hash(self, packet_hash: str) -> MDExpertReviewPacketRecord | None:
+        """Return one MD expert review packet by stable packet hash."""
+
+    def list_md_expert_review_packets(
+        self,
+        *,
+        packet_hash: str | None = None,
+        status: str | None = None,
+        limit: int | None = 50,
+    ) -> list[MDExpertReviewPacketRecord]:
+        """Return persisted MD expert review packets by durable filters."""
+
+    def upsert_md_expert_approval(self, record: MDExpertApprovalRecord) -> MDExpertApprovalRecord:
+        """Persist an MD expert approval or rejection ledger entry."""
+
+    def list_md_expert_approvals(
+        self,
+        *,
+        packet_hash: str | None = None,
+        decision: str | None = None,
+        limit: int | None = 50,
+    ) -> list[MDExpertApprovalRecord]:
+        """Return MD expert approval ledger entries by durable filters."""
+
     def upsert_research_brief_queue_item(self, item: ResearchBriefQueueItem) -> ResearchBriefQueueItem:
         """Persist a queued research brief request."""
 
@@ -542,6 +609,9 @@ class InMemoryResearchRepository:
         self.validation_decisions: dict[str, ValidationDecisionRecord] = {}
         self.validation_plans: dict[UUID, ValidationPlanRecord] = {}
         self.validation_request_queue: dict[UUID, ValidationRequestQueueItem] = {}
+        self.compute_jobs: dict[UUID, ComputeJobRecord] = {}
+        self.md_expert_review_packets: dict[UUID, MDExpertReviewPacketRecord] = {}
+        self.md_expert_approvals: dict[UUID, MDExpertApprovalRecord] = {}
         self.research_brief_queue: dict[UUID, ResearchBriefQueueItem] = {}
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
         self.agent_runs: dict[UUID, AgentRunRecord] = {}
@@ -1392,6 +1462,128 @@ class InMemoryResearchRepository:
         )
         self.validation_request_queue[queue_item_id] = updated
         return updated
+
+    def upsert_compute_job(self, record: ComputeJobRecord) -> ComputeJobRecord:
+        self.compute_jobs[record.compute_job_id] = record
+        return record
+
+    def get_compute_job(self, compute_job_id: UUID) -> ComputeJobRecord | None:
+        return self.compute_jobs.get(compute_job_id)
+
+    def list_compute_jobs(
+        self,
+        *,
+        status: str | None = None,
+        runner_kind: str | None = None,
+        queue_item_id: UUID | None = None,
+        limit: int | None = 50,
+    ) -> list[ComputeJobRecord]:
+        records = list(self.compute_jobs.values())
+        if status:
+            records = [record for record in records if record.status == status]
+        if runner_kind:
+            records = [record for record in records if record.runner_kind == runner_kind]
+        if queue_item_id:
+            records = [record for record in records if record.queue_item_id == queue_item_id]
+        records.sort(key=lambda record: record.updated_at, reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def update_compute_job(
+        self,
+        compute_job_id: UUID,
+        *,
+        status: str | None = None,
+        output_payload: dict | None = None,
+        external_run_id: str | None = None,
+        dagster_run_id: str | None = None,
+        runpod_job_id: str | None = None,
+        cost_actual_usd: float | None = None,
+        last_error: str | None = None,
+        metadata: dict | None = None,
+    ) -> ComputeJobRecord | None:
+        record = self.compute_jobs.get(compute_job_id)
+        if record is None:
+            return None
+        now = datetime.now(UTC)
+        update: dict[str, object] = {
+            "status": record.status if status is None else status,
+            "output_payload": record.output_payload if output_payload is None else output_payload,
+            "external_run_id": record.external_run_id if external_run_id is None else external_run_id,
+            "dagster_run_id": record.dagster_run_id if dagster_run_id is None else dagster_run_id,
+            "runpod_job_id": record.runpod_job_id if runpod_job_id is None else runpod_job_id,
+            "cost_actual_usd": record.cost_actual_usd if cost_actual_usd is None else cost_actual_usd,
+            "last_error": last_error,
+            "updated_at": now,
+            "metadata": {**record.metadata, **(metadata or {})},
+        }
+        if status == "submitted":
+            update["submitted_at"] = now
+        if status == "running":
+            update["started_at"] = now
+        if status in {"completed", "failed", "cancelled", "blocked"}:
+            update["completed_at"] = now
+        updated = record.model_copy(update=update)
+        self.compute_jobs[compute_job_id] = updated
+        return updated
+
+    def upsert_md_expert_review_packet(
+        self,
+        record: MDExpertReviewPacketRecord,
+    ) -> MDExpertReviewPacketRecord:
+        self.md_expert_review_packets[record.packet_id] = record
+        return record
+
+    def get_md_expert_review_packet(self, packet_id: UUID) -> MDExpertReviewPacketRecord | None:
+        return self.md_expert_review_packets.get(packet_id)
+
+    def get_md_expert_review_packet_by_hash(self, packet_hash: str) -> MDExpertReviewPacketRecord | None:
+        return next(
+            (
+                record
+                for record in self.md_expert_review_packets.values()
+                if record.packet_hash == packet_hash
+            ),
+            None,
+        )
+
+    def list_md_expert_review_packets(
+        self,
+        *,
+        packet_hash: str | None = None,
+        status: str | None = None,
+        limit: int | None = 50,
+    ) -> list[MDExpertReviewPacketRecord]:
+        records = list(self.md_expert_review_packets.values())
+        if packet_hash:
+            records = [record for record in records if record.packet_hash == packet_hash]
+        if status:
+            records = [record for record in records if record.status == status]
+        records.sort(key=lambda record: record.updated_at, reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def upsert_md_expert_approval(self, record: MDExpertApprovalRecord) -> MDExpertApprovalRecord:
+        self.md_expert_approvals[record.approval_id] = record
+        packet = self.get_md_expert_review_packet(record.packet_id)
+        if packet is not None:
+            self.md_expert_review_packets[packet.packet_id] = packet.model_copy(
+                update={"status": record.decision, "updated_at": datetime.now(UTC)}
+            )
+        return record
+
+    def list_md_expert_approvals(
+        self,
+        *,
+        packet_hash: str | None = None,
+        decision: str | None = None,
+        limit: int | None = 50,
+    ) -> list[MDExpertApprovalRecord]:
+        records = list(self.md_expert_approvals.values())
+        if packet_hash:
+            records = [record for record in records if record.packet_hash == packet_hash]
+        if decision:
+            records = [record for record in records if record.decision == decision]
+        records.sort(key=lambda record: record.reviewed_at, reverse=True)
+        return records[:limit] if limit is not None else records
 
     def upsert_research_brief_queue_item(self, item: ResearchBriefQueueItem) -> ResearchBriefQueueItem:
         existing = next(

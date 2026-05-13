@@ -27,6 +27,7 @@ from .contracts import (
     FullTextTriageRequest,
     FullTextOpsRequest,
     HypothesisPromotionReportRequest,
+    MDExpertAgentReviewRequest,
     OmicsAccessionHuntRequest,
     OmicsEvidencePacketRequest,
     OmicsFollowupRequest,
@@ -1574,6 +1575,34 @@ def main() -> None:
         help="Validation model profile to dispatch with.",
     )
 
+    md_expert_packet = subparsers.add_parser(
+        "md-expert-packet",
+        help="Generate the MD expert review packet for a compute job",
+    )
+    md_expert_packet.add_argument("--compute-job-id", required=True, help="Compute job ID to package")
+    md_expert_packet.add_argument("--endpoint-id", default="cbf4ffekmo36t9")
+    md_expert_packet.add_argument("--endpoint-name", default="hsa-md-validation")
+    md_expert_packet.add_argument("--template-name", default="hsa-md-openmm")
+    md_expert_packet.add_argument("--no-persist", action="store_true", help="Render without persisting the packet")
+
+    md_expert_agent_review = subparsers.add_parser(
+        "md-expert-agent-review",
+        help="Run the OpenRouter-backed MD expert agent over a packet",
+    )
+    md_expert_agent_review.add_argument("--packet-id", required=True, help="MD expert packet ID to review")
+    md_expert_agent_review.add_argument(
+        "--model-profile",
+        default="openrouter_required",
+        help="OpenRouter model/profile for the MD expert agent. Use deterministic_only for tests.",
+    )
+    md_expert_agent_review.add_argument(
+        "--no-agent-approval",
+        action="store_true",
+        help="Do not persist an approval record when the agent returns approved.",
+    )
+    md_expert_agent_review.add_argument("--reviewer-name", default="md_expert_review_agent")
+    md_expert_agent_review.add_argument("--reviewer-contact", default="agent://md_expert_review_agent")
+
     evidence_gap_resolver = subparsers.add_parser(
         "resolve-evidence-gaps",
         help="Convert validation-agent missing evidence, risks, and next actions into research leads",
@@ -2970,6 +2999,26 @@ def main() -> None:
             output = service.run_validation_autopilot(request).model_dump(mode="json")
         else:
             output = service.preview_validation_autopilot(request).model_dump(mode="json")
+    elif args.command == "md-expert-packet":
+        packet = HSAResearchService(repo).create_md_expert_review_packet(
+            UUID(args.compute_job_id),
+            endpoint_id=args.endpoint_id,
+            endpoint_name=args.endpoint_name,
+            template_name=args.template_name,
+            persist=not args.no_persist,
+        )
+        output = {} if packet is None else packet.model_dump(mode="json")
+    elif args.command == "md-expert-agent-review":
+        result = HSAResearchService(repo).run_md_expert_review_agent(
+            MDExpertAgentReviewRequest(
+                packet_id=UUID(args.packet_id),
+                model_profile=args.model_profile,
+                approve_on_agent_approved=not args.no_agent_approval,
+                reviewer_name=args.reviewer_name,
+                reviewer_contact=args.reviewer_contact,
+            )
+        )
+        output = {} if result is None else result.model_dump(mode="json")
     elif args.command == "resolve-evidence-gaps":
         output = HSAResearchService(repo).resolve_evidence_gaps(
             EvidenceGapResolverRequest(

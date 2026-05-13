@@ -16,6 +16,7 @@ from hsa_research.ingestion_bridge import entity_resolution
 from hsa_research.ingestion_bridge import evidence_fit
 from hsa_research.ingestion_bridge import source_query_params
 from hsa_research.ingestion_bridge import storage, structured_orchestration
+from hsa_research.ingestion_bridge import compute_runners
 from hsa_research.ingestion_bridge.contracts import (
     AgentFindingEscalationRequest,
     AgentFindingEscalationResult,
@@ -34,6 +35,9 @@ from hsa_research.ingestion_bridge.contracts import (
     ClaimSearchResult,
     ClaimType,
     CommandCenterRequest,
+    ComputeJobRecord,
+    ComputeJobReportRequest,
+    ComputeJobReportResult,
     CommitHypothesisRequest,
     DoiOpenAccessFollowupQueueRequest,
     DocumentChunk,
@@ -54,6 +58,11 @@ from hsa_research.ingestion_bridge.contracts import (
     HypothesisPromotionReportRequest,
     HypothesisProposalRequest,
     IngestionResult,
+    MDExpertAgentReviewRequest,
+    MDExpertAgentReviewResult,
+    MDExpertApprovalRecord,
+    MDExpertReviewPacketRecord,
+    MDInputPacket,
     OmicsAccessionHuntRequest,
     OmicsAccessionHuntResult,
     OmicsEvidencePacketRequest,
@@ -198,6 +207,7 @@ from hsa_research.ingestion_bridge import omics_accession_hunt
 from hsa_research.ingestion_bridge import research_brief_agent
 from hsa_research.ingestion_bridge import model_policy
 from hsa_research.ingestion_bridge import research_program_board
+from hsa_research.ingestion_bridge import md_expert_agent
 from hsa_research.ingestion_bridge import therapy_committee
 from hsa_research.ingestion_bridge import validation_agents
 from hsa_research.ingestion_bridge import source_followup
@@ -11044,6 +11054,7 @@ def test_live_compute_validation_lanes_stay_blocked_until_runner_exists(tmp_path
                 candidate_name="candidate A",
                 objective="Dock candidate A against KDR.",
                 require_approval=True,
+                metadata={"runpod_input": {"protein_pdb": "ATOM test"}},
                 assay_context=ValidationAssayContext(
                     disease_context="canine hemangiosarcoma and human angiosarcoma",
                     species=["canine", "human"],
@@ -11070,6 +11081,517 @@ def test_live_compute_validation_lanes_stay_blocked_until_runner_exists(tmp_path
     assert blocked.status == "blocked"
     assert "live_compute_runner_not_enabled" in blocked.dispatch_blockers
     assert blocked.last_run_id is None
+
+
+def test_compute_job_contract_rejects_invalid_status():
+    with pytest.raises(ValidationError):
+        ComputeJobRecord(
+            status="waiting",
+            title="Dock candidate A",
+            objective="Run a controlled docking job.",
+        )
+
+
+def test_compute_jobs_round_trip_and_filter_in_sqlite(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "compute-jobs.sqlite3", seed=False)
+    queue_item_id = uuid4()
+    record = repo.upsert_compute_job(
+        ComputeJobRecord(
+            queue_item_id=queue_item_id,
+            status="approved",
+            runner_kind="runpod",
+            compute_profile="gpu_l4",
+            validation_type="docking",
+            title="Dock candidate A against KDR",
+            objective="Create a durable compute job without live submission.",
+        )
+    )
+
+    fetched = repo.get_compute_job(record.compute_job_id)
+    filtered = repo.list_compute_jobs(status="approved", runner_kind="runpod", queue_item_id=queue_item_id)
+    updated = repo.update_compute_job(
+        record.compute_job_id,
+        status="submitted",
+        external_run_id=f"dry-run:{record.compute_job_id}",
+        metadata={"submission_mode": "dry_run"},
+    )
+
+    assert fetched == record
+    assert filtered == [record]
+    assert updated is not None
+    assert updated.status == "submitted"
+    assert updated.submitted_at is not None
+    assert updated.metadata["submission_mode"] == "dry_run"
+
+
+_MINIMAL_MD_PDB = (
+    "ATOM      1  N   ALA A   1      11.104  13.207   8.678  1.00 20.00           N\n"
+    "ATOM      2  CA  ALA A   1      12.560  13.235   8.421  1.00 20.00           C\n"
+    "TER\n"
+    "END\n"
+)
+
+
+def _md_runpod_input(**overrides):
+    payload = {
+        "protein_pdb": _MINIMAL_MD_PDB,
+        "compound_smiles": "CCO",
+        "target_name": "KDR",
+        "compound_name": "ethanol smoke ligand",
+        "simulation_steps": 10,
+        "temperature": 300.0,
+        "protein_source": "unit-test minimal PDB smoke fixture",
+        "ligand_source": "unit-test SMILES fixture",
+        "preparation_method": "unprepared smoke input for contract validation only",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _md_queue_item(runpod_input=None) -> ValidationRequestQueueItem:
+    return ValidationRequestQueueItem(
+        plan_id=uuid4(),
+        task_id=uuid4(),
+        brief_id=uuid4(),
+        topic="MD queue compute job",
+        task_type="target_validation",
+        title="Run a smoke MD job against KDR",
+        objective="Submit one expert-approved smoke-scale MD worker test.",
+        rationale="The RunPod lane needs an expert-gated input contract before live execution.",
+        validation_request=ValidationRequest(
+            validation_type="md",
+            target_name="KDR",
+            candidate_name="ethanol smoke ligand",
+            objective="Run one smoke-scale MD worker test.",
+            require_approval=True,
+            metadata={"runpod_input": runpod_input or _md_runpod_input()},
+            assay_context=ValidationAssayContext(
+                disease_context="canine hemangiosarcoma and human angiosarcoma",
+                species=["canine", "human"],
+                model_system="Computational target or structure model with explicit source provenance.",
+                assay_type="in silico MD smoke test",
+                readout="worker contract acceptance and structured failure modes",
+                endpoint="compute lane readiness",
+            ),
+        ),
+    )
+
+
+def test_md_input_packet_rejects_missing_or_malformed_inputs():
+    valid = MDInputPacket(**_md_runpod_input())
+    assert valid.simulation_steps == 10
+    assert valid.compound_smiles == "CCO"
+
+    with pytest.raises(ValidationError):
+        MDInputPacket(**_md_runpod_input(protein_pdb="HEADER only\nEND\n"))
+    with pytest.raises(ValidationError):
+        MDInputPacket(**_md_runpod_input(compound_smiles="C C"))
+    with pytest.raises(ValidationError):
+        MDInputPacket(**_md_runpod_input(compound_smiles=""))
+
+
+def test_md_expert_review_packet_round_trip_and_approval_status(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "md-expert-packets.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(_md_queue_item())
+    service.approve_validation_request_queue_item(item.queue_item_id, approved_by="unit-test")
+    created = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            queue_item_id=item.queue_item_id,
+            create_from_queue_item=True,
+            approved_by="unit-test",
+        )
+    ).created_job
+    assert created is not None
+
+    packet = service.create_md_expert_review_packet(created.compute_job_id)
+    assert isinstance(packet, MDExpertReviewPacketRecord)
+    assert packet.status == "needs_review"
+    assert packet.input_packet.target_name == "KDR"
+    assert packet.packet_hash
+    assert repo.get_md_expert_review_packet_by_hash(packet.packet_hash) == packet
+
+    approval = service.record_md_expert_approval(
+        packet.packet_id,
+        decision="approved",
+        reviewer_name="Dr. Test",
+        reviewer_contact="expert@example.com",
+        comments="Approved for one smoke test only.",
+    )
+    assert isinstance(approval, MDExpertApprovalRecord)
+    assert approval.decision == "approved"
+    assert repo.get_md_expert_review_packet(packet.packet_id).status == "approved"
+
+
+def test_md_expert_agent_contract_rejects_invalid_decision():
+    with pytest.raises(ValidationError):
+        MDExpertAgentReviewResult(
+            packet_id=uuid4(),
+            packet_hash="a" * 64,
+            decision="maybe",
+            confidence=0.5,
+            summary="Invalid decision.",
+            model_profile="deterministic_only",
+        )
+
+
+def test_md_expert_agent_deterministic_review_persists_agent_approval(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "md-expert-agent-deterministic.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(_md_queue_item())
+    service.approve_validation_request_queue_item(item.queue_item_id, approved_by="unit-test")
+    created = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            queue_item_id=item.queue_item_id,
+            create_from_queue_item=True,
+            approved_by="unit-test",
+        )
+    ).created_job
+    assert created is not None
+    packet = service.create_md_expert_review_packet(created.compute_job_id)
+    assert packet is not None
+
+    result = service.run_md_expert_review_agent(
+        MDExpertAgentReviewRequest(packet_id=packet.packet_id, model_profile="deterministic_only")
+    )
+
+    assert isinstance(result, MDExpertAgentReviewResult)
+    assert result.decision == "approved"
+    assert result.agent_run_id is not None
+    assert result.approval_record is not None
+    assert result.approval_record.reviewer_type == "md_expert_agent"
+    assert result.approval_record.agent_run_id == result.agent_run_id
+    approvals = repo.list_md_expert_approvals(packet_hash=packet.packet_hash, decision="approved")
+    assert approvals[0].reviewer_type == "md_expert_agent"
+    assert repo.get_md_expert_review_packet(packet.packet_id).status == "approved"
+
+    requests_seen = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"id": "rp-md-agent-approved", "status": "IN_QUEUE"}).encode("utf-8")
+
+    def fake_urlopen(request, timeout=60):
+        requests_seen.append(json.loads(request.data.decode("utf-8")) if request.data else {})
+        return FakeResponse()
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "temp-test-key")
+    monkeypatch.setenv("HSA_RUNPOD_ENDPOINT_ID", "cbf4ffekmo36t9")
+    monkeypatch.setattr(compute_runners.urllib.request, "urlopen", fake_urlopen)
+    submitted = service.submit_compute_job(created.compute_job_id, dry_run=False)
+    assert submitted is not None
+    assert submitted.status == "submitted"
+    assert submitted.runpod_job_id == "rp-md-agent-approved"
+    assert submitted.metadata["md_expert_approval_id"] == str(result.approval_record.approval_id)
+    assert submitted.metadata["md_expert_reviewer_type"] == "md_expert_agent"
+    assert requests_seen[-1]["input"]["compound_smiles"] == "CCO"
+
+
+def test_md_expert_agent_openrouter_review_persists_agent_approval(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "md-expert-agent-openrouter.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(_md_queue_item())
+    service.approve_validation_request_queue_item(item.queue_item_id, approved_by="unit-test")
+    created = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            queue_item_id=item.queue_item_id,
+            create_from_queue_item=True,
+            approved_by="unit-test",
+        )
+    ).created_job
+    assert created is not None
+    packet = service.create_md_expert_review_packet(created.compute_job_id)
+    assert packet is not None
+
+    def fake_openrouter(model_name, review_payload):
+        assert model_name == "anthropic/claude-sonnet-test"
+        assert review_payload["packet"]["packet_hash"] == packet.packet_hash
+        return {
+            "text": json.dumps(
+                {
+                    "decision": "approved",
+                    "confidence": 0.82,
+                    "summary": "Packet is acceptable for one smoke-scale worker contract test.",
+                    "rationale": "Required inputs, provenance, endpoint, expected outputs, and cost bounds are present.",
+                    "required_changes": [],
+                    "checklist_assessment": ["Smoke-scale bounds are explicit."],
+                    "risk_flags": ["Not an efficacy result."],
+                }
+            ),
+            "metadata": {
+                "provider": "openrouter",
+                "model_name": "anthropic/claude-sonnet-test",
+                "requested_model": "anthropic/claude-sonnet-test",
+                "usage": {"cost": 0.01},
+            },
+        }
+
+    monkeypatch.setattr(md_expert_agent, "_openrouter_review_model", fake_openrouter)
+    result = service.run_md_expert_review_agent(
+        MDExpertAgentReviewRequest(
+            packet_id=packet.packet_id,
+            model_profile="anthropic/claude-sonnet-test",
+        )
+    )
+
+    assert result is not None
+    assert result.decision == "approved"
+    assert result.confidence == 0.82
+    assert result.approval_record is not None
+    assert result.approval_record.model_profile == "anthropic/claude-sonnet-test"
+    assert result.approval_record.metadata["raw_response"]["provider_metadata"]["usage"]["cost"] == 0.01
+
+
+def test_md_live_submit_blocks_until_exact_expert_approval_exists(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "md-live-submit-gate.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(_md_queue_item())
+    service.approve_validation_request_queue_item(item.queue_item_id, approved_by="unit-test")
+    created = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            queue_item_id=item.queue_item_id,
+            create_from_queue_item=True,
+            approved_by="unit-test",
+        )
+    ).created_job
+    assert created is not None
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "temp-test-key")
+    monkeypatch.setenv("HSA_RUNPOD_ENDPOINT_ID", "endpoint-test")
+
+    blocked_without_packet = service.submit_compute_job(created.compute_job_id, dry_run=False)
+    assert blocked_without_packet is not None
+    assert blocked_without_packet.status == "blocked"
+    assert blocked_without_packet.last_error == "md_expert_review_packet_required"
+
+    packet = service.create_md_expert_review_packet(created.compute_job_id, endpoint_id="endpoint-test")
+    assert packet is not None
+    blocked_without_approval = service.submit_compute_job(created.compute_job_id, dry_run=False)
+    assert blocked_without_approval is not None
+    assert blocked_without_approval.status == "blocked"
+    assert blocked_without_approval.last_error == "md_expert_approval_required"
+
+
+def test_md_live_submit_allows_approved_packet_and_sends_worker_fields(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "md-live-submit-approved.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(_md_queue_item())
+    service.approve_validation_request_queue_item(item.queue_item_id, approved_by="unit-test")
+    created = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            queue_item_id=item.queue_item_id,
+            create_from_queue_item=True,
+            approved_by="unit-test",
+        )
+    ).created_job
+    assert created is not None
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "temp-test-key")
+    monkeypatch.setenv("HSA_RUNPOD_ENDPOINT_ID", "endpoint-test")
+    packet = service.create_md_expert_review_packet(created.compute_job_id, endpoint_id="endpoint-test")
+    assert packet is not None
+    approval = service.record_md_expert_approval(
+        packet.packet_id,
+        decision="approved",
+        reviewer_name="Dr. Test",
+        reviewer_contact="expert@example.com",
+    )
+    assert approval is not None
+
+    requests_seen = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout=60):
+        requests_seen.append(
+            {
+                "url": request.full_url,
+                "body": json.loads(request.data.decode("utf-8")) if request.data else None,
+            }
+        )
+        return FakeResponse({"id": "rp-md-job-1", "status": "IN_QUEUE"})
+
+    monkeypatch.setattr(compute_runners.urllib.request, "urlopen", fake_urlopen)
+    submitted = service.submit_compute_job(created.compute_job_id, dry_run=False)
+
+    assert submitted is not None
+    assert submitted.status == "submitted"
+    assert submitted.runpod_job_id == "rp-md-job-1"
+    assert submitted.metadata["md_expert_approval_id"] == str(approval.approval_id)
+    assert requests_seen[-1]["url"].endswith("/v2/endpoint-test/run")
+    worker_input = requests_seen[-1]["body"]["input"]
+    assert worker_input["protein_pdb"] == _MINIMAL_MD_PDB
+    assert worker_input["compound_smiles"] == "CCO"
+    assert worker_input["simulation_steps"] == 10
+
+
+def test_compute_job_report_creates_dry_run_and_blocks_live_submit(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "compute-job-report.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="Docking queue compute job",
+            task_type="docking",
+            title="Dock candidate A against KDR",
+            objective="Run docking after a live compute runner is configured.",
+            rationale="The first GPU lane needs durable approval and artifact tracking.",
+            validation_request=ValidationRequest(
+                validation_type="docking",
+                target_name="KDR",
+                candidate_name="candidate A",
+                objective="Dock candidate A against KDR.",
+                require_approval=True,
+                metadata={"runpod_input": {"protein_pdb": "ATOM test"}},
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma and human angiosarcoma",
+                    species=["canine", "human"],
+                    model_system="Computational target or structure model with explicit source provenance.",
+                    assay_type="in silico structural validation",
+                    readout="binding plausibility and failure modes",
+                    endpoint="computational plausibility",
+                ),
+            ),
+        )
+    )
+    service.approve_validation_request_queue_item(item.queue_item_id, approved_by="unit-test")
+
+    report = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            queue_item_id=item.queue_item_id,
+            create_from_queue_item=True,
+            submit=True,
+            dry_run=True,
+            approved_by="unit-test",
+        )
+    )
+    assert isinstance(report, ComputeJobReportResult)
+    assert report.created_job is not None
+    assert report.created_job.status == "submitted"
+    assert report.created_job.external_run_id.startswith("dry-run:")
+    assert report.submitted_count == 1
+
+    live_attempt = service.submit_compute_job(report.created_job.compute_job_id, dry_run=False)
+    assert live_attempt is not None
+    assert live_attempt.status == "blocked"
+    assert "RUNPOD_API_KEY" in live_attempt.last_error
+
+
+def test_runpod_compute_job_live_submit_and_poll_are_persisted(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "runpod-compute-job.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="RunPod docking queue compute job",
+            task_type="docking",
+            title="Dock candidate A against KDR",
+            objective="Submit a mocked RunPod serverless job.",
+            rationale="The live adapter should persist job ids and status responses.",
+            validation_request=ValidationRequest(
+                validation_type="docking",
+                target_name="KDR",
+                candidate_name="candidate A",
+                objective="Dock candidate A against KDR.",
+                require_approval=True,
+                metadata={"runpod_input": {"protein_pdb": "ATOM test"}},
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma and human angiosarcoma",
+                    species=["canine", "human"],
+                    model_system="Computational target or structure model with explicit source provenance.",
+                    assay_type="in silico structural validation",
+                    readout="binding plausibility and failure modes",
+                    endpoint="computational plausibility",
+                ),
+            ),
+        )
+    )
+    service.approve_validation_request_queue_item(item.queue_item_id, approved_by="unit-test")
+    created = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            queue_item_id=item.queue_item_id,
+            create_from_queue_item=True,
+            approved_by="unit-test",
+        )
+    ).created_job
+    assert created is not None
+
+    requests_seen = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout=60):
+        requests_seen.append(
+            {
+                "url": request.full_url,
+                "method": request.get_method(),
+                "headers": dict(request.header_items()),
+                "body": json.loads(request.data.decode("utf-8")) if request.data else None,
+                "timeout": timeout,
+            }
+        )
+        if request.get_method() == "POST":
+            return FakeResponse({"id": "rp-job-1", "status": "IN_QUEUE"})
+        if "/cancel/" in request.full_url:
+            return FakeResponse({"id": "rp-job-1", "status": "CANCELLED"})
+        return FakeResponse({"id": "rp-job-1", "status": "COMPLETED", "output": {"artifact": "ok"}})
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "temp-test-key")
+    monkeypatch.setenv("HSA_RUNPOD_ENDPOINT_ID", "endpoint-test")
+    monkeypatch.setattr(compute_runners.urllib.request, "urlopen", fake_urlopen)
+
+    submitted = service.submit_compute_job(created.compute_job_id, dry_run=False)
+    assert submitted is not None
+    assert submitted.status == "submitted"
+    assert submitted.runpod_job_id == "rp-job-1"
+    assert submitted.metadata["submission_mode"] == "live"
+    assert requests_seen[-1]["url"].endswith("/v2/endpoint-test/run")
+    assert requests_seen[-1]["body"]["input"]["compute_job_id"] == str(created.compute_job_id)
+    assert requests_seen[-1]["body"]["input"]["protein_pdb"] == "ATOM test"
+
+    polled = service.poll_compute_job(created.compute_job_id)
+    assert polled is not None
+    assert polled.status == "completed"
+    assert polled.completed_at is not None
+    assert polled.output_payload["runpod_status_response"]["output"]["artifact"] == "ok"
+    assert requests_seen[-1]["url"].endswith("/v2/endpoint-test/status/rp-job-1")
+
+    cancelled = service.cancel_compute_job(created.compute_job_id)
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
+    assert requests_seen[-1]["url"].endswith("/v2/endpoint-test/cancel/rp-job-1")
 
 
 def test_omics_validation_request_dispatches_after_approval(tmp_path):

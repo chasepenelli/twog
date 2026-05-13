@@ -486,6 +486,20 @@ ValidationRequestQueueStatus = Literal[
     "archived",
 ]
 
+ComputeRunnerKind = Literal["runpod", "local", "dagster", "external", "mock"]
+ComputeProfile = Literal["cpu", "gpu", "gpu_a10", "gpu_l4", "gpu_a100", "gpu_h100", "unknown"]
+ComputeJobStatus = Literal[
+    "needs_approval",
+    "approved",
+    "queued",
+    "submitted",
+    "running",
+    "completed",
+    "failed",
+    "cancelled",
+    "blocked",
+]
+
 
 class AgentRunRecord(StrictBaseModel):
     agent_run_id: UUID = Field(default_factory=uuid4)
@@ -3480,6 +3494,236 @@ class AsyncRunHandle(StrictBaseModel):
     artifact_ids: list[UUID] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ComputeJobRecord(StrictBaseModel):
+    compute_job_id: UUID = Field(default_factory=uuid4)
+    queue_item_id: UUID | None = None
+    status: ComputeJobStatus = "needs_approval"
+    runner_kind: ComputeRunnerKind = "runpod"
+    compute_profile: ComputeProfile = "gpu"
+    validation_type: str | None = Field(default=None, max_length=100)
+    title: str = Field(min_length=1, max_length=500)
+    objective: str = Field(min_length=1, max_length=2000)
+    container_image: str | None = Field(default=None, max_length=500)
+    entrypoint: list[str] = Field(default_factory=list, max_length=50)
+    input_payload: dict[str, Any] = Field(default_factory=dict)
+    output_payload: dict[str, Any] = Field(default_factory=dict)
+    expected_outputs: list[str] = Field(default_factory=list, max_length=50)
+    artifact_ids: list[UUID] = Field(default_factory=list)
+    external_run_id: str | None = Field(default=None, max_length=300)
+    dagster_run_id: str | None = Field(default=None, max_length=300)
+    runpod_job_id: str | None = Field(default=None, max_length=300)
+    cost_estimate_usd: float | None = Field(default=None, ge=0.0)
+    cost_actual_usd: float | None = Field(default=None, ge=0.0)
+    approved_by: str | None = Field(default=None, max_length=200)
+    approval_note: str | None = Field(default=None, max_length=1000)
+    submitted_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    last_error: str | None = Field(default=None, max_length=2000)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_compute_job_record(self) -> "ComputeJobRecord":
+        self.title = self.title.strip()
+        self.objective = self.objective.strip()
+        if self.container_image:
+            self.container_image = self.container_image.strip() or None
+        if self.external_run_id:
+            self.external_run_id = self.external_run_id.strip() or None
+        if self.dagster_run_id:
+            self.dagster_run_id = self.dagster_run_id.strip() or None
+        if self.runpod_job_id:
+            self.runpod_job_id = self.runpod_job_id.strip() or None
+        self.entrypoint = _normalized_unique_strings(self.entrypoint)
+        self.expected_outputs = _normalized_unique_strings(self.expected_outputs)
+        return self
+
+
+class ComputeJobReportRequest(StrictBaseModel):
+    queue_item_id: UUID | None = None
+    status: ComputeJobStatus | None = None
+    runner_kind: ComputeRunnerKind | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+    create_from_queue_item: bool = False
+    submit: bool = False
+    poll: bool = False
+    cancel: bool = False
+    dry_run: bool = True
+    compute_profile: ComputeProfile = "gpu"
+    approved_by: str | None = Field(default=None, max_length=200)
+    approval_note: str | None = Field(default=None, max_length=1000)
+    dagster_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ComputeJobReportResult(StrictBaseModel):
+    job_count: int = 0
+    created_count: int = 0
+    submitted_count: int = 0
+    blocked_count: int = 0
+    jobs: list[ComputeJobRecord] = Field(default_factory=list)
+    created_job: ComputeJobRecord | None = None
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+MDExpertApprovalDecision = Literal["approved", "needs_changes", "rejected"]
+MDExpertReviewerType = Literal["human_expert", "md_expert_agent"]
+
+
+class MDInputPacket(StrictBaseModel):
+    protein_pdb: str = Field(min_length=20)
+    compound_smiles: str = Field(min_length=1, max_length=500)
+    target_name: str = Field(min_length=1, max_length=200)
+    compound_name: str = Field(min_length=1, max_length=200)
+    simulation_steps: int = Field(default=10, ge=1, le=1000)
+    temperature: float = Field(default=300.0, ge=250.0, le=350.0)
+    ph: float | None = Field(default=None, ge=0.0, le=14.0)
+    box_padding: float | None = Field(default=None, ge=0.0, le=20.0)
+    force_field: str | None = Field(default=None, max_length=100)
+    solvent_model: str | None = Field(default=None, max_length=100)
+    protein_source: str = Field(min_length=1, max_length=500)
+    ligand_source: str = Field(min_length=1, max_length=500)
+    preparation_method: str = Field(min_length=1, max_length=1000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_md_input_packet(self) -> "MDInputPacket":
+        self.protein_pdb = self.protein_pdb.strip()
+        self.compound_smiles = self.compound_smiles.strip()
+        self.target_name = self.target_name.strip()
+        self.compound_name = self.compound_name.strip()
+        self.protein_source = self.protein_source.strip()
+        self.ligand_source = self.ligand_source.strip()
+        self.preparation_method = self.preparation_method.strip()
+        if self.force_field:
+            self.force_field = self.force_field.strip() or None
+        if self.solvent_model:
+            self.solvent_model = self.solvent_model.strip() or None
+        pdb_lines = [line.strip() for line in self.protein_pdb.splitlines() if line.strip()]
+        if not any(line.startswith(("ATOM", "HETATM")) for line in pdb_lines):
+            raise ValueError("protein_pdb must include at least one ATOM or HETATM record")
+        if not any(line.startswith(("END", "TER")) for line in pdb_lines):
+            raise ValueError("protein_pdb must include an END or TER record")
+        if re.search(r"\s", self.compound_smiles):
+            raise ValueError("compound_smiles must not contain whitespace")
+        if not re.fullmatch(r"[A-Za-z0-9@+\-\[\]\(\)=#$\\/%.:]+", self.compound_smiles):
+            raise ValueError("compound_smiles contains unsupported characters")
+        if not re.search(r"[A-Za-z]", self.compound_smiles):
+            raise ValueError("compound_smiles must contain at least one atom token")
+        return self
+
+
+class MDExpertReviewPacketRecord(StrictBaseModel):
+    packet_id: UUID = Field(default_factory=uuid4)
+    packet_version: str = "md_expert_review_packet.v1"
+    packet_hash: str = Field(min_length=16, max_length=128)
+    compute_job_id: UUID | None = None
+    queue_item_id: UUID | None = None
+    endpoint_id: str = "cbf4ffekmo36t9"
+    endpoint_name: str = "hsa-md-validation"
+    template_name: str = "hsa-md-openmm"
+    input_packet: MDInputPacket
+    worker_error_history: list[dict[str, Any]] = Field(default_factory=list)
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    expected_outputs: list[str] = Field(default_factory=list)
+    known_limitations: list[str] = Field(default_factory=list)
+    safety_cost_bounds: dict[str, Any] = Field(default_factory=dict)
+    approval_checklist: list[str] = Field(default_factory=list)
+    review_document: str = Field(min_length=1)
+    status: Literal["needs_review", "approved", "needs_changes", "rejected"] = "needs_review"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_md_expert_review_packet(self) -> "MDExpertReviewPacketRecord":
+        self.endpoint_id = self.endpoint_id.strip()
+        self.endpoint_name = self.endpoint_name.strip()
+        self.template_name = self.template_name.strip()
+        self.expected_outputs = _normalized_unique_strings(self.expected_outputs)
+        self.known_limitations = _normalized_unique_strings(self.known_limitations)
+        self.approval_checklist = _normalized_unique_strings(self.approval_checklist)
+        self.review_document = self.review_document.strip()
+        return self
+
+
+class MDExpertApprovalRecord(StrictBaseModel):
+    approval_id: UUID = Field(default_factory=uuid4)
+    packet_id: UUID
+    packet_hash: str = Field(min_length=16, max_length=128)
+    decision: MDExpertApprovalDecision
+    reviewer_type: MDExpertReviewerType = "human_expert"
+    reviewer_name: str = Field(min_length=1, max_length=200)
+    reviewer_contact: str = Field(min_length=1, max_length=300)
+    agent_run_id: UUID | None = None
+    model_profile: str | None = Field(default=None, max_length=300)
+    required_changes: list[str] = Field(default_factory=list, max_length=50)
+    comments: str | None = Field(default=None, max_length=3000)
+    reviewed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_md_expert_approval(self) -> "MDExpertApprovalRecord":
+        self.reviewer_name = self.reviewer_name.strip()
+        self.reviewer_contact = self.reviewer_contact.strip()
+        self.required_changes = _normalized_unique_strings(self.required_changes)
+        if self.comments:
+            self.comments = self.comments.strip() or None
+        if self.model_profile:
+            self.model_profile = self.model_profile.strip() or None
+        if self.decision == "approved" and self.required_changes:
+            raise ValueError("approved MD expert reviews cannot include required_changes")
+        return self
+
+
+class MDExpertAgentReviewRequest(StrictBaseModel):
+    packet_id: UUID
+    model_profile: str = Field(default="openrouter_required", min_length=1, max_length=300)
+    approve_on_agent_approved: bool = True
+    reviewer_name: str = Field(default="md_expert_review_agent", min_length=1, max_length=200)
+    reviewer_contact: str = Field(default="agent://md_expert_review_agent", min_length=1, max_length=300)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_md_expert_agent_review_request(self) -> "MDExpertAgentReviewRequest":
+        self.model_profile = self.model_profile.strip()
+        self.reviewer_name = self.reviewer_name.strip()
+        self.reviewer_contact = self.reviewer_contact.strip()
+        return self
+
+
+class MDExpertAgentReviewResult(StrictBaseModel):
+    agent_run_id: UUID | None = None
+    packet_id: UUID
+    packet_hash: str = Field(min_length=16, max_length=128)
+    decision: MDExpertApprovalDecision
+    confidence: float = Field(ge=0.0, le=1.0)
+    summary: str = Field(min_length=1, max_length=3000)
+    rationale: str = Field(default="", max_length=5000)
+    required_changes: list[str] = Field(default_factory=list, max_length=50)
+    checklist_assessment: list[str] = Field(default_factory=list, max_length=50)
+    risk_flags: list[str] = Field(default_factory=list, max_length=50)
+    model_profile: str = Field(min_length=1, max_length=300)
+    approval_record: MDExpertApprovalRecord | None = None
+    raw_response: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_md_expert_agent_review_result(self) -> "MDExpertAgentReviewResult":
+        self.summary = self.summary.strip()
+        self.rationale = self.rationale.strip()
+        self.required_changes = _normalized_unique_strings(self.required_changes)
+        self.checklist_assessment = _normalized_unique_strings(self.checklist_assessment)
+        self.risk_flags = _normalized_unique_strings(self.risk_flags)
+        if self.decision == "approved" and self.required_changes:
+            raise ValueError("approved MD expert agent reviews cannot include required_changes")
+        return self
 
 
 class ValidationPlanTask(StrictBaseModel):

@@ -20,9 +20,11 @@ from .contracts import (
     ClaimCurationRequest,
     ClaimSearchRequest,
     CommandCenterRequest,
+    ComputeJobReportRequest,
     EvidenceGapResolverRequest,
     FullTextOpsRequest,
     HypothesisPromotionReportRequest,
+    MDExpertAgentReviewRequest,
     OmicsAccessionHuntRequest,
     OmicsEvidencePacketRequest,
     OmicsFollowupRequest,
@@ -724,6 +726,19 @@ _ENTITY_RESOLUTION_TABLE_COLUMNS = (
     "claims",
     "passes_minimum_bar",
     "errors",
+)
+_COMPUTE_JOB_TABLE_COLUMNS = (
+    "compute_job_id",
+    "queue_item_id",
+    "status",
+    "runner_kind",
+    "compute_profile",
+    "validation_type",
+    "title",
+    "runpod_job_id",
+    "dagster_run_id",
+    "last_error",
+    "updated_at",
 )
 
 
@@ -1736,6 +1751,69 @@ if dg is not None:
             "last_run_id": item.get("last_run_id"),
             "last_error": str(item.get("last_error") or "")[:300],
             "created_at": item.get("created_at"),
+        }
+
+    def _compute_job_row(item: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "compute_job_id": item.get("compute_job_id"),
+            "queue_item_id": item.get("queue_item_id"),
+            "status": item.get("status"),
+            "runner_kind": item.get("runner_kind"),
+            "compute_profile": item.get("compute_profile"),
+            "validation_type": item.get("validation_type"),
+            "title": str(item.get("title") or "")[:300],
+            "runpod_job_id": item.get("runpod_job_id"),
+            "dagster_run_id": item.get("dagster_run_id"),
+            "last_error": str(item.get("last_error") or "")[:300],
+            "updated_at": item.get("updated_at"),
+        }
+
+    def _compute_job_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = [_compute_job_row(item) for item in report.get("jobs", [])]
+        created_job = report.get("created_job") or {}
+        return {
+            "job_count": dg.MetadataValue.int(int(report.get("job_count", 0))),
+            "created_count": dg.MetadataValue.int(int(report.get("created_count", 0))),
+            "submitted_count": dg.MetadataValue.int(int(report.get("submitted_count", 0))),
+            "blocked_count": dg.MetadataValue.int(int(report.get("blocked_count", 0))),
+            "created_compute_job_id": created_job.get("compute_job_id"),
+            "created_compute_job_status": created_job.get("status"),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "jobs": _metadata_table(rows, _COMPUTE_JOB_TABLE_COLUMNS),
+        }
+
+    def _md_expert_review_packet_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        input_packet = report.get("input_packet") if isinstance(report.get("input_packet"), Mapping) else {}
+        return {
+            "packet_id": report.get("packet_id"),
+            "packet_hash": report.get("packet_hash"),
+            "status": report.get("status"),
+            "compute_job_id": report.get("compute_job_id"),
+            "queue_item_id": report.get("queue_item_id"),
+            "endpoint_id": report.get("endpoint_id"),
+            "target_name": input_packet.get("target_name"),
+            "compound_name": input_packet.get("compound_name"),
+            "simulation_steps": dg.MetadataValue.int(int(input_packet.get("simulation_steps", 0))),
+            "worker_error_count": dg.MetadataValue.int(len(report.get("worker_error_history", []))),
+            "review_document": dg.MetadataValue.md(str(report.get("review_document") or "")),
+        }
+
+    def _md_expert_agent_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        approval = report.get("approval_record") if isinstance(report.get("approval_record"), Mapping) else {}
+        return {
+            "agent_run_id": report.get("agent_run_id"),
+            "packet_id": report.get("packet_id"),
+            "packet_hash": report.get("packet_hash"),
+            "decision": report.get("decision"),
+            "confidence": float(report.get("confidence", 0.0)),
+            "model_profile": report.get("model_profile"),
+            "approval_id": approval.get("approval_id"),
+            "reviewer_type": approval.get("reviewer_type"),
+            "required_change_count": dg.MetadataValue.int(len(report.get("required_changes", []))),
+            "risk_flag_count": dg.MetadataValue.int(len(report.get("risk_flags", []))),
+            "summary": dg.MetadataValue.md(str(report.get("summary") or "")),
+            "required_changes": dg.MetadataValue.json(report.get("required_changes", [])),
+            "risk_flags": dg.MetadataValue.json(report.get("risk_flags", [])),
         }
 
     def _validation_autopilot_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -4364,6 +4442,177 @@ if dg is not None:
         return dg.MaterializeResult(
             value=report,
             metadata=_validation_request_queue_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "queue_item_id": dg.Field(
+                str,
+                is_required=False,
+                description="Optional validation queue item to create/list compute jobs for.",
+            ),
+            "status": dg.Field(str, is_required=False, description="Optional compute job status filter."),
+            "runner_kind": dg.Field(
+                str,
+                default_value="runpod",
+                description="Compute runner kind for new jobs and optional list filter.",
+            ),
+            "compute_profile": dg.Field(
+                str,
+                default_value="gpu",
+                description="Requested compute profile for new jobs.",
+            ),
+            "limit": dg.Field(int, default_value=50, description="Maximum compute jobs to list."),
+            "create_from_queue_item": dg.Field(
+                bool,
+                default_value=False,
+                description="Create a durable compute job from the selected validation queue item.",
+            ),
+            "submit": dg.Field(
+                bool,
+                default_value=False,
+                description="Attempt submission. Dry-run submission records a handle only.",
+            ),
+            "poll": dg.Field(
+                bool,
+                default_value=False,
+                description="Poll the created/submitted RunPod job after submission.",
+            ),
+            "cancel": dg.Field(
+                bool,
+                default_value=False,
+                description="Cancel the created/submitted RunPod job after submission/polling.",
+            ),
+            "dry_run": dg.Field(
+                bool,
+                default_value=True,
+                description="Keep submission in dry-run mode. Live RunPod submission is blocked until configured.",
+            ),
+            "approved_by": dg.Field(str, is_required=False, description="Optional operator approval identity."),
+            "approval_note": dg.Field(str, is_required=False, description="Optional operator approval note."),
+        },
+    )
+    def compute_job_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual control-plane view for approval-first CPU/GPU compute jobs."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).build_compute_job_report(
+            ComputeJobReportRequest(
+                queue_item_id=UUID(config["queue_item_id"]) if config.get("queue_item_id") else None,
+                status=config.get("status"),
+                runner_kind=config.get("runner_kind") or None,
+                compute_profile=config.get("compute_profile") or "gpu",
+                limit=config["limit"],
+                create_from_queue_item=config["create_from_queue_item"],
+                submit=config["submit"],
+                poll=config["poll"],
+                cancel=config["cancel"],
+                dry_run=config["dry_run"],
+                approved_by=config.get("approved_by"),
+                approval_note=config.get("approval_note"),
+                dagster_run_id=context.run_id,
+                metadata={"dagster_run_id": context.run_id},
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_compute_job_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "compute_job_id": dg.Field(str, description="Compute job ID to package for MD expert review."),
+            "endpoint_id": dg.Field(str, default_value="cbf4ffekmo36t9"),
+            "endpoint_name": dg.Field(str, default_value="hsa-md-validation"),
+            "template_name": dg.Field(str, default_value="hsa-md-openmm"),
+            "persist": dg.Field(bool, default_value=True),
+        },
+    )
+    def md_expert_review_packet_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Generate the pre-submit MD expert review packet for one compute job."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        packet = HSAResearchService(repository).create_md_expert_review_packet(
+            UUID(config["compute_job_id"]),
+            endpoint_id=config["endpoint_id"],
+            endpoint_name=config["endpoint_name"],
+            template_name=config["template_name"],
+            persist=config["persist"],
+        )
+        if packet is None:
+            raise RuntimeError(f"Compute job not found: {config['compute_job_id']}")
+        report = packet.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_md_expert_review_packet_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "packet_id": dg.Field(str, description="MD expert review packet ID to review."),
+            "model_profile": dg.Field(
+                str,
+                default_value="openrouter_required",
+                description="OpenRouter model/profile for the MD expert agent. Use deterministic_only for tests.",
+            ),
+            "approve_on_agent_approved": dg.Field(
+                bool,
+                default_value=True,
+                description="Persist an approval record when the agent returns approved.",
+            ),
+            "reviewer_name": dg.Field(str, default_value="md_expert_review_agent"),
+            "reviewer_contact": dg.Field(str, default_value="agent://md_expert_review_agent"),
+        },
+    )
+    def md_expert_agent_review_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Run the MD expert agent over a generated review packet."""
+
+        from uuid import UUID
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).run_md_expert_review_agent(
+            MDExpertAgentReviewRequest(
+                packet_id=UUID(config["packet_id"]),
+                model_profile=config["model_profile"],
+                approve_on_agent_approved=config["approve_on_agent_approved"],
+                reviewer_name=config["reviewer_name"],
+                reviewer_contact=config["reviewer_contact"],
+                metadata={"dagster_run_id": context.run_id},
+            ),
+            dagster_run_id=context.run_id,
+        )
+        if result is None:
+            raise RuntimeError(f"MD expert review packet not found: {config['packet_id']}")
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_md_expert_agent_metadata(report),
         )
 
     @dg.asset(
@@ -7028,6 +7277,9 @@ if dg is not None:
         validation_plan_library_report,
         validation_request_queue_report,
         validation_request_queue_library_report,
+        compute_job_report,
+        md_expert_review_packet_report,
+        md_expert_agent_review_report,
         validation_autopilot_report,
         research_brief_queue_report,
         research_brief_queue_batch_report,
@@ -7260,6 +7512,18 @@ if dg is not None:
     validation_request_queue_library_job = dg.define_asset_job(
         "validation_request_queue_library_job",
         selection=dg.AssetSelection.assets(validation_request_queue_library_report),
+    )
+    compute_job_job = dg.define_asset_job(
+        "compute_job_job",
+        selection=dg.AssetSelection.assets(compute_job_report),
+    )
+    md_expert_review_packet_job = dg.define_asset_job(
+        "md_expert_review_packet_job",
+        selection=dg.AssetSelection.assets(md_expert_review_packet_report),
+    )
+    md_expert_agent_review_job = dg.define_asset_job(
+        "md_expert_agent_review_job",
+        selection=dg.AssetSelection.assets(md_expert_agent_review_report),
     )
     validation_autopilot_job = dg.define_asset_job(
         "validation_autopilot_job",
@@ -7587,6 +7851,9 @@ if dg is not None:
             validation_plan_library_job,
             validation_request_queue_job,
             validation_request_queue_library_job,
+            compute_job_job,
+            md_expert_review_packet_job,
+            md_expert_agent_review_job,
             validation_autopilot_job,
             research_brief_queue_job,
             research_brief_queue_batch_job,
@@ -7692,6 +7959,9 @@ else:
     validation_plan_library_job = None
     validation_request_queue_job = None
     validation_request_queue_library_job = None
+    compute_job_job = None
+    md_expert_review_packet_job = None
+    md_expert_agent_review_job = None
     validation_autopilot_job = None
     research_brief_queue_job = None
     research_brief_queue_batch_job = None

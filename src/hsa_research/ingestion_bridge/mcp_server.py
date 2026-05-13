@@ -29,6 +29,7 @@ from .contracts import (
     HypothesisPromotionReportRequest,
     HypothesisDraft,
     HypothesisProposalRequest,
+    MDExpertAgentReviewRequest,
     ModelProfile,
     ResearchBriefEvaluationRequest,
     ResearchBriefQueueBatchRequest,
@@ -626,6 +627,46 @@ def run_validation_autopilot_tool(
     if dry_run:
         return service.preview_validation_autopilot(request).model_dump(mode="json")
     return service.run_validation_autopilot(request).model_dump(mode="json")
+
+
+def create_md_expert_review_packet_tool(
+    compute_job_id: str,
+    endpoint_id: str = "cbf4ffekmo36t9",
+    endpoint_name: str = "hsa-md-validation",
+    template_name: str = "hsa-md-openmm",
+    persist: bool = True,
+) -> dict:
+    """Generate the MD expert review packet for a compute job."""
+
+    packet = get_service().create_md_expert_review_packet(
+        UUID(compute_job_id),
+        endpoint_id=endpoint_id,
+        endpoint_name=endpoint_name,
+        template_name=template_name,
+        persist=persist,
+    )
+    return {} if packet is None else packet.model_dump(mode="json")
+
+
+def run_md_expert_agent_review_tool(
+    packet_id: str,
+    model_profile: str = "openrouter_required",
+    approve_on_agent_approved: bool = True,
+    reviewer_name: str = "md_expert_review_agent",
+    reviewer_contact: str = "agent://md_expert_review_agent",
+) -> dict:
+    """Run the MD expert agent over a review packet and persist the review decision."""
+
+    result = get_service().run_md_expert_review_agent(
+        MDExpertAgentReviewRequest(
+            packet_id=UUID(packet_id),
+            model_profile=model_profile,
+            approve_on_agent_approved=approve_on_agent_approved,
+            reviewer_name=reviewer_name,
+            reviewer_contact=reviewer_contact,
+        )
+    )
+    return {} if result is None else result.model_dump(mode="json")
 
 
 def resolve_evidence_gaps_tool(
@@ -1906,6 +1947,42 @@ if mcp is not None:
             allowed_validation_types=allowed_validation_types,
             source_keys=source_keys,
             model_profile=model_profile,
+        )
+
+    @mcp.tool()
+    def create_md_expert_review_packet(
+        compute_job_id: str,
+        endpoint_id: str = "cbf4ffekmo36t9",
+        endpoint_name: str = "hsa-md-validation",
+        template_name: str = "hsa-md-openmm",
+        persist: bool = True,
+    ) -> dict:
+        """Generate the MD expert review packet for a compute job."""
+
+        return create_md_expert_review_packet_tool(
+            compute_job_id=compute_job_id,
+            endpoint_id=endpoint_id,
+            endpoint_name=endpoint_name,
+            template_name=template_name,
+            persist=persist,
+        )
+
+    @mcp.tool()
+    def run_md_expert_agent_review(
+        packet_id: str,
+        model_profile: str = "openrouter_required",
+        approve_on_agent_approved: bool = True,
+        reviewer_name: str = "md_expert_review_agent",
+        reviewer_contact: str = "agent://md_expert_review_agent",
+    ) -> dict:
+        """Run the MD expert agent over a review packet and persist the review decision."""
+
+        return run_md_expert_agent_review_tool(
+            packet_id=packet_id,
+            model_profile=model_profile,
+            approve_on_agent_approved=approve_on_agent_approved,
+            reviewer_name=reviewer_name,
+            reviewer_contact=reviewer_contact,
         )
 
     @mcp.tool()

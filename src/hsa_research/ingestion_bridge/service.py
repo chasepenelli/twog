@@ -41,6 +41,9 @@ from .contracts import (
     CommandCenterRecommendation,
     CommandCenterRequest,
     CommandCenterResult,
+    ComputeJobRecord,
+    ComputeJobReportRequest,
+    ComputeJobReportResult,
     CommitHypothesisRequest,
     DoiOpenAccessFollowupQueueRequest,
     DocumentChunk,
@@ -55,6 +58,11 @@ from .contracts import (
     FullTextOpsResult,
     HypothesisDraft,
     HypothesisProposalRequest,
+    MDExpertAgentReviewRequest,
+    MDExpertAgentReviewResult,
+    MDExpertApprovalRecord,
+    MDExpertReviewPacketRecord,
+    MDInputPacket,
     ModelProfile,
     PubMedIdentifierRepairRequest,
     PubMedIdentifierRepairResult,
@@ -205,6 +213,7 @@ from .agent_performance import (
 from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
 from .claim_extractor import extract_claims_for_chunks
+from .compute_runners import ComputeRunnerConfigError, ComputeRunnerRequestError, RunPodComputeRunner
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, build_embedding_provider, select_embedding_model_from_coverage
 from .evidence_fit import assess_research_followup_ingest_evidence_fit
 from .evidence_gap_resolver import (
@@ -216,6 +225,12 @@ from .evidence_gap_resolver import (
 from .full_text_ops import FULL_TEXT_OPS_AGENT_NAME, FULL_TEXT_OPS_AGENT_VERSION, FullTextOpsAgent
 from .full_text_triage import FullTextTriageAgent
 from .model_policy import BIG_IDEA_OPENROUTER_MODEL, DEFAULT_OPENROUTER_MODEL
+from .md_expert_agent import (
+    MD_EXPERT_REVIEW_AGENT_NAME,
+    MD_EXPERT_REVIEW_AGENT_VERSION,
+    run_md_expert_review_agent,
+    summarize_md_expert_review,
+)
 from .omics_accession_hunt import run_omics_accession_hunt
 from .omics_evidence_packets import build_omics_evidence_packets
 from .omics_followups import build_omics_followups
@@ -626,6 +641,195 @@ def _queue_item_cost_usd(item: ValidationRequestQueueItem) -> float | None:
         if parsed is not None:
             return parsed
     return None
+
+
+def _md_runpod_input_from_compute_job(record: ComputeJobRecord) -> dict[str, Any]:
+    explicit_input: dict[str, Any] = {}
+    validation_request = record.input_payload.get("validation_request")
+    if isinstance(validation_request, dict):
+        request_metadata = validation_request.get("metadata")
+        if isinstance(request_metadata, dict) and isinstance(request_metadata.get("runpod_input"), dict):
+            explicit_input.update(request_metadata["runpod_input"])
+    metadata = record.metadata or {}
+    if isinstance(metadata.get("runpod_input"), dict):
+        explicit_input.update(metadata["runpod_input"])
+    if isinstance(record.input_payload.get("runpod_input"), dict):
+        explicit_input.update(record.input_payload["runpod_input"])
+    return explicit_input
+
+
+def _md_input_packet_from_compute_job(record: ComputeJobRecord) -> MDInputPacket:
+    validation_request = record.input_payload.get("validation_request")
+    if not isinstance(validation_request, dict):
+        validation_request = {}
+    runpod_input = _md_runpod_input_from_compute_job(record)
+    missing = [
+        key
+        for key in ("protein_pdb", "compound_smiles", "protein_source", "ligand_source", "preparation_method")
+        if not str(runpod_input.get(key) or "").strip()
+    ]
+    if missing:
+        raise ValueError(f"missing MD runpod_input fields: {', '.join(missing)}")
+    target_name = str(runpod_input.get("target_name") or validation_request.get("target_name") or "").strip()
+    compound_name = str(
+        runpod_input.get("compound_name")
+        or validation_request.get("candidate_name")
+        or validation_request.get("candidate_id")
+        or ""
+    ).strip()
+    if not target_name:
+        raise ValueError("target_name is required for MD input packets")
+    if not compound_name:
+        raise ValueError("compound_name or candidate_name is required for MD input packets")
+    return MDInputPacket(
+        protein_pdb=str(runpod_input["protein_pdb"]),
+        compound_smiles=str(runpod_input["compound_smiles"]),
+        target_name=target_name,
+        compound_name=compound_name,
+        simulation_steps=int(runpod_input.get("simulation_steps") or runpod_input.get("steps") or 10),
+        temperature=float(runpod_input.get("temperature") or 300.0),
+        ph=_float_or_none(runpod_input.get("ph")),
+        box_padding=_float_or_none(runpod_input.get("box_padding")),
+        force_field=str(runpod_input["force_field"]) if runpod_input.get("force_field") is not None else None,
+        solvent_model=str(runpod_input["solvent_model"]) if runpod_input.get("solvent_model") is not None else None,
+        protein_source=str(runpod_input["protein_source"]),
+        ligand_source=str(runpod_input["ligand_source"]),
+        preparation_method=str(runpod_input["preparation_method"]),
+        metadata={
+            "compute_job_id": str(record.compute_job_id),
+            "queue_item_id": str(record.queue_item_id) if record.queue_item_id else None,
+            "validation_type": record.validation_type,
+            "title": record.title,
+            "source_metadata_keys": sorted(str(key) for key in runpod_input.keys()),
+        },
+    )
+
+
+def _md_expert_packet_hash(
+    input_packet: MDInputPacket,
+    *,
+    endpoint_id: str,
+    packet_version: str,
+) -> str:
+    payload = {
+        "endpoint_id": endpoint_id,
+        "packet_version": packet_version,
+        "input_packet": input_packet.model_dump(mode="json"),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _md_worker_error_history(record: ComputeJobRecord) -> list[dict[str, Any]]:
+    history: list[dict[str, Any]] = []
+    if record.last_error:
+        history.append(
+            {
+                "source": "compute_job.last_error",
+                "status": record.status,
+                "message": record.last_error,
+                "observed_at": record.updated_at.isoformat(),
+            }
+        )
+    for payload_key, payload in (("output_payload", record.output_payload), ("metadata", record.metadata)):
+        if not isinstance(payload, dict):
+            continue
+        for response_key in ("runpod_submit_response", "runpod_status_response", "runpod_cancel_response"):
+            response = payload.get(response_key)
+            if not isinstance(response, dict):
+                continue
+            error = response.get("error") or response.get("errorMessage") or response.get("message")
+            output = response.get("output")
+            if error or isinstance(output, dict):
+                entry: dict[str, Any] = {
+                    "source": f"{payload_key}.{response_key}",
+                    "runpod_status": response.get("status"),
+                }
+                if error:
+                    entry["error"] = str(error)[:2000]
+                if isinstance(output, dict):
+                    for key in ("error", "traceback", "stderr", "message"):
+                        if output.get(key):
+                            entry[key] = str(output[key])[:2000]
+                history.append(entry)
+    return history
+
+
+def _md_input_schema() -> dict[str, Any]:
+    return {
+        "required": [
+            "protein_pdb",
+            "compound_smiles",
+            "target_name",
+            "compound_name",
+            "simulation_steps",
+            "temperature",
+            "protein_source",
+            "ligand_source",
+            "preparation_method",
+        ],
+        "optional": ["ph", "box_padding", "force_field", "solvent_model", "metadata"],
+        "worker_contract": {
+            "runpod_body": "Fields are sent at top-level under JSON body input.",
+            "protein_pdb": "PDB text containing ATOM/HETATM records and TER or END.",
+            "compound_smiles": "Single ligand SMILES string without whitespace.",
+            "simulation_steps": "Smoke tests must be <= 1000 steps.",
+        },
+    }
+
+
+def _render_md_expert_review_document(
+    *,
+    input_packet: MDInputPacket,
+    endpoint_id: str,
+    endpoint_name: str,
+    template_name: str,
+    packet_hash: str,
+    worker_error_history: list[dict[str, Any]],
+) -> str:
+    pdb_lines = [line for line in input_packet.protein_pdb.splitlines() if line.strip()]
+    pdb_preview = "\n".join(pdb_lines[:8])
+    errors = worker_error_history or [{"source": "system", "message": "No prior worker error history supplied."}]
+    return "\n".join(
+        [
+            "# MD Expert Review Packet",
+            "",
+            f"- Packet hash: `{packet_hash}`",
+            f"- Endpoint: `{endpoint_name}` / `{endpoint_id}`",
+            f"- Template: `{template_name}`",
+            "- Scope: one smoke-scale MD worker contract test only.",
+            "",
+            "## Proposed Inputs",
+            "",
+            f"- Target: {input_packet.target_name}",
+            f"- Compound: {input_packet.compound_name}",
+            f"- Compound SMILES: `{input_packet.compound_smiles}`",
+            f"- Simulation steps: {input_packet.simulation_steps}",
+            f"- Temperature: {input_packet.temperature}",
+            f"- Protein source: {input_packet.protein_source}",
+            f"- Ligand source: {input_packet.ligand_source}",
+            f"- Preparation method: {input_packet.preparation_method}",
+            f"- PDB line count: {len(pdb_lines)}",
+            "",
+            "```pdb",
+            pdb_preview,
+            "```",
+            "",
+            "## Worker Error History",
+            "",
+            "```json",
+            json.dumps(errors[:10], indent=2, sort_keys=True),
+            "```",
+            "",
+            "## Approval Checklist",
+            "",
+            "- Are the protein and ligand valid for a smoke test?",
+            "- Is the worker input contract complete?",
+            "- Are preparation assumptions acceptable for the first live run?",
+            "- Are cost/capacity bounds appropriate for exactly one small test?",
+            "- If no, list exact required changes before live execution.",
+        ]
+    )
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -1986,6 +2190,474 @@ class HSAResearchService:
                 "validation_agent_model_profile": model_profile,
                 "validation_agent_result": result.model_dump(mode="json"),
             },
+        )
+
+    def create_compute_job_from_validation_queue_item(
+        self,
+        queue_item_id: UUID,
+        *,
+        runner_kind: str = "runpod",
+        compute_profile: str = "gpu",
+        approved_by: str | None = None,
+        approval_note: str | None = None,
+        dagster_run_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ComputeJobRecord | None:
+        item = self.repository.get_validation_request_queue_item(queue_item_id)
+        if item is None:
+            return None
+        request = item.validation_request
+        status = "approved" if approved_by or item.status == "approved" else "needs_approval"
+        blockers = _validation_request_dispatch_blockers(request.model_copy(update={"require_approval": False}))
+        if blockers and item.status == "blocked":
+            status = "blocked"
+        existing_jobs = self.repository.list_compute_jobs(queue_item_id=queue_item_id, limit=1)
+        existing = existing_jobs[0] if existing_jobs else None
+        record = ComputeJobRecord(
+            compute_job_id=existing.compute_job_id if existing else uuid4(),
+            queue_item_id=queue_item_id,
+            status=existing.status if existing and existing.status not in {"needs_approval", "approved"} else status,
+            runner_kind=runner_kind,  # type: ignore[arg-type]
+            compute_profile=compute_profile,  # type: ignore[arg-type]
+            validation_type=request.validation_type,
+            title=item.title,
+            objective=item.objective,
+            input_payload={
+                "queue_item": item.model_dump(mode="json"),
+                "validation_request": request.model_dump(mode="json"),
+            },
+            expected_outputs=[
+                "execution_manifest",
+                "computed_artifacts",
+                "quality_gate_report",
+                "validation_summary",
+            ],
+            dagster_run_id=dagster_run_id,
+            cost_estimate_usd=_queue_item_cost_usd(item),
+            approved_by=approved_by or item.approved_by,
+            approval_note=approval_note or item.approval_note,
+            created_at=existing.created_at if existing else datetime.now(UTC),
+            metadata={
+                **(existing.metadata if existing else {}),
+                **(metadata or {}),
+                "dispatch_blockers": blockers,
+                "recommend_only": True,
+                "runner_enabled": False,
+            },
+        )
+        return self.repository.upsert_compute_job(record)
+
+    def create_md_expert_review_packet(
+        self,
+        compute_job_id: UUID,
+        *,
+        endpoint_id: str = "cbf4ffekmo36t9",
+        endpoint_name: str = "hsa-md-validation",
+        template_name: str = "hsa-md-openmm",
+        worker_error_history: list[dict[str, Any]] | None = None,
+        safety_cost_bounds: dict[str, Any] | None = None,
+        persist: bool = True,
+    ) -> MDExpertReviewPacketRecord | None:
+        record = self.repository.get_compute_job(compute_job_id)
+        if record is None:
+            return None
+        input_packet = _md_input_packet_from_compute_job(record)
+        packet_hash = _md_expert_packet_hash(
+            input_packet,
+            endpoint_id=endpoint_id,
+            packet_version="md_expert_review_packet.v1",
+        )
+        packet = MDExpertReviewPacketRecord(
+            packet_hash=packet_hash,
+            compute_job_id=record.compute_job_id,
+            queue_item_id=record.queue_item_id,
+            endpoint_id=endpoint_id,
+            endpoint_name=endpoint_name,
+            template_name=template_name,
+            input_packet=input_packet,
+            worker_error_history=worker_error_history or _md_worker_error_history(record),
+            input_schema=_md_input_schema(),
+            expected_outputs=[
+                "runpod_job_id",
+                "runpod_status_response",
+                "prepared_ligand_artifact_or_error",
+                "md_or_docking_metrics_or_structured_failure",
+            ],
+            known_limitations=[
+                "This is a smoke-scale MD endpoint test, not a biological efficacy result.",
+                "Protein and ligand preparation assumptions must be reviewed before live execution.",
+                "The current worker previously required protein_pdb and compound_smiles and failed inside ligand preparation.",
+            ],
+            safety_cost_bounds=safety_cost_bounds
+            or {
+                "endpoint_id": endpoint_id,
+                "workers_max": 5,
+                "simulation_steps_max": 1000,
+                "single_job_only": True,
+                "requires_manual_expert_approval": True,
+            },
+            approval_checklist=[
+                "Protein PDB is appropriate for a smoke test.",
+                "Compound SMILES is appropriate for ligand preparation.",
+                "Ligand/protein preparation assumptions are acceptable.",
+                "Expected outputs and failure modes are sufficient for a first run.",
+                "Endpoint choice is acceptable for this smoke test.",
+            ],
+            review_document=_render_md_expert_review_document(
+                input_packet=input_packet,
+                endpoint_id=endpoint_id,
+                endpoint_name=endpoint_name,
+                template_name=template_name,
+                packet_hash=packet_hash,
+                worker_error_history=worker_error_history or _md_worker_error_history(record),
+            ),
+            metadata={
+                "source_compute_job_id": str(record.compute_job_id),
+                "source_queue_item_id": str(record.queue_item_id) if record.queue_item_id else None,
+                "source_compute_status": record.status,
+            },
+        )
+        return self.repository.upsert_md_expert_review_packet(packet) if persist else packet
+
+    def record_md_expert_approval(
+        self,
+        packet_id: UUID,
+        *,
+        decision: str,
+        reviewer_name: str,
+        reviewer_contact: str,
+        reviewer_type: str = "human_expert",
+        agent_run_id: UUID | None = None,
+        model_profile: str | None = None,
+        required_changes: list[str] | None = None,
+        comments: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> MDExpertApprovalRecord | None:
+        packet = self.repository.get_md_expert_review_packet(packet_id)
+        if packet is None:
+            return None
+        approval = MDExpertApprovalRecord(
+            packet_id=packet.packet_id,
+            packet_hash=packet.packet_hash,
+            decision=decision,  # type: ignore[arg-type]
+            reviewer_type=reviewer_type,  # type: ignore[arg-type]
+            reviewer_name=reviewer_name,
+            reviewer_contact=reviewer_contact,
+            agent_run_id=agent_run_id,
+            model_profile=model_profile,
+            required_changes=required_changes or [],
+            comments=comments,
+            metadata=metadata or {},
+        )
+        return self.repository.upsert_md_expert_approval(approval)
+
+    def run_md_expert_review_agent(
+        self,
+        request: MDExpertAgentReviewRequest,
+        *,
+        dagster_run_id: str | None = None,
+    ) -> MDExpertAgentReviewResult | None:
+        packet = self.repository.get_md_expert_review_packet(request.packet_id)
+        if packet is None:
+            return None
+        result = AgentRunner(self.repository).run(
+            agent_name=MD_EXPERT_REVIEW_AGENT_NAME,
+            agent_version=MD_EXPERT_REVIEW_AGENT_VERSION,
+            model_profile=request.model_profile,
+            input_payload={
+                "packet_id": str(packet.packet_id),
+                "packet_hash": packet.packet_hash,
+                "packet": packet.model_dump(mode="json"),
+                "approve_on_agent_approved": request.approve_on_agent_approved,
+            },
+            execute=lambda: run_md_expert_review_agent(packet, model_profile=request.model_profile),
+            dagster_run_id=dagster_run_id,
+            metadata={
+                "packet_id": str(packet.packet_id),
+                "packet_hash": packet.packet_hash,
+                **(request.metadata or {}),
+            },
+            summarize=summarize_md_expert_review,
+        )
+        approval = None
+        if request.approve_on_agent_approved or result.decision != "approved":
+            approval = self.record_md_expert_approval(
+                packet.packet_id,
+                decision=result.decision,
+                reviewer_type="md_expert_agent",
+                reviewer_name=request.reviewer_name,
+                reviewer_contact=request.reviewer_contact,
+                agent_run_id=result.agent_run_id,
+                model_profile=request.model_profile,
+                required_changes=result.required_changes,
+                comments=result.summary,
+                metadata={
+                    "agent_run_id": str(result.agent_run_id) if result.agent_run_id else None,
+                    "confidence": result.confidence,
+                    "rationale": result.rationale,
+                    "checklist_assessment": result.checklist_assessment,
+                    "risk_flags": result.risk_flags,
+                    "raw_response": result.raw_response,
+                    **(request.metadata or {}),
+                },
+            )
+        return result.model_copy(update={"approval_record": approval})
+
+    def submit_compute_job(
+        self,
+        compute_job_id: UUID,
+        *,
+        dry_run: bool = True,
+        dagster_run_id: str | None = None,
+    ) -> ComputeJobRecord | None:
+        record = self.repository.get_compute_job(compute_job_id)
+        if record is None:
+            return None
+        retryable_md_gate_block = (
+            record.validation_type == "md"
+            and record.status == "blocked"
+            and str(record.last_error or "").split(":", 1)[0]
+            in {
+                "md_input_packet_invalid",
+                "md_expert_review_packet_required",
+                "md_safety_cost_bounds_required",
+                "md_expert_approval_required",
+            }
+        )
+        if record.status not in {"approved", "queued", "submitted"} and not retryable_md_gate_block:
+            return self.repository.update_compute_job(
+                compute_job_id,
+                status="blocked",
+                dagster_run_id=dagster_run_id,
+                last_error=f"Compute job must be approved before submission; current status is {record.status}.",
+                metadata={"submission_blocked_at": datetime.now(UTC).isoformat()},
+            )
+        if dry_run:
+            return self.repository.update_compute_job(
+                compute_job_id,
+                status="submitted",
+                external_run_id=f"dry-run:{compute_job_id}",
+                dagster_run_id=dagster_run_id,
+                metadata={
+                    "submission_mode": "dry_run",
+                    "submitted_at": datetime.now(UTC).isoformat(),
+                },
+            )
+        if record.runner_kind != "runpod":
+            return self.repository.update_compute_job(
+                compute_job_id,
+                status="blocked",
+                dagster_run_id=dagster_run_id,
+                last_error=f"{record.runner_kind}_runner_not_configured",
+                metadata={
+                    "submission_mode": "live",
+                    "blocked_reason": f"{record.runner_kind}_runner_not_configured",
+                },
+            )
+        gate_metadata: dict[str, Any] = {}
+        if record.validation_type == "md":
+            gate_error, gate_metadata = self._md_live_submit_gate(record)
+            if gate_error:
+                return self.repository.update_compute_job(
+                    compute_job_id,
+                    status="blocked",
+                    dagster_run_id=dagster_run_id,
+                    last_error=gate_error,
+                    metadata={
+                        "submission_mode": "live",
+                        "blocked_reason": gate_error.split(":", 1)[0],
+                        **gate_metadata,
+                    },
+                )
+        try:
+            submission = RunPodComputeRunner.from_env().submit(record)
+        except (ComputeRunnerConfigError, ComputeRunnerRequestError) as exc:
+            return self.repository.update_compute_job(
+                compute_job_id,
+                status="blocked",
+                dagster_run_id=dagster_run_id,
+                last_error=str(exc),
+                metadata={
+                    "submission_mode": "live",
+                    "blocked_reason": type(exc).__name__,
+                },
+            )
+        return self.repository.update_compute_job(
+            compute_job_id,
+            status=submission["status"],
+            output_payload=submission["output_payload"],
+            external_run_id=submission["external_run_id"],
+            runpod_job_id=submission["runpod_job_id"],
+            dagster_run_id=dagster_run_id,
+            metadata=submission["metadata"] | gate_metadata | {"submission_mode": "live"},
+        )
+
+    def _md_live_submit_gate(self, record: ComputeJobRecord) -> tuple[str | None, dict[str, Any]]:
+        try:
+            input_packet = _md_input_packet_from_compute_job(record)
+        except Exception as exc:
+            return f"md_input_packet_invalid: {exc}", {}
+        endpoint_id = os.getenv("HSA_RUNPOD_ENDPOINT_ID", "cbf4ffekmo36t9").strip() or "cbf4ffekmo36t9"
+        packet_hash = _md_expert_packet_hash(
+            input_packet,
+            endpoint_id=endpoint_id,
+            packet_version="md_expert_review_packet.v1",
+        )
+        packet = self.repository.get_md_expert_review_packet_by_hash(packet_hash)
+        if packet is None:
+            return "md_expert_review_packet_required", {"md_packet_hash": packet_hash}
+        if not packet.safety_cost_bounds:
+            return "md_safety_cost_bounds_required", {"md_packet_hash": packet_hash, "md_packet_id": str(packet.packet_id)}
+        approvals = self.repository.list_md_expert_approvals(
+            packet_hash=packet_hash,
+            decision="approved",
+            limit=1,
+        )
+        if not approvals:
+            return "md_expert_approval_required", {"md_packet_hash": packet_hash, "md_packet_id": str(packet.packet_id)}
+        approval = approvals[0]
+        return None, {
+            "md_packet_hash": packet_hash,
+            "md_packet_id": str(packet.packet_id),
+            "md_expert_approval_id": str(approval.approval_id),
+            "md_expert_reviewer_type": approval.reviewer_type,
+            "md_expert_reviewer": approval.reviewer_name,
+        }
+
+    def poll_compute_job(
+        self,
+        compute_job_id: UUID,
+        *,
+        dagster_run_id: str | None = None,
+    ) -> ComputeJobRecord | None:
+        record = self.repository.get_compute_job(compute_job_id)
+        if record is None:
+            return None
+        if record.runner_kind != "runpod":
+            return self.repository.update_compute_job(
+                compute_job_id,
+                status="blocked",
+                dagster_run_id=dagster_run_id,
+                last_error=f"{record.runner_kind}_runner_not_configured",
+                metadata={"poll_blocked_at": datetime.now(UTC).isoformat()},
+            )
+        try:
+            status = RunPodComputeRunner.from_env().poll(record)
+        except (ComputeRunnerConfigError, ComputeRunnerRequestError) as exc:
+            return self.repository.update_compute_job(
+                compute_job_id,
+                status="blocked",
+                dagster_run_id=dagster_run_id,
+                last_error=str(exc),
+                metadata={
+                    "poll_blocked_at": datetime.now(UTC).isoformat(),
+                    "blocked_reason": type(exc).__name__,
+                },
+            )
+        return self.repository.update_compute_job(
+            compute_job_id,
+            status=status["status"],
+            output_payload=status["output_payload"],
+            dagster_run_id=dagster_run_id,
+            last_error=status["last_error"],
+            metadata=status["metadata"],
+        )
+
+    def cancel_compute_job(
+        self,
+        compute_job_id: UUID,
+        *,
+        dagster_run_id: str | None = None,
+    ) -> ComputeJobRecord | None:
+        record = self.repository.get_compute_job(compute_job_id)
+        if record is None:
+            return None
+        if record.runner_kind != "runpod":
+            return self.repository.update_compute_job(
+                compute_job_id,
+                status="blocked",
+                dagster_run_id=dagster_run_id,
+                last_error=f"{record.runner_kind}_runner_not_configured",
+                metadata={"cancel_blocked_at": datetime.now(UTC).isoformat()},
+            )
+        try:
+            cancellation = RunPodComputeRunner.from_env().cancel(record)
+        except (ComputeRunnerConfigError, ComputeRunnerRequestError) as exc:
+            return self.repository.update_compute_job(
+                compute_job_id,
+                status="blocked",
+                dagster_run_id=dagster_run_id,
+                last_error=str(exc),
+                metadata={
+                    "cancel_blocked_at": datetime.now(UTC).isoformat(),
+                    "blocked_reason": type(exc).__name__,
+                },
+            )
+        return self.repository.update_compute_job(
+            compute_job_id,
+            status=cancellation["status"],
+            output_payload=cancellation["output_payload"],
+            dagster_run_id=dagster_run_id,
+            metadata=cancellation["metadata"],
+        )
+
+    def build_compute_job_report(self, request: ComputeJobReportRequest) -> ComputeJobReportResult:
+        errors: list[str] = []
+        created_job: ComputeJobRecord | None = None
+        submitted_count = 0
+        if request.create_from_queue_item:
+            if request.queue_item_id is None:
+                errors.append("queue_item_id_required")
+            else:
+                created_job = self.create_compute_job_from_validation_queue_item(
+                    request.queue_item_id,
+                    runner_kind=request.runner_kind or "runpod",
+                    compute_profile=request.compute_profile,
+                    approved_by=request.approved_by,
+                    approval_note=request.approval_note,
+                    dagster_run_id=request.dagster_run_id,
+                    metadata=request.metadata,
+                )
+                if created_job is None:
+                    errors.append("queue_item_not_found")
+                elif request.submit:
+                    submitted = self.submit_compute_job(
+                        created_job.compute_job_id,
+                        dry_run=request.dry_run,
+                        dagster_run_id=request.dagster_run_id,
+                    )
+                    if submitted is not None:
+                        created_job = submitted
+                        submitted_count = 1 if submitted.status == "submitted" else 0
+                if created_job is not None and request.poll:
+                    polled = self.poll_compute_job(
+                        created_job.compute_job_id,
+                        dagster_run_id=request.dagster_run_id,
+                    )
+                    if polled is not None:
+                        created_job = polled
+                if created_job is not None and request.cancel:
+                    cancelled = self.cancel_compute_job(
+                        created_job.compute_job_id,
+                        dagster_run_id=request.dagster_run_id,
+                    )
+                    if cancelled is not None:
+                        created_job = cancelled
+
+        jobs = self.repository.list_compute_jobs(
+            status=request.status,
+            runner_kind=request.runner_kind,
+            queue_item_id=request.queue_item_id,
+            limit=request.limit,
+        )
+        return ComputeJobReportResult(
+            job_count=len(jobs),
+            created_count=1 if created_job else 0,
+            submitted_count=submitted_count,
+            blocked_count=sum(1 for job in jobs if job.status == "blocked"),
+            jobs=jobs,
+            created_job=created_job,
+            errors=errors,
         )
 
     def run_validation_queue_item_agent(

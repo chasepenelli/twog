@@ -47,6 +47,9 @@ on:
           - "validation_plan_library_job"
           - "validation_request_queue_job"
           - "validation_request_queue_library_job"
+          - "compute_job_job"
+          - "md_expert_review_packet_job"
+          - "md_expert_agent_review_job"
           - "research_brief_queue_job"
           - "research_brief_queue_batch_job"
           - "research_brief_queue_seed_job"
@@ -128,6 +131,8 @@ jobs:
       HSA_RESEARCH_BRIEF_MODEL: "anthropic/claude-sonnet-4.6"
       HSA_BIG_IDEA_OPENROUTER_MODEL: "~anthropic/claude-opus-latest"
       HSA_RESEARCH_PROGRAM_BOARD_MODEL: "~anthropic/claude-opus-latest"
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      HSA_RUNPOD_ENDPOINT_ID: ${{ secrets.HSA_RUNPOD_ENDPOINT_ID }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
       HSA_X_LINKED_ARTICLE_APPROVED_BY: "github-actions"
@@ -169,6 +174,12 @@ jobs:
           if [ "$DAGSTER_CLOUD_JOB" = "x_topic_monitor_review_job" ] && [ -z "$TWITTERAPI_IO_KEY" ]; then
             echo "::error::TWITTERAPI_IO_KEY is required for x_topic_monitor_review_job."
             exit 1
+          fi
+          if [ "$DAGSTER_CLOUD_JOB" = "compute_job_job" ] && printf '%s' "$DAGSTER_CLOUD_CONFIG_JSON" | grep -q '"dry_run"[[:space:]]*:[[:space:]]*false'; then
+            if [ -z "$RUNPOD_API_KEY" ] || [ -z "$HSA_RUNPOD_ENDPOINT_ID" ]; then
+              echo "::error::RUNPOD_API_KEY and HSA_RUNPOD_ENDPOINT_ID are required for live compute_job_job submissions."
+              exit 1
+            fi
           fi
         shell: bash
 

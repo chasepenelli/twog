@@ -25,12 +25,15 @@ from .contracts import (
     CandidateDossierRequest,
     ClaimSearchRequest,
     ClaimSearchResult,
+    ComputeJobRecord,
     CommitHypothesisRequest,
     DocumentChunk,
     EmbeddingCoverageSummary,
     EntityAlias,
     EntityMention,
     HypothesisDraft,
+    MDExpertApprovalRecord,
+    MDExpertReviewPacketRecord,
     RawSourceRecord,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
@@ -2397,6 +2400,269 @@ class SQLiteResearchRepository(ResearchRepository):
         self.conn.commit()
         return updated
 
+    def upsert_compute_job(self, record: ComputeJobRecord) -> ComputeJobRecord:
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into compute_jobs (
+              compute_job_id, queue_item_id, status, runner_kind, compute_profile,
+              validation_type, title, runpod_job_id, dagster_run_id, created_at,
+              updated_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(compute_job_id) do update set
+              queue_item_id = excluded.queue_item_id,
+              status = excluded.status,
+              runner_kind = excluded.runner_kind,
+              compute_profile = excluded.compute_profile,
+              validation_type = excluded.validation_type,
+              title = excluded.title,
+              runpod_job_id = excluded.runpod_job_id,
+              dagster_run_id = excluded.dagster_run_id,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(record.compute_job_id),
+                str(record.queue_item_id) if record.queue_item_id else None,
+                record.status,
+                record.runner_kind,
+                record.compute_profile,
+                record.validation_type,
+                record.title,
+                record.runpod_job_id,
+                record.dagster_run_id,
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_compute_job(self, compute_job_id: UUID) -> ComputeJobRecord | None:
+        row = self.conn.execute(
+            "select payload from compute_jobs where compute_job_id = ?",
+            (str(compute_job_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return ComputeJobRecord.model_validate(json.loads(row["payload"]))
+
+    def list_compute_jobs(
+        self,
+        *,
+        status: str | None = None,
+        runner_kind: str | None = None,
+        queue_item_id: UUID | None = None,
+        limit: int | None = 50,
+    ) -> list[ComputeJobRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if runner_kind:
+            clauses.append("runner_kind = ?")
+            params.append(runner_kind)
+        if queue_item_id:
+            clauses.append("queue_item_id = ?")
+            params.append(str(queue_item_id))
+        sql = "select payload from compute_jobs"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by updated_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            ComputeJobRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
+    def update_compute_job(
+        self,
+        compute_job_id: UUID,
+        *,
+        status: str | None = None,
+        output_payload: dict | None = None,
+        external_run_id: str | None = None,
+        dagster_run_id: str | None = None,
+        runpod_job_id: str | None = None,
+        cost_actual_usd: float | None = None,
+        last_error: str | None = None,
+        metadata: dict | None = None,
+    ) -> ComputeJobRecord | None:
+        record = self.get_compute_job(compute_job_id)
+        if record is None:
+            return None
+        now = datetime.now(UTC)
+        update: dict[str, object] = {
+            "status": record.status if status is None else status,
+            "output_payload": record.output_payload if output_payload is None else output_payload,
+            "external_run_id": record.external_run_id if external_run_id is None else external_run_id,
+            "dagster_run_id": record.dagster_run_id if dagster_run_id is None else dagster_run_id,
+            "runpod_job_id": record.runpod_job_id if runpod_job_id is None else runpod_job_id,
+            "cost_actual_usd": record.cost_actual_usd if cost_actual_usd is None else cost_actual_usd,
+            "last_error": last_error,
+            "updated_at": now,
+            "metadata": {**record.metadata, **(metadata or {})},
+        }
+        if status == "submitted":
+            update["submitted_at"] = now
+        if status == "running":
+            update["started_at"] = now
+        if status in {"completed", "failed", "cancelled", "blocked"}:
+            update["completed_at"] = now
+        updated = record.model_copy(update=update)
+        return self.upsert_compute_job(updated)
+
+    def upsert_md_expert_review_packet(
+        self,
+        record: MDExpertReviewPacketRecord,
+    ) -> MDExpertReviewPacketRecord:
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into md_expert_review_packets (
+              packet_id, packet_hash, status, compute_job_id, queue_item_id,
+              endpoint_id, created_at, updated_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(packet_id) do update set
+              packet_hash = excluded.packet_hash,
+              status = excluded.status,
+              compute_job_id = excluded.compute_job_id,
+              queue_item_id = excluded.queue_item_id,
+              endpoint_id = excluded.endpoint_id,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(record.packet_id),
+                record.packet_hash,
+                record.status,
+                str(record.compute_job_id) if record.compute_job_id else None,
+                str(record.queue_item_id) if record.queue_item_id else None,
+                record.endpoint_id,
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_md_expert_review_packet(self, packet_id: UUID) -> MDExpertReviewPacketRecord | None:
+        row = self.conn.execute(
+            "select payload from md_expert_review_packets where packet_id = ?",
+            (str(packet_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return MDExpertReviewPacketRecord.model_validate(json.loads(row["payload"]))
+
+    def get_md_expert_review_packet_by_hash(self, packet_hash: str) -> MDExpertReviewPacketRecord | None:
+        row = self.conn.execute(
+            "select payload from md_expert_review_packets where packet_hash = ? order by updated_at desc limit 1",
+            (packet_hash,),
+        ).fetchone()
+        if row is None:
+            return None
+        return MDExpertReviewPacketRecord.model_validate(json.loads(row["payload"]))
+
+    def list_md_expert_review_packets(
+        self,
+        *,
+        packet_hash: str | None = None,
+        status: str | None = None,
+        limit: int | None = 50,
+    ) -> list[MDExpertReviewPacketRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if packet_hash:
+            clauses.append("packet_hash = ?")
+            params.append(packet_hash)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        sql = "select payload from md_expert_review_packets"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by updated_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            MDExpertReviewPacketRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
+    def upsert_md_expert_approval(self, record: MDExpertApprovalRecord) -> MDExpertApprovalRecord:
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into md_expert_approvals (
+              approval_id, packet_id, packet_hash, decision, reviewer_name,
+              reviewer_contact, reviewed_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(approval_id) do update set
+              packet_id = excluded.packet_id,
+              packet_hash = excluded.packet_hash,
+              decision = excluded.decision,
+              reviewer_name = excluded.reviewer_name,
+              reviewer_contact = excluded.reviewer_contact,
+              reviewed_at = excluded.reviewed_at,
+              payload = excluded.payload,
+              updated_at = current_timestamp
+            """,
+            (
+                str(record.approval_id),
+                str(record.packet_id),
+                record.packet_hash,
+                record.decision,
+                record.reviewer_name,
+                record.reviewer_contact,
+                record.reviewed_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        packet = self.get_md_expert_review_packet(record.packet_id)
+        if packet is not None:
+            self.upsert_md_expert_review_packet(
+                packet.model_copy(update={"status": record.decision, "updated_at": datetime.now(UTC)})
+            )
+        self.conn.commit()
+        return record
+
+    def list_md_expert_approvals(
+        self,
+        *,
+        packet_hash: str | None = None,
+        decision: str | None = None,
+        limit: int | None = 50,
+    ) -> list[MDExpertApprovalRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if packet_hash:
+            clauses.append("packet_hash = ?")
+            params.append(packet_hash)
+        if decision:
+            clauses.append("decision = ?")
+            params.append(decision)
+        sql = "select payload from md_expert_approvals"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by reviewed_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            MDExpertApprovalRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
     def upsert_research_brief_queue_item(self, item: ResearchBriefQueueItem) -> ResearchBriefQueueItem:
         existing = self.conn.execute(
             "select payload from research_brief_queue where identity_key = ?",
@@ -3647,6 +3913,61 @@ class SQLiteResearchRepository(ResearchRepository):
               on validation_request_queue(source_key, status, priority, created_at);
             create index if not exists validation_request_queue_type_idx
               on validation_request_queue(task_type, validation_type, status);
+
+            create table if not exists compute_jobs (
+              compute_job_id text primary key,
+              queue_item_id text,
+              status text not null,
+              runner_kind text not null,
+              compute_profile text not null,
+              validation_type text,
+              title text not null,
+              runpod_job_id text,
+              dagster_run_id text,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp
+            );
+
+            create index if not exists compute_jobs_status_idx
+              on compute_jobs(status, updated_at desc);
+            create index if not exists compute_jobs_runner_idx
+              on compute_jobs(runner_kind, updated_at desc);
+            create index if not exists compute_jobs_queue_item_idx
+              on compute_jobs(queue_item_id, updated_at desc);
+
+            create table if not exists md_expert_review_packets (
+              packet_id text primary key,
+              packet_hash text not null,
+              status text not null,
+              compute_job_id text,
+              queue_item_id text,
+              endpoint_id text not null,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp
+            );
+
+            create index if not exists md_expert_review_packets_hash_idx
+              on md_expert_review_packets(packet_hash, updated_at desc);
+            create index if not exists md_expert_review_packets_status_idx
+              on md_expert_review_packets(status, updated_at desc);
+
+            create table if not exists md_expert_approvals (
+              approval_id text primary key,
+              packet_id text not null,
+              packet_hash text not null,
+              decision text not null,
+              reviewer_name text not null,
+              reviewer_contact text not null,
+              reviewed_at text not null,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp
+            );
+
+            create index if not exists md_expert_approvals_hash_idx
+              on md_expert_approvals(packet_hash, decision, reviewed_at desc);
 
             create table if not exists research_brief_queue (
               queue_item_id text primary key,
