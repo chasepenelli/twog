@@ -11210,6 +11210,16 @@ def test_md_smoke_seed_fetches_live_api_inputs_and_creates_compute_job(tmp_path,
     assert "protein_pdb" not in report["queue_item"]["validation_request"]["metadata"]["runpod_input"]
 
 
+def test_pubchem_smiles_resolver_accepts_smiles_field_variants(monkeypatch):
+    def fake_fetch(url, timeout_seconds=45):
+        assert "CanonicalSMILES,IsomericSMILES,ConnectivitySMILES" in url
+        return json.dumps({"PropertyTable": {"Properties": [{"CID": 1, "IsomericSMILES": "C[C@H](O)N"}]}})
+
+    monkeypatch.setattr(service_module, "_fetch_text_url", fake_fetch)
+
+    assert service_module._fetch_pubchem_canonical_smiles("test compound") == "C[C@H](O)N"
+
+
 def test_md_input_packet_rejects_missing_or_malformed_inputs():
     valid = MDInputPacket(**_md_runpod_input())
     assert valid.simulation_steps == 10

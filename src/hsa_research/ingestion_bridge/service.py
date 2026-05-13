@@ -874,15 +874,25 @@ def _fetch_pubchem_canonical_smiles(compound_name: str, *, timeout_seconds: int 
     encoded = urllib.parse.quote(name, safe="")
     url = (
         "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/"
-        f"{encoded}/property/CanonicalSMILES/JSON"
+        f"{encoded}/property/CanonicalSMILES,IsomericSMILES,ConnectivitySMILES/JSON"
     )
     payload = json.loads(_fetch_text_url(url, timeout_seconds=timeout_seconds))
     properties = payload.get("PropertyTable", {}).get("Properties", [])
     if not properties or not isinstance(properties[0], dict):
         raise RuntimeError(f"PubChem response for {name!r} did not contain properties")
-    smiles = str(properties[0].get("CanonicalSMILES") or "").strip()
+    property_row = properties[0]
+    smiles = ""
+    for key in ("CanonicalSMILES", "IsomericSMILES", "ConnectivitySMILES", "SMILES"):
+        smiles = str(property_row.get(key) or "").strip()
+        if smiles:
+            break
     if not smiles:
-        raise RuntimeError(f"PubChem response for {name!r} did not contain CanonicalSMILES")
+        for key, value in property_row.items():
+            if "smiles" in str(key).lower() and str(value or "").strip():
+                smiles = str(value).strip()
+                break
+    if not smiles:
+        raise RuntimeError(f"PubChem response for {name!r} did not contain a SMILES field")
     return smiles
 
 
