@@ -4480,6 +4480,14 @@ if dg is not None:
             "priority": dg.Field(int, default_value=40),
             "approve_queue_item": dg.Field(bool, default_value=True),
             "create_compute_job": dg.Field(bool, default_value=True),
+            "force_new_compute_job": dg.Field(
+                bool,
+                default_value=False,
+                description=(
+                    "Create a fresh compute job for an existing MD smoke queue item instead of reusing "
+                    "the latest job for that queue item."
+                ),
+            ),
             "approved_by": dg.Field(str, default_value="dagster-md-smoke"),
             "approval_note": dg.Field(str, is_required=False),
             "timeout_seconds": dg.Field(int, default_value=45),
@@ -4504,6 +4512,7 @@ if dg is not None:
             priority=config["priority"],
             approve_queue_item=config["approve_queue_item"],
             create_compute_job=config["create_compute_job"],
+            force_new_compute_job=config["force_new_compute_job"],
             approved_by=config["approved_by"],
             approval_note=config.get("approval_note"),
             timeout_seconds=config["timeout_seconds"],
@@ -4543,6 +4552,14 @@ if dg is not None:
                 bool,
                 default_value=False,
                 description="Create a durable compute job from the selected validation queue item.",
+            ),
+            "force_new_compute_job": dg.Field(
+                bool,
+                default_value=False,
+                description=(
+                    "When creating from a queue item, create a fresh compute job instead of reusing "
+                    "the latest job for that queue item."
+                ),
             ),
             "submit": dg.Field(
                 bool,
@@ -4594,6 +4611,7 @@ if dg is not None:
                 compute_profile=config.get("compute_profile") or "gpu",
                 limit=config["limit"],
                 create_from_queue_item=config["create_from_queue_item"],
+                force_new_compute_job=config["force_new_compute_job"],
                 submit=config["submit"],
                 poll=config["poll"],
                 cancel=config["cancel"],

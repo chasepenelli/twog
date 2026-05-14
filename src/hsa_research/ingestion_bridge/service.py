@@ -2282,6 +2282,7 @@ class HSAResearchService:
         priority: int = 40,
         approve_queue_item: bool = True,
         create_compute_job: bool = True,
+        force_new_compute_job: bool = False,
         approved_by: str = "md-smoke-seed",
         approval_note: str | None = None,
         protein_pdb: str | None = None,
@@ -2438,6 +2439,7 @@ class HSAResearchService:
                 approved_by=approved_by if approve_queue_item else None,
                 approval_note=approval if approve_queue_item else None,
                 dagster_run_id=dagster_run_id,
+                force_new=force_new_compute_job,
                 metadata={
                     "seed_route": "md_smoke_compute_job",
                     "pdb_id": normalized_pdb_id,
@@ -2445,6 +2447,7 @@ class HSAResearchService:
                     "target_name": target_name,
                     "simulation_steps": simulation_steps,
                     "temperature": temperature,
+                    "force_new_compute_job": force_new_compute_job,
                 },
             )
 
@@ -2555,6 +2558,7 @@ class HSAResearchService:
         approval_note: str | None = None,
         dagster_run_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        force_new: bool = False,
     ) -> ComputeJobRecord | None:
         item = self.repository.get_validation_request_queue_item(queue_item_id)
         if item is None:
@@ -2565,7 +2569,7 @@ class HSAResearchService:
         if blockers and item.status == "blocked":
             status = "blocked"
         existing_jobs = self.repository.list_compute_jobs(queue_item_id=queue_item_id, limit=1)
-        existing = existing_jobs[0] if existing_jobs else None
+        existing = None if force_new else (existing_jobs[0] if existing_jobs else None)
         record = ComputeJobRecord(
             compute_job_id=existing.compute_job_id if existing else uuid4(),
             queue_item_id=queue_item_id,
@@ -2607,6 +2611,10 @@ class HSAResearchService:
                 "dispatch_blockers": blockers,
                 "recommend_only": True,
                 "runner_enabled": False,
+                "force_new_compute_job": force_new,
+                "supersedes_compute_job_id": str(existing_jobs[0].compute_job_id)
+                if force_new and existing_jobs
+                else None,
             },
         )
         return self.repository.upsert_compute_job(record)
@@ -2985,6 +2993,7 @@ class HSAResearchService:
                     approval_note=request.approval_note,
                     dagster_run_id=request.dagster_run_id,
                     metadata=request.metadata,
+                    force_new=request.force_new_compute_job,
                 )
                 if created_job is None:
                     errors.append("queue_item_not_found")

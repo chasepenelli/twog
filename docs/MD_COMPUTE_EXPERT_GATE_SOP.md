@@ -83,6 +83,7 @@ Use this route for a single approved smoke test:
 
 1. Create or reuse the approved validation queue item.
 2. Create or reuse the compute job with `compute_job_job`.
+   - If an old compute job exists for the same queue item but belongs to a retired endpoint or failed worker image, create a fresh compute job with `force_new_compute_job=true`. This preserves the old failed row for audit while preventing stale RunPod handles, output payloads, and failure status from blocking the new endpoint test.
 3. Generate the expert packet with `md_expert_review_packet_job`.
 4. Run the MD expert review agent with OpenRouter and persist the approval.
 5. Confirm the exact packet hash in the approval matches the packet hash in the compute job.

@@ -3550,6 +3550,7 @@ class ComputeJobReportRequest(StrictBaseModel):
     runner_kind: ComputeRunnerKind | None = None
     limit: int = Field(default=50, ge=1, le=500)
     create_from_queue_item: bool = False
+    force_new_compute_job: bool = False
     submit: bool = False
     poll: bool = False
     cancel: bool = False

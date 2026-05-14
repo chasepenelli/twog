@@ -11542,6 +11542,53 @@ def test_md_live_submit_allows_approved_packet_and_sends_worker_fields(tmp_path,
     assert worker_input["simulation_steps"] == 10
 
 
+def test_force_new_compute_job_does_not_reuse_failed_runpod_state(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "md-force-new-compute-job.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(_md_queue_item())
+    service.approve_validation_request_queue_item(item.queue_item_id, approved_by="unit-test")
+    first = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            queue_item_id=item.queue_item_id,
+            create_from_queue_item=True,
+            approved_by="unit-test",
+        )
+    ).created_job
+    assert first is not None
+    failed = repo.update_compute_job(
+        first.compute_job_id,
+        status="failed",
+        external_run_id="old-runpod-job",
+        runpod_job_id="old-runpod-job",
+        output_payload={"runpod_status_response": {"status": "FAILED"}},
+        last_error="worker_ligand_prep_failed",
+    )
+    assert failed is not None
+
+    report = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            queue_item_id=item.queue_item_id,
+            create_from_queue_item=True,
+            force_new_compute_job=True,
+            approved_by="unit-test",
+            metadata={"test_case": "force_new"},
+        )
+    )
+
+    fresh = report.created_job
+    assert fresh is not None
+    assert fresh.compute_job_id != failed.compute_job_id
+    assert fresh.status == "approved"
+    assert fresh.external_run_id is None
+    assert fresh.runpod_job_id is None
+    assert fresh.output_payload == {}
+    assert fresh.last_error is None
+    assert fresh.metadata["force_new_compute_job"] is True
+    assert fresh.metadata["supersedes_compute_job_id"] == str(failed.compute_job_id)
+    assert repo.get_compute_job(failed.compute_job_id).status == "failed"  # type: ignore[union-attr]
+    assert len(repo.list_compute_jobs(queue_item_id=item.queue_item_id, limit=None)) == 2
+
+
 def test_compute_job_report_creates_dry_run_and_blocks_live_submit(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "compute-job-report.sqlite3", seed=False)
     service = HSAResearchService(repo)
