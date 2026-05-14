@@ -171,6 +171,20 @@ The new RunPod endpoint should be created from `ghcr.io/chasepenelli/twog-md-wor
 
 After endpoint creation, update `HSA_RUNPOD_ENDPOINT_ID` in GitHub Actions and Dagster+ to the new endpoint ID. Do not reuse the old opaque endpoint for this lane.
 
+Current hosted state:
+
+- GHCR image build and publish workflow: passing on `main`.
+- RunPod template: `3qszkm4q1c` (`twog-md-smoke-v1-template`).
+- RunPod endpoint: `bpjbi4te75eoul` (`twog-md-smoke-v1`).
+- Old opaque MD endpoint: `cbf4ffekmo36t9` (`hsa-md-validation`) reduced from `workersMax=5` to `workersMax=3` to free quota for the owned worker.
+- GitHub Actions secret `HSA_RUNPOD_ENDPOINT_ID` points to `bpjbi4te75eoul`; the Dagster+ env sync workflow was dispatched after the update.
+
+Remaining hosted smoke blocker:
+
+- GHCR currently requires authenticated pull access for `ghcr.io/chasepenelli/twog-md-worker:smoke-v1`.
+- RunPod template `3qszkm4q1c` has no `containerRegistryAuthId`, so the image must either be made public in GitHub Packages or RunPod must be given GHCR credentials with `read:packages`.
+- Do not run a live worker smoke until one of those image-pull paths is resolved.
+
 ## Expert Checklist
 
 The expert should answer:
