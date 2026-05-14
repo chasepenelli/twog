@@ -74,7 +74,18 @@ def run_worker(payload: dict[str, Any]) -> dict[str, Any]:
             result["stages"].append(_stage("ligand_pdbqt", "completed", **ligand_pdbqt["stage_details"]))
             result["artifacts"]["ligand_pdbqt"] = _artifact_summary(ligand_pdbqt["pdbqt_path"])
 
-            result["stages"].append(_docking_stage(input_payload))
+            docking_stage = _docking_stage(input_payload)
+            result["stages"].append(docking_stage)
+            if docking_stage.get("status") == "failed":
+                result["status"] = "failed"
+                result["errors"].append(
+                    {
+                        "stage": "docking",
+                        "message": docking_stage.get("message") or "Docking stage failed.",
+                        **{key: value for key, value in docking_stage.items() if key not in {"stage", "status", "message"}},
+                    }
+                )
+                return result
             result["stages"].append(_md_smoke_stage(input_payload))
     except StageFailure as exc:
         result["status"] = "failed"
@@ -113,6 +124,7 @@ def _base_result(payload: dict[str, Any]) -> dict[str, Any]:
             "ph": payload.get("ph"),
             "force_field": payload.get("force_field"),
             "solvent_model": payload.get("solvent_model"),
+            "enable_docking": payload.get("enable_docking"),
         },
         "stages": [],
         "artifacts": {},
@@ -323,4 +335,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -3589,6 +3589,7 @@ class MDInputPacket(StrictBaseModel):
     box_padding: float | None = Field(default=None, ge=0.0, le=20.0)
     force_field: str | None = Field(default=None, max_length=100)
     solvent_model: str | None = Field(default=None, max_length=100)
+    enable_docking: bool = False
     protein_source: str = Field(min_length=1, max_length=500)
     ligand_source: str = Field(min_length=1, max_length=500)
     preparation_method: str = Field(min_length=1, max_length=1000)

@@ -87,6 +87,52 @@ def test_md_worker_ligand_pdbqt_uses_sdf_not_pdb(monkeypatch):
     assert stages["md_smoke"]["status"] == "skipped"
 
 
+def test_md_worker_docking_enabled_reports_missing_vina_as_failure(monkeypatch):
+    def fake_prepare_ligand_3d(smiles, compound_name, workdir):
+        sdf_path = Path(workdir) / "ligand.sdf"
+        mol_path = Path(workdir) / "ligand.mol"
+        sdf_path.write_text("sdf fixture\n", encoding="utf-8")
+        mol_path.write_text("mol fixture\n", encoding="utf-8")
+        return {
+            "sdf_path": sdf_path,
+            "mol_path": mol_path,
+            "stage_details": {
+                "compound_name": compound_name,
+                "atom_count": 9,
+                "conformer_count": 1,
+                "optimization_method": "MMFF94",
+                "optimization_code": 0,
+                "intermediate_format": "sdf",
+            },
+        }
+
+    def fake_run_subprocess(command, *, stage):
+        output_path = command[command.index("-o") + 1]
+        Path(output_path).write_text("pdbqt fixture\n", encoding="utf-8")
+        return {
+            "command": command,
+            "return_code": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+
+    def fake_find_command(name):
+        return "mk_prepare_ligand.py" if name == "mk_prepare_ligand.py" else None
+
+    monkeypatch.setattr(md_worker, "_prepare_ligand_3d", fake_prepare_ligand_3d)
+    monkeypatch.setattr(md_worker, "_find_command", fake_find_command)
+    monkeypatch.setattr(md_worker, "_run_subprocess", fake_run_subprocess)
+
+    result = md_worker.handler({"input": _worker_payload(enable_docking=True)})
+
+    assert result["status"] == "failed"
+    stages = {stage["stage"]: stage for stage in result["stages"]}
+    assert stages["ligand_pdbqt"]["status"] == "completed"
+    assert stages["docking"]["status"] == "failed"
+    assert result["errors"][0]["stage"] == "docking"
+    assert "vina" in result["errors"][0]["message"]
+
+
 def test_md_worker_returns_structured_ligand_failure(monkeypatch):
     def fake_prepare_ligand_3d(smiles, compound_name, workdir):
         raise md_worker.StageFailure("ligand_3d", "compound_smiles could not be parsed by RDKit.", {"compound_smiles": smiles})

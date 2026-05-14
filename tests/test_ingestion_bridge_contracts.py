@@ -11254,6 +11254,7 @@ def test_md_smoke_seed_fetches_live_api_inputs_and_creates_compute_job(tmp_path,
     assert item.validation_request.metadata["runpod_input"]["box_padding"] == 10.0
     assert item.validation_request.metadata["runpod_input"]["force_field"]
     assert item.validation_request.metadata["runpod_input"]["solvent_model"] == "tip3p"
+    assert item.validation_request.metadata["runpod_input"]["enable_docking"] is False
     assert item.validation_request.metadata["runpod_input"]["metadata"]["pdb_preparation"]["retained_records"] == [
         "ATOM",
         "TER",
@@ -11265,6 +11266,41 @@ def test_md_smoke_seed_fetches_live_api_inputs_and_creates_compute_job(tmp_path,
     assert report["queue_item"]["validation_request"]["metadata"]["runpod_input"]["protein_pdb_sha256"]
     assert "protein_pdb" not in report["queue_item"]["validation_request"]["metadata"]["runpod_input"]
     assert report["pdb_preparation"]["preparation"] == "protein_only_strip_hetatm_waters_ligands"
+
+
+def test_md_smoke_seed_can_create_distinct_docking_enabled_packet(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "md-smoke-seed-docking.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+
+    monkeypatch.setattr(service_module, "_fetch_rcsb_pdb_text", lambda pdb_id, timeout_seconds=45: _MINIMAL_MD_PDB)
+    monkeypatch.setattr(service_module, "_fetch_pubchem_canonical_smiles", lambda name, timeout_seconds=45: "CCO")
+
+    prep_report = service.seed_md_smoke_compute_job(
+        pdb_id="1abc",
+        compound_name="ethanol",
+        target_name="KDR",
+        simulation_steps=10,
+        approved_by="unit-test",
+    )
+    docking_report = service.seed_md_smoke_compute_job(
+        pdb_id="1abc",
+        compound_name="ethanol",
+        target_name="KDR",
+        simulation_steps=10,
+        enable_docking=True,
+        approved_by="unit-test",
+    )
+
+    assert docking_report["queue_item_id"] != prep_report["queue_item_id"]
+    docking_item = repo.get_validation_request_queue_item(UUID(docking_report["queue_item_id"]))
+    assert docking_item is not None
+    assert docking_item.validation_request.metadata["runpod_input"]["enable_docking"] is True
+    docking_job = repo.get_compute_job(UUID(docking_report["compute_job_id"]))
+    assert docking_job is not None
+    packet = service.create_md_expert_review_packet(docking_job.compute_job_id, endpoint_id="endpoint-test")
+    assert packet is not None
+    assert packet.input_packet.enable_docking is True
+    assert "Docking enabled: True" in packet.review_document
 
 
 def test_pubchem_smiles_resolver_accepts_smiles_field_variants(monkeypatch):

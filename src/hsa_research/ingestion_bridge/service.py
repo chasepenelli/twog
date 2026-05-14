@@ -695,6 +695,7 @@ def _md_input_packet_from_compute_job(record: ComputeJobRecord) -> MDInputPacket
         box_padding=_float_or_none(runpod_input.get("box_padding")),
         force_field=str(runpod_input["force_field"]) if runpod_input.get("force_field") is not None else None,
         solvent_model=str(runpod_input["solvent_model"]) if runpod_input.get("solvent_model") is not None else None,
+        enable_docking=bool(runpod_input.get("enable_docking")),
         protein_source=str(runpod_input["protein_source"]),
         ligand_source=str(runpod_input["ligand_source"]),
         preparation_method=str(runpod_input["preparation_method"]),
@@ -772,12 +773,13 @@ def _md_input_schema() -> dict[str, Any]:
             "ligand_source",
             "preparation_method",
         ],
-        "optional": ["ph", "box_padding", "force_field", "solvent_model", "metadata"],
+        "optional": ["ph", "box_padding", "force_field", "solvent_model", "enable_docking", "metadata"],
         "worker_contract": {
             "runpod_body": "Fields are sent at top-level under JSON body input.",
             "protein_pdb": "PDB text containing ATOM/HETATM records and TER or END.",
             "compound_smiles": "Single ligand SMILES string without whitespace.",
             "simulation_steps": "Smoke tests must be <= 1000 steps.",
+            "enable_docking": "When true, the worker must execute or explicitly fail the docking stage with structured diagnostics.",
         },
     }
 
@@ -814,6 +816,7 @@ def _render_md_expert_review_document(
             f"- Box padding: {input_packet.box_padding}",
             f"- Force field: {input_packet.force_field}",
             f"- Solvent model: {input_packet.solvent_model}",
+            f"- Docking enabled: {input_packet.enable_docking}",
             f"- Protein source: {input_packet.protein_source}",
             f"- Ligand source: {input_packet.ligand_source}",
             f"- Preparation method: {input_packet.preparation_method}",
@@ -2279,6 +2282,7 @@ class HSAResearchService:
         target_name: str = "VEGFR2/KDR",
         simulation_steps: int = 10,
         temperature: float = 300.0,
+        enable_docking: bool = False,
         priority: int = 40,
         approve_queue_item: bool = True,
         create_compute_job: bool = True,
@@ -2316,6 +2320,7 @@ class HSAResearchService:
             box_padding=10.0,
             force_field="protein=amber14; ligand=worker_default_openff_or_gaff",
             solvent_model="tip3p",
+            enable_docking=enable_docking,
             protein_source=f"RCSB PDB {normalized_pdb_id}; protein-only ATOM records prepared by TWOG seed route",
             ligand_source=f"PubChem canonical SMILES for {compound_name}",
             preparation_method=(
@@ -2335,10 +2340,12 @@ class HSAResearchService:
                     "worker handles SMILES-to-3D, protonation, and ligand parameterization; structured "
                     "failure is acceptable for this smoke-scale contract test"
                 ),
+                "enable_docking": enable_docking,
             },
         )
+        run_mode = "docking-smoke" if enable_docking else "prep-smoke"
         identity_basis = (
-            f"md-smoke:{normalized_pdb_id}:{compound_name.strip().lower()}:"
+            f"md-smoke:{run_mode}:{normalized_pdb_id}:{compound_name.strip().lower()}:"
             f"{target_name.strip().lower()}:{simulation_steps}:{temperature}"
         )
         plan_id = uuid5(NAMESPACE_URL, f"{identity_basis}:plan")
@@ -2416,9 +2423,10 @@ class HSAResearchService:
                 "seed_route": "md_smoke_compute_job",
                 "pdb_id": normalized_pdb_id,
                 "compound_name": compound_name,
-                "target_name": target_name,
-                "dagster_run_id": dagster_run_id,
-            },
+                    "target_name": target_name,
+                    "enable_docking": enable_docking,
+                    "dagster_run_id": dagster_run_id,
+                },
         )
         queue_item = self.repository.upsert_validation_request_queue_item(queue_item)
         if approve_queue_item:
@@ -2447,6 +2455,7 @@ class HSAResearchService:
                     "target_name": target_name,
                     "simulation_steps": simulation_steps,
                     "temperature": temperature,
+                    "enable_docking": enable_docking,
                     "force_new_compute_job": force_new_compute_job,
                 },
             )

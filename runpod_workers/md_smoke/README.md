@@ -15,6 +15,7 @@ RunPod sends a job shaped as:
     "compound_name": "compound",
     "simulation_steps": 10,
     "temperature": 300.0,
+    "enable_docking": false,
     "protein_source": "provenance",
     "ligand_source": "provenance",
     "preparation_method": "provenance"
@@ -32,6 +33,8 @@ The response always includes:
 - `errors`
 
 Structured worker failures return `status="failed"` inside the output payload with the failing stage and diagnostic fields.
+
+`enable_docking=true` is a separate tier. It requires a fresh TWOG expert-review packet and approval because the packet hash changes. If docking is enabled but the worker image lacks the docking executable or wiring, the worker returns a structured `docking` failure rather than silently passing the job.
 
 ## Local Tests
 
