@@ -69,6 +69,11 @@ The current worker contract discovered from live tests:
 - Minimal ligand smoke reached worker execution and failed during ligand preparation.
 - The first approved packet for pazopanib/KDR used a stripped protein-only PDB, explicit preparation settings, and packet hash `7601216eb7080b76f83e86262094f727a466d966ed8af0ee437d864faca75ed9`.
 - The first live RunPod submission created a RunPod job handle and persisted it in the compute ledger.
+- The first terminal RunPod result failed inside worker ligand preparation:
+  - status: `FAILED`
+  - location: `/app/handler.py`, `dock_ligand_vina`
+  - failing command: `mk_prepare_ligand.py -i ligand.pdb -o ligand.pdbqt`
+  - interpretation: TWOG reached the RunPod worker successfully; the remaining defect is the worker's ligand preparation path.
 
 That means the next live test should be a scientifically valid prepared packet, not another minimal placeholder.
 
@@ -108,6 +113,34 @@ After the first live smoke reaches a terminal state:
 - `blocked`: inspect `last_error`; fix the local gate or ledger path before touching RunPod again.
 
 No larger MD, docking, Boltz, raw omics, or repeated GPU tests should run until this single smoke is understood.
+
+## Worker Fix Plan
+
+The current endpoint appears to prepare ligands through an intermediate `ligand.pdb` file and then convert that file to PDBQT with `mk_prepare_ligand.py`. That is fragile for small molecules because PDB does not reliably preserve ligand bond order, stereochemistry, or charge information.
+
+The preferred worker fix is:
+
+1. Generate the ligand from `compound_smiles` with RDKit.
+2. Add hydrogens and embed a 3D conformer.
+3. Optimize the conformer with an appropriate force field such as MMFF94 or UFF.
+4. Write ligand SDF/MOL with bond orders preserved.
+5. Run ligand preparation from SDF/MOL/MOL2 into PDBQT, not from ligand PDB.
+6. Capture stdout/stderr from every subprocess and return it in the RunPod `output` payload.
+7. Treat ligand-prep failure as a structured result with:
+   - `stage`
+   - `command`
+   - `return_code`
+   - `stdout_tail`
+   - `stderr_tail`
+   - `input_artifact_summary`
+
+The next endpoint should be tested with three tiers before any larger MD claim:
+
+1. Simple positive-control ligand that should pass ligand prep.
+2. Pazopanib/KDR smoke with 10 simulation steps.
+3. A slightly longer still-non-scientific smoke only after tier 2 completes.
+
+If the current endpoint image cannot be patched, create a new TWOG-owned RunPod worker image with a minimal `handler.py`, explicit requirements, local handler test input, and a container build workflow. RunPod's documented worker layout is `Dockerfile`, `src/handler.py`, and `requirements.txt`; the handler processes `job["input"]` and starts with `runpod.serverless.start`.
 
 ## Expert Checklist
 
