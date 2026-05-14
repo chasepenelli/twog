@@ -60,7 +60,7 @@ class RunPodComputeRunner:
         return {
             "runpod_job_id": job_id,
             "external_run_id": job_id,
-            "status": _runpod_status_to_compute_status(str(response.get("status") or "IN_QUEUE")),
+            "status": _runpod_response_to_compute_status(response),
             "output_payload": {"runpod_submit_response": response},
             "metadata": {
                 "runpod_endpoint_id": self.endpoint_id,
@@ -74,7 +74,7 @@ class RunPodComputeRunner:
         if not job_id:
             raise ComputeRunnerConfigError("Compute job has no RunPod job id to poll.")
         response = self._request_json("GET", f"/v2/{self.endpoint_id}/status/{job_id}")
-        status = _runpod_status_to_compute_status(str(response.get("status") or "UNKNOWN"))
+        status = _runpod_response_to_compute_status(response)
         return {
             "status": status,
             "output_payload": {"runpod_status_response": response},
@@ -152,6 +152,18 @@ def _runpod_status_to_compute_status(status: str) -> str:
     return "submitted"
 
 
+def _runpod_response_to_compute_status(response: dict[str, Any]) -> str:
+    status = _runpod_status_to_compute_status(str(response.get("status") or "UNKNOWN"))
+    output = response.get("output")
+    if status == "completed" and isinstance(output, dict):
+        output_status = str(output.get("status") or "").strip().lower()
+        if output_status in {"failed", "error"}:
+            return "failed"
+        if output_status in {"cancelled", "canceled"}:
+            return "cancelled"
+    return status
+
+
 def _runpod_worker_input(record: ComputeJobRecord) -> dict[str, Any]:
     worker_input = {
         "compute_job_id": str(record.compute_job_id),
@@ -179,4 +191,26 @@ def _runpod_worker_input(record: ComputeJobRecord) -> dict[str, Any]:
 
 def _runpod_error_message(response: dict[str, Any]) -> str | None:
     error = response.get("error") or response.get("errorMessage") or response.get("message")
-    return str(error)[:2000] if error else None
+    if error:
+        return str(error)[:2000]
+    output = response.get("output")
+    if not isinstance(output, dict):
+        return None
+    output_error = output.get("error") or output.get("errorMessage") or output.get("message") or output.get("last_error")
+    if output_error:
+        return str(output_error)[:2000]
+    errors = output.get("errors")
+    if isinstance(errors, list) and errors:
+        first = errors[0]
+        if isinstance(first, dict):
+            parts = [
+                str(first.get("stage") or "").strip(),
+                str(first.get("message") or "").strip(),
+                str(first.get("stderr_tail") or "").strip(),
+            ]
+            message = ": ".join(part for part in parts if part)
+            return message[:2000] if message else json.dumps(first, sort_keys=True)[:2000]
+        return str(first)[:2000]
+    if str(output.get("status") or "").strip().lower() in {"failed", "error"}:
+        return "RunPod worker returned failed status without an error message."
+    return None

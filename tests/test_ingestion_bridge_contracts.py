@@ -11124,6 +11124,53 @@ def test_compute_jobs_round_trip_and_filter_in_sqlite(tmp_path):
     assert updated.metadata["submission_mode"] == "dry_run"
 
 
+def test_runpod_completed_worker_failure_maps_to_failed_compute_status(monkeypatch):
+    runner = compute_runners.RunPodComputeRunner(api_key="temp-test-key", endpoint_id="endpoint-test")
+    record = ComputeJobRecord(
+        status="submitted",
+        runner_kind="runpod",
+        compute_profile="gpu_l4",
+        validation_type="md",
+        title="Poll structured worker failure",
+        objective="Persist a worker-level structured failure from RunPod.",
+        runpod_job_id="rp-worker-failed",
+    )
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "id": "rp-worker-failed",
+                    "status": "COMPLETED",
+                    "output": {
+                        "status": "failed",
+                        "errors": [
+                            {
+                                "stage": "ligand_pdbqt",
+                                "message": "Subprocess failed.",
+                                "stderr_tail": "mk_prepare_ligand.py failed on ligand.sdf",
+                            }
+                        ],
+                    },
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(compute_runners.urllib.request, "urlopen", lambda request, timeout=60: FakeResponse())
+
+    polled = runner.poll(record)
+
+    assert polled["status"] == "failed"
+    assert "ligand_pdbqt" in polled["last_error"]
+    assert "mk_prepare_ligand.py failed" in polled["last_error"]
+    assert polled["output_payload"]["runpod_status_response"]["output"]["status"] == "failed"
+
+
 _MINIMAL_MD_PDB = (
     "ATOM      1  N   ALA A   1      11.104  13.207   8.678  1.00 20.00           N\n"
     "ATOM      2  CA  ALA A   1      12.560  13.235   8.421  1.00 20.00           C\n"

@@ -142,6 +142,35 @@ The next endpoint should be tested with three tiers before any larger MD claim:
 
 If the current endpoint image cannot be patched, create a new TWOG-owned RunPod worker image with a minimal `handler.py`, explicit requirements, local handler test input, and a container build workflow. RunPod's documented worker layout is `Dockerfile`, `src/handler.py`, and `requirements.txt`; the handler processes `job["input"]` and starts with `runpod.serverless.start`.
 
+## TWOG-Owned MD Worker
+
+The first repo-owned worker lives at `runpod_workers/md_smoke/`.
+
+It preserves ligand chemistry by using this ligand route:
+
+1. parse `compound_smiles` with RDKit,
+2. add hydrogens,
+3. embed a 3D conformer,
+4. optimize with MMFF94 when available, otherwise UFF,
+5. write SDF/MOL intermediates with bond orders preserved,
+6. prepare PDBQT from SDF with `mk_prepare_ligand.py`.
+
+The worker must not prepare PDBQT from a ligand PDB intermediate. The earlier opaque endpoint failed on `mk_prepare_ligand.py -i ligand.pdb -o ligand.pdbqt`; the owned worker uses `ligand.sdf` as the PDBQT input instead.
+
+The GitHub Actions workflow `.github/workflows/build-md-worker.yml` builds and tests the container for `linux/amd64`, then publishes:
+
+- `ghcr.io/chasepenelli/twog-md-worker:<commit-sha>`
+- `ghcr.io/chasepenelli/twog-md-worker:smoke-v1`
+
+The new RunPod endpoint should be created from `ghcr.io/chasepenelli/twog-md-worker:smoke-v1` with:
+
+- endpoint name: `twog-md-smoke-v1`
+- `workersMin=0`
+- `workersMax=2` during smoke validation
+- raise to `workersMax=5` only after positive-control and pazopanib/KDR smoke tiers pass
+
+After endpoint creation, update `HSA_RUNPOD_ENDPOINT_ID` in GitHub Actions and Dagster+ to the new endpoint ID. Do not reuse the old opaque endpoint for this lane.
+
 ## Expert Checklist
 
 The expert should answer:
