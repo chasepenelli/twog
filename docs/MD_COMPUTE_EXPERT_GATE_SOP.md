@@ -157,12 +157,17 @@ It preserves ligand chemistry by using this ligand route:
 
 The worker must not prepare PDBQT from a ligand PDB intermediate. The earlier opaque endpoint failed on `mk_prepare_ligand.py -i ligand.pdb -o ligand.pdbqt`; the owned worker uses `ligand.sdf` as the PDBQT input instead.
 
-The GitHub Actions workflow `.github/workflows/build-md-worker.yml` builds and tests the container for `linux/amd64`, then publishes:
+The GitHub Actions workflow `.github/workflows/build-md-worker.yml` builds and tests the container for `linux/amd64`, then publishes the private repo image:
 
 - `ghcr.io/chasepenelli/twog-md-worker:<commit-sha>`
 - `ghcr.io/chasepenelli/twog-md-worker:smoke-v1`
 
-The new RunPod endpoint should be created from `ghcr.io/chasepenelli/twog-md-worker:smoke-v1` with:
+RunPod uses the credential-free public image published from the worker-only public mirror:
+
+- public repo: `chasepenelli/twog-md-worker-public`
+- public image: `ghcr.io/chasepenelli/twog-md-worker-public:smoke-v1`
+
+The new RunPod endpoint should be created from `ghcr.io/chasepenelli/twog-md-worker-public:smoke-v1` with:
 
 - endpoint name: `twog-md-smoke-v1`
 - `workersMin=0`
@@ -176,14 +181,17 @@ Current hosted state:
 - GHCR image build and publish workflow: passing on `main`.
 - RunPod template: `3qszkm4q1c` (`twog-md-smoke-v1-template`).
 - RunPod endpoint: `bpjbi4te75eoul` (`twog-md-smoke-v1`).
+- RunPod template image: `ghcr.io/chasepenelli/twog-md-worker-public:smoke-v1`.
 - Old opaque MD endpoint: `cbf4ffekmo36t9` (`hsa-md-validation`) reduced from `workersMax=5` to `workersMax=3` to free quota for the owned worker.
 - GitHub Actions secret `HSA_RUNPOD_ENDPOINT_ID` points to `bpjbi4te75eoul`; the Dagster+ env sync workflow was dispatched after the update.
 
-Remaining hosted smoke blocker:
+Hosted smoke validation:
 
-- GHCR currently requires authenticated pull access for `ghcr.io/chasepenelli/twog-md-worker:smoke-v1`.
-- RunPod template `3qszkm4q1c` has no `containerRegistryAuthId`, so the image must either be made public in GitHub Packages or RunPod must be given GHCR credentials with `read:packages`.
-- Do not run a live worker smoke until one of those image-pull paths is resolved.
+- Positive-control job `f51a77ba-187e-4eeb-9a15-15d37b83ee1f-u2`: completed.
+- Pazopanib/KDR ligand-prep smoke job `63956262-f684-43bc-8e47-97d2a3e57d52-u1`: completed.
+- Both jobs completed `input_validation`, `protein_prep`, `ligand_3d`, and `ligand_pdbqt`.
+- Both jobs prepared PDBQT from `ligand.sdf`, not from ligand PDB.
+- Docking and OpenMM MD remain intentionally skipped in `smoke-v1`.
 
 ## Expert Checklist
 
