@@ -1,6 +1,6 @@
 # TWOG MD Smoke RunPod Worker
 
-This worker owns the first TWOG MD compute lane. It is not a therapeutic efficacy engine. It proves the worker contract: protein PDB input, ligand SMILES input, deterministic ligand 3D generation, ligand PDBQT preparation from SDF, structured stage diagnostics, and safe smoke-scale behavior.
+This worker owns the first TWOG MD compute lane. It is not a therapeutic efficacy engine. It proves the worker contract: protein PDB input, ligand SMILES input, deterministic ligand 3D generation, ligand PDBQT preparation from SDF, optional smoke docking, structured stage diagnostics, and safe smoke-scale behavior.
 
 ## Contract
 
@@ -34,7 +34,15 @@ The response always includes:
 
 Structured worker failures return `status="failed"` inside the output payload with the failing stage and diagnostic fields.
 
-`enable_docking=true` is a separate tier. It requires a fresh TWOG expert-review packet and approval because the packet hash changes. If docking is enabled but the worker image lacks the docking executable or wiring, the worker returns a structured `docking` failure rather than silently passing the job.
+`enable_docking=true` is a separate tier. It requires a fresh TWOG expert-review packet and approval because the packet hash changes. When enabled, the worker prepares a receptor PDBQT, runs a small AutoDock Vina smoke dock, and returns the receptor/docked ligand artifacts plus the best parsed affinity when Vina reports one. If docking is enabled but the worker image lacks the docking executable, receptor preparation, or a non-empty docking artifact, the worker returns a structured `docking` failure rather than silently passing the job.
+
+Optional docking controls:
+
+- `docking_center`: object with `x`, `y`, `z`
+- `docking_box_size`: number or object with `x`, `y`, `z`
+- `docking_exhaustiveness`
+- `docking_num_modes`
+- `docking_cpu`
 
 ## Local Tests
 
@@ -53,6 +61,7 @@ The container workflow runs both commands before publishing the image.
 docker build --platform linux/amd64 -t twog-md-worker:test .
 docker run --rm twog-md-worker:test python /app/src/handler.py /app/test_input_positive_control.json
 docker run --rm twog-md-worker:test python /app/src/handler.py /app/test_input_pazopanib_kdr.json
+docker run --rm twog-md-worker:test python -c "import shutil; assert shutil.which('vina'); assert shutil.which('mk_prepare_receptor.py')"
 ```
 
 ## Hosted Endpoint

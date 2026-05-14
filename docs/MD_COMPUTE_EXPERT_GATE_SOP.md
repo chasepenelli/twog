@@ -178,6 +178,8 @@ The new RunPod endpoint should be created from `ghcr.io/chasepenelli/twog-md-wor
 
 After endpoint creation, update `HSA_RUNPOD_ENDPOINT_ID` in GitHub Actions and Dagster+ to the new endpoint ID. Do not reuse the old opaque endpoint for this lane.
 
+Docking-enabled smoke packets require the worker image to include AutoDock Vina and Meeko receptor preparation. When `enable_docking=true`, the worker prepares `receptor.pdbqt`, runs Vina with a small smoke grid, and returns `docked_ligand.pdbqt` plus structured stdout/stderr. Missing Vina, receptor-prep failure, or empty docking artifacts are terminal worker failures for the docking smoke tier.
+
 Current hosted state:
 
 - GHCR image build and publish workflow: passing on `main`.
@@ -193,7 +195,7 @@ Hosted smoke validation:
 - Pazopanib/KDR ligand-prep smoke job `63956262-f684-43bc-8e47-97d2a3e57d52-u1`: completed.
 - Both jobs completed `input_validation`, `protein_prep`, `ligand_3d`, and `ligand_pdbqt`.
 - Both jobs prepared PDBQT from `ligand.sdf`, not from ligand PDB.
-- Docking and OpenMM MD remain intentionally skipped in `smoke-v1`.
+- OpenMM MD remains intentionally skipped in `smoke-v1`; docking is available only for separately approved `enable_docking=true` packets.
 
 ## Expert Checklist
 

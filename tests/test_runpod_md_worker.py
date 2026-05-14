@@ -133,6 +133,71 @@ def test_md_worker_docking_enabled_reports_missing_vina_as_failure(monkeypatch):
     assert "vina" in result["errors"][0]["message"]
 
 
+def test_md_worker_docking_enabled_runs_vina_smoke(monkeypatch):
+    commands_seen = []
+
+    def fake_prepare_ligand_3d(smiles, compound_name, workdir):
+        sdf_path = Path(workdir) / "ligand.sdf"
+        mol_path = Path(workdir) / "ligand.mol"
+        sdf_path.write_text("sdf fixture\n", encoding="utf-8")
+        mol_path.write_text("mol fixture\n", encoding="utf-8")
+        return {
+            "sdf_path": sdf_path,
+            "mol_path": mol_path,
+            "stage_details": {
+                "compound_name": compound_name,
+                "atom_count": 9,
+                "conformer_count": 1,
+                "optimization_method": "MMFF94",
+                "optimization_code": 0,
+                "intermediate_format": "sdf",
+            },
+        }
+
+    def fake_find_command(name):
+        return name if name in {"mk_prepare_ligand.py", "mk_prepare_receptor.py", "vina"} else None
+
+    def fake_run_subprocess(command, *, stage):
+        commands_seen.append(command)
+        if command[0] == "mk_prepare_ligand.py":
+            output_path = Path(command[command.index("-o") + 1])
+            output_path.write_text("ligand pdbqt fixture\n", encoding="utf-8")
+        elif command[0] == "mk_prepare_receptor.py":
+            output_path = Path(command[command.index("--write_pdbqt") + 1])
+            output_path.write_text("receptor pdbqt fixture\n", encoding="utf-8")
+        elif command[0] == "vina":
+            output_path = Path(command[command.index("--out") + 1])
+            output_path.write_text("docked ligand pdbqt fixture\n", encoding="utf-8")
+            return {
+                "command": command,
+                "return_code": 0,
+                "stdout_tail": "mode | affinity\n   1       -7.4      0.000      0.000\n",
+                "stderr_tail": "",
+            }
+        else:  # pragma: no cover - defensive test guard.
+            raise AssertionError(command)
+        return {
+            "command": command,
+            "return_code": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+
+    monkeypatch.setattr(md_worker, "_prepare_ligand_3d", fake_prepare_ligand_3d)
+    monkeypatch.setattr(md_worker, "_find_command", fake_find_command)
+    monkeypatch.setattr(md_worker, "_run_subprocess", fake_run_subprocess)
+
+    result = md_worker.handler({"input": _worker_payload(enable_docking=True)})
+
+    assert result["status"] == "completed"
+    stages = {stage["stage"]: stage for stage in result["stages"]}
+    assert stages["docking"]["status"] == "completed"
+    assert stages["docking"]["best_affinity_kcal_mol"] == -7.4
+    assert result["artifacts"]["receptor_pdbqt"]["file_name"] == "receptor.pdbqt"
+    assert result["artifacts"]["docked_ligand_pdbqt"]["file_name"] == "docked_ligand.pdbqt"
+    assert any(command[0] == "vina" for command in commands_seen)
+
+
 def test_md_worker_returns_structured_ligand_failure(monkeypatch):
     def fake_prepare_ligand_3d(smiles, compound_name, workdir):
         raise md_worker.StageFailure("ligand_3d", "compound_smiles could not be parsed by RDKit.", {"compound_smiles": smiles})
