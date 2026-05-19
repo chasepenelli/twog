@@ -268,6 +268,40 @@ ValidationPacketStatus = Literal[
     "archived",
 ]
 
+PublicCandidateKind = Literal[
+    "molecule",
+    "peptide",
+    "combination",
+    "target_strategy",
+    "research_program_child",
+    "validation_packet",
+]
+
+PublicCandidateStatus = Literal[
+    "draft",
+    "proposed",
+    "investigating",
+    "evidence_supported",
+    "compute_supported",
+    "needs_review",
+    "deprecated",
+    "archived",
+]
+
+PublicCandidateVisibility = Literal["private", "draft_public", "public"]
+
+PublicCandidateDecisionAction = Literal[
+    "proposed",
+    "evidence_added",
+    "advanced",
+    "held",
+    "deprecated",
+    "archived",
+    "annotated",
+    "status_changed",
+    "snapshot_generated",
+]
+
 ValidationPacketReadiness = Literal[
     "ready_for_committee",
     "ready_for_validation_plan",
@@ -4252,6 +4286,180 @@ class ValidationDecisionReportResult(StrictBaseModel):
     packet_count: int = 0
     persisted_decision_count: int = 0
     decisions: list[ValidationDecisionPacket] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PublicCandidateRecord(StrictBaseModel):
+    candidate_id: str = Field(min_length=3, max_length=260)
+    display_id: str | None = Field(default=None, max_length=120)
+    candidate_kind: PublicCandidateKind = "target_strategy"
+    title: str = Field(min_length=3, max_length=500)
+    summary: str = Field(default="", max_length=3000)
+    rationale_md: str = Field(default="", max_length=6000)
+    public_status: PublicCandidateStatus = "draft"
+    visibility: PublicCandidateVisibility = "private"
+    therapy_idea_id: UUID | None = None
+    validation_packet_id: str | None = Field(default=None, max_length=260)
+    validation_decision_id: str | None = Field(default=None, max_length=280)
+    source_program_id: UUID | None = None
+    source_brief_id: UUID | None = None
+    source_evaluation_id: UUID | None = None
+    committee_run_id: UUID | None = None
+    primary_compute_job_id: UUID | None = None
+    targets: list[str] = Field(default_factory=list, max_length=50)
+    biomarkers: list[str] = Field(default_factory=list, max_length=50)
+    candidate_therapies: list[str] = Field(default_factory=list, max_length=50)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=100)
+    risk_flags: list[str] = Field(default_factory=list, max_length=50)
+    artifact_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    priority_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    content_hash: str | None = Field(default=None, max_length=128)
+    latest_snapshot_id: UUID | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_record(self) -> "PublicCandidateRecord":
+        self.candidate_id = self.candidate_id.strip()
+        self.display_id = self.display_id.strip() if self.display_id else None
+        self.title = self.title.strip()
+        self.summary = self.summary.strip()
+        self.rationale_md = self.rationale_md.strip()
+        self.validation_packet_id = self.validation_packet_id.strip() if self.validation_packet_id else None
+        self.validation_decision_id = self.validation_decision_id.strip() if self.validation_decision_id else None
+        self.targets = _dedupe_strings(self.targets)
+        self.biomarkers = _dedupe_strings(self.biomarkers)
+        self.candidate_therapies = _dedupe_strings(self.candidate_therapies)
+        self.evidence_refs = _dedupe_strings(self.evidence_refs)
+        self.risk_flags = _dedupe_strings(self.risk_flags)
+        return self
+
+
+class PublicCandidateDecisionEvent(StrictBaseModel):
+    event_id: UUID = Field(default_factory=uuid4)
+    candidate_id: str = Field(min_length=3, max_length=260)
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    action: PublicCandidateDecisionAction
+    rationale_md: str = Field(default="", max_length=4000)
+    actor: str = Field(default="twog_system", max_length=200)
+    prior_status: PublicCandidateStatus | None = None
+    new_status: PublicCandidateStatus | None = None
+    related_snapshot_id: UUID | None = None
+    related_study_id: str | None = Field(default=None, max_length=260)
+    related_agent_run_id: UUID | None = None
+    related_compute_job_id: UUID | None = None
+    related_validation_decision_id: str | None = Field(default=None, max_length=280)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_decision_event(self) -> "PublicCandidateDecisionEvent":
+        self.candidate_id = self.candidate_id.strip()
+        self.rationale_md = self.rationale_md.strip()
+        self.actor = self.actor.strip() or "twog_system"
+        if self.related_study_id:
+            self.related_study_id = self.related_study_id.strip() or None
+        if self.related_validation_decision_id:
+            self.related_validation_decision_id = self.related_validation_decision_id.strip() or None
+        return self
+
+
+class PublicCandidateSnapshot(StrictBaseModel):
+    snapshot_id: UUID = Field(default_factory=uuid4)
+    candidate_id: str = Field(min_length=3, max_length=260)
+    snapshot_version: int = Field(default=1, ge=1)
+    content_hash: str = Field(min_length=8, max_length=128)
+    title: str = Field(min_length=3, max_length=500)
+    candidate_kind: PublicCandidateKind = "target_strategy"
+    public_status: PublicCandidateStatus = "draft"
+    payload: dict[str, Any] = Field(default_factory=dict)
+    source_refs: list[str] = Field(default_factory=list, max_length=100)
+    citation_refs: list[str] = Field(default_factory=list, max_length=100)
+    method_refs: list[str] = Field(default_factory=list, max_length=50)
+    artifact_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    decision_event_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    compute_job_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    pipeline_version: str | None = Field(default=None, max_length=120)
+    commit_sha: str | None = Field(default=None, max_length=80)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_snapshot(self) -> "PublicCandidateSnapshot":
+        self.candidate_id = self.candidate_id.strip()
+        self.title = self.title.strip()
+        self.source_refs = _dedupe_strings(self.source_refs)
+        self.citation_refs = _dedupe_strings(self.citation_refs)
+        self.method_refs = _dedupe_strings(self.method_refs)
+        if self.pipeline_version:
+            self.pipeline_version = self.pipeline_version.strip() or None
+        if self.commit_sha:
+            self.commit_sha = self.commit_sha.strip() or None
+        return self
+
+
+class PublicCandidateGenerateRequest(StrictBaseModel):
+    candidate_id: str | None = Field(default=None, min_length=3, max_length=260)
+    therapy_idea_id: UUID | None = None
+    display_id: str | None = Field(default=None, max_length=120)
+    candidate_kind: PublicCandidateKind | None = None
+    visibility: PublicCandidateVisibility = "private"
+    public_status: PublicCandidateStatus | None = None
+    pipeline_version: str | None = Field(default=None, max_length=120)
+    commit_sha: str | None = Field(default=None, max_length=80)
+    include_compute_jobs: bool = True
+    include_decisions: bool = True
+    include_artifacts: bool = True
+    persist: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_generate_request(self) -> "PublicCandidateGenerateRequest":
+        if self.candidate_id:
+            self.candidate_id = self.candidate_id.strip() or None
+        if self.display_id:
+            self.display_id = self.display_id.strip() or None
+        if self.pipeline_version:
+            self.pipeline_version = self.pipeline_version.strip() or None
+        if self.commit_sha:
+            self.commit_sha = self.commit_sha.strip() or None
+        if not self.candidate_id and not self.therapy_idea_id:
+            raise ValueError("candidate_id or therapy_idea_id is required")
+        return self
+
+
+class PublicCandidateLibraryRequest(StrictBaseModel):
+    candidate_id: str | None = Field(default=None, min_length=3, max_length=260)
+    therapy_idea_id: UUID | None = None
+    public_status: PublicCandidateStatus | None = None
+    visibility: PublicCandidateVisibility | None = None
+    candidate_kind: PublicCandidateKind | None = None
+    query: str | None = Field(default=None, max_length=500)
+    limit: int = Field(default=50, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_library_request(self) -> "PublicCandidateLibraryRequest":
+        if self.candidate_id:
+            self.candidate_id = self.candidate_id.strip() or None
+        if self.query:
+            self.query = self.query.strip() or None
+        return self
+
+
+class PublicCandidateLibraryResult(StrictBaseModel):
+    candidate_count: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    visibility_counts: dict[str, int] = Field(default_factory=dict)
+    candidates: list[PublicCandidateRecord] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PublicCandidateSnapshotResult(StrictBaseModel):
+    candidate: PublicCandidateRecord | None = None
+    snapshot: PublicCandidateSnapshot | None = None
+    decision_events: list[PublicCandidateDecisionEvent] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
