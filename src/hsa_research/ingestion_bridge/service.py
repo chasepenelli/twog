@@ -5842,6 +5842,17 @@ def _generate_public_candidate_snapshot(
             *(artifact_id for job in compute_jobs for artifact_id in job.artifact_ids),
         ]
     )
+    citation_refs = _dedupe_texts(
+        [
+            *therapy_idea.evidence_refs,
+            *[
+                str(ref)
+                for decision in validation_decisions
+                for ref in _public_candidate_decision_evidence_refs(decision)
+            ],
+        ]
+    )
+    literature = _public_candidate_literature(repository, therapy_idea, citation_refs, validation_decisions)
     payload = _public_candidate_payload(
         candidate_id=candidate_id,
         display_id=display_id,
@@ -5851,6 +5862,7 @@ def _generate_public_candidate_snapshot(
         validation_decisions=validation_decisions,
         compute_jobs=compute_jobs,
         artifacts=artifacts,
+        literature=literature,
         pipeline_version=request.pipeline_version,
         commit_sha=request.commit_sha,
     )
@@ -5872,16 +5884,6 @@ def _generate_public_candidate_snapshot(
             *(therapy_idea.evidence_refs or []),
             *(str(therapy_idea.source_program_id) for _ in [therapy_idea] if therapy_idea.source_program_id),
             *(decision.packet_id for decision in validation_decisions),
-        ]
-    )
-    citation_refs = _dedupe_texts(
-        [
-            *therapy_idea.evidence_refs,
-            *[
-                str(ref)
-                for decision in validation_decisions
-                for ref in _public_candidate_decision_evidence_refs(decision)
-            ],
         ]
     )
     method_refs = _public_candidate_method_refs(compute_jobs, validation_decisions)
@@ -5999,6 +6001,7 @@ def _public_candidate_payload(
     validation_decisions: list[ValidationDecisionRecord],
     compute_jobs: list[ComputeJobRecord],
     artifacts: list[ArtifactHandle],
+    literature: list[dict[str, Any]],
     pipeline_version: str | None,
     commit_sha: str | None,
 ) -> dict[str, Any]:
@@ -6076,14 +6079,7 @@ def _public_candidate_payload(
             }
             for artifact in artifacts
         ],
-        "literature": [
-            {
-                "ref": ref,
-                "claim": "candidate support evidence",
-                "source": "therapy_idea.evidence_refs",
-            }
-            for ref in therapy_idea.evidence_refs
-        ],
+        "literature": literature,
         "reproducibility": {
             "pipeline_version": pipeline_version,
             "commit_sha": commit_sha,
@@ -6112,6 +6108,123 @@ def _public_candidate_decision_evidence_refs(decision: ValidationDecisionRecord)
     if isinstance(refs, list):
         return [str(ref) for ref in refs if str(ref).strip()]
     return []
+
+
+def _public_candidate_literature(
+    repository: ResearchRepository,
+    therapy_idea: TherapyIdeaRecord,
+    citation_refs: list[str],
+    decisions: list[ValidationDecisionRecord],
+) -> list[dict[str, Any]]:
+    citation_maps: dict[UUID, dict[str, dict[str, Any]]] = {}
+    if therapy_idea.source_brief_id:
+        brief = repository.get_research_brief(therapy_idea.source_brief_id)
+        if brief is not None:
+            citation_maps[therapy_idea.source_brief_id] = _citation_map_for_brief(brief)
+    records: list[dict[str, Any]] = []
+    for ref in citation_refs:
+        normalized = _normalize_evidence_ref(ref)
+        citation = None
+        source_brief_id = None
+        explicit = _explicit_brief_citation_ref(normalized)
+        if explicit:
+            source_brief_id, citation_ref = explicit
+            citation = citation_maps.get(source_brief_id, {}).get(citation_ref)
+            normalized = citation_ref
+        elif therapy_idea.source_brief_id:
+            source_brief_id = therapy_idea.source_brief_id
+            citation = citation_maps.get(source_brief_id, {}).get(normalized)
+        record = _public_candidate_literature_record(
+            citation_ref=normalized,
+            source_brief_id=source_brief_id,
+            citation=citation,
+            therapy_idea=therapy_idea,
+            decisions=decisions,
+        )
+        records.append(record)
+    return records
+
+
+def _public_candidate_literature_record(
+    *,
+    citation_ref: str,
+    source_brief_id: UUID | None,
+    citation: dict[str, Any] | None,
+    therapy_idea: TherapyIdeaRecord,
+    decisions: list[ValidationDecisionRecord],
+) -> dict[str, Any]:
+    citation = citation or {}
+    identifiers = _citation_identifiers(citation) if citation else {}
+    metadata = citation.get("metadata") if isinstance(citation.get("metadata"), dict) else {}
+    provenance = metadata.get("provenance") if isinstance(metadata.get("provenance"), dict) else {}
+    source_key = citation.get("source_key") or _first(provenance.get("source_keys"))
+    source_url = citation.get("source_url") or _first(provenance.get("source_urls"))
+    title = citation.get("title") or _first(provenance.get("titles")) or f"Unresolved citation {citation_ref}"
+    publication_year = metadata.get("publication_year") or citation.get("publication_year")
+    section_labels = provenance.get("section_labels") if isinstance(provenance.get("section_labels"), list) else []
+    return {
+        "ref": citation_ref,
+        "source_brief_id": str(source_brief_id) if source_brief_id else None,
+        "title": title,
+        "source_url": source_url,
+        "source_key": source_key,
+        "identifiers": identifiers,
+        "publication_year": publication_year,
+        "published_at": metadata.get("published_at") or citation.get("published_at"),
+        "section_labels": section_labels[:12],
+        "evidence_kind": _public_candidate_evidence_kind(citation_ref, title, section_labels),
+        "supports": _public_candidate_supported_claim(citation_ref, therapy_idea, decisions),
+        "dedupe": metadata.get("dedupe") if isinstance(metadata.get("dedupe"), dict) else {},
+        "provenance": {
+            "research_object_ids": provenance.get("research_object_ids", []),
+            "chunk_ids": provenance.get("chunk_ids", []),
+            "dedupe_keys": provenance.get("dedupe_keys", []),
+        },
+        "resolved": bool(citation),
+    }
+
+
+def _public_candidate_supported_claim(
+    citation_ref: str,
+    therapy_idea: TherapyIdeaRecord,
+    decisions: list[ValidationDecisionRecord],
+) -> str:
+    text_fields = [
+        therapy_idea.idea.rationale,
+        therapy_idea.idea.hypothesis,
+        therapy_idea.idea.mechanism or "",
+        therapy_idea.idea.translational_path or "",
+        *therapy_idea.risks,
+        *therapy_idea.next_experiments,
+        *(decision.decision.rationale for decision in decisions),
+        *(reason for decision in decisions for reason in decision.decision.blocking_reasons),
+    ]
+    pattern = re.compile(rf"(?<![A-Z0-9]){re.escape(citation_ref)}(?![A-Z0-9])", re.IGNORECASE)
+    matches: list[str] = []
+    for field in text_fields:
+        for sentence in re.split(r"(?<=[.!?])\s+", str(field).strip()):
+            if pattern.search(sentence):
+                matches.append(sentence.strip())
+    if matches:
+        return " ".join(_dedupe_texts(matches)[:3])
+    return "Supports candidate rationale evidence."
+
+
+def _public_candidate_evidence_kind(citation_ref: str, title: Any, section_labels: list[Any]) -> str:
+    text = " ".join([str(title), *[str(label) for label in section_labels]]).lower()
+    if "canine splenic hemangiosarcoma" in text and ("vegfr" in text or "pdgfr" in text):
+        return "direct_canine_target_expression"
+    if "canine" in text and "hemangiosarcoma" in text:
+        return "direct_canine_context"
+    if "angiosarcoma" in text and "canine" not in text:
+        return "human_analog_context"
+    return "supporting_context"
+
+
+def _first(value: Any) -> Any:
+    if isinstance(value, list) and value:
+        return value[0]
+    return None
 
 
 def _public_candidate_decision_events(

@@ -1127,10 +1127,47 @@ def test_public_candidate_snapshot_generation_links_therapy_decision_compute_and
     repo = SQLiteResearchRepository(tmp_path / "public-candidate-generation.sqlite3", seed=False)
     service = HSAResearchService(repo)
     artifact_id = uuid4()
+    brief_id = uuid4()
+    chunk_id = uuid4()
+    research_object_id = uuid4()
+    repo.upsert_research_brief(
+        ResearchBriefRecord(
+            brief_id=brief_id,
+            topic="VIM peptide program child",
+            final_brief="Synthetic brief with source-traceable citations.",
+            result_payload={
+                "citations": [
+                    {
+                        "citation_id": "C1",
+                        "chunk_id": str(chunk_id),
+                        "research_object_id": str(research_object_id),
+                        "source_key": "europe_pmc",
+                        "title": "Vimentin expression in canine hemangiosarcoma",
+                        "source_url": "https://example.test/vim",
+                        "section_label": "abstract",
+                        "quote": "VIM expression was observed in canine HSA.",
+                        "metadata": {
+                            "identifiers": {"doi": "10.1000/vim", "pmid": "123"},
+                            "publication_year": 2026,
+                            "provenance": {
+                                "source_keys": ["europe_pmc"],
+                                "source_urls": ["https://example.test/vim"],
+                                "titles": ["Vimentin expression in canine hemangiosarcoma"],
+                                "research_object_ids": [str(research_object_id)],
+                                "chunk_ids": [str(chunk_id)],
+                                "section_labels": ["abstract"],
+                            },
+                        },
+                    }
+                ]
+            },
+            citation_count=1,
+        )
+    )
     idea = TherapyIdea(
         title="Vimentin peptide blockade strategy",
         hypothesis="A vimentin-directed peptide strategy may disrupt vascular HSA invasion programs.",
-        rationale="VIM sits at a plausible tumor ecology interface and needs inspectable validation.",
+        rationale="C1 indicates VIM sits at a plausible tumor ecology interface and needs inspectable validation.",
         candidate_therapies=["vimentin-targeting peptide"],
         targets=["VIM"],
         biomarkers=["VIM expression"],
@@ -1143,6 +1180,7 @@ def test_public_candidate_snapshot_generation_links_therapy_decision_compute_and
     repo.upsert_therapy_idea(
         TherapyIdeaRecord(
             idea=idea,
+            source_brief_id=brief_id,
             topic="VIM peptide program child",
             status="ready_for_promotion",
             score=0.82,
@@ -1210,6 +1248,9 @@ def test_public_candidate_snapshot_generation_links_therapy_decision_compute_and
     assert str(artifact_id) in [str(value) for value in result.snapshot.artifact_ids]
     assert result.snapshot.payload["computational_evidence"][0]["summary"]["stage"] == "md_smoke"
     assert "PMID:123" in result.snapshot.citation_refs
+    assert result.snapshot.payload["literature"][0]["title"] == "Vimentin expression in canine hemangiosarcoma"
+    assert result.snapshot.payload["literature"][0]["identifiers"]["doi"] == "10.1000/vim"
+    assert result.snapshot.payload["literature"][0]["supports"].startswith("C1 indicates")
     assert {event.action for event in result.decision_events} >= {"proposed", "evidence_added", "snapshot_generated"}
     listed = service.list_public_candidates(PublicCandidateLibraryRequest(query="vimentin", limit=10))
     assert listed.candidate_count == 1

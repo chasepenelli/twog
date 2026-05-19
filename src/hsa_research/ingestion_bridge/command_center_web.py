@@ -384,6 +384,7 @@ def _public_candidate_html(payload: Mapping[str, Any]) -> str:
     rationale = body.get("rationale") if isinstance(body.get("rationale"), dict) else {}
     biology = body.get("biology") if isinstance(body.get("biology"), dict) else {}
     evidence = body.get("evidence") if isinstance(body.get("evidence"), dict) else {}
+    literature = body.get("literature") if isinstance(body.get("literature"), list) else []
     compute = body.get("computational_evidence") if isinstance(body.get("computational_evidence"), list) else []
     events = payload.get("decision_events") if isinstance(payload.get("decision_events"), list) else []
     title = str(candidate.get("title") or identity.get("title") or "TWOG Candidate")
@@ -410,6 +411,8 @@ def _public_candidate_html(payload: Mapping[str, Any]) -> str:
     .muted {{ color: #9fb0c7; }}
     .list {{ display: grid; gap: 10px; }}
     .row {{ border-top: 1px solid #252b36; padding-top: 10px; }}
+    a {{ color: #9bdcff; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
     code {{ color: #b7f7d4; overflow-wrap: anywhere; }}
     pre {{ background: #070a0f; border: 1px solid #252b36; border-radius: 6px; padding: 12px; overflow: auto; color: #cdd7e5; }}
     @media (max-width: 860px) {{ .grid, .top {{ grid-template-columns: 1fr; display: block; }} h1 {{ font-size: 32px; }} }}
@@ -440,6 +443,10 @@ def _public_candidate_html(payload: Mapping[str, Any]) -> str:
         <h2>Evidence</h2>
         <div class="chips">{_html_chips(evidence.get("evidence_refs", []))}</div>
         <p class="muted">Strength: {html.escape(str(evidence.get("evidence_strength") or "unknown"))}</p>
+      </section>
+      <section>
+        <h2>Literature Audit</h2>
+        <div class="list">{_html_literature_rows(literature)}</div>
       </section>
       <section>
         <h2>Risks And Next Experiments</h2>
@@ -485,6 +492,34 @@ def _html_compute_rows(values: Any) -> str:
             f'<strong>{html.escape(str(item.get("title") or "Compute study"))}</strong><br>'
             f'<span class="muted">{html.escape(str(item.get("status") or ""))} · '
             f'{html.escape(str(item.get("validation_type") or item.get("runner_kind") or ""))}</span>'
+            "</div>"
+        )
+    return "".join(rows)
+
+
+def _html_literature_rows(values: Any) -> str:
+    if not values:
+        return '<p class="muted">No expanded literature records attached yet.</p>'
+    rows = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        identifiers = item.get("identifiers") if isinstance(item.get("identifiers"), dict) else {}
+        identifier_text = " · ".join(
+            f"{key.upper()}: {value}"
+            for key, value in identifiers.items()
+            if value not in (None, "")
+        )
+        title = html.escape(str(item.get("title") or item.get("ref") or "Citation"))
+        url = str(item.get("source_url") or "").strip()
+        title_html = f'<a href="{html.escape(url)}" target="_blank" rel="noreferrer">{title}</a>' if url else title
+        rows.append(
+            '<div class="row">'
+            f'<strong>{html.escape(str(item.get("ref") or ""))}</strong> · '
+            f'<span class="muted">{html.escape(str(item.get("evidence_kind") or "supporting_context"))}</span><br>'
+            f'{title_html}<br>'
+            f'<span class="muted">{html.escape(identifier_text)}</span>'
+            f'<p>{html.escape(str(item.get("supports") or ""))}</p>'
             "</div>"
         )
     return "".join(rows)
