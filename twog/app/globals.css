@@ -2007,10 +2007,13 @@ section {
   margin: 0;
   border-top: 1px solid var(--line-strong);
   border-bottom: 1px solid var(--line-strong);
-  background: rgba(251, 250, 244, 0.48);
+  background:
+    linear-gradient(128deg, rgba(109, 40, 217, 0.1), transparent 31%, rgba(5, 5, 5, 0.04)),
+    rgba(251, 250, 244, 0.58);
 }
 
-.learning-column-shell {
+.learning-column-shell,
+.learning-studio {
   max-width: 1180px;
   margin: 0 auto;
 }
@@ -2145,6 +2148,158 @@ section {
 }
 
 .learning-rule-line span:last-child {
+  border-right: 0;
+}
+
+.learning-studio {
+  display: grid;
+  gap: clamp(2rem, 5vw, 4.5rem);
+}
+
+.learning-studio-copy {
+  display: grid;
+  grid-template-columns: minmax(0, 0.86fr) minmax(300px, 0.58fr);
+  gap: clamp(1.5rem, 5vw, 5.5rem);
+  align-items: end;
+}
+
+.learning-studio-copy h2 {
+  max-width: 980px;
+  font-size: clamp(2.4rem, 5.2vw, 6rem);
+  font-weight: 500;
+  line-height: 0.98;
+  text-wrap: balance;
+}
+
+.learning-studio-copy p:not(.section-kicker) {
+  max-width: 720px;
+  color: var(--muted-ink);
+  font-size: clamp(1.02rem, 1.38vw, 1.2rem);
+}
+
+.learning-studio-copy p + p {
+  margin-top: 1rem;
+}
+
+.learning-studio-board {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.42fr) minmax(0, 1fr);
+  border: 1px solid var(--line-strong);
+  background: rgba(251, 250, 244, 0.72);
+  box-shadow: 14px 14px 0 rgba(5, 5, 5, 0.08);
+}
+
+.learning-thesis-card {
+  display: grid;
+  align-content: space-between;
+  min-height: 28rem;
+  padding: clamp(1rem, 2vw, 1.35rem);
+  background: var(--foreground);
+  color: var(--background);
+}
+
+.learning-thesis-card span,
+.lesson-strip code,
+.learning-output-note span,
+.contact-form-head span,
+.contact-form label span,
+.contact-form button,
+.contact-fallback,
+.contact-status {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.learning-thesis-card p {
+  color: rgba(251, 250, 244, 0.82);
+  font-size: clamp(1.5rem, 2.8vw, 2.7rem);
+  line-height: 1.08;
+}
+
+.lesson-runway {
+  display: grid;
+  border-left: 1px solid var(--line-strong);
+}
+
+.lesson-strip {
+  position: relative;
+  display: grid;
+  grid-template-columns: 4.5rem minmax(160px, 0.42fr) minmax(220px, 1fr);
+  gap: clamp(0.8rem, 2vw, 1.5rem);
+  align-items: center;
+  min-height: 7rem;
+  padding: clamp(1rem, 2vw, 1.35rem);
+  border-bottom: 1px solid var(--line-strong);
+  overflow: hidden;
+}
+
+.lesson-strip:last-child {
+  border-bottom: 0;
+}
+
+.lesson-strip::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(109, 40, 217, 0.12), transparent 38%),
+    linear-gradient(180deg, rgba(5, 5, 5, 0.045) 1px, transparent 1px);
+  background-size: auto, 100% 1.45rem;
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+.lesson-strip:hover::before {
+  opacity: 1;
+}
+
+.lesson-strip code,
+.lesson-strip div,
+.lesson-strip span {
+  position: relative;
+  z-index: 1;
+}
+
+.lesson-strip code {
+  color: var(--accent-ink);
+}
+
+.lesson-strip h3 {
+  font-size: clamp(1.9rem, 3.2vw, 3.4rem);
+  font-weight: 500;
+  line-height: 0.95;
+}
+
+.lesson-strip p {
+  margin-top: 0.4rem;
+  color: var(--foreground);
+  font-size: 1rem;
+  line-height: 1.45;
+}
+
+.lesson-strip > span {
+  color: var(--muted-ink);
+  font-size: clamp(0.98rem, 1.25vw, 1.12rem);
+  line-height: 1.55;
+}
+
+.learning-output-note {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--line-strong);
+  background: var(--purple-paper);
+}
+
+.learning-output-note span {
+  padding: 0.9rem 1rem;
+  border-right: 1px solid var(--line-strong);
+  color: var(--accent-ink);
+}
+
+.learning-output-note span:last-child {
   border-right: 0;
 }
 
@@ -2309,6 +2464,96 @@ section {
 
 .signup-links a:hover {
   color: var(--paper);
+}
+
+.contact-console {
+  align-content: start;
+  min-height: auto;
+}
+
+.contact-form {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 0.7rem;
+  padding-top: 0.2rem;
+}
+
+.contact-form-head {
+  display: grid;
+  gap: 0.35rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(251, 250, 244, 0.28);
+}
+
+.contact-form-head span,
+.contact-form label span {
+  color: rgba(251, 250, 244, 0.68);
+}
+
+.contact-form-head p {
+  max-width: 28rem;
+  color: rgba(251, 250, 244, 0.78);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.contact-form label {
+  display: grid;
+  gap: 0.38rem;
+}
+
+.contact-form input,
+.contact-form select,
+.contact-form textarea {
+  width: 100%;
+  border: 1px solid rgba(251, 250, 244, 0.34);
+  background: rgba(251, 250, 244, 0.92);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.92rem;
+  outline: none;
+  padding: 0.72rem 0.78rem;
+}
+
+.contact-form textarea {
+  resize: vertical;
+  min-height: 6.8rem;
+}
+
+.contact-form input:focus,
+.contact-form select:focus,
+.contact-form textarea:focus {
+  border-color: var(--lavender);
+  box-shadow: 0 0 0 2px rgba(184, 166, 255, 0.22);
+}
+
+.contact-form button {
+  min-height: 3.4rem;
+  border: 1px solid var(--lavender);
+  background: var(--lavender);
+  color: var(--foreground);
+  cursor: pointer;
+  transition: transform 180ms ease, background 180ms ease;
+}
+
+.contact-form button:hover {
+  transform: translateY(-2px);
+  background: var(--purple-paper);
+}
+
+.contact-fallback {
+  color: rgba(251, 250, 244, 0.72);
+  text-decoration: none;
+}
+
+.contact-fallback:hover {
+  color: var(--paper);
+}
+
+.contact-status {
+  color: rgba(251, 250, 244, 0.78);
+  line-height: 1.4;
 }
 
 .page-shell {
@@ -2987,6 +3232,8 @@ section {
   .record-preview-grid,
   .candidate-snapshot-row,
   .learning-column-header,
+  .learning-studio-copy,
+  .learning-studio-board,
   .public-cta-grid,
   .candidate-technical-story,
   .reference-group,
@@ -3041,6 +3288,19 @@ section {
   .learning-column-layout,
   .learning-rule-line {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .lesson-runway {
+    border-left: 0;
+    border-top: 1px solid var(--line-strong);
+  }
+
+  .lesson-strip {
+    grid-template-columns: 3.5rem minmax(140px, 0.45fr) minmax(0, 1fr);
+  }
+
+  .learning-thesis-card {
+    min-height: 20rem;
   }
 
   .method-audit-grid {
@@ -3101,6 +3361,8 @@ section {
   .review-stack,
   .learning-column-layout,
   .learning-rule-line,
+  .lesson-strip,
+  .learning-output-note,
   .method-audit-grid,
   .payload-exchange-board,
   .payload-exchange-steps,
@@ -3228,10 +3490,25 @@ section {
   }
 
   .learning-thesis-column,
-  .lesson-column {
+  .lesson-column,
+  .learning-thesis-card {
     min-height: auto;
     border-right: 0;
     border-bottom: 1px solid var(--line-strong);
+  }
+
+  .lesson-strip {
+    gap: 0.55rem;
+    min-height: auto;
+  }
+
+  .learning-output-note span {
+    border-right: 0;
+    border-bottom: 1px solid var(--line-strong);
+  }
+
+  .learning-output-note span:last-child {
+    border-bottom: 0;
   }
 
   .lesson-column::after {

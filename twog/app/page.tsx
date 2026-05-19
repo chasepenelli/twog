@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { ContactForm } from '@/components/ContactForm';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from '@/lib/constants';
 import { getFeaturedCandidate, shortHash } from '@/lib/public-candidates';
 
@@ -50,10 +51,10 @@ const HERO_LOOP_PATH =
   'M104 240 C104 122 242 68 398 94 C486 109 534 109 622 94 C778 68 916 122 916 240 C916 358 778 412 622 386 C534 371 486 371 398 386 C242 412 104 358 104 240 Z';
 
 const LESSON_COLUMNS = [
-  ['Ask', 'Start with the honest question.', 'Explain VEGFR signaling like I am new to oncology.'],
-  ['Unpack', 'Turn the answer into a map.', 'Define the terms, pathway, species context, and weak assumptions.'],
-  ['Follow', 'Walk the evidence trail.', 'Show the citations, contradictions, missing data, and next search query.'],
-  ['Make', 'Convert learning into work.', 'Draft the brief, validation packet, or public record update.'],
+  ['Ask', 'Plain-language lesson', 'Start with the question a real person would ask.'],
+  ['Map', 'Context and terms', 'Define the pathway, species context, assumptions, and unknowns.'],
+  ['Check', 'Evidence trail', 'Find the citations, contradictions, missing data, and next query.'],
+  ['Build', 'Reusable output', 'Turn the lesson into a brief, validation packet, or public record update.'],
 ] as const;
 
 export default function Home() {
@@ -321,8 +322,8 @@ export default function Home() {
       </section>
 
       <section className="learning-section">
-        <div className="learning-column-shell">
-          <div className="learning-column-header layered-heading" data-layer="LEARN / BUILD">
+        <div className="learning-studio">
+          <div className="learning-studio-copy layered-heading" data-layer="LEARN / BUILD">
             <p className="section-kicker">The learning layer</p>
             <h2>The real unlock is being able to ask for the lesson.</h2>
             <p>
@@ -338,29 +339,34 @@ export default function Home() {
             </p>
           </div>
 
-          <div className="learning-column-layout" aria-label="Learning column workflow">
-            <article className="learning-thesis-column">
+          <div className="learning-studio-board" aria-label="Learning layer workflow">
+            <article className="learning-thesis-card">
               <span>Learning is infrastructure</span>
               <p>
                 The point is not to get a clever answer and move on. The point is to turn
-                curiosity into a reusable research object.
+                curiosity into a reusable research object: something cited, versioned, and
+                useful to the next person who asks.
               </p>
             </article>
 
-            {LESSON_COLUMNS.map(([label, title, example], index) => (
-              <article className="lesson-column" key={label}>
-                <code>{String(index + 1).padStart(2, '0')}</code>
-                <h3>{label}</h3>
-                <p>{title}</p>
-                <span>{example}</span>
-              </article>
-            ))}
-          </div>
+            <div className="lesson-runway">
+              {LESSON_COLUMNS.map(([label, title, example], index) => (
+                <article className="lesson-strip" key={label}>
+                  <code>{String(index + 1).padStart(2, '0')}</code>
+                  <div>
+                    <h3>{label}</h3>
+                    <p>{title}</p>
+                  </div>
+                  <span>{example}</span>
+                </article>
+              ))}
+            </div>
 
-          <div className="learning-rule-line" aria-hidden="true">
-            <span>A question becomes a lesson</span>
-            <span>A lesson becomes a search</span>
-            <span>A search becomes a record</span>
+            <div className="learning-output-note">
+              <span>A question becomes a lesson</span>
+              <span>A lesson becomes a search</span>
+              <span>A search becomes a record</span>
+            </div>
           </div>
         </div>
       </section>
@@ -381,10 +387,10 @@ export default function Home() {
             </p>
           </div>
 
-          <div className="signup-console" aria-label="TWOG field notes signup">
+          <div className="signup-console contact-console" aria-label="TWOG field notes and contact">
             <div className="signup-header">
               <span>TWOG field notes</span>
-              <code>public / useful / weird</code>
+              <code>subscribe / contact</code>
             </div>
             <div className="signup-terminal">
               <p>Receive:</p>
@@ -401,6 +407,7 @@ export default function Home() {
             >
               Sign up on Substack
             </a>
+            <ContactForm />
             <div className="signup-links">
               <Link href="/candidates">Inspect candidates</Link>
               <a href={CONTACT_MAILTO}>{CONTACT_EMAIL}</a>
