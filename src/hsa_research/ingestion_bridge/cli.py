@@ -39,6 +39,8 @@ from .contracts import (
     OmicsLocusSignalRequest,
     OmicsReadoutRequest,
     PubMedIdentifierRepairRequest,
+    PublicCandidateGenerateRequest,
+    PublicCandidateLibraryRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
     ResearchBriefOperatorDocRequest,
@@ -724,6 +726,66 @@ def main() -> None:
     therapy_ideas.add_argument("--committee-run-id", default=None, help="Committee run ID")
     therapy_ideas.add_argument("--query", default=None, help="Topic/title/hypothesis search")
     therapy_ideas.add_argument("--limit", type=int, default=50, help="Maximum ideas to return")
+
+    public_candidate = subparsers.add_parser(
+        "public-candidate-generate",
+        help="Generate a persisted public-proof candidate snapshot from a therapy idea",
+    )
+    public_candidate.add_argument("--candidate-id", default=None, help="Existing or desired public candidate ID")
+    public_candidate.add_argument("--therapy-idea-id", required=True, help="Therapy idea ID to project")
+    public_candidate.add_argument("--display-id", default=None, help="Human-readable candidate display ID")
+    public_candidate.add_argument(
+        "--candidate-kind",
+        choices=[
+            "molecule",
+            "peptide",
+            "combination",
+            "target_strategy",
+            "research_program_child",
+            "validation_packet",
+        ],
+        default=None,
+        help="Override candidate kind",
+    )
+    public_candidate.add_argument(
+        "--visibility",
+        choices=["private", "draft_public", "public"],
+        default="private",
+        help="Candidate visibility",
+    )
+    public_candidate.add_argument(
+        "--public-status",
+        choices=[
+            "draft",
+            "proposed",
+            "investigating",
+            "evidence_supported",
+            "compute_supported",
+            "needs_review",
+            "deprecated",
+            "archived",
+        ],
+        default=None,
+        help="Override public candidate status",
+    )
+    public_candidate.add_argument("--pipeline-version", default=None, help="Pipeline/methodology version label")
+    public_candidate.add_argument("--commit-sha", default=None, help="Code commit SHA linked to this snapshot")
+    public_candidate.add_argument("--no-compute-jobs", action="store_true", help="Do not attach matching compute jobs")
+    public_candidate.add_argument("--no-decisions", action="store_true", help="Do not attach validation decisions")
+    public_candidate.add_argument("--no-artifacts", action="store_true", help="Do not resolve compute artifacts")
+    public_candidate.add_argument("--no-persist", action="store_true", help="Preview without writing records")
+
+    public_candidates = subparsers.add_parser(
+        "public-candidates",
+        help="List public-proof candidate records",
+    )
+    public_candidates.add_argument("--candidate-id", default=None, help="Public candidate ID")
+    public_candidates.add_argument("--therapy-idea-id", default=None, help="Therapy idea ID")
+    public_candidates.add_argument("--status", default=None, help="Public candidate status")
+    public_candidates.add_argument("--visibility", default=None, help="Visibility filter")
+    public_candidates.add_argument("--kind", default=None, help="Candidate kind filter")
+    public_candidates.add_argument("--query", default=None, help="Title/rationale/target search")
+    public_candidates.add_argument("--limit", type=int, default=50, help="Maximum candidates to return")
 
     hypothesis_promotion = subparsers.add_parser(
         "hypothesis-promotion-report",
@@ -2385,6 +2447,35 @@ def main() -> None:
                 source_evaluation_id=UUID(args.evaluation_id) if args.evaluation_id else None,
                 committee_run_id=UUID(args.committee_run_id) if args.committee_run_id else None,
                 topic_query=args.query,
+                limit=args.limit,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "public-candidate-generate":
+        output = HSAResearchService(repo).generate_public_candidate_snapshot(
+            PublicCandidateGenerateRequest(
+                candidate_id=args.candidate_id,
+                therapy_idea_id=UUID(args.therapy_idea_id),
+                display_id=args.display_id,
+                candidate_kind=args.candidate_kind,
+                visibility=args.visibility,
+                public_status=args.public_status,
+                pipeline_version=args.pipeline_version,
+                commit_sha=args.commit_sha,
+                include_compute_jobs=not args.no_compute_jobs,
+                include_decisions=not args.no_decisions,
+                include_artifacts=not args.no_artifacts,
+                persist=not args.no_persist,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "public-candidates":
+        output = HSAResearchService(repo).list_public_candidates(
+            PublicCandidateLibraryRequest(
+                candidate_id=args.candidate_id,
+                therapy_idea_id=UUID(args.therapy_idea_id) if args.therapy_idea_id else None,
+                public_status=args.status,
+                visibility=args.visibility,
+                candidate_kind=args.kind,
+                query=args.query,
                 limit=args.limit,
             )
         ).model_dump(mode="json")

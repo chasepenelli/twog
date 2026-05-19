@@ -73,6 +73,13 @@ from .contracts import (
     ModelProfile,
     PubMedIdentifierRepairRequest,
     PubMedIdentifierRepairResult,
+    PublicCandidateDecisionEvent,
+    PublicCandidateGenerateRequest,
+    PublicCandidateLibraryRequest,
+    PublicCandidateLibraryResult,
+    PublicCandidateRecord,
+    PublicCandidateSnapshot,
+    PublicCandidateSnapshotResult,
     ResearchBriefEvaluationRecord,
     ResearchBriefEvaluationRequest,
     ResearchBriefEvaluationResult,
@@ -1297,6 +1304,28 @@ class HSAResearchService:
             therapy_idea_id=therapy_idea_id,
             candidate_id=candidate_id,
             limit=limit,
+        )
+
+    def generate_public_candidate_snapshot(
+        self,
+        request: PublicCandidateGenerateRequest,
+    ) -> PublicCandidateSnapshotResult:
+        return _generate_public_candidate_snapshot(self.repository, request)
+
+    def get_public_candidate(self, candidate_id: str) -> PublicCandidateRecord | None:
+        return self.repository.get_public_candidate(candidate_id)
+
+    def list_public_candidates(
+        self,
+        request: PublicCandidateLibraryRequest | None = None,
+    ) -> PublicCandidateLibraryResult:
+        request = request or PublicCandidateLibraryRequest()
+        records = self.repository.list_public_candidates(request)
+        return PublicCandidateLibraryResult(
+            candidate_count=len(records),
+            status_counts=dict(sorted(Counter(record.public_status for record in records).items())),
+            visibility_counts=dict(sorted(Counter(record.visibility for record in records).items())),
+            candidates=records,
         )
 
     def build_evidence_ref_repair_report(
@@ -5755,6 +5784,538 @@ def _research_brief_record_from_result(
         error_count=len(hard_errors),
         metadata={key: value for key, value in metadata.items() if value not in (None, [], {})},
     )
+
+
+def _generate_public_candidate_snapshot(
+    repository: ResearchRepository,
+    request: PublicCandidateGenerateRequest,
+) -> PublicCandidateSnapshotResult:
+    errors: list[str] = []
+    therapy_idea: TherapyIdeaRecord | None = None
+    candidate: PublicCandidateRecord | None = None
+
+    if request.therapy_idea_id:
+        therapy_idea = repository.get_therapy_idea(request.therapy_idea_id)
+        if therapy_idea is None:
+            return PublicCandidateSnapshotResult(errors=[f"therapy_idea_not_found:{request.therapy_idea_id}"])
+
+    if request.candidate_id:
+        candidate = repository.get_public_candidate(request.candidate_id)
+        if candidate and therapy_idea is None and candidate.therapy_idea_id:
+            therapy_idea = repository.get_therapy_idea(candidate.therapy_idea_id)
+
+    if therapy_idea is None:
+        return PublicCandidateSnapshotResult(errors=["public_candidate_generation_requires_therapy_idea"])
+
+    existing_candidates = repository.list_public_candidates(
+        PublicCandidateLibraryRequest(therapy_idea_id=therapy_idea.therapy_idea_id, limit=1)
+    )
+    if candidate is None and existing_candidates:
+        candidate = existing_candidates[0]
+
+    candidate_id = request.candidate_id or (candidate.candidate_id if candidate else _public_candidate_id(therapy_idea))
+    display_id = request.display_id or (candidate.display_id if candidate else _public_candidate_display_id(candidate_id))
+    candidate_kind = request.candidate_kind or (candidate.candidate_kind if candidate else _public_candidate_kind(therapy_idea))
+    validation_decisions = (
+        repository.list_validation_decisions(therapy_idea_id=therapy_idea.therapy_idea_id, limit=25)
+        if request.include_decisions
+        else []
+    )
+    compute_jobs = (
+        _public_candidate_compute_jobs(repository, therapy_idea, validation_decisions)
+        if request.include_compute_jobs
+        else []
+    )
+    artifacts = _public_candidate_artifacts(repository, compute_jobs) if request.include_artifacts else []
+    public_status = request.public_status or _public_candidate_status(
+        therapy_idea,
+        validation_decisions,
+        compute_jobs,
+    )
+    latest_validation_decision = validation_decisions[0] if validation_decisions else None
+    latest_compute_job = compute_jobs[0] if compute_jobs else None
+    previous_status = candidate.public_status if candidate else None
+    artifact_ids = _dedupe_uuid_list(
+        [
+            *(candidate.artifact_ids if candidate else []),
+            *(artifact.artifact_id for artifact in artifacts),
+            *(artifact_id for job in compute_jobs for artifact_id in job.artifact_ids),
+        ]
+    )
+    payload = _public_candidate_payload(
+        candidate_id=candidate_id,
+        display_id=display_id,
+        candidate_kind=candidate_kind,
+        public_status=public_status,
+        therapy_idea=therapy_idea,
+        validation_decisions=validation_decisions,
+        compute_jobs=compute_jobs,
+        artifacts=artifacts,
+        pipeline_version=request.pipeline_version,
+        commit_sha=request.commit_sha,
+    )
+    content_hash = _public_candidate_content_hash(payload)
+    snapshots = repository.list_public_candidate_snapshots(candidate_id=candidate_id, limit=1)
+    snapshot_version = (snapshots[0].snapshot_version + 1) if snapshots else 1
+    snapshot_id = uuid5(NAMESPACE_URL, f"twog:public-candidate-snapshot:{candidate_id}:{snapshot_version}:{content_hash}")
+    decision_events = _public_candidate_decision_events(
+        candidate_id=candidate_id,
+        snapshot_id=snapshot_id,
+        snapshot_version=snapshot_version,
+        public_status=public_status,
+        previous_status=previous_status,
+        validation_decisions=validation_decisions,
+        compute_jobs=compute_jobs,
+    )
+    source_refs = _dedupe_texts(
+        [
+            *(therapy_idea.evidence_refs or []),
+            *(str(therapy_idea.source_program_id) for _ in [therapy_idea] if therapy_idea.source_program_id),
+            *(decision.packet_id for decision in validation_decisions),
+        ]
+    )
+    citation_refs = _dedupe_texts(
+        [
+            *therapy_idea.evidence_refs,
+            *[
+                str(ref)
+                for decision in validation_decisions
+                for ref in _public_candidate_decision_evidence_refs(decision)
+            ],
+        ]
+    )
+    method_refs = _public_candidate_method_refs(compute_jobs, validation_decisions)
+    snapshot = PublicCandidateSnapshot(
+        snapshot_id=snapshot_id,
+        candidate_id=candidate_id,
+        snapshot_version=snapshot_version,
+        content_hash=content_hash,
+        title=therapy_idea.idea.title,
+        candidate_kind=candidate_kind,
+        public_status=public_status,
+        payload=payload,
+        source_refs=source_refs,
+        citation_refs=citation_refs,
+        method_refs=method_refs,
+        artifact_ids=artifact_ids,
+        decision_event_ids=[event.event_id for event in decision_events],
+        compute_job_ids=[job.compute_job_id for job in compute_jobs],
+        pipeline_version=request.pipeline_version,
+        commit_sha=request.commit_sha,
+        metadata={**request.metadata, "source": "public_candidate_snapshot_generator"},
+    )
+    candidate_record = PublicCandidateRecord(
+        candidate_id=candidate_id,
+        display_id=display_id,
+        candidate_kind=candidate_kind,
+        title=therapy_idea.idea.title,
+        summary=therapy_idea.idea.hypothesis,
+        rationale_md=therapy_idea.idea.rationale,
+        public_status=public_status,
+        visibility=request.visibility,
+        therapy_idea_id=therapy_idea.therapy_idea_id,
+        validation_packet_id=latest_validation_decision.packet_id if latest_validation_decision else None,
+        validation_decision_id=latest_validation_decision.decision_id if latest_validation_decision else None,
+        source_program_id=therapy_idea.source_program_id,
+        source_brief_id=therapy_idea.source_brief_id,
+        source_evaluation_id=therapy_idea.source_evaluation_id,
+        committee_run_id=therapy_idea.committee_run_id,
+        primary_compute_job_id=latest_compute_job.compute_job_id if latest_compute_job else None,
+        targets=therapy_idea.targets,
+        biomarkers=therapy_idea.biomarkers,
+        candidate_therapies=therapy_idea.candidate_therapies,
+        evidence_refs=therapy_idea.evidence_refs,
+        risk_flags=therapy_idea.risks,
+        artifact_ids=artifact_ids,
+        priority_score=therapy_idea.score,
+        content_hash=content_hash,
+        latest_snapshot_id=snapshot.snapshot_id,
+        metadata={
+            **(candidate.metadata if candidate else {}),
+            **request.metadata,
+            "latest_snapshot_version": snapshot.snapshot_version,
+            "snapshot_source": "therapy_idea",
+        },
+    )
+    if request.persist:
+        repository.upsert_public_candidate(candidate_record)
+        repository.upsert_public_candidate_snapshot(snapshot)
+        for event in decision_events:
+            repository.append_public_candidate_decision_event(event)
+    return PublicCandidateSnapshotResult(
+        candidate=candidate_record,
+        snapshot=snapshot,
+        decision_events=decision_events,
+        errors=errors,
+    )
+
+
+def _public_candidate_id(record: TherapyIdeaRecord) -> str:
+    digest = uuid5(NAMESPACE_URL, f"twog:public-candidate:therapy-idea:{record.therapy_idea_id}").hex[:12]
+    return f"twog-candidate-{digest}"
+
+
+def _public_candidate_display_id(candidate_id: str) -> str:
+    digest = hashlib.sha1(candidate_id.encode("utf-8")).hexdigest()[:6].upper()
+    return f"TWOG-{digest}"
+
+
+def _public_candidate_kind(record: TherapyIdeaRecord) -> str:
+    text = " ".join([record.idea.title, *record.candidate_therapies, *record.targets]).lower()
+    if "peptide" in text:
+        return "peptide"
+    if len(record.candidate_therapies) > 1 or "combination" in text or "+" in text:
+        return "combination"
+    if any(token in text for token in ("compound", "molecule", "inhibitor", "drug")):
+        return "molecule"
+    if record.source_program_id is not None:
+        return "research_program_child"
+    return "target_strategy"
+
+
+def _public_candidate_status(
+    record: TherapyIdeaRecord,
+    decisions: list[ValidationDecisionRecord],
+    compute_jobs: list[ComputeJobRecord],
+) -> str:
+    if record.status in {"archived", "rejected"}:
+        return "archived" if record.status == "archived" else "deprecated"
+    if any(job.status == "completed" for job in compute_jobs):
+        return "compute_supported"
+    if any(decision.validation_ready for decision in decisions):
+        return "evidence_supported"
+    if decisions or record.status in {"ready_for_promotion", "queued_for_validation"}:
+        return "investigating"
+    return "proposed"
+
+
+def _public_candidate_payload(
+    *,
+    candidate_id: str,
+    display_id: str | None,
+    candidate_kind: str,
+    public_status: str,
+    therapy_idea: TherapyIdeaRecord,
+    validation_decisions: list[ValidationDecisionRecord],
+    compute_jobs: list[ComputeJobRecord],
+    artifacts: list[ArtifactHandle],
+    pipeline_version: str | None,
+    commit_sha: str | None,
+) -> dict[str, Any]:
+    return {
+        "identity": {
+            "candidate_id": candidate_id,
+            "display_id": display_id,
+            "candidate_kind": candidate_kind,
+            "public_status": public_status,
+            "title": therapy_idea.idea.title,
+            "disease_scope": therapy_idea.disease_scope,
+            "priority_score": therapy_idea.score,
+        },
+        "rationale": {
+            "hypothesis": therapy_idea.idea.hypothesis,
+            "rationale_md": therapy_idea.idea.rationale,
+            "mechanism": therapy_idea.idea.mechanism,
+            "translational_path": therapy_idea.idea.translational_path,
+        },
+        "biology": {
+            "targets": therapy_idea.targets,
+            "biomarkers": therapy_idea.biomarkers,
+            "candidate_therapies": therapy_idea.candidate_therapies,
+            "therapy_family_hints": therapy_idea.metadata.get("therapy_families", []),
+        },
+        "evidence": {
+            "evidence_strength": therapy_idea.idea.evidence_strength,
+            "evidence_refs": therapy_idea.evidence_refs,
+            "risks": therapy_idea.risks,
+            "next_experiments": therapy_idea.next_experiments,
+            "validation_decisions": [
+                {
+                    "decision_id": decision.decision_id,
+                    "packet_id": decision.packet_id,
+                    "outcome": decision.outcome,
+                    "confidence": decision.confidence,
+                    "validation_ready": decision.validation_ready,
+                    "specific_claim_viability": decision.specific_claim_viability,
+                    "broader_program_signal": decision.broader_program_signal,
+                    "summary": decision.decision.rationale,
+                    "blocking_reasons": decision.decision.blocking_reasons,
+                    "confidence_changers": decision.decision.confidence_changers,
+                    "evidence_refs": _public_candidate_decision_evidence_refs(decision),
+                }
+                for decision in validation_decisions
+            ],
+        },
+        "computational_evidence": [
+            {
+                "compute_job_id": str(job.compute_job_id),
+                "status": job.status,
+                "runner_kind": job.runner_kind,
+                "compute_profile": job.compute_profile,
+                "validation_type": job.validation_type,
+                "title": job.title,
+                "objective": job.objective,
+                "container_image": job.container_image,
+                "artifact_ids": [str(artifact_id) for artifact_id in job.artifact_ids],
+                "summary": _public_candidate_compute_summary(job),
+                "cost": {
+                    "estimate_usd": job.cost_estimate_usd,
+                    "actual_usd": job.cost_actual_usd,
+                },
+            }
+            for job in compute_jobs
+        ],
+        "artifacts": [
+            {
+                "artifact_id": str(artifact.artifact_id),
+                "artifact_type": artifact.artifact_type,
+                "uri": artifact.uri,
+                "mime_type": artifact.mime_type,
+                "legal_status": artifact.legal_status,
+                "metadata": artifact.metadata,
+            }
+            for artifact in artifacts
+        ],
+        "literature": [
+            {
+                "ref": ref,
+                "claim": "candidate support evidence",
+                "source": "therapy_idea.evidence_refs",
+            }
+            for ref in therapy_idea.evidence_refs
+        ],
+        "reproducibility": {
+            "pipeline_version": pipeline_version,
+            "commit_sha": commit_sha,
+            "committee_run_id": str(therapy_idea.committee_run_id) if therapy_idea.committee_run_id else None,
+            "agent_run_id": str(therapy_idea.agent_run_id) if therapy_idea.agent_run_id else None,
+            "source_program_id": str(therapy_idea.source_program_id) if therapy_idea.source_program_id else None,
+            "source_brief_id": str(therapy_idea.source_brief_id) if therapy_idea.source_brief_id else None,
+            "source_evaluation_id": str(therapy_idea.source_evaluation_id) if therapy_idea.source_evaluation_id else None,
+        },
+        "linked_records": {
+            "therapy_idea_id": str(therapy_idea.therapy_idea_id),
+            "validation_decision_ids": [decision.decision_id for decision in validation_decisions],
+            "compute_job_ids": [str(job.compute_job_id) for job in compute_jobs],
+        },
+    }
+
+
+def _public_candidate_content_hash(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _public_candidate_decision_evidence_refs(decision: ValidationDecisionRecord) -> list[str]:
+    summary = decision.decision.evidence_summary if isinstance(decision.decision.evidence_summary, dict) else {}
+    refs = summary.get("evidence_refs") or summary.get("citation_refs") or []
+    if isinstance(refs, list):
+        return [str(ref) for ref in refs if str(ref).strip()]
+    return []
+
+
+def _public_candidate_decision_events(
+    *,
+    candidate_id: str,
+    snapshot_id: UUID,
+    snapshot_version: int,
+    public_status: str,
+    previous_status: str | None,
+    validation_decisions: list[ValidationDecisionRecord],
+    compute_jobs: list[ComputeJobRecord],
+) -> list[PublicCandidateDecisionEvent]:
+    events: list[PublicCandidateDecisionEvent] = []
+    if previous_status is None:
+        events.append(
+            PublicCandidateDecisionEvent(
+                event_id=uuid5(NAMESPACE_URL, f"twog:public-candidate-event:{candidate_id}:proposed"),
+                candidate_id=candidate_id,
+                action="proposed",
+                rationale_md="Public candidate record generated from a persisted TWOG therapy idea.",
+                new_status=public_status,
+                related_snapshot_id=snapshot_id,
+            )
+        )
+    elif previous_status != public_status:
+        events.append(
+            PublicCandidateDecisionEvent(
+                event_id=uuid5(
+                    NAMESPACE_URL,
+                    f"twog:public-candidate-event:{candidate_id}:{snapshot_version}:status:{public_status}",
+                ),
+                candidate_id=candidate_id,
+                action="status_changed",
+                rationale_md=f"Candidate status changed from {previous_status} to {public_status}.",
+                prior_status=previous_status,
+                new_status=public_status,
+                related_snapshot_id=snapshot_id,
+            )
+        )
+    for decision in validation_decisions:
+        events.append(
+            PublicCandidateDecisionEvent(
+                event_id=uuid5(
+                    NAMESPACE_URL,
+                    f"twog:public-candidate-event:{candidate_id}:{snapshot_version}:decision:{decision.decision_id}",
+                ),
+                candidate_id=candidate_id,
+                action="evidence_added",
+                rationale_md=decision.decision.rationale or f"Validation decision {decision.decision_id} attached.",
+                new_status=public_status,
+                related_snapshot_id=snapshot_id,
+                related_validation_decision_id=decision.decision_id,
+                metadata={
+                    "packet_id": decision.packet_id,
+                    "outcome": decision.outcome,
+                    "confidence": decision.confidence,
+                    "validation_ready": decision.validation_ready,
+                },
+            )
+        )
+    for job in compute_jobs:
+        if job.status in {"completed", "failed", "blocked"}:
+            events.append(
+                PublicCandidateDecisionEvent(
+                    event_id=uuid5(
+                        NAMESPACE_URL,
+                        f"twog:public-candidate-event:{candidate_id}:{snapshot_version}:compute:{job.compute_job_id}",
+                    ),
+                    candidate_id=candidate_id,
+                    action="evidence_added",
+                    rationale_md=f"Compute job {job.title} reached {job.status}.",
+                    new_status=public_status,
+                    related_snapshot_id=snapshot_id,
+                    related_compute_job_id=job.compute_job_id,
+                    metadata={"runner_kind": job.runner_kind, "validation_type": job.validation_type},
+                )
+            )
+    events.append(
+        PublicCandidateDecisionEvent(
+            event_id=uuid5(
+                NAMESPACE_URL,
+                f"twog:public-candidate-event:{candidate_id}:{snapshot_version}:snapshot",
+            ),
+            candidate_id=candidate_id,
+            action="snapshot_generated",
+            rationale_md=f"Generated candidate snapshot version {snapshot_version}.",
+            new_status=public_status,
+            related_snapshot_id=snapshot_id,
+        )
+    )
+    return events
+
+
+def _public_candidate_compute_jobs(
+    repository: ResearchRepository,
+    therapy_idea: TherapyIdeaRecord,
+    decisions: list[ValidationDecisionRecord],
+) -> list[ComputeJobRecord]:
+    jobs = repository.list_compute_jobs(limit=250)
+    terms = _public_candidate_match_terms(therapy_idea, decisions)
+    matched: list[ComputeJobRecord] = []
+    for job in jobs:
+        haystack = " ".join(
+            [
+                job.title,
+                job.objective,
+                job.validation_type or "",
+                json.dumps(job.input_payload, sort_keys=True, default=str),
+                json.dumps(job.output_payload, sort_keys=True, default=str),
+                json.dumps(job.metadata, sort_keys=True, default=str),
+            ]
+        ).lower()
+        if any(term in haystack for term in terms):
+            matched.append(job)
+    matched.sort(key=lambda item: item.updated_at, reverse=True)
+    return matched[:20]
+
+
+def _public_candidate_match_terms(
+    therapy_idea: TherapyIdeaRecord,
+    decisions: list[ValidationDecisionRecord],
+) -> list[str]:
+    values = [
+        str(therapy_idea.therapy_idea_id),
+        therapy_idea.idea.title,
+        *therapy_idea.targets,
+        *therapy_idea.biomarkers,
+        *therapy_idea.candidate_therapies,
+        *(decision.candidate_id for decision in decisions),
+        *(decision.packet_id for decision in decisions),
+    ]
+    terms: list[str] = []
+    for value in values:
+        normalized = re.sub(r"\s+", " ", str(value).strip().lower())
+        if len(normalized) >= 3:
+            terms.append(normalized)
+        for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", normalized):
+            terms.append(token)
+    return _dedupe_texts(terms)
+
+
+def _public_candidate_artifacts(
+    repository: ResearchRepository,
+    compute_jobs: list[ComputeJobRecord],
+) -> list[ArtifactHandle]:
+    artifacts: list[ArtifactHandle] = []
+    seen: set[UUID] = set()
+    for artifact_id in [artifact_id for job in compute_jobs for artifact_id in job.artifact_ids]:
+        if artifact_id in seen:
+            continue
+        artifact = repository.get_artifact(artifact_id)
+        if artifact is not None:
+            artifacts.append(artifact)
+            seen.add(artifact_id)
+    return artifacts
+
+
+def _public_candidate_method_refs(
+    compute_jobs: list[ComputeJobRecord],
+    decisions: list[ValidationDecisionRecord],
+) -> list[str]:
+    refs: list[str] = []
+    for job in compute_jobs:
+        for source in (job.metadata, job.input_payload, job.output_payload):
+            if not isinstance(source, dict):
+                continue
+            for key in ("method_ref", "methods_ref", "methods_version", "protocol_version"):
+                value = source.get(key)
+                if value:
+                    refs.append(str(value))
+        if job.container_image:
+            refs.append(job.container_image)
+    for decision in decisions:
+        tool_hint = decision.metadata.get("tool_hint") if isinstance(decision.metadata, dict) else None
+        if tool_hint:
+            refs.append(str(tool_hint))
+    return _dedupe_texts(refs)
+
+
+def _public_candidate_compute_summary(job: ComputeJobRecord) -> dict[str, Any]:
+    output = job.output_payload if isinstance(job.output_payload, dict) else {}
+    summary = output.get("summary")
+    if isinstance(summary, dict):
+        return summary
+    stages = output.get("stages") or output.get("stage_status") or output.get("stage_diagnostics")
+    if isinstance(stages, dict):
+        return {"stages": stages}
+    return {
+        "status": job.status,
+        "last_error": job.last_error,
+        "runpod_job_id": job.runpod_job_id,
+        "external_run_id": job.external_run_id,
+    }
+
+
+def _dedupe_uuid_list(values: list[UUID]) -> list[UUID]:
+    deduped: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in values:
+        if value in seen:
+            continue
+        deduped.append(value)
+        seen.add(value)
+    return deduped
 
 
 def _therapy_idea_record_from_result(

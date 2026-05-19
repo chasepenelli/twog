@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+import html
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -27,6 +29,7 @@ from .contracts import (
     AgentRunReviewRecord,
     CommandCenterRequest,
     HypothesisPromotionReportRequest,
+    PublicCandidateLibraryRequest,
     ResearchFollowupRefinementRequest,
     ResearchFollowupLoopRequest,
     ResearchBriefQualityReportRequest,
@@ -336,6 +339,256 @@ def validation_packets_payload(
         limit=_int_param(params, "limit", 10),
     )
     return service.build_validation_packets(request).model_dump(mode="json")
+
+
+def public_candidates_payload(
+    service: HSAResearchService,
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Return public-proof candidate records for command center/public-page previews."""
+
+    params = params or {}
+    request = PublicCandidateLibraryRequest(
+        candidate_id=_str_param(params, "candidate_id"),
+        therapy_idea_id=_uuid_param(params, "therapy_idea_id"),
+        public_status=_str_param(params, "status"),
+        visibility=_str_param(params, "visibility"),
+        candidate_kind=_str_param(params, "kind"),
+        query=_str_param(params, "query"),
+        limit=max(1, min(_int_param(params, "limit", 50), 500)),
+    )
+    result = service.list_public_candidates(request).model_dump(mode="json")
+    return result
+
+
+def public_candidate_payload(service: HSAResearchService, candidate_id: str) -> dict[str, Any]:
+    """Return one candidate plus its latest snapshot and decision log."""
+
+    candidate = service.get_public_candidate(candidate_id)
+    if candidate is None:
+        raise LookupError(f"public_candidate_not_found:{candidate_id}")
+    snapshots = service.repository.list_public_candidate_snapshots(candidate_id=candidate_id, limit=1)
+    events = service.repository.list_public_candidate_decision_events(candidate_id=candidate_id, limit=100)
+    return {
+        "candidate": candidate.model_dump(mode="json"),
+        "latest_snapshot": snapshots[0].model_dump(mode="json") if snapshots else None,
+        "decision_events": [event.model_dump(mode="json") for event in events],
+    }
+
+
+def _public_candidate_html(payload: Mapping[str, Any]) -> str:
+    candidate = payload.get("candidate") if isinstance(payload.get("candidate"), dict) else {}
+    snapshot = payload.get("latest_snapshot") if isinstance(payload.get("latest_snapshot"), dict) else {}
+    body = snapshot.get("payload") if isinstance(snapshot.get("payload"), dict) else {}
+    identity = body.get("identity") if isinstance(body.get("identity"), dict) else {}
+    rationale = body.get("rationale") if isinstance(body.get("rationale"), dict) else {}
+    biology = body.get("biology") if isinstance(body.get("biology"), dict) else {}
+    evidence = body.get("evidence") if isinstance(body.get("evidence"), dict) else {}
+    compute = body.get("computational_evidence") if isinstance(body.get("computational_evidence"), list) else []
+    events = payload.get("decision_events") if isinstance(payload.get("decision_events"), list) else []
+    title = str(candidate.get("title") or identity.get("title") or "TWOG Candidate")
+    content_hash = str(candidate.get("content_hash") or snapshot.get("content_hash") or "")
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)} | TWOG Candidate</title>
+  <style>
+    body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #090b10; color: #f5f7fb; }}
+    main {{ max-width: 1120px; margin: 0 auto; padding: 40px 20px 56px; }}
+    .top {{ display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid #252b36; padding-bottom: 24px; }}
+    .eyebrow {{ color: #9fb0c7; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }}
+    h1 {{ margin: 10px 0; font-size: 42px; line-height: 1.05; letter-spacing: 0; }}
+    .badge {{ display: inline-flex; align-items: center; border: 1px solid #3d4b60; color: #cde0ff; padding: 6px 10px; border-radius: 6px; font-size: 13px; background: #111722; }}
+    .grid {{ display: grid; grid-template-columns: 1.2fr .8fr; gap: 20px; margin-top: 24px; }}
+    section {{ background: #111722; border: 1px solid #252b36; border-radius: 8px; padding: 18px; }}
+    h2 {{ font-size: 17px; margin: 0 0 12px; }}
+    p {{ color: #d9e2f0; line-height: 1.55; }}
+    .chips {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+    .chip {{ border: 1px solid #334155; border-radius: 999px; padding: 6px 9px; color: #d9e2f0; font-size: 13px; background: #0b1018; }}
+    .muted {{ color: #9fb0c7; }}
+    .list {{ display: grid; gap: 10px; }}
+    .row {{ border-top: 1px solid #252b36; padding-top: 10px; }}
+    code {{ color: #b7f7d4; overflow-wrap: anywhere; }}
+    pre {{ background: #070a0f; border: 1px solid #252b36; border-radius: 6px; padding: 12px; overflow: auto; color: #cdd7e5; }}
+    @media (max-width: 860px) {{ .grid, .top {{ grid-template-columns: 1fr; display: block; }} h1 {{ font-size: 32px; }} }}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="top">
+      <div>
+        <div class="eyebrow">{html.escape(str(candidate.get("display_id") or identity.get("display_id") or candidate.get("candidate_id") or ""))}</div>
+        <h1>{html.escape(title)}</h1>
+        <span class="badge">{html.escape(str(candidate.get("public_status") or identity.get("public_status") or ""))}</span>
+        <span class="badge">{html.escape(str(candidate.get("candidate_kind") or identity.get("candidate_kind") or ""))}</span>
+      </div>
+      <div class="muted">Hash<br><code>{html.escape(content_hash[:16])}</code></div>
+    </div>
+    <div class="grid">
+      <section>
+        <h2>Rationale</h2>
+        <p>{html.escape(str(rationale.get("hypothesis") or ""))}</p>
+        <p>{html.escape(str(rationale.get("rationale_md") or ""))}</p>
+      </section>
+      <section>
+        <h2>Targets And Therapies</h2>
+        <div class="chips">{_html_chips([*_html_list_values(biology.get("targets")), *_html_list_values(biology.get("candidate_therapies"))])}</div>
+      </section>
+      <section>
+        <h2>Evidence</h2>
+        <div class="chips">{_html_chips(evidence.get("evidence_refs", []))}</div>
+        <p class="muted">Strength: {html.escape(str(evidence.get("evidence_strength") or "unknown"))}</p>
+      </section>
+      <section>
+        <h2>Risks And Next Experiments</h2>
+        <div class="chips">{_html_chips([*_html_list_values(evidence.get("risks")), *_html_list_values(evidence.get("next_experiments"))])}</div>
+      </section>
+      <section>
+        <h2>Computational Evidence</h2>
+        <div class="list">{_html_compute_rows(compute)}</div>
+      </section>
+      <section>
+        <h2>Decision Log</h2>
+        <div class="list">{_html_decision_rows(events)}</div>
+      </section>
+    </div>
+    <section style="margin-top:20px">
+      <h2>Snapshot JSON</h2>
+      <pre>{html.escape(json.dumps(snapshot, indent=2, sort_keys=True, default=str))}</pre>
+    </section>
+  </main>
+</body>
+</html>"""
+
+
+def _html_chips(values: Any) -> str:
+    if not isinstance(values, list):
+        return ""
+    return "".join(f'<span class="chip">{html.escape(str(value))}</span>' for value in values if str(value).strip())
+
+
+def _html_list_values(values: Any) -> list[Any]:
+    return values if isinstance(values, list) else []
+
+
+def _html_compute_rows(values: Any) -> str:
+    if not values:
+        return '<p class="muted">No compute studies attached yet.</p>'
+    rows = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            '<div class="row">'
+            f'<strong>{html.escape(str(item.get("title") or "Compute study"))}</strong><br>'
+            f'<span class="muted">{html.escape(str(item.get("status") or ""))} · '
+            f'{html.escape(str(item.get("validation_type") or item.get("runner_kind") or ""))}</span>'
+            "</div>"
+        )
+    return "".join(rows)
+
+
+def _html_decision_rows(values: Any) -> str:
+    if not values:
+        return '<p class="muted">No decision events recorded yet.</p>'
+    rows = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            '<div class="row">'
+            f'<strong>{html.escape(str(item.get("action") or "event"))}</strong><br>'
+            f'<span class="muted">{html.escape(str(item.get("occurred_at") or ""))}</span>'
+            f'<p>{html.escape(str(item.get("rationale_md") or ""))}</p>'
+            "</div>"
+        )
+    return "".join(rows)
+
+
+def big_ideas_payload(
+    service: HSAResearchService,
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Return the Big Ideas cockpit board payload."""
+
+    params = params or {}
+    limit = max(1, min(_int_param(params, "limit", 100), 300))
+    query = (_str_param(params, "query") or "").casefold()
+    stage_filter = _str_param(params, "stage")
+    items = _collect_big_idea_items(service, limit=limit)
+    if query:
+        items = [item for item in items if query in _big_idea_search_text(item)]
+    if stage_filter:
+        items = [item for item in items if item.get("board_stage") == stage_filter]
+    stage_counts: dict[str, int] = {stage: 0 for stage in BIG_IDEA_STAGES}
+    for item in items:
+        stage = str(item.get("board_stage") or "new_signal")
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+    return {
+        "stages": [{"key": key, "label": BIG_IDEA_STAGE_LABELS[key]} for key in BIG_IDEA_STAGES],
+        "total": len(items),
+        "stage_counts": stage_counts,
+        "items": items,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def activity_events_payload(
+    service: HSAResearchService,
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Return explicit and derived command-center activity events."""
+
+    params = params or {}
+    limit = max(1, min(_int_param(params, "limit", 100), 300))
+    entity_type = _str_param(params, "entity_type")
+    entity_id = _str_param(params, "entity_id")
+    source = _str_param(params, "source")
+    explicit = [
+        _command_center_activity_event(record.model_dump(mode="json"))
+        for record in service.repository.list_command_center_activity_events(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            source=source,
+            limit=limit,
+        )
+    ]
+    derived = _derived_activity_events(service, limit=limit)
+    if entity_type:
+        derived = [item for item in derived if item.get("entity_type") == entity_type]
+    if entity_id:
+        derived = [item for item in derived if item.get("entity_id") == entity_id]
+    if source:
+        derived = [item for item in derived if item.get("source") == source]
+    events = explicit + derived
+    events.sort(key=lambda item: str(item.get("occurred_at") or ""), reverse=True)
+    events = events[:limit]
+    return {"total": len(events), "items": events}
+
+
+def compute_jobs_payload(
+    service: HSAResearchService,
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Return compute jobs for the redesigned command center."""
+
+    params = params or {}
+    items = service.repository.list_compute_jobs(
+        status=_str_param(params, "status"),
+        runner_kind=_str_param(params, "runner_kind"),
+        limit=max(1, min(_int_param(params, "limit", 50), 200)),
+    )
+    status_counts: dict[str, int] = {}
+    for job in service.repository.list_compute_jobs(limit=None):
+        status_counts[str(job.status)] = status_counts.get(str(job.status), 0) + 1
+    return {
+        "total": sum(status_counts.values()),
+        "visible": len(items),
+        "status_counts": dict(sorted(status_counts.items())),
+        "items": [item.model_dump(mode="json") for item in items],
+    }
 
 
 def list_research_briefs_payload(
@@ -1266,7 +1519,25 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
             if parsed.path == "/api/validation-packets":
                 self._send_json(validation_packets_payload(service_factory(), parse_qs(parsed.query)))
                 return
+            if parsed.path == "/api/public-candidates":
+                self._send_json(public_candidates_payload(service_factory(), parse_qs(parsed.query)))
+                return
+            if parsed.path == "/api/compute-jobs":
+                self._send_json(compute_jobs_payload(service_factory(), parse_qs(parsed.query)))
+                return
             parts = [part for part in PurePosixPath(parsed.path).parts if part != "/"]
+            if len(parts) == 3 and parts[:2] == ["api", "public-candidates"]:
+                try:
+                    self._send_json(public_candidate_payload(service_factory(), parts[2]))
+                except LookupError as exc:
+                    self._send_error(HTTPStatus.NOT_FOUND, str(exc))
+                return
+            if len(parts) == 3 and parts[:2] == ["public", "candidates"]:
+                try:
+                    self._send_html(_public_candidate_html(public_candidate_payload(service_factory(), parts[2])))
+                except LookupError as exc:
+                    self._send_error(HTTPStatus.NOT_FOUND, str(exc))
+                return
             if len(parts) == 3 and parts[:2] == ["api", "agent-runs"]:
                 try:
                     self._send_json(get_agent_run_payload(service_factory(), parts[2]))
@@ -1403,6 +1674,18 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)
+
+        def _send_html(self, html: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+            content = html.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            try:
+                self.wfile.write(content)
+            except BrokenPipeError:
+                return
 
         def _send_error(self, status: HTTPStatus, message: str) -> None:
             self._send_json({"error": message, "status": int(status)}, status=status)

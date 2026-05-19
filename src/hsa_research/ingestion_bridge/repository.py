@@ -32,6 +32,10 @@ from .contracts import (
     MDExpertApprovalRecord,
     MDExpertReviewPacketRecord,
     PrimitiveCallEvent,
+    PublicCandidateDecisionEvent,
+    PublicCandidateLibraryRequest,
+    PublicCandidateRecord,
+    PublicCandidateSnapshot,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
     ResearchProgramRecord,
@@ -361,6 +365,43 @@ class ResearchRepository(Protocol):
     ) -> list[ValidationDecisionRecord]:
         """Return persisted validation decisions by durable filters."""
 
+    def upsert_public_candidate(self, record: PublicCandidateRecord) -> PublicCandidateRecord:
+        """Persist an inspectable public-proof candidate record."""
+
+    def get_public_candidate(self, candidate_id: str) -> PublicCandidateRecord | None:
+        """Return a persisted public candidate by stable candidate ID."""
+
+    def list_public_candidates(self, request: PublicCandidateLibraryRequest | None = None) -> list[PublicCandidateRecord]:
+        """Return public candidates by durable filters."""
+
+    def upsert_public_candidate_snapshot(self, record: PublicCandidateSnapshot) -> PublicCandidateSnapshot:
+        """Persist a generated candidate page snapshot."""
+
+    def get_public_candidate_snapshot(self, snapshot_id: UUID) -> PublicCandidateSnapshot | None:
+        """Return a persisted candidate snapshot by ID."""
+
+    def list_public_candidate_snapshots(
+        self,
+        *,
+        candidate_id: str | None = None,
+        limit: int | None = 50,
+    ) -> list[PublicCandidateSnapshot]:
+        """Return candidate snapshots newest-first."""
+
+    def append_public_candidate_decision_event(
+        self,
+        record: PublicCandidateDecisionEvent,
+    ) -> PublicCandidateDecisionEvent:
+        """Append a candidate decision-log event."""
+
+    def list_public_candidate_decision_events(
+        self,
+        *,
+        candidate_id: str | None = None,
+        limit: int | None = 100,
+    ) -> list[PublicCandidateDecisionEvent]:
+        """Return candidate decision-log events newest-first."""
+
     def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:
         """Persist a recommend-only validation plan derived from a research brief."""
 
@@ -643,6 +684,9 @@ class InMemoryResearchRepository:
         self.therapy_ideas: dict[UUID, TherapyIdeaRecord] = {}
         self.research_programs: dict[UUID, ResearchProgramRecord] = {}
         self.validation_decisions: dict[str, ValidationDecisionRecord] = {}
+        self.public_candidates: dict[str, PublicCandidateRecord] = {}
+        self.public_candidate_snapshots: dict[UUID, PublicCandidateSnapshot] = {}
+        self.public_candidate_decision_events: dict[UUID, PublicCandidateDecisionEvent] = {}
         self.validation_plans: dict[UUID, ValidationPlanRecord] = {}
         self.validation_request_queue: dict[UUID, ValidationRequestQueueItem] = {}
         self.compute_jobs: dict[UUID, ComputeJobRecord] = {}
@@ -1417,6 +1461,87 @@ class InMemoryResearchRepository:
         if candidate_id:
             records = [record for record in records if record.candidate_id == candidate_id]
         records.sort(key=lambda record: record.updated_at, reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def upsert_public_candidate(self, record: PublicCandidateRecord) -> PublicCandidateRecord:
+        existing = self.public_candidates.get(record.candidate_id)
+        if existing:
+            record = record.model_copy(
+                update={
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **record.metadata},
+                }
+            )
+        self.public_candidates[record.candidate_id] = record
+        return record
+
+    def get_public_candidate(self, candidate_id: str) -> PublicCandidateRecord | None:
+        return self.public_candidates.get(candidate_id)
+
+    def list_public_candidates(self, request: PublicCandidateLibraryRequest | None = None) -> list[PublicCandidateRecord]:
+        request = request or PublicCandidateLibraryRequest(limit=50)
+        records = list(self.public_candidates.values())
+        if request.candidate_id:
+            records = [record for record in records if record.candidate_id == request.candidate_id]
+        if request.therapy_idea_id:
+            records = [record for record in records if record.therapy_idea_id == request.therapy_idea_id]
+        if request.public_status:
+            records = [record for record in records if record.public_status == request.public_status]
+        if request.visibility:
+            records = [record for record in records if record.visibility == request.visibility]
+        if request.candidate_kind:
+            records = [record for record in records if record.candidate_kind == request.candidate_kind]
+        if request.query:
+            query = request.query.lower()
+            records = [
+                record
+                for record in records
+                if query in record.title.lower()
+                or query in record.summary.lower()
+                or query in record.rationale_md.lower()
+                or any(query in target.lower() for target in record.targets)
+                or any(query in therapy.lower() for therapy in record.candidate_therapies)
+            ]
+        records.sort(key=lambda record: (record.priority_score, record.updated_at), reverse=True)
+        return records[: request.limit]
+
+    def upsert_public_candidate_snapshot(self, record: PublicCandidateSnapshot) -> PublicCandidateSnapshot:
+        self.public_candidate_snapshots[record.snapshot_id] = record
+        return record
+
+    def get_public_candidate_snapshot(self, snapshot_id: UUID) -> PublicCandidateSnapshot | None:
+        return self.public_candidate_snapshots.get(snapshot_id)
+
+    def list_public_candidate_snapshots(
+        self,
+        *,
+        candidate_id: str | None = None,
+        limit: int | None = 50,
+    ) -> list[PublicCandidateSnapshot]:
+        records = list(self.public_candidate_snapshots.values())
+        if candidate_id:
+            records = [record for record in records if record.candidate_id == candidate_id]
+        records.sort(key=lambda record: (record.snapshot_version, record.created_at), reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def append_public_candidate_decision_event(
+        self,
+        record: PublicCandidateDecisionEvent,
+    ) -> PublicCandidateDecisionEvent:
+        self.public_candidate_decision_events[record.event_id] = record
+        return record
+
+    def list_public_candidate_decision_events(
+        self,
+        *,
+        candidate_id: str | None = None,
+        limit: int | None = 100,
+    ) -> list[PublicCandidateDecisionEvent]:
+        records = list(self.public_candidate_decision_events.values())
+        if candidate_id:
+            records = [record for record in records if record.candidate_id == candidate_id]
+        records.sort(key=lambda record: record.occurred_at, reverse=True)
         return records[:limit] if limit is not None else records
 
     def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:

@@ -28,6 +28,7 @@ from hsa_research.ingestion_bridge.contracts import (
     AgentPerformanceRow,
     AgentRunRecord,
     AgentRunReviewRecord,
+    ArtifactHandle,
     BoltzRunRequest,
     CandidateDossierRequest,
     ChunkContextRequest,
@@ -80,6 +81,11 @@ from hsa_research.ingestion_bridge.contracts import (
     OmicsReadoutRequest,
     OmicsReadoutResult,
     PrimitiveCallEvent,
+    PublicCandidateDecisionEvent,
+    PublicCandidateGenerateRequest,
+    PublicCandidateLibraryRequest,
+    PublicCandidateRecord,
+    PublicCandidateSnapshot,
     RawSourceRecord,
     ResolvedEntity,
     ResearchChunkSearchRequest,
@@ -1038,6 +1044,181 @@ def test_validation_decision_record_round_trips_in_memory_and_sqlite(tmp_path):
         assert repo.list_validation_decisions(outcome="promote_broader_program", limit=10)[0].decision_id == (
             decision.decision_id
         )
+
+
+def test_public_candidate_contracts_validate_and_reject_bad_status():
+    candidate = PublicCandidateRecord(
+        candidate_id="twog-candidate-test",
+        display_id="TWOG-TEST",
+        candidate_kind="peptide",
+        title="Vimentin peptide strategy",
+        public_status="proposed",
+        visibility="draft_public",
+        targets=["VIM", "VIM"],
+        candidate_therapies=["vimentin-targeting peptide"],
+        evidence_refs=["C1", "C1"],
+    )
+    assert candidate.targets == ["VIM"]
+    assert candidate.evidence_refs == ["C1"]
+
+    snapshot = PublicCandidateSnapshot(
+        candidate_id=candidate.candidate_id,
+        content_hash="abc123456789",
+        title=candidate.title,
+        candidate_kind=candidate.candidate_kind,
+        public_status=candidate.public_status,
+    )
+    assert snapshot.snapshot_version == 1
+
+    event = PublicCandidateDecisionEvent(
+        candidate_id=candidate.candidate_id,
+        action="proposed",
+        new_status="proposed",
+    )
+    assert event.actor == "twog_system"
+
+    payload = candidate.model_dump(mode="json")
+    payload["public_status"] = "maybe_ready"
+    with pytest.raises(ValidationError):
+        PublicCandidateRecord.model_validate(payload)
+
+
+def test_public_candidate_records_round_trip_in_memory_and_sqlite(tmp_path):
+    candidate = PublicCandidateRecord(
+        candidate_id="twog-candidate-roundtrip",
+        display_id="TWOG-RT",
+        title="Round-trip candidate",
+        public_status="investigating",
+        visibility="private",
+    )
+    snapshot = PublicCandidateSnapshot(
+        candidate_id=candidate.candidate_id,
+        snapshot_version=1,
+        content_hash="roundtriphash",
+        title=candidate.title,
+        payload={"identity": {"candidate_id": candidate.candidate_id}},
+    )
+    event = PublicCandidateDecisionEvent(
+        candidate_id=candidate.candidate_id,
+        action="snapshot_generated",
+        related_snapshot_id=snapshot.snapshot_id,
+    )
+    memory_repo = InMemoryResearchRepository()
+    sqlite_repo = SQLiteResearchRepository(tmp_path / "public-candidates.sqlite3", seed=False)
+
+    for repo in (memory_repo, sqlite_repo):
+        repo.upsert_public_candidate(candidate)
+        repo.upsert_public_candidate_snapshot(snapshot)
+        repo.append_public_candidate_decision_event(event)
+
+        assert repo.get_public_candidate(candidate.candidate_id).display_id == "TWOG-RT"
+        assert repo.list_public_candidates(PublicCandidateLibraryRequest(query="round-trip", limit=10))[0].candidate_id == (
+            candidate.candidate_id
+        )
+        assert repo.list_public_candidate_snapshots(candidate_id=candidate.candidate_id)[0].content_hash == (
+            snapshot.content_hash
+        )
+        assert repo.list_public_candidate_decision_events(candidate_id=candidate.candidate_id)[0].action == (
+            "snapshot_generated"
+        )
+
+
+def test_public_candidate_snapshot_generation_links_therapy_decision_compute_and_artifact(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "public-candidate-generation.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    artifact_id = uuid4()
+    idea = TherapyIdea(
+        title="Vimentin peptide blockade strategy",
+        hypothesis="A vimentin-directed peptide strategy may disrupt vascular HSA invasion programs.",
+        rationale="VIM sits at a plausible tumor ecology interface and needs inspectable validation.",
+        candidate_therapies=["vimentin-targeting peptide"],
+        targets=["VIM"],
+        biomarkers=["VIM expression"],
+        evidence_refs=["C1", "PMID:123"],
+        evidence_strength="medium",
+        risks=["direct canine peptide evidence remains sparse"],
+        next_experiments=["Run processed omics VIM expression readout."],
+        priority_score=0.82,
+    )
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            topic="VIM peptide program child",
+            status="ready_for_promotion",
+            score=0.82,
+        )
+    )
+    decision = ValidationDecisionPacket(
+        decision_id="validation_decision:public-candidate",
+        packet_id="validation_packet:public-candidate",
+        candidate_id=f"therapy_idea:{idea.idea_id}",
+        source_type="therapy_idea",
+        source_id=str(idea.idea_id),
+        therapy_idea_id=idea.idea_id,
+        title="Public candidate decision",
+        outcome="promote_broader_program",
+        confidence=0.72,
+        validation_ready=True,
+        specific_claim_viability="uncertain",
+        broader_program_signal="strong",
+        rationale="The broader VIM peptide program has enough signal for a public proof snapshot.",
+        recommended_downstream_action="Create an inspectable candidate record and keep validation recommend-only.",
+        decisive_questions=["Does VIM expression enrich in canine HSA cohorts?"],
+        evidence_tasks=["Attach processed omics readout and assay strategy."],
+        evidence_summary={"evidence_refs": ["PMID:123"]},
+    )
+    repo.upsert_validation_decision(ValidationDecisionRecord.from_decision(decision))
+    repo.upsert_artifact(
+        ArtifactHandle(
+            artifact_id=artifact_id,
+            artifact_type="md_pose",
+            uri="twog://artifacts/pose.pdbqt",
+            mime_type="chemical/x-pdbqt",
+        )
+    )
+    repo.upsert_compute_job(
+        ComputeJobRecord(
+            status="completed",
+            runner_kind="local",
+            compute_profile="cpu",
+            validation_type="md_smoke",
+            title="VIM peptide MD smoke",
+            objective="Run a smoke compute study for the VIM peptide public candidate.",
+            output_payload={"summary": {"stage": "md_smoke", "status": "completed"}},
+            artifact_ids=[artifact_id],
+            metadata={"method_ref": "md-smoke-v1"},
+        )
+    )
+
+    result = service.generate_public_candidate_snapshot(
+        PublicCandidateGenerateRequest(
+            therapy_idea_id=idea.idea_id,
+            visibility="draft_public",
+            pipeline_version="test-v1",
+            commit_sha="abc123",
+        )
+    )
+
+    assert result.errors == []
+    assert result.candidate is not None
+    assert result.snapshot is not None
+    assert result.candidate.public_status == "compute_supported"
+    assert result.candidate.candidate_kind == "peptide"
+    assert result.candidate.latest_snapshot_id == result.snapshot.snapshot_id
+    assert result.candidate.content_hash == result.snapshot.content_hash
+    assert result.snapshot.pipeline_version == "test-v1"
+    assert str(artifact_id) in [str(value) for value in result.snapshot.artifact_ids]
+    assert result.snapshot.payload["computational_evidence"][0]["summary"]["stage"] == "md_smoke"
+    assert "PMID:123" in result.snapshot.citation_refs
+    assert {event.action for event in result.decision_events} >= {"proposed", "evidence_added", "snapshot_generated"}
+    listed = service.list_public_candidates(PublicCandidateLibraryRequest(query="vimentin", limit=10))
+    assert listed.candidate_count == 1
+    assert listed.candidates[0].therapy_idea_id == idea.idea_id
+    api_list = command_center_web.public_candidates_payload(service, {"query": ["vimentin"]})
+    assert api_list["candidate_count"] == 1
+    api_detail = command_center_web.public_candidate_payload(service, result.candidate.candidate_id)
+    assert api_detail["candidate"]["candidate_id"] == result.candidate.candidate_id
+    assert api_detail["latest_snapshot"]["content_hash"] == result.snapshot.content_hash
 
 
 def test_validation_decision_report_promotes_broader_program_for_weak_specific_claim(tmp_path):
