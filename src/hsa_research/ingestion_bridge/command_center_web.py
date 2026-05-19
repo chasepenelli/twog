@@ -441,7 +441,7 @@ def _public_candidate_html(payload: Mapping[str, Any]) -> str:
       </section>
       <section>
         <h2>Evidence</h2>
-        <div class="chips">{_html_chips(evidence.get("evidence_refs", []))}</div>
+        <div class="list">{_html_evidence_summary(literature, evidence)}</div>
         <p class="muted">Strength: {html.escape(str(evidence.get("evidence_strength") or "unknown"))}</p>
       </section>
       <section>
@@ -495,6 +495,29 @@ def _html_compute_rows(values: Any) -> str:
             "</div>"
         )
     return "".join(rows)
+
+
+def _html_evidence_summary(literature: Any, evidence: Mapping[str, Any]) -> str:
+    if isinstance(literature, list) and literature:
+        rows = []
+        for item in literature:
+            if not isinstance(item, dict):
+                continue
+            ref = str(item.get("ref") or "").strip()
+            kind = str(item.get("evidence_kind") or "supporting_context").replace("_", " ")
+            title = str(item.get("title") or ref or "Citation")
+            supports = str(item.get("supports") or "").strip()
+            rows.append(
+                '<div class="row">'
+                f'<strong>{html.escape(ref)}</strong> = '
+                f'<span class="muted">{html.escape(kind)}</span><br>'
+                f'{html.escape(title)}'
+                f'<p>{html.escape(supports)}</p>'
+                "</div>"
+            )
+        if rows:
+            return "".join(rows)
+    return _html_chips(evidence.get("evidence_refs", []))
 
 
 def _html_literature_rows(values: Any) -> str:
