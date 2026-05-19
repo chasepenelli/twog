@@ -1244,6 +1244,10 @@ def test_public_candidate_snapshot_generation_links_therapy_decision_compute_and
     api_detail = command_center_web.public_candidate_payload(service, result.candidate.candidate_id)
     assert api_detail["candidate"]["candidate_id"] == result.candidate.candidate_id
     assert api_detail["latest_snapshot"]["content_hash"] == result.snapshot.content_hash
+    candidate_html = command_center_web._public_candidate_html(api_detail)
+    assert "<h2>Evidence</h2>" in candidate_html
+    assert "<strong>C1</strong> =" in candidate_html
+    assert "Vimentin expression in canine hemangiosarcoma" in candidate_html
 
 
 def test_validation_decision_report_promotes_broader_program_for_weak_specific_claim(tmp_path):
