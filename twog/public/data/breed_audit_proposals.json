@@ -1,0 +1,797 @@
+[
+  {
+    "paper_id": 99100,
+    "pmid": null,
+    "doi": null,
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Estudo clínico retrospetivo de Hemangiossarcoma no cão",
+    "journal": "",
+    "year": 2021,
+    "abstract_preview": "Com o aumento da esperança média de vida dos animais, cresce também a incidência de doenças relacionadas com a idade. Dentro destas, as neoplasias são uma doença com elevada incidência. O hemangiossarcoma (HSA) é uma neoplasia maligna de origem endotelial vascular, cujo órgão primário mais afetado é o baço e, ocorre com maior frequência nos cães em comparação com as demais espécies. É mais frequente em animais com idades entre oito e treze anos e apresenta sinais, muitas vezes, inespecíficos. Esta neoplasia é diagnosticada recorrendo a vários métodos de diagnóstico clínico, imagiológico e his…",
+    "n_signals": 3,
+    "signal_flags": [
+      "breed_name",
+      "epi+breed",
+      "sim>=0.35"
+    ],
+    "sim": 0.852,
+    "rationale": "[treatment -> breed_screening] sim=0.85, 3 signals: breed_name + epi+breed + sim>=0.35"
+  },
+  {
+    "paper_id": 99270,
+    "pmid": null,
+    "doi": "10.30917/att-vk-1814-9588-2023-1-13",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Splenectomy for hemangiosarcoma in dogs",
+    "journal": "Veterinaria i kormlenie",
+    "year": 2023,
+    "abstract_preview": "A retrospective study was conducted on 20 dogs with histologically verified hemangiosarcoma of the spleen after splenectomy. The average age of the dogs was above average - over 10 years old. Breed predisposition was revealed in German Shepherds and Yorkshire Terriers. All patients underwent splenectomy and intraoperative revision. According to the results of intraoperative revision, the study was divided into 2 groups - with the presence of the gemabdomen and without the gemabdomen. The gemabdomen was diagnosed in 70% of patients during the initial diagnosis. Intraoperative revision revealed…",
+    "n_signals": 3,
+    "signal_flags": [
+      "hard_breed_kw",
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.802,
+    "rationale": "[treatment -> breed_screening] sim=0.80, 3 signals: hard_breed_kw + breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 98250,
+    "pmid": null,
+    "doi": null,
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Hemoabdomen in a German Shepherd with Scott syndrome",
+    "journal": "eCommons (Cornell University)",
+    "year": 2012,
+    "abstract_preview": "A 7-year-old male castrated German Shepherd dog presented to Cornell University Hospital for Animals Emergency Service with a 36-hour history of lethargy and decreased appetite. The patient had a history of Canine Scott Syndrome (CSS) and well-controlled hypothyroidism. On presentation, blood work, physical exam, and imaging modalities lead to the diagnosis of a splenic mass and a hemoabdomen. The splenic mass, which was confirmed by histopathology to be a Hemangiosarcoma, had ruptured and hemorrhaged into the abdomen. An emergency splenectomy was performed. Blood and platelet transfusions we…",
+    "n_signals": 3,
+    "signal_flags": [
+      "hard_breed_kw",
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.689,
+    "rationale": "[treatment -> breed_screening] sim=0.69, 3 signals: hard_breed_kw + breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 71292,
+    "pmid": null,
+    "doi": "10.1158/1538-7445.am2026-5572",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Abstract 5572: Conservation of driver mutations and oncogenic pathway alterations revealed through a comparative genomic analysis of human angiosarcoma and canine hemangiosarcoma",
+    "journal": "Cancer Research",
+    "year": 2026,
+    "abstract_preview": "Angiosarcoma (AS) is a rare and aggressive endothelial malignancy, representing <2% of soft tissue sarcomas in humans. Progress in developing effective therapies has been hindered by its low incidence, genomic heterogeneity, and the scarcity of representative preclinical models.Integrative genomic analyses of two cBioPortal cohorts (n=131) identified recurrent alterations in TP53 (26%), KDR (17.6%), POT1 (17.6%), PIK3CA (14.5%), FLT4 (11.5%), PTPRB (11.5%), and NRAS (5.3%), highlighting pervasive disruptions of DNA damage response, PI3K/AKT/mTOR, and angiogenic receptor signaling. However, th…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.846,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.85, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 98877,
+    "pmid": null,
+    "doi": "10.1158/1538-7445.am2025-3912",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Abstract 3912: Transcriptional heterogeneity between hemangiosarcoma and nodular hyperplasia using patient-derived cell lines and orthotopic xenograft model revealed new therapeutic targets",
+    "journal": "Cancer Research",
+    "year": 2025,
+    "abstract_preview": "Abstract Human angiosarcoma (AS) is a rare and aggressive subtype of soft tissue sarcoma of endothelial cell origin with a propensity for local recurrence and metastasis. The optimal treatment of metastatic AS is unclear and is associated with a generally poor prognosis unless diagnosed early. The lack of insight into the pathogenesis always causes treatment failure in the clinic. To discover new treatment strategies for AS, it is necessary to develop new and relevant preclinical models for AS. Dogs commonly suffer from a similar neoplasm, called hemangiosarcoma (HA), with breeds like the gol…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.835,
+    "rationale": "[treatment -> breed_screening] sim=0.83, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 705,
+    "pmid": null,
+    "doi": "10.1158/1538-7445.am2025-3912",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Abstract 3912: Transcriptional heterogeneity between hemangiosarcoma and nodular hyperplasia using patient-derived cell lines and orthotopic xenograft model revealed new therapeutic targets",
+    "journal": "Cancer Research",
+    "year": 2025,
+    "abstract_preview": "Human angiosarcoma (AS) is a rare and aggressive subtype of soft tissue sarcoma of endothelial cell origin with a propensity for local recurrence and metastasis. The optimal treatment of metastatic AS is unclear and is associated with a generally poor prognosis unless diagnosed early. The lack of insight into the pathogenesis always causes treatment failure in the clinic. To discover new treatment strategies for AS, it is necessary to develop new and relevant preclinical models for AS. Dogs commonly suffer from a similar neoplasm, called hemangiosarcoma (HA), with breeds like the golden retri…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.829,
+    "rationale": "[treatment -> breed_screening] sim=0.83, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 84,
+    "pmid": null,
+    "doi": "10.1242/dmm.049044",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Comparison of the oncogenomic landscape of canine and feline hemangiosarcoma shows novel parallels with human angiosarcoma",
+    "journal": "Disease Models & Mechanisms",
+    "year": 2021,
+    "abstract_preview": "ABSTRACT Angiosarcoma (AS) is a highly aggressive tumor of blood and lymphatic vessels in humans that shares many similarities with spontaneously occurring hemangiosarcoma (HSA) in dogs and cats. To investigate the genetic suitability of HSA as a model for AS, we sequenced ∼1000 cancer genes in 41 cases of HSA and matched germline tissue: 15 canine visceral HSAs, 13 canine skin HSAs and 13 feline skin HSAs. Analysis of visceral HSAs from dogs presenting with concurrent splenic and cardiac neoplasms showed that the tumors were not independent primaries, consistent with the highly metastatic na…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.817,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.82, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 97959,
+    "pmid": null,
+    "doi": "10.2460/javma.1970.157.03.326",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Primary Cardiac Hemangiosarcomas in Dogs",
+    "journal": "Journal of the American Veterinary Medical Association",
+    "year": 1970,
+    "abstract_preview": "SUMMARY Hemangiosarcoma of the heart was diagnosed and studied retrospectively in 31 dogs at the Angell Memorial Animal Hospital. The disease was found most frequently in old dogs, especially German Shepherd Dogs. The clinical signs were characterized by weakness or prostration, weight loss, pallor, and respiratory difficulties. Signs of cardiac disease and brain disorders were frequently encountered. Frequently tumors or hemorrhage into body cavities were detected by palpation, paracentesis, radiography, or exploratory surgery. Hematologic findings disclosed anemia, leukocytosis due to neutr…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.809,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.81, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 7973,
+    "pmid": null,
+    "doi": "10.19052/MV.3615",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Descripción clínica de hemangiosarcoma (HSA) cutáneo metastásico en un canino galgo: estudio clínico de un caso",
+    "journal": "Revue De Medecine Veterinaire",
+    "year": 2015,
+    "abstract_preview": "Hemangiosarcoma (HSA) is a type of cancer that has different clinical presentations and therefore different effects, since, depending on each case, different treatment options will exist. While in the case of cutaneous HSA the first line of treatment is always surgical removal of the tumor, metastatic foci should be sought and then perform chemotherapy, despite them having a low metastatic potential. Moreover, the low survival that exists in this type of cancer is a factor that should be communicated to those responsible for the pets, so that, with all available information, they can make a f…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.805,
+    "rationale": "[treatment -> breed_screening] sim=0.81, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 97893,
+    "pmid": null,
+    "doi": "10.1177/104063879200400222",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Prostatic Hemangiosarcoma in a Dog: Clinical and Pathologic Findings",
+    "journal": "Journal of Veterinary Diagnostic Investigation",
+    "year": 1992,
+    "abstract_preview": "Prostatic hemangiosarcoma (HS) appears to be rare in the dog. In 3 of 4 previously reported cases, the prostate was involved via metastasis. For 1 dog, the primary tumor presumably was located in the prostate gland, but no details were given. The present report documents what we believe is a primary HS of the prostate in a dog that presented with clinical signs of urinary tract disease. The prostate tumor and metastases had microscopic features of a poorly differentiated HS, and the diagnosis was confirmed by immunohistochemistry. An 11-year-old male Miniature poodle was admitted to a veterin…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.804,
+    "rationale": "[treatment -> breed_screening] sim=0.80, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 102,
+    "pmid": null,
+    "doi": "10.55170/1997-3225-2025-10-1-79-85",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "ELECTROCHEMOTHERAPY IN THE TREATMENT OF HEMANGIOSARCOMA IN DOGS (CLINICAL CASE)",
+    "journal": "Bulletin Samara State Agricultural Academy",
+    "year": 2025,
+    "abstract_preview": "The article describes a clinical case of hemangiosarcoma treatment in a 7-year-old Labrador dog, local tumor control using intrave-nous bleomycin and subsequent tumor removal, as well as combined administration of calcium gluconate directly into the area of the tumor node. Hemangiosarcoma is a malignant tumor that is quite common in dogs in middle and older age. Labradors, German Shepherds, and Retrievers are the most susceptible to this disease. The causes of the identified cancer are not yet known, but it is safe to say that the main organs that are affected more often in an animal are the…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.801,
+    "rationale": "[treatment -> breed_screening] sim=0.80, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 97927,
+    "pmid": null,
+    "doi": null,
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Splenic hemangiosarcoma with abdominal dissemination in a dog",
+    "journal": "DergiPark (Istanbul University)",
+    "year": 1998,
+    "abstract_preview": "A case of spontaneosly ruptured splenic hemangiosarcoma with abdominal dissemination in a 12-year-old male German shepherd dog is described. At necropsy, a ruptured tumor mass was seen in the ventral region of the visceral surface of the spleen, and disseminated tumor masses were seen throughout the peritoneal cavity. Histologically, in both the primary tumor mass and dis-seminated tumor masses, atypical endothelial cells lining vascular spaces as small clefts or as cavernous channels were observed. Some immunological properties of tumor cells were determined for endothelial cell markers (fac…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.8,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.80, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 97981,
+    "pmid": null,
+    "doi": null,
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Characterizing the spectrum of somatic alterations in canine and human cancers",
+    "journal": "KTH Publication Database DiVA (KTH Royal Institute of Technology)",
+    "year": 2020,
+    "abstract_preview": "Cancers arise as a result of deleterious somatic alterations accumulating in the genome during the process of cell division. These alterations arise either via exposure to mutagens or due to errors occurring during DNA replication. In this thesis, a systematic exploration, from discovery to analyses of somatic alterations in three diverse cancers that affect dogs and humans, was undertaken. In Studies I and II, whole-exome sequencing of dogs affected by the cancers of osteosarcoma and hemangiosarcoma were done to delineate coding mutations that can contribute to their carcinogenesis. Besides,…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.795,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.79, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 97523,
+    "pmid": null,
+    "doi": "10.24099/vet.arhiv.1245",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Pathomorphological features and mast cell count in canine visceral hemangiosarcomas",
+    "journal": "Veterinarski arhiv",
+    "year": 2021,
+    "abstract_preview": "Visceral hemangiosarcoma were analyzed at the Department of Veterinary Pathology of the Faculty of Veterinary Medicine, University of Zagreb, over a 5-year period. From a total of 52 tumor masses in a total of 31 dogs, histological growth patterns (cavernous, capillary or solid) and the amount of tumor supporting stroma were evaluated. Additionally, sections were stained with toluidine blue for the purpose of mast cell detection and their number was determined in the tumor parenchyma, tumor stroma and edges. The average age of the affected animals was 10 years, males predominated, and the tum…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.789,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.79, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 99781,
+    "pmid": null,
+    "doi": "10.31533/pubvet.v18n11e1688",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Hemangiossarcoma hepático em cadela da raça Dobermann",
+    "journal": "Pubvet",
+    "year": 2024,
+    "abstract_preview": "In this work, a case is reported of a young Doberman dog, with a history of ingesting sago palm (Cycas revoluta). During her first months of life, she presented changes in liver enzymes. The patient was diagnosed with primary hepatic hemangiosarcoma, which is a malignant neoplasm of the epithelial cells, and is highly metastatic in its visceral form. The diagnosis was made through exploratory laparotomy and histopathological results. In addition, complementary hematological and imaging tests were performed for a follow-up. Eight chemotherapy sessions with doxorubicin were performed. Due to th…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.769,
+    "rationale": "[treatment -> breed_screening] sim=0.77, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 98290,
+    "pmid": null,
+    "doi": "10.18006/2016.4(spl-3-adpciad).s78.s82",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Histopathological features of cutaneous tumours arising from the vascular endothelial cells in dogs",
+    "journal": "Journal of Experimental Biology and Agricultural Sciences",
+    "year": 2016,
+    "abstract_preview": "Cutaneous growths arising from the endothelial cells of blood vessels were studied in three dogs (Two in male cocker spaniels and one in male Labrador). All the three growths were surgically excised and referred to the Department of Veterinary Pathology, Tirupati for histopathological confirmation during the period from August 2015 to December 2015.Gross examination revealed, firm reddish, soft dark red and soft greyish red coloured masses and are diagnosed based on histopathological features as hemangiosarcoma, cavernous hemangioma and lipohemangioma respectively. In the case of hemangiosarc…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.769,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.77, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 1233,
+    "pmid": null,
+    "doi": "10.3892/ol.2021.12597",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Genomics and transcriptomics in veterinary oncology",
+    "journal": "Oncology Letters",
+    "year": 2021,
+    "abstract_preview": "The sequencing of the canine genome, combined with additional genomic technologies, has created opportunities for research linking veterinary genomics with naturally occurring cancer in dogs. Also, as numerous canine cancers have features in common with human cancers, comparative studies can be performed to evaluate the use of cancers in dogs as models for human cancer. There have been several reviews of veterinary genomics but, to the best of our knowledge, there has been no comprehensive review of the literature of canine cancer genomics. PubMed and CAB Abstracts databases were searched to…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.765,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.76, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 98434,
+    "pmid": null,
+    "doi": "10.22201/fmvz.24486760e.2023.1149",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Revisión del hemangiosarcoma canino: una neoplasia agresiva y mortal",
+    "journal": "Veterinaria México OA",
+    "year": 2023,
+    "abstract_preview": "El hemangiosarcoma (HSA) es un tumor agresivo y maligno que se produce en las células del endotelio e invade los vasos sanguíneos, suele ser bastante común en caninos de 6 a 13 años de edad, pero ciertas razas como Pastor Alemán, Golden Retriever, Labrador y Bóxer presentan predisposición a padecerlo. Este puede producirse en cualquier parte del cuerpo del animal, pudiéndose encontrar en corazón, hígado, piel y huesos, aunque su localización más común es en el bazo. Su importancia radica en que son pocos los caninos que pueden ser diagnosticados antes de que el tumor sufra ruptura y provoque…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.757,
+    "rationale": "[treatment -> breed_screening] sim=0.76, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 98017,
+    "pmid": null,
+    "doi": "10.33188/vetheder.1329707",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "A rare case of perivulvar hemangiosarcoma in a bitch",
+    "journal": "Veteriner Hekimler Derneği Dergisi",
+    "year": 2024,
+    "abstract_preview": "An 11-year old, Rottweiler bitch was presented to the clinic with the complaint of a huge mass protruding from the left side of the vulvar labium. The bitch had been ovariohysterectomized due to the pyometra 2 years ago. The perivulvar mass was surgically removed by using an electrocautery device under general anesthesia. Macroscopically, the pedunculated mass was 20 cm x 25 cm in diameter, capsulated and slightly firm. Histopathological examination revealed that the mass was a hemangiosarcoma originating from the mucosa. Marked anisocytosis and anisokaryosis were noted in microscopic examina…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.755,
+    "rationale": "[treatment -> breed_screening] sim=0.75, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 97899,
+    "pmid": null,
+    "doi": "10.1160/vcot-06-12-0097",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Retroperitoneal hemangiosarcoma causing chronic hindlimb lameness in a dog",
+    "journal": "Veterinary and Comparative Orthopaedics and Traumatology",
+    "year": 2007,
+    "abstract_preview": "The clinical, radiographic, ultrasonographic, computed tomographic, surgical and histopathological findings in a Boxer dog with retroperitoneal hemangiosarcoma are described in this study. A seven-year-old, male, castrated Boxer dog was referred for evaluation of chronic hindlimb lameness. The physical examination revealed muscle atrophy and sciatic nerve deficits. Radiography and ultrasonography revealed a caudodorsal abdominal mass. Computed tomography revealed that the mass involved the left margin of the L7 vertebra, lumbosacral canal, and lumbosacral plexus. At surgery, a large retroperi…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.748,
+    "rationale": "[treatment -> breed_screening] sim=0.75, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 97944,
+    "pmid": null,
+    "doi": null,
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Hemangiosarcoma of the penis in a German Shepherd dog",
+    "journal": "eCommons (Cornell University)",
+    "year": 2009,
+    "abstract_preview": "A 12 year old, intact male, German shepherd dog presented to Cornell University Hospital for Animals emergency service on Thursday 9/25/2008 for the treatment of urinary obstruction. The dog had a six day history of progressive urinary signs ultimately resulting in anuria. A large firm urinary bladder, that was difficult to express manually, and a firm mass in the region of the bulbourethral gland were the most significant physical examination findings. A penile amputation, castration, scrotal ablation and scrotal urethrostomy were performed. Histopathologic evaluation and factor VIII antigen…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.746,
+    "rationale": "[treatment -> breed_screening] sim=0.75, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 98652,
+    "pmid": null,
+    "doi": "10.32469/10355/79560",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "The use of massively parallel sequencing to study the virome, epigenome and genome of canine and feline cancers",
+    "journal": "",
+    "year": 2019,
+    "abstract_preview": "The remarkable advancements in sequencing technologies have allowed the entire mutational landscape of hundreds of different types of human cancers to be defined. This knowledge gives patients two new categories of treatment options, small molecule inhibitors and targeted immunotherapy. Veterinary oncology has been slow to enter the field of genome-wide studies, largely due to costs. Five years ago, the first whole genome of a canine cancer patient was published. Because of NIH support and the steady decline in sequencing costs, the number of published canine tumor sequences has exploded this…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.745,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.75, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 69,
+    "pmid": null,
+    "doi": "10.1111/jvim.15309",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Association of Sphingosine‐1‐phosphate (S1P)/S1P Receptor‐1 Pathway with Cell Proliferation and Survival in Canine Hemangiosarcoma",
+    "journal": "Journal of Veterinary Internal Medicine",
+    "year": 2018,
+    "abstract_preview": "Upon careful review of data from the quality control (QC) and quality assurance (QA) program, the authors have determined that the Frog cell line reported in this manuscript was misidentified and was actually Dal-4. The Frog cell line was established in 2005 from a hemangiosarcoma of the spleen obtained from a 10-year-old female Golden Retriever. The Dal-4 cell line was established in 2000 from a hemangiosarcoma of the spleen obtained from a 7-year-old male Dalmatian. The authors believe that the conclusions from this paper are not affected by the breed, age, or sex of origin of the dog from…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.74,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.74, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 98583,
+    "pmid": null,
+    "doi": "10.24070/bjvp.1983-0246.v12i2p41-47",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "A review of neoplastic and non-neoplastic canine skin tumours in Trinidad from 2010-2015",
+    "journal": "Brazilian Journal of Veterinary Pathology",
+    "year": 2019,
+    "abstract_preview": "This retrospective study was performed on samples submitted to the Pathology Unit of the School of Veterinary Medicine, Faculty of Medical Sciences, St. Augustine, Trinidad, during the period 2010 to 2015. A total of 471 noninflammatory cutaneous masses were analyzed, of which 225 (47.8%) were malignant, 202 (42.9%) were benign and 44 (9.3%) were non-neoplastic. The most common malignant tumors were haemangiosarcoma, 50 (22.2%); mast cell tumour, 49 (21.8%); soft tissue sarcoma 35 (15.6%), lymphoma, 20 (8.9%) and melanoma 20 (8.9%). The most common benign tumors were haemangioma, 39 (19.3%);…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.739,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.74, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 98733,
+    "pmid": null,
+    "doi": "10.1002/vrc2.70363",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Non‐resectable extratesticular sustentacular cell tumour treated with palliative‐intent radiation and carboplatin chemotherapy in a dog",
+    "journal": "Veterinary Record Case Reports",
+    "year": 2026,
+    "abstract_preview": "Abstract There is limited published information regarding the diagnosis and treatment of sustentacular cell neoplasia in dogs, and no data evaluating the use of radiation and chemotherapy for those tumours that are non‐resectable. This case report describes a 5‐year‐old, male, neutered German shepherd dog presented with a large, rapidly growing inguinal mass. Advanced imaging (computed tomography), cytology, histopathology, and immunohistochemistry led to the diagnosis of sustentacular (Sertoli) cell neoplasia. The dog underwent five daily palliative radiation treatments followed by a six‐dos…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.73,
+    "rationale": "[treatment -> breed_screening] sim=0.73, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 99133,
+    "pmid": null,
+    "doi": null,
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "A Novel Approach to the Comparative Genomic Analysis of Canine and Human Cancers",
+    "journal": "",
+    "year": 2018,
+    "abstract_preview": "abstract: Study of canine cancer’s molecular underpinnings holds great potential for informing veterinary and human oncology. Sporadic canine cancers are highly abundant (~4 million diagnoses/year in the United States) and the dog’s unique genomic architecture due to selective inbreeding, alongside the high similarity between dog and human genomes both confer power for improving understanding of cancer genes. However, characterization of canine cancer genome landscapes has been limited. It is hindered by lack of canine-specific tools and resources. To enable robust and reproducible comparativ…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.725,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.72, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 97956,
+    "pmid": null,
+    "doi": "10.1111/j.1939-1676.1994.tb03258.x",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Thrombocytopenia Associated With Neoplasia in Dogs",
+    "journal": "Journal of Veterinary Internal Medicine",
+    "year": 1994,
+    "abstract_preview": "Ten percent (214/2,059) of all dogs with cancer at North Carolina State University Veterinary Teaching Hospital had thrombocytopenia. The thrombocytopenia was associated with infectious/inflammatory etiologies in 4%, miscellaneous disorders (therapy, bone marrow failure, disseminated intravascular coagulation) in 35%, and neoplasia without identifiable secondary factors in 61% of cancer-bearing dogs. Classifying these dogs by tumor groups revealed the following proportionate ratios: lymphoid, 29%; carcinoma, 28%; sarcoma, 20%; hemic neoplasia, 7%; multiple, 5%; unclassified, 3%; benign, 3%; b…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.719,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.72, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 98721,
+    "pmid": null,
+    "doi": "10.56808/2985-1130.3656",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Cervical Lymphangiosarcoma in a Poodle Dog: Surgical Treatment and Chemotherapy",
+    "journal": "The Thai Journal of Veterinary Medicine",
+    "year": 2024,
+    "abstract_preview": "A 7-year-old neutered male Poodle exhibited a persistent caudoventral cervical mass with draining lesions characterized by chronic and relapsing features. Upon presentation, the mass measured 7 × 11 × 11.5 cm, containing sanguine fluid. Computed tomography revealed the diffuse extension of the cervical mass from the C3 level to the thoracic inlet, affecting the sternal lymph node. Extensive surgical removal was attempted with meticulous resection to avoid damaging the right jugular vein, carotid sheath, and vagus nerve within the mass. Histopathology and immunohistochemical staining for facto…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.718,
+    "rationale": "[treatment -> breed_screening] sim=0.72, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 98717,
+    "pmid": null,
+    "doi": "10.22233/9781910443699.85.28",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "The use of toceranib phosphate after surgical resection of haemangiosarcoma from the aortic arch in a German Shepherd dog",
+    "journal": "British Small Animal Veterinary Association eBooks",
+    "year": 2019,
+    "abstract_preview": "To report the post-operative outcome and survival of a dog after surgical resection of a haemangiosarcoma from the aortic arch using toceranib phosphate as an adjunctive therapy.",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.709,
+    "rationale": "[treatment -> breed_screening] sim=0.71, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 98056,
+    "pmid": null,
+    "doi": "10.5455/ijlr.20210217045123",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Surgico-chemotherapeutic Management of Splenic Hemangiosarcoma using VAC Protocol in German Shepherd Dog- A Case Report",
+    "journal": "International Journal of Livestock Research",
+    "year": 2021,
+    "abstract_preview": null,
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.706,
+    "rationale": "[treatment -> breed_screening] sim=0.71, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 98353,
+    "pmid": null,
+    "doi": "10.56808/2985-1130.2044",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Hemangiosarcoma of the Nictitating Membrane as Seen in Two Great Danes (a Case Report)",
+    "journal": "The Thai Journal of Veterinary Medicine",
+    "year": 2006,
+    "abstract_preview": "Hemangiosarcoma of the nictitating membrane of two Great Dane dogs is reported. Treatment was successfully carried out by amputation of the nictitan. No recurrence of the mass or pulmonary metastasis was evident within a period of twelve months after the treatment.",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.672,
+    "rationale": "[treatment -> breed_screening] sim=0.67, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 97555,
+    "pmid": null,
+    "doi": "10.1038/s42003-023-04856-5",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Spatial transcriptomics reveal topological immune landscapes of Asian head and neck angiosarcoma",
+    "journal": "Communications Biology",
+    "year": 2023,
+    "abstract_preview": "Angiosarcomas are rare malignant tumors of the endothelium, arising commonly from the head and neck region (AS-HN) and recently associated with ultraviolet (UV) exposure and human herpesvirus-7 infection. We examined 81 cases of angiosarcomas, including 47 cases of AS-HN, integrating information from whole genome sequencing, gene expression profiling and spatial transcriptomics (10X Visium). In the AS-HN cohort, we observed recurrent somatic mutations in CSMD3 (18%), LRP1B (18%), MUC16 (18%), POT1 (16%) and TP53 (16%). UV-positive AS-HN harbored significantly higher tumor mutation burden than…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.661,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.66, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 98565,
+    "pmid": null,
+    "doi": "10.1111/vco.12795",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "DNA damage response proteins in canine cancer as potential research targets in comparative oncology",
+    "journal": "Veterinary and Comparative Oncology",
+    "year": 2021,
+    "abstract_preview": "The DNA damage response (DDR) is a complex signal transduction network that is activated when endogenous or exogenous genotoxins damage or interfere with the replication of genomic DNA. Under such conditions, the DDR promotes DNA repair and ensures accurate replication and division of the genome. High levels of genomic instability are frequently observed in cancers and can stem from germline loss-of-function mutations in certain DDR genes, such as BRCA1, BRCA2, and p53, that form the basis of human cancer predisposition syndromes. In addition, mutation and/or aberrant expression of multiple D…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.658,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.66, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 101841,
+    "pmid": null,
+    "doi": "10.1186/s12917-021-02850-9",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Toceranib phosphate-associated nephrotic syndrome in a dog: a case report",
+    "journal": "BMC Veterinary Research",
+    "year": 2021,
+    "abstract_preview": "Abstract\n                Background\n                Nephrotic syndrome (NS) is rare in dogs and is characterized by concurrent clinical findings of proteinuria, hyperlipidemia, hypoalbuminemia, and edema. NS has been reported in humans receiving tyrosine kinase inhibitors (TKI) and in dogs receiving masitinib. This is the first report of NS in a dog receiving toceranib phosphate.\n              \n                Case presentation\n                An 8-year-old, female, spayed Labrador retriever was diagnosed with a 10 cm mast cell tumor on the left lateral abdomen. After completion of a 12-week…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.654,
+    "rationale": "[treatment -> breed_screening] sim=0.65, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 98842,
+    "pmid": null,
+    "doi": "10.1101/2024.02.14.580390",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Initial Characterization of Canine T-cell Receptor Repertoires Using RNA-seq Data from Different Diseases and Tissues",
+    "journal": "bioRxiv (Cold Spring Harbor Laboratory)",
+    "year": 2024,
+    "abstract_preview": "The dog serves as a key translational model in cancer immunotherapy. Understanding the T cell receptor (TCR) repertoire is needed for various cancer immunotherapies. Compared to humans where >300 million TCRs have been identified, <100 canine TCRs are reported. To address this deficiency, we assembled >200,000 complete TCR complementarity-determining region 3 (CDR3) sequences from RNA-seq data published for ~2,000 canine samples of blood, lymph node, and other tissues, of which 613 are tumors. We collected 1,324 human RNA-seq samples to compare the similarities and differences in T-cell reper…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.637,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.64, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 97964,
+    "pmid": null,
+    "doi": "10.2460/javma.1992.201.10.1572",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Acute sterile hemorrhagic cystitis after a single intravenous administration of cyclophosphamide in three dogs",
+    "journal": "Journal of the American Veterinary Medical Association",
+    "year": 1992,
+    "abstract_preview": "Three dogs receiving cyclophosphamide IV as part of a combination chemotherapeutic regimen developed macrohematuria, stranguria, and pollakiuria within 24 hours of administration of the first dose of this drug. An 11-year-old spayed mixed-breed dog with an oral squamous cell carcinoma was administered 250 mg of cyclophosphamide/m2 of body surface, whereas a 4-year-old castrated male Gordon Setter was treated with 100 mg of cyclophosphamide/m2 and a 6-year-old male German Shepherd Dog with a cutaneous hemangiosarcoma was administered 140 mg of cyclophosphamide/m2. Aerobic bacterial culture, an…",
+    "n_signals": 2,
+    "signal_flags": [
+      "breed_name",
+      "sim>=0.35"
+    ],
+    "sim": 0.616,
+    "rationale": "[treatment -> breed_screening] sim=0.62, 2 signals: breed_name + sim>=0.35"
+  },
+  {
+    "paper_id": 98328,
+    "pmid": null,
+    "doi": "10.1038/s41467-024-52798-1",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "The DoGA consortium expression atlas of promoters and genes in 100 canine tissues",
+    "journal": "Nature Communications",
+    "year": 2024,
+    "abstract_preview": "The dog, Canis lupus familiaris, is an important model for studying human diseases. Unlike many model organisms, the dog genome has a comparatively poor functional annotation, which hampers gene discovery for development, morphology, disease, and behavior. To fill this gap, we established a comprehensive tissue biobank for both the dog and wolf samples. The biobank consists of 5485 samples representing 132 tissues from 13 dogs, 12 dog embryos, and 24 wolves. In a subset of 100 tissues from nine dogs and 12 embryos, we characterized gene expression activity for each promoter, including alterna…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.594,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.59, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 1501,
+    "pmid": null,
+    "doi": "10.64898/2026.03.10.26348013",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Single-cell transcriptome-wide Mendelian randomization and colocalization analyses reveal immune-cell-specific mechanisms and actionable drug targets in prostate cancer",
+    "journal": "medrxiv (preprint)",
+    "year": 2026,
+    "abstract_preview": "Prostate cancer remains a major health burden with limited success in immune-targeted therapies. To identify immune-cell-specific therapeutic targets, we integrated single-cell cis-eQTL data across 14 immune cell types, bulk eQTLs, GWAS summary statistics from PRACTICAL and FinnGen, and single-cell RNA-seq data from prostate tumors. Using Mendelian randomization and Bayesian colocalization, we prioritized 80 causal eGenes with shared genetic signals, especially in CD4 and CD8 T cells. Functional analyses revealed enrichment in immune-related pathways such as antigen processing and cytokine si…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.583,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.58, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 368,
+    "pmid": null,
+    "doi": "10.64898/2026.01.04.25341444",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "LncRNA CDKN2B-AS1 C-Allele: A High-Risk Genetic Determinant in Cancer Susceptibility and Progression Impacting Immune Cell Modulation Dynamics with Therapeutic Implications",
+    "journal": "medrxiv (preprint)",
+    "year": 2026,
+    "abstract_preview": "Examining LncRNA-driven cancer biology, our study represents the first comprehensive investigation of the LncRNA CDKN2B-AS1 across multiple cancer types, revealing its genetic basis for cancer susceptibility, and associations with thromboembolic risks and immunological dynamics. Stratification across hematological and non-hematological cancers revealed predominant prevalence rates of the CDKN2B-AS1 C-allele, notably higher in solid tumor malignancies, peaking at 86.8% in colorectal carcinoma (CRC). CRC-C-carriers exhibited worse outcomes, marked by reduced overall survival, increased venous-t…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.561,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.56, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 99138,
+    "pmid": null,
+    "doi": null,
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Elucidation Of Mechanisms In Mammary Tumorigenesis And Identification Of Driving Events And Susceptibility Loci",
+    "journal": "",
+    "year": 2012,
+    "abstract_preview": "Human breast cancer research faces limitations necessitating a comparative oncogenomic approach and use of models, in which the environment and genetic background can be controlled. The Mcm4Chaos3 (Chaos3) mouse model contains the only endogenous mutation in mice known to lead exclusively to spontaneous development of mammary adenocarcinomas. My comparative analysis of Chaos3 and human oncogenomic data implicate NF1 deficiency as a major driver of breast cancer. Traditionally known for its tumor suppressive role in preventing neurofibromas, I find NF1 is deficient in Chaos3 mammary tumors and…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.551,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.55, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 366,
+    "pmid": null,
+    "doi": "10.64898/2025.12.19.25342717",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "TASTE identifies shared proteomic effects on multiple related cancers",
+    "journal": "medrxiv (preprint)",
+    "year": 2025,
+    "abstract_preview": "IntroductionGenome-wide association studies (GWAS) have identified hundreds of variants linked to cancers, but their downstream regulatory consequences remain poorly understood. Increasing evidence suggests that related cancers share alterations of common regulatory programs. Trans-associations of cancer risk variants mediated via molecular phenotypes, such as gene expression and protein levels, can help uncover these downstream mechanisms. Further investigation of such convergence can reveal shared etiological processes and therapeutic targets across cancer types.\n\nMethodWe introduce TASTE (…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.52,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.52, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 925,
+    "pmid": null,
+    "doi": "10.1136/jitc-2023-007236",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "T-cell receptor beta variable gene polymorphism predicts immune-related adverse events during checkpoint blockade immunotherapy",
+    "journal": "Journal for Immunotherapy of Cancer",
+    "year": 2023,
+    "abstract_preview": "Background Immune checkpoint inhibitors have revolutionized cancer treatment. However, they are associated with a unique spectrum of side effects, called immune-related adverse events (irAEs), which can cause significant morbidity and quickly progress to severe or life-threatening events if not treated promptly. Identifying predictive biomarkers for irAEs before immunotherapy initiation is therefore a critical area of research. Polymorphisms within the T-cell receptor beta (TCRB) variable (TRBV) gene have been implicated in autoimmune disease and may be mechanistically linked to irAEs. Howeve…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.515,
+    "rationale": "[treatment -> breed_screening] sim=0.52, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 38265,
+    "pmid": null,
+    "doi": "10.1038/nature19353",
+    "current_track": "cross_cutting",
+    "proposed_track": "breed_screening",
+    "title": "Fumarate is an epigenetic modifier that elicits epithelial-to-mesenchymal transition",
+    "journal": "Nature",
+    "year": 2016,
+    "abstract_preview": "Mutations of the tricarboxylic acid cycle enzyme fumarate hydratase cause hereditary leiomyomatosis and renal cell cancer. Fumarate hydratase-deficient renal cancers are highly aggressive and metastasize even when small, leading to a very poor clinical outcome. Fumarate, a small molecule metabolite that accumulates in fumarate hydratase-deficient cells, plays a key role in cell transformation, making it a bona fide oncometabolite. Fumarate has been shown to inhibit α-ketoglutarate-dependent dioxygenases that are involved in DNA and histone demethylation. However, the link between fumarate acc…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.461,
+    "rationale": "[cross_cutting -> breed_screening] sim=0.46, 2 signals: hard_breed_kw + sim>=0.35"
+  },
+  {
+    "paper_id": 1054,
+    "pmid": null,
+    "doi": "10.3390/cancers16081463",
+    "current_track": "treatment",
+    "proposed_track": "breed_screening",
+    "title": "Revitalizing Cancer Treatment: Exploring the Role of Drug Repurposing",
+    "journal": "Cancers",
+    "year": 2024,
+    "abstract_preview": "Simple Summary Drug repurposing is emerging as a promising avenue for addressing clinical challenges in treating drug-resistant and metastatic cancers. As a case study, some FDA-approved drugs and re-engineered proteins have been revitalized to target various mechanisms in sensitizing drug-resistant cancers. Various computational approaches, including genome-wide association studies, machine learning, artificial intelligence, and deep learning, have been discussed for repurposing drugs for cancer treatment. The drug repurposing approach holds great promise in revolutionizing cancer therapeuti…",
+    "n_signals": 2,
+    "signal_flags": [
+      "hard_breed_kw",
+      "sim>=0.35"
+    ],
+    "sim": 0.461,
+    "rationale": "[treatment -> breed_screening] sim=0.46, 2 signals: hard_breed_kw + sim>=0.35"
+  }
+]

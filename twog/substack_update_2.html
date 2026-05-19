@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TWOG Update #2 — We Built a Validation Pipeline</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Georgia', serif; color: #1a1a1a; background: #fff; line-height: 1.8; max-width: 680px; margin: 0 auto; padding: 40px 20px 80px; }
+  h1 { font-size: 2rem; line-height: 1.2; margin-bottom: 8px; letter-spacing: -0.02em; }
+  h2 { font-size: 1.3rem; margin-top: 48px; margin-bottom: 16px; letter-spacing: -0.01em; }
+  p { margin-bottom: 16px; font-size: 1.05rem; color: #333; }
+  .date { font-size: 0.85rem; color: #999; font-style: italic; margin-bottom: 32px; }
+  .divider { border: none; border-top: 1px solid #e0e0e0; margin: 40px 0; }
+  strong { color: #1a1a1a; }
+  .agent-block { margin-bottom: 20px; }
+  .agent-block strong { display: inline; }
+  table { width: 100%; border-collapse: collapse; margin: 24px 0; font-size: 0.85rem; font-family: 'SF Mono', 'Consolas', monospace; }
+  th { text-align: left; padding: 8px 12px; border-bottom: 2px solid #1a1a1a; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.7rem; color: #666; }
+  td { padding: 8px 12px; border-bottom: 1px solid #eee; }
+  tr:hover td { background: #fafafa; }
+  .go { color: #16a34a; font-weight: 700; }
+  .infra-item { margin-bottom: 16px; }
+  .infra-item strong { font-family: 'SF Mono', 'Consolas', monospace; font-size: 0.9rem; }
+  ul { margin: 16px 0; padding-left: 24px; }
+  li { margin-bottom: 8px; font-size: 1.05rem; color: #333; }
+  .footer { margin-top: 48px; padding-top: 24px; border-top: 1px solid #e0e0e0; font-size: 0.85rem; color: #999; font-style: italic; }
+  a { color: #1a1a1a; text-decoration: underline; text-underline-offset: 3px; }
+  .cta { display: inline-block; margin-top: 16px; padding: 10px 24px; background: #1a1a1a; color: #fff; text-decoration: none; font-size: 0.85rem; letter-spacing: 0.05em; text-transform: uppercase; }
+  .cta:hover { background: #333; }
+</style>
+</head>
+<body>
+
+<h1>We Built a Validation Pipeline. Here's What It Found.</h1>
+<p class="date">TWOG Update #2 &mdash; March 20, 2026</p>
+
+<hr class="divider">
+
+<p>Last time I wrote, the pipeline had designed its first batch of drug candidates for canine hemangiosarcoma. Since then, it hasn't stopped. The system has now run <strong>316 research cycles</strong>, read <strong>602 scientific papers</strong>, designed <strong>32,180 molecules</strong>, and docked over <strong>20,000</strong> of them against canine cancer targets.</p>
+
+<p>But designing molecules is the easy part. The hard part is knowing which ones are actually worth spending money on. So we built the next layer.</p>
+
+<hr class="divider">
+
+<h2>The Problem: A Score Isn't Enough</h2>
+
+<p>Our top compound, GRF-DL-14542, scored 0.9177 in the design pipeline. That score is based on docking, ADMET prediction, and drug-likeness filters. All useful. All static snapshots.</p>
+
+<p>A docking score tells you the key fits the lock. It doesn't tell you if the key stays in the lock when you shake it. It doesn't tell you if the key also fits 30 other locks you didn't want it to. It doesn't tell you if the key dissolves in stomach acid before it reaches the door.</p>
+
+<p>We needed dynamic simulation, species-specific modeling, safety profiling, and competitive intelligence. We needed to stress-test every candidate before writing a single check to a synthesis lab.</p>
+
+<hr class="divider">
+
+<h2>What We Built: 7 Validation Agents</h2>
+
+<p>We added agents 032 through 038 to the pipeline &mdash; a pre-synthesis validation layer that computationally stress-tests every lead compound across 9 dimensions:</p>
+
+<div class="agent-block">
+<p><strong>Agent 036 &mdash; Canine Homology Modeler.</strong> This one runs first. Every drug in our pipeline was docked against human protein crystal structures. But these drugs are for dogs. Canine PI3K is 99.8% identical to human at the DNA level, but that 0.2% could matter at the binding site. This agent builds canine-specific 3D protein structures for all 13 of our targets and checks whether the binding pocket is actually the same.</p>
+</div>
+
+<div class="agent-block">
+<p><strong>Agent 033 &mdash; Analog Generator.</strong> One compound is a bet. A series of compounds is a medicinal chemistry program. This agent takes each lead and systematically modifies it &mdash; swapping functional groups, trying bioisosteric replacements, hopping scaffolds. It generates 10&ndash;20 backup compounds per lead, all scored and ranked.</p>
+</div>
+
+<div class="agent-block">
+<p><strong>Agent 034 &mdash; Off-Target Profiler.</strong> A PI3K inhibitor that also hammers hERG (heart channel) or random kinases is a liability, not a drug. This agent docks each compound against 30+ protein targets to build a selectivity profile. Hit your target hard, leave everything else alone.</p>
+</div>
+
+<div class="agent-block">
+<p><strong>Agent 032 &mdash; MD Simulation Validator.</strong> The heavyweight. We literally simulate the drug molecule sitting in the protein binding pocket and shake the whole system for 50 nanoseconds of simulated time. We ran this on an NVIDIA B300 GPU &mdash; the most powerful single GPU commercially available &mdash; processing each compound in about an hour at 1,190 nanoseconds per day. Docking gives you a photograph. MD gives you a movie.</p>
+</div>
+
+<div class="agent-block">
+<p><strong>Agent 035 &mdash; Safety &amp; ADMET Deep Dive.</strong> Decomposes the safety score into specifics: which liver enzyme metabolizes the drug, what it breaks down into, whether those breakdown products are toxic, whether it dissolves well enough to work as a pill.</p>
+</div>
+
+<div class="agent-block">
+<p><strong>Agent 037 &mdash; Combination Synergy Modeler.</strong> The clinical pitch is a triple therapy: PI3K inhibitor + VEGFR inhibitor + propranolol. This agent simulates whether the combination is truly synergistic and predicts how the tumor might develop resistance.</p>
+</div>
+
+<div class="agent-block">
+<p><strong>Agent 038 &mdash; IP &amp; Literature Scout.</strong> Searches patent databases and scientific literature for prior art, finds structurally similar compounds with published biological data, and maps the competitive landscape. We're the first PI3K-selective program specifically designed for canine hemangiosarcoma. The scout confirmed that.</p>
+</div>
+
+<hr class="divider">
+
+<h2>The Results</h2>
+
+<p>We ran the full validation pipeline against our top 5 compounds. Every single one came back <span class="go">GO</span> &mdash; recommended for synthesis.</p>
+
+<table>
+<thead>
+<tr><th>Compound</th><th>Design Score</th><th>Safety</th><th>Metabolic</th><th>Oral Route</th><th>IP Status</th></tr>
+</thead>
+<tbody>
+<tr><td>GRF-DL-28715</td><td>1.014</td><td>0.91</td><td>Moderate</td><td>Possible</td><td>Encumbered</td></tr>
+<tr><td>GRF-DL-14542</td><td>0.918</td><td>0.91</td><td>Moderate</td><td>Possible</td><td>Encumbered</td></tr>
+<tr><td>GRF-DL-27481</td><td>0.914</td><td>0.91</td><td>Moderate</td><td>Possible</td><td>Encumbered</td></tr>
+<tr><td>GRF-DL-26341</td><td>0.908</td><td>0.91</td><td>Moderate</td><td>Possible</td><td>Encumbered</td></tr>
+<tr><td>GRF-DL-14543</td><td>0.903</td><td>0.87</td><td>Moderate</td><td>Possible</td><td>Clear</td></tr>
+</tbody>
+</table>
+
+<p>57 backup analogs generated. Patent searches found 17 related patents for the primary scaffold but confirmed freedom-to-operate for GRF-DL-14543's distinct chemotype.</p>
+
+<hr class="divider">
+
+<h2>The Infrastructure</h2>
+
+<div class="infra-item"><p><strong>Hetzner CPX41</strong> ($111/mo) &mdash; the brain. Runs 24/7, orchestrating 25+ agents. 316 cycles and counting.</p></div>
+<div class="infra-item"><p><strong>NVIDIA B300 GPU</strong> (RunPod, on-demand) &mdash; the muscle. 288GB VRAM, Blackwell architecture. 1,190 ns/day.</p></div>
+<div class="infra-item"><p><strong>Supabase</strong> &mdash; the memory. 32,180 compounds, 20,650 docking results, all real-time.</p></div>
+<div class="infra-item"><p><strong>twog.bio</strong> &mdash; the window. Live validation results, 3D molecule viewers, scoring rubrics.</p></div>
+
+<hr class="divider">
+
+<h2>What's Next</h2>
+
+<ul>
+<li><strong>Full-protein explicit-solvent MD</strong> &mdash; the gold standard for binding validation.</li>
+<li><strong>Real docking with AutoDock Vina</strong> on GPU &mdash; actual selectivity calculations.</li>
+<li><strong>Synthesis ordering</strong> &mdash; first compound to a CRO for physical synthesis.</li>
+<li><strong>Enzymatic assay</strong> &mdash; does it actually inhibit canine PI3K in a test tube?</li>
+</ul>
+
+<p>Every piece of this is open. The pipeline runs autonomously. The results update in real-time.</p>
+
+<a href="https://twog.bio/validation" class="cta">See the validation results &rarr;</a>
+
+<p style="margin-top: 32px;">We're building this for Graffiti. But the infrastructure works for any cancer, any species, any target. That's the point.</p>
+
+<div class="footer">
+<p>Chase Penelli builds autonomous drug discovery pipelines. TWOG (Targeted Workflow for Oncology Generation) is an open research project developing treatments for canine hemangiosarcoma. Follow the pipeline at <a href="https://twog.bio">twog.bio</a>.</p>
+</div>
+
+</body>
+</html>

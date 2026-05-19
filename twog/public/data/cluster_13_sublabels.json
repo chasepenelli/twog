@@ -1,0 +1,758 @@
+{
+  "-1": {
+    "name": "Noise / HSA periphery",
+    "top_terms": [
+      "canine",
+      "dogs",
+      "tumor",
+      "cell",
+      "cancer",
+      "cells",
+      "tumors",
+      "clinical",
+      "hemangiosarcoma",
+      "treatment"
+    ],
+    "n_papers": 634,
+    "track_mix": {
+      "untagged": 0.5489,
+      "treatment": 0.2555,
+      "early_detection": 0.082,
+      "cross_cutting": 0.0584,
+      "supplements": 0.0284,
+      "breed_screening": 0.0268
+    },
+    "sample_titles": [
+      "Tumor Immune Microenvironment and Its Clinicopathological and Prognostic Associations in Canine Splenic Hemangiosarcoma",
+      "In vitro effects of doxorubicin and tetrathiomolybdate on canine hemangiosarcoma cells.",
+      "Ferric Chloride-induced Canine Carotid Artery Thrombosis: A Large Animal Model of Vascular Injury.",
+      "Evaluation of anticancer effects and enhanced doxorubicin cytotoxicity of xanthine derivatives using canine hemangiosarcoma cell lines.",
+      "Penile hemangiosarcoma as a cause of stranguria in a dog: clinical presentation, imaging findings, treatment and outcome"
+    ]
+  },
+  "0": {
+    "name": "Canine ocular hemangiosarcoma cases",
+    "top_terms": [
+      "eyelid",
+      "eye",
+      "ocular",
+      "hemangiosarcoma",
+      "dog",
+      "conjunctival",
+      "surgical",
+      "hemangiosarcoma eyelid",
+      "report",
+      "case"
+    ],
+    "n_papers": 30,
+    "track_mix": {
+      "untagged": 0.6667,
+      "treatment": 0.3333
+    },
+    "sample_titles": [
+      "Hemangiosarcoma of the third eyelid in dogs",
+      "Primary ocular hemangiosarcoma in a dog",
+      "Case Report Of Adenocarcinoma On Palpebral Of Rotweiler Dog: A Histopathological Evaluation",
+      "Diagnosis of intraocular lymphosarcoma in a dog by use of a polymerase chain reaction assay for antigen receptor rearrangement",
+      "Manifestations of systemic disease in the retina and fundus of cats and dogs"
+    ]
+  },
+  "1": {
+    "name": "Nutritional management canine cancer",
+    "top_terms": [
+      "cancer",
+      "diet",
+      "dogs",
+      "owners",
+      "selenium",
+      "nutritional",
+      "use",
+      "dietary",
+      "health",
+      "diets"
+    ],
+    "n_papers": 32,
+    "track_mix": {
+      "supplements": 0.625,
+      "untagged": 0.25,
+      "cross_cutting": 0.0938,
+      "treatment": 0.0312
+    },
+    "sample_titles": [
+      "Factors Which Influence Owners When Deciding to Use Chemotherapy in Terminally Ill Pets",
+      "Evaluation of Body Condition and Weight Loss in Dogs Presented to a Veterinary Oncology Service",
+      "The use of nutraceuticals in cancer therapy.",
+      "Mulberry Leaf Supplements Effecting Anti-Inflammatory Genes and Improving Obesity in Elderly Overweight Dogs.",
+      "Demographic features, health status, and behavioral changes associated with cannabidiol use in the Dog Aging Project."
+    ]
+  },
+  "2": {
+    "name": "Veterinary tumor ablation therapies",
+    "top_terms": [
+      "oncology",
+      "veterinary oncology",
+      "veterinary",
+      "electrochemotherapy",
+      "ablation",
+      "ultrasound",
+      "focused ultrasound",
+      "focused",
+      "treatment",
+      "bleomycin"
+    ],
+    "n_papers": 30,
+    "track_mix": {
+      "treatment": 0.7667,
+      "untagged": 0.2,
+      "early_detection": 0.0333
+    },
+    "sample_titles": [
+      "Electrochemotherapy in Veterinary Oncology",
+      "Focused Ultrasound Tumor Ablation in Small Animal Oncology.",
+      "Electroporation-Based Treatments in Small Animal Veterinary Oral and Maxillofacial Oncology",
+      "Clinical indications and applications of radiotherapy and hyperthermia in veterinary oncology.",
+      "Immunotherapy in veterinary oncology."
+    ]
+  },
+  "3": {
+    "name": "Canine cutaneous tumor incidence",
+    "top_terms": [
+      "tumours",
+      "cases",
+      "tumors",
+      "incidence",
+      "cutaneous",
+      "dogs",
+      "neoplasms",
+      "study",
+      "lesions",
+      "neoplastic"
+    ],
+    "n_papers": 46,
+    "track_mix": {
+      "untagged": 0.8261,
+      "breed_screening": 0.1087,
+      "cross_cutting": 0.0435,
+      "early_detection": 0.0217
+    },
+    "sample_titles": [
+      "Canine cutaneous neoplasms in the metropolitan region of Goiânia, Goiás state, Brazil",
+      "Retrospective study of canine cutaneous tumors submitted to a diagnostic pathology laboratory in Northern Portugal (2014–2020)",
+      "MORPHOLOGICAL STUDY OF TESTICULAR TUMORS IN DOGS",
+      "A Retrospective Study in 1,070 Feline Tumor Cases of Japan.",
+      "Neoplastic lesions in domestic pigs detected at slaughter: literature review and a 20-year review (1998–2018) of carcass inspection in Catalonia"
+    ]
+  },
+  "4": {
+    "name": "Canine hemangiosarcoma clinical characterization",
+    "top_terms": [
+      "em",
+      "com",
+      "hemangiossarcoma",
+      "cães",
+      "os",
+      "um",
+      "da",
+      "se",
+      "animais",
+      "uma"
+    ],
+    "n_papers": 59,
+    "track_mix": {
+      "untagged": 0.4068,
+      "treatment": 0.3051,
+      "early_detection": 0.1186,
+      "cross_cutting": 0.1017,
+      "breed_screening": 0.0678
+    },
+    "sample_titles": [
+      "Identification of paraneoplastic syndromes in a dog with cutaneous hemangiosarcoma and in bitches with mammary neoplasms.",
+      "AVALIAÇÃO DA MICRODENSIDADE VASCULAR COMO FATOR PROGNÓSTICO EM SARCOMAS DE TECIDOS MOLES EM CANINOS E FELINOS",
+      "HEMANGIOMAS E HEMANGIOSSARCOMAS EM CÃES: ESTUDO RETROSPECTIVO DE 192 CASOS (2002-2014)",
+      "Primary ovary hemangiosarcoma in a female dog",
+      "Prevalência de neoplasias diagnosticadas em cães no Hospital Veterinário da Universidade Eduardo Mondlane, Moçambique"
+    ]
+  },
+  "5": {
+    "name": "Toceranib phosphate canine tumors",
+    "top_terms": [
+      "toceranib",
+      "toceranib phosphate",
+      "phosphate",
+      "dogs",
+      "treatment",
+      "carcinoma",
+      "therapy",
+      "insulinoma",
+      "canine",
+      "toc"
+    ],
+    "n_papers": 72,
+    "track_mix": {
+      "treatment": 0.625,
+      "untagged": 0.375
+    },
+    "sample_titles": [
+      "Safety and feasibility of lapatinib for the treatment of a EGFR1/HER-2-positive advanced gastrointestinal stromal tumor in a cat",
+      "Palliative effects of non-selective intra-arterial chemotherapy of paclitaxel plus platinum combination in two dogs with intranasal cancers",
+      "Relationship between Treatment and Prognosis of Canine Insulinoma: 22 Cases (1997-2006)",
+      "A Scoping Review on Tyrosine Kinase Inhibitors in Cats: Current Evidence and Future Directions",
+      "A Prospective, Multi-Center, Veterinary Radiation Therapy Oncology Group Study Reveals Potential Efficacy Of Toceranib Phosphate (Palladia®) As A Primary Or Adjuvant Agent In The Treatment Of Canine Nasal Carcinoma†."
+    ]
+  },
+  "6": {
+    "name": "Metronomic chemotherapy canine oncology",
+    "top_terms": [
+      "metronomic",
+      "chemotherapy",
+      "metronomic chemotherapy",
+      "dogs",
+      "cyclophosphamide",
+      "antimicrobial",
+      "treatment",
+      "administration",
+      "patients",
+      "em"
+    ],
+    "n_papers": 35,
+    "track_mix": {
+      "treatment": 0.7429,
+      "untagged": 0.2286,
+      "cross_cutting": 0.0286
+    },
+    "sample_titles": [
+      "Acute sterile hemorrhagic cystitis after a single intravenous administration of cyclophosphamide in three dogs",
+      "Volumetric-modulated arc stereotactic radiotherapy for canine adrenocortical tumours with vascular invasion.",
+      "Evaluation of the effectiveness and adverse events of oxycodone as a pain-relieving agent in 103 dogs with tumors: a retrospective study",
+      "&lt;b&gt;Quimioterapia metronômica como tratamento adjuvante para o mastocitoma cutâneo em cães&lt;/b&gt;",
+      "Retrospective study evaluating the efficacy of stereotactic body radiation therapy for the treatment of confirmed or suspected primary pulmonary carcinomas in dogs"
+    ]
+  },
+  "7": {
+    "name": "Canine splenic hemangiosarcoma treatment",
+    "top_terms": [
+      "doxorubicin",
+      "chemotherapy",
+      "splenic",
+      "dogs",
+      "hemangiosarcoma",
+      "adjuvant",
+      "splenic hemangiosarcoma",
+      "survival",
+      "splenectomy",
+      "hsa"
+    ],
+    "n_papers": 31,
+    "track_mix": {
+      "treatment": 0.9032,
+      "untagged": 0.0645,
+      "cross_cutting": 0.0323
+    },
+    "sample_titles": [
+      "A Phase 2, Single-Arm, Open-Label Clinical Trial on Adjuvant Peptide-Based Vaccination in Dogs with Aggressive Hemangiosarcoma Undergoing Surgery and Chemotherapy",
+      "Doxorubicin and deracoxib adjuvant therapy for canine splenic hemangiosarcoma: a pilot study.",
+      "Evaluation of an autologous cancer vaccine for the treatment of metastatic canine hemangiosarcoma: a preliminary study",
+      "Extended Survival in a Dog with Primary Bone Hemangiosarcoma Following Treatment with Neoadjuvant Oncolytic Virotherapy and Standard of Care",
+      "Outcome comparison between radiation therapy and surgery as primary treatment for dogs with periarticular histiocytic sarcoma: an Italian Society of Veterinary Oncology study."
+    ]
+  },
+  "8": {
+    "name": "Canine osteosarcoma chemotherapy protocols",
+    "top_terms": [
+      "doxorubicin",
+      "osteosarcoma",
+      "dogs",
+      "chemotherapy",
+      "amputation",
+      "appendicular",
+      "treatment",
+      "appendicular osteosarcoma",
+      "treatment canine",
+      "protocol"
+    ],
+    "n_papers": 26,
+    "track_mix": {
+      "treatment": 0.5769,
+      "untagged": 0.4231
+    },
+    "sample_titles": [
+      "Active specific immunotherapy for lethal canine hemangiosarcoma: A model system for the treatment of angiosarcoma with curative intent.",
+      "Comparison of doxorubicin–cyclophosphamide with doxorubicin–dacarbazine for the adjuvant treatment of canine hemangiosarcoma",
+      "Alternating Carboplatin and Doxorubicin as Adjunctive Chemotherapy to Amputation or Limb-Sparing Surgery in the Treatment of Appendicular Osteosarcoma in Dogs",
+      "Clinical and pharmacokinetic characteristics of intracavitary administration of pegylated liposomal encapsulated doxorubicin in dogs with splenic hemangiosarcoma.",
+      "Intra‐arterial cisplatin with or without radiation in limb‐sparing for canine osteosarcoma"
+    ]
+  },
+  "9": {
+    "name": "Canine hemangiosarcoma clinical cases",
+    "top_terms": [
+      "hemangiosarcoma",
+      "dog",
+      "hemangiosarcoma dog",
+      "case",
+      "case report",
+      "report",
+      "cutaneous hemangiosarcoma",
+      "primary",
+      "renal hemangiosarcoma",
+      "dog case"
+    ],
+    "n_papers": 49,
+    "track_mix": {
+      "untagged": 0.7143,
+      "early_detection": 0.1633,
+      "breed_screening": 0.0612,
+      "cross_cutting": 0.0408,
+      "treatment": 0.0204
+    },
+    "sample_titles": [
+      "Hemangiosarcoma Occurring in the Nasal Cavity of a Dog",
+      "Neutering is associated with developing hemangiosarcoma in dogs in the Veterinary Medical Database: An age and time-period matched case-control study (1964-2003).",
+      "Disseminated Intravascular Coagulation in a Dog with Hemothorax and Hemangiosarcoma",
+      "Radiologic diagnosis of a hemangiosarcoma in a dog.",
+      "Sudden death due to primary mediastinal hemangiosarcoma in a canine."
+    ]
+  },
+  "10": {
+    "name": "oncolytic virotherapy canine tumors",
+    "top_terms": [
+      "oncolytic",
+      "virus",
+      "tumor",
+      "canine",
+      "viruses",
+      "cells",
+      "cancer",
+      "parvovirus",
+      "canine parvovirus",
+      "anti"
+    ],
+    "n_papers": 39,
+    "track_mix": {
+      "treatment": 0.5641,
+      "untagged": 0.4103,
+      "breed_screening": 0.0256
+    },
+    "sample_titles": [
+      "Virotherapy of Canine Tumors with Oncolytic Vaccinia Virus GLV-1h109 Expressing an Anti-VEGF Single-Chain Antibody",
+      "Persistence of Infectious Canine Distemper Virus in Murine Xenotransplants of Canine Histiocytic Sarcoma Cells after Intratumoral Application",
+      "Mesenchymal to epithelial transition driven by canine distemper virus infection of canine histiocytic sarcoma cells contributes to a reduced cell motility in vitro",
+      "Preclinical Evaluation of Oncolytic Vaccinia Virus for Therapy of Canine Soft Tissue Sarcoma",
+      "A pRb-responsive, RGD-modified, and hyaluronidase-armed canine oncolytic adenovirus for application in veterinary oncology."
+    ]
+  },
+  "11": {
+    "name": "Canine cardiac hemangiosarcoma",
+    "top_terms": [
+      "cardiac",
+      "right",
+      "pericardial",
+      "effusion",
+      "dog",
+      "pericardial effusion",
+      "dogs",
+      "heart",
+      "atrium",
+      "atrial"
+    ],
+    "n_papers": 66,
+    "track_mix": {
+      "untagged": 0.5,
+      "treatment": 0.2424,
+      "early_detection": 0.197,
+      "breed_screening": 0.0455,
+      "cross_cutting": 0.0152
+    },
+    "sample_titles": [
+      "Hemangiosarcoma at the base of the left atrium of a dog with mitral and tricuspid valve degeneration – case report",
+      "Pericardial Hemangiosarcoma in a 10-Year-Old Papillon.",
+      "DIAGNOSTIC PNEUMOPERICARDIOGRAPHY IN DOGS WITH SPONTANEOUS PERICARDIAL EFFUSION",
+      "Surgical Resection of Cardiac Hemangiosarcoma Using Articulated Surgical Stapler in a Dog",
+      "Epidemiological, Clinical and Pathological Features of Primary Cardiac Hemangiosarcoma in Dogs: A Review of 51 Cases"
+    ]
+  },
+  "12": {
+    "name": "Canine melanoma p53 immunobiology",
+    "top_terms": [
+      "p53",
+      "canine",
+      "melanoma",
+      "melanocytic",
+      "tp53",
+      "cell",
+      "pd",
+      "tumors",
+      "methylation",
+      "mutations"
+    ],
+    "n_papers": 26,
+    "track_mix": {
+      "untagged": 0.6923,
+      "early_detection": 0.1538,
+      "cross_cutting": 0.1154,
+      "treatment": 0.0385
+    },
+    "sample_titles": [
+      "Naturally Occurring Canine Melanoma as a Predictive Comparative Oncology Model for Human Mucosal and Other Triple Wild-Type Melanomas",
+      "Overexpression of p53 tumor suppressor protein in spontaneously arising neoplasms of dogs",
+      "Prognostic Value of PD-L1, PD-1 and CD8A in Canine Diffuse Large B-cell Lymphoma Detected by RNAscope",
+      "Immunohistochemical and transcriptomic characterization of T and myeloid cell infiltrates in canine malignant melanoma",
+      "Predictive value of <i>TP53</i> RNAscope <sup>®</sup> <i>in situ</i> hybridization and p53 immunohistochemistry for <i>TP53</i> mutational status in canine diffuse large B-cell lymphoma"
+    ]
+  },
+  "13": {
+    "name": "Canine genome cancer genetics",
+    "top_terms": [
+      "cancer",
+      "genome",
+      "canine",
+      "human",
+      "genomic",
+      "cell",
+      "genetic",
+      "dogs",
+      "cancers",
+      "gene"
+    ],
+    "n_papers": 81,
+    "track_mix": {
+      "untagged": 0.4691,
+      "cross_cutting": 0.2346,
+      "early_detection": 0.1358,
+      "breed_screening": 0.0988,
+      "treatment": 0.0494,
+      "supplements": 0.0123
+    },
+    "sample_titles": [
+      "Cytogenetic screening of livestock populations in Europe: an overview",
+      "Gene synteny comparisons between different vertebrates provide new insights into breakage and fusion events during mammalian karyotype evolution",
+      "Facilitating genome annotation using ANNEXA and long-read RNA sequencing",
+      "Whole genome sequencing for the investigation of canine mammary tumor inheritance - an initial assessment of high-risk breast cancer genes reveal BRCA2 and STK11 variants potentially associated with risk in purebred dogs",
+      "Changes in Regulatory T Cells in Dogs with Cancer and Associations with Tumor Type"
+    ]
+  },
+  "14": {
+    "name": "canine hemangiosarcoma VEGF signaling",
+    "top_terms": [
+      "canine",
+      "factor",
+      "vascular",
+      "growth",
+      "canine hemangiosarcoma",
+      "growth factor",
+      "vegf",
+      "vascular endothelial",
+      "endothelial growth",
+      "expression"
+    ],
+    "n_papers": 100,
+    "track_mix": {
+      "untagged": 0.46,
+      "cross_cutting": 0.25,
+      "treatment": 0.13,
+      "early_detection": 0.13,
+      "breed_screening": 0.03
+    },
+    "sample_titles": [
+      "Three-dimensional cell cultures of canine hemangiosarcoma retain phenotypic features of primary tumors but exhibit distinct oxidative metabolic profile",
+      "Lactate dehydrogenase is associated with cholesterol/lipid metabolism, and fluvastatin plus dipyridamole suppresses canine hemangiosarcoma growth in patient-derived xenograft models",
+      "In vitro effects of the tyrosine kinase inhibitor, masitinib mesylate, on canine hemangiosarcoma cell lines.",
+      "OF THE BETA 2 ADRENERGIC RECEPTOR ( Β 2-AR ) PATHWAY IN CANINE HEMANGIOSARCOMA",
+      "Transcriptional and Functional Activity of Canine Hemangiosarcoma to Support"
+    ]
+  },
+  "15": {
+    "name": "Canine hemangiosarcoma genomic therapeutics",
+    "top_terms": [
+      "hsa",
+      "canine",
+      "hemangiosarcoma",
+      "cell",
+      "cells",
+      "angiosarcoma",
+      "canine hemangiosarcoma",
+      "expression",
+      "dogs",
+      "human"
+    ],
+    "n_papers": 144,
+    "track_mix": {
+      "treatment": 0.2917,
+      "cross_cutting": 0.2778,
+      "untagged": 0.2153,
+      "early_detection": 0.125,
+      "breed_screening": 0.0833,
+      "supplements": 0.0069
+    },
+    "sample_titles": [
+      "Real-world evidence couples genomic biomarkers with therapeutic outcomes for canine hemangiosarcoma",
+      "TRANSCRIPTOME ANALYSIS AND BIOINFORMATICS CHARACTERIZATION OF CANINE HEMANGIOSARCOMA: POTENTIAL THERAPEUTIC TARGETS",
+      "Molecular Profile of Canine Hemangiosarcoma and Potential Novel Therapeutic Targets",
+      "Current understanding of comparative pathology and prospective research approaches for canine hemangiosarcoma.",
+      "Abstract A005: Canine hemangiosarcoma as a model for RAS-mutated human cancers: Preliminary data"
+    ]
+  },
+  "16": {
+    "name": "Canine melanoma immunotherapy vaccines",
+    "top_terms": [
+      "immunotherapy",
+      "vaccine",
+      "melanoma",
+      "canine",
+      "immune",
+      "immunotherapy canine",
+      "canine melanoma",
+      "adoptive immunotherapy",
+      "autologous",
+      "tumor"
+    ],
+    "n_papers": 41,
+    "track_mix": {
+      "treatment": 0.5854,
+      "untagged": 0.3659,
+      "supplements": 0.0244,
+      "cross_cutting": 0.0244
+    },
+    "sample_titles": [
+      "Successful in Vivo Generation of Canine Lymphokine-Activated Killer Cells by Continuous Recombinant Interleukin-2 Infusion through the Splenic Artery",
+      "Victory and defeat in the induction of a therapeutic response through vaccine therapy for human and canine brain tumors: a review of the state of the art.",
+      "Abstract B20: Immunotherapy as treatment for dogs with glioma.",
+      "Cancer immunology and canine malignant melanoma: a comparative review",
+      "577. Tumor Vaccine Combined with Cytokines and Suicide Gene Therapy for Canine Spontaneous Soft Tissue Sarcomas"
+    ]
+  },
+  "17": {
+    "name": "Canine PD-L1 immunotherapy translational",
+    "top_terms": [
+      "car",
+      "immunotherapy",
+      "cancer",
+      "cells",
+      "pd",
+      "cell",
+      "canine",
+      "therapy",
+      "adoptive",
+      "pd l1"
+    ],
+    "n_papers": 40,
+    "track_mix": {
+      "treatment": 0.675,
+      "untagged": 0.3,
+      "cross_cutting": 0.025
+    },
+    "sample_titles": [
+      "Developing canine osteosarcoma and human non-small cell lung cancer PDX models to study immunotherapies targeting canine and human T cells",
+      "Abstract 2969: Development of a canine PD-L1 antibody and caninized PD-L1 mouse model: an essential translational research tool to raise the success rate of immunotherapy in humans",
+      "Development of an Anti-canine PD-L1 Antibody and Caninized PD-L1 Mouse Model as Translational Research Tools for the Study of Immunotherapy in Humans",
+      "A novel PD-L1-targeted shark VNAR single-domain-based CAR-T cell strategy for treating breast cancer and liver cancer",
+      "Ablation Using Laser Beam Irradiation and Dog Recombinant Interferon γ for Two Canine Mammary Tumors"
+    ]
+  },
+  "18": {
+    "name": "Canine mammary tumor comparative oncology",
+    "top_terms": [
+      "mammary",
+      "canine mammary",
+      "canine",
+      "breast",
+      "tumor",
+      "mammary tumor",
+      "cancer",
+      "breast cancer",
+      "tumors",
+      "mammary tumors"
+    ],
+    "n_papers": 89,
+    "track_mix": {
+      "untagged": 0.7528,
+      "cross_cutting": 0.1236,
+      "treatment": 0.0562,
+      "early_detection": 0.0449,
+      "breed_screening": 0.0225
+    },
+    "sample_titles": [
+      "Canine mammary carcinomas: influence of histological grade, vascular invasion, proliferation, microvessel density and VEGFR2 expression on lymph node status and survival time",
+      "Canine Mammary Tumors as a Potential Model for Human Breast Cancer in Comparative Oncology",
+      "Metabolic Alterations in Canine Mammary Tumors",
+      "Canine Model For The Study of the Epigenetic Factors Involved in Mammary Tumor Development",
+      "Comparative pathology of mammary gland cancers in domestic and wild animals."
+    ]
+  },
+  "19": {
+    "name": "Canine cutaneous mast cell tumors",
+    "top_terms": [
+      "mast",
+      "mast cell",
+      "cell",
+      "cell tumors",
+      "tumors",
+      "cutaneous",
+      "cutaneous mast",
+      "prognosis",
+      "mct",
+      "canine cutaneous"
+    ],
+    "n_papers": 61,
+    "track_mix": {
+      "untagged": 0.9344,
+      "cross_cutting": 0.0656
+    },
+    "sample_titles": [
+      "MAST CELL TUMORS: TO CUT OR NOT TO CUT",
+      "Circulating Endocannabinoids in Canine Cutaneous Mast Cell Tumor",
+      "Canine mast cell tumors: diagnosis, treatment, and prognosis",
+      "Corrigendum to mitotic index is predictive for survival for canine cutaneous mast cell tumors",
+      "Assessing the Risk of Nodal Metastases in Canine Integumentary Mast Cell Tumors: Is Sentinel Lymph Node Biopsy Always Necessary?"
+    ]
+  },
+  "20": {
+    "name": "KIT tyrosine kinase inhibitor therapy",
+    "top_terms": [
+      "kit",
+      "kinase",
+      "mast",
+      "tyrosine",
+      "tyrosine kinase",
+      "mast cell",
+      "canine mast",
+      "cell",
+      "canine",
+      "cell tumours"
+    ],
+    "n_papers": 25,
+    "track_mix": {
+      "treatment": 0.48,
+      "untagged": 0.28,
+      "cross_cutting": 0.12,
+      "supplements": 0.08,
+      "early_detection": 0.04
+    },
+    "sample_titles": [
+      "Calcitriol (1,25-dihydroxycholecalciferol) enhances mast cell tumour chemotherapy and receptor tyrosine kinase inhibitor activity in vitro and has single-agent activity against spontaneously occurring canine mast cell tumours.",
+      "Effect of Tyrosine Kinase Inhibitor INNO-406 on Human Mast Cells Bearing Mutated c-KIT Tyrosine Kinase.",
+      "Investigation of the Theragnostic Role of KIT Expression for the Treatment of Canine Mast Cell Tumors with Tyrosine Kinase Inhibitors",
+      "Common tissue-specific expressions and regulatory factors of c-KIT isoforms with and without GNNK and GNSK sequences across five mammals",
+      "Common tissue-specific expressions and regulatory factors of c-KIT isoforms with and without GNNK and GNSK sequences across five mammals"
+    ]
+  },
+  "21": {
+    "name": "Canine tumor tyrosine kinase receptors",
+    "top_terms": [
+      "tyrosine",
+      "kinase",
+      "receptor",
+      "tyrosine kinase",
+      "expression",
+      "canine",
+      "pdgfr",
+      "growth factor",
+      "growth",
+      "vegfr"
+    ],
+    "n_papers": 30,
+    "track_mix": {
+      "untagged": 0.4667,
+      "treatment": 0.3,
+      "cross_cutting": 0.1333,
+      "early_detection": 0.1
+    },
+    "sample_titles": [
+      "Immunohistochemistry Screening of Different Tyrosine Kinase Receptors in Canine Solid Tumors—Part I: Proposal of a Receptor Panel to Predict Therapies",
+      "Evaluation of expression and function of vascular endothelial growth factor receptor 2, platelet derived growth factor receptors-alpha and -beta, KIT, and RET in canine apocrine gland anal sac adenocarcinoma and thyroid carcinoma",
+      "Cyclooxygenase inhibitors potentiate receptor tyrosine kinase therapies in bladder cancer cells in vitro",
+      "Expression of receptor tyrosine kinase targets <scp>PDGFR</scp>‐β, <scp>VEGFR2</scp> and <scp>KIT</scp> in canine transitional cell carcinoma",
+      "Characterization of receptor tyrosine kinase activation and biological activity of toceranib phosphate in canine urothelial carcinoma cell lines"
+    ]
+  },
+  "22": {
+    "name": "Canine splenic hemangiosarcoma imaging",
+    "top_terms": [
+      "splenic",
+      "dogs",
+      "splenectomy",
+      "lesions",
+      "canine splenic",
+      "imaging",
+      "spleen",
+      "ct",
+      "contrast",
+      "hemangiosarcoma"
+    ],
+    "n_papers": 111,
+    "track_mix": {
+      "untagged": 0.4595,
+      "early_detection": 0.2432,
+      "treatment": 0.2072,
+      "breed_screening": 0.0631,
+      "supplements": 0.018,
+      "cross_cutting": 0.009
+    },
+    "sample_titles": [
+      "Contrast-enhanced computed tomography findings of canine primary renal tumors including renal cell carcinoma, lymphoma, and hemangiosarcoma",
+      "Traditional Chinese Veterinary Medicine Approach to Canine Splenic Hemangiosarcoma",
+      "Increased Survival after Treatment of Canine Hemangiosarcoma with Fenofibrate",
+      "Investigation of a Traditional Chinese Medicine Herbal Therapy protocol for Treatment of Dogs with Stage II Splenic Hemangiosarcoma after Splenectomy Multi-Institutional Clinical Study Background information and Study Summary Canine Splenic",
+      "SPLENIC HEMATOMA IN A LABRADOR RETRIEVER – A CASE REPORT"
+    ]
+  },
+  "23": {
+    "name": "Canine hemangiosarcoma clinical presentations",
+    "top_terms": [
+      "dog",
+      "hemangiosarcoma",
+      "dogs",
+      "mass",
+      "tumor",
+      "primary",
+      "abdominal",
+      "old",
+      "year old",
+      "year"
+    ],
+    "n_papers": 28,
+    "track_mix": {
+      "treatment": 0.6071,
+      "untagged": 0.25,
+      "cross_cutting": 0.1071,
+      "early_detection": 0.0357
+    },
+    "sample_titles": [
+      "Canine Hemangiosarcoma",
+      "Hemangiosarcoma of pets: a literary review",
+      "Primary Hepatic Hemangiosarcoma With Hemoperitoneum in a Dog: Clinical Course and Therapeutic Outcome",
+      "Photodynamic therapy for cutaneous hemangiosarcoma in dogs.",
+      "Multifocal cerebral haemorrhage in two dogs with erythrocytosis"
+    ]
+  },
+  "24": {
+    "name": "Canine hemangiosarcoma case reports",
+    "top_terms": [
+      "hemangiosarcoma",
+      "dog",
+      "mass",
+      "old",
+      "year old",
+      "year",
+      "presented",
+      "male",
+      "cells",
+      "case"
+    ],
+    "n_papers": 100,
+    "track_mix": {
+      "untagged": 0.55,
+      "early_detection": 0.23,
+      "treatment": 0.12,
+      "cross_cutting": 0.08,
+      "breed_screening": 0.02
+    },
+    "sample_titles": [
+      "Hemangiosarcoma de perro: Reporte de un caso",
+      "MRI features of canine hemangiosarcoma affecting the central nervous system.",
+      "Primary diffuse mammary hemangiosarcoma in a female dog",
+      "Hemangiosarcoma with brain metastasis in a cocker spaniel in Türkiye",
+      "Pathological findings of mammary gland carcinoma and hemangiosarcoma cases in two African wild dogs (Lycaon pictus)"
+    ]
+  }
+}
