@@ -5732,6 +5732,145 @@ def test_dagster_candidate_contribution_intake_report_uses_report_builder(monkey
     assert result.metadata["intake_rows"].records[0].data["display_id"] == "TWOG-15F50D"
 
 
+def test_candidate_contribution_triage_plan_routes_accepted_rows():
+    contribution_id = "11111111-1111-1111-1111-111111111111"
+    report = candidate_contribution_intake.build_candidate_contribution_triage_plan_from_rows(
+        [
+            {
+                "contribution_id": contribution_id,
+                "candidate_id": "twog-candidate-447eb8089965",
+                "display_id": "TWOG-15F50D",
+                "status": "queued_for_intake",
+                "review_notes": None,
+                "promoted_queue_id": None,
+            }
+        ],
+        contribution_ids=[contribution_id],
+        action="accept_for_evidence_review",
+        operator="operator@example.com",
+        review_notes="Good citation repair lead.",
+        dry_run=True,
+        timestamp=datetime(2026, 5, 19, 12, 0, tzinfo=UTC),
+    )
+
+    assert report["dry_run"] is True
+    assert report["target_status"] == "accepted_for_evidence_review"
+    assert report["summary"] == {
+        "requested_count": 1,
+        "selected_count": 1,
+        "missing_count": 0,
+        "updated_count": 0,
+    }
+    assert report["rows"][0]["old_status"] == "queued_for_intake"
+    assert report["rows"][0]["new_status"] == "accepted_for_evidence_review"
+    assert report["rows"][0]["promoted_queue_id"] == (
+        f"candidate_contribution:{contribution_id}:evidence_review"
+    )
+    assert "Good citation repair lead." in report["rows"][0]["review_notes"]
+
+
+def test_candidate_contribution_triage_plan_flags_missing_ids():
+    report = candidate_contribution_intake.build_candidate_contribution_triage_plan_from_rows(
+        [],
+        contribution_ids=["missing-id"],
+        action="reject",
+        operator="operator",
+        review_notes="Not enough evidence.",
+        dry_run=False,
+    )
+
+    assert report["summary"]["requested_count"] == 1
+    assert report["summary"]["selected_count"] == 0
+    assert report["summary"]["missing_count"] == 1
+    assert report["summary"]["updated_count"] == 0
+    assert report["missing_contribution_ids"] == ["missing-id"]
+
+
+def test_candidate_contribution_triage_rejects_invalid_action():
+    with pytest.raises(ValueError, match="action must be one of"):
+        candidate_contribution_intake.build_candidate_contribution_triage_plan_from_rows(
+            [],
+            contribution_ids=["11111111-1111-1111-1111-111111111111"],
+            action="auto_approve_everything",
+            operator="operator",
+        )
+
+    report = candidate_contribution_intake.triage_candidate_contributions(
+        database_url=None,
+        contribution_ids=["11111111-1111-1111-1111-111111111111"],
+        action="auto_approve_everything",
+        operator="operator",
+    )
+    assert report["errors"]
+
+
+def test_dagster_candidate_contribution_triage_report_lives_in_control_panel_group():
+    assert dagster_asset_module.candidate_contribution_triage_report.group_names_by_key == {
+        dagster_asset_module.dg.AssetKey(["candidate_contribution_triage_report"]): "control_panel"
+    }
+    assert dagster_asset_module.candidate_contribution_triage_job is not None
+
+
+def test_dagster_candidate_contribution_triage_report_uses_triage_builder(monkeypatch):
+    calls = []
+
+    def fake_triage(**kwargs):
+        calls.append(kwargs)
+        return {
+            "dry_run": True,
+            "action": "start_triage",
+            "target_status": "triage_in_progress",
+            "operator": "dagster-test",
+            "summary": {
+                "requested_count": 1,
+                "selected_count": 1,
+                "missing_count": 0,
+                "updated_count": 0,
+            },
+            "missing_contribution_ids": [],
+            "rows": [
+                {
+                    "contribution_id": "11111111-1111-1111-1111-111111111111",
+                    "display_id": "TWOG-15F50D",
+                    "old_status": "queued_for_intake",
+                    "new_status": "triage_in_progress",
+                    "action": "start_triage",
+                    "operator": "dagster-test",
+                    "promoted_queue_id": None,
+                    "would_update": True,
+                }
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(candidate_contribution_intake, "triage_candidate_contributions", fake_triage)
+    result = dagster_asset_module.candidate_contribution_triage_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "contribution_ids": ["11111111-1111-1111-1111-111111111111"],
+                "action": "start_triage",
+                "operator": "dagster-test",
+                "review_notes": "Taking first look.",
+                "dry_run": True,
+            }
+        )
+    )
+
+    assert calls == [
+        {
+            "contribution_ids": ["11111111-1111-1111-1111-111111111111"],
+            "action": "start_triage",
+            "operator": "dagster-test",
+            "review_notes": "Taking first look.",
+            "dry_run": True,
+        }
+    ]
+    assert result.value["target_status"] == "triage_in_progress"
+    assert result.metadata["dry_run"] is True
+    assert result.metadata["selected_count"].value == 1
+    assert result.metadata["triage_rows"].records[0].data["display_id"] == "TWOG-15F50D"
+
+
 def test_dagster_full_text_source_specific_assets_use_injected_repository(monkeypatch):
     sentinel_repository = object()
     calls = []
