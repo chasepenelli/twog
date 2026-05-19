@@ -1,43 +1,104 @@
-# HSA AutoResearch v2
+# TWOG
 
-Dagster+ deployed ingestion, curation, and orchestration system for canine
-hemangiosarcoma and human angiosarcoma comparative oncology research.
+**TWOG is a living research engine for canine hemangiosarcoma and related vascular cancers.**
 
-This repository is the active Dagster+ project for v2. Dagster+ created the
-deployment repo and GitHub Actions workflow; the HSA research system now lives
-inside that generated project layout.
+This repository contains the active v2 system: Dagster-backed research orchestration, structured biomedical ingestion, agent synthesis and validation lanes, RunPod/Docker compute work, and the first public-proof website layer.
+
+The practical aim is to make serious scientific work easier to inspect. TWOG does not just publish conclusions. It preserves the chain of reasoning: source evidence, agent critiques, method versions, candidate records, decision logs, compute artifacts, and public contribution intake.
+
+Live site: [twog.bio](https://twog.bio)
+
+## Why This Exists
+
+Canine hemangiosarcoma is aggressive, common in dogs, and underserved by conventional drug discovery economics. It also overlaps with human vascular cancers such as angiosarcoma, making it a meaningful comparative oncology problem.
+
+TWOG is built around that gap: use modern AI and automation to read broadly, organize evidence carefully, surface big therapeutic ideas, critique them with specialist agents, and move only the strongest signals toward validation.
+
+This is research infrastructure. It is not a treatment recommendation system.
+
+## System Shape
+
+```text
+public evidence
+  -> structured ingestion
+  -> normalized research records
+  -> agent synthesis and critique
+  -> research programs
+  -> therapy ideas
+  -> public candidate records
+  -> contribution intake
+  -> validation and compute queues
+```
 
 ## Current System
 
-- Typed research contracts.
-- Local SQLite development storage.
-- Hosted Postgres runtime adapter for Dagster+.
-- Structured API harvesters for PubChem, ChEMBL, UniProt, RCSB PDB, and openFDA
-  animal adverse events.
-- Source-specific claim extraction and curation.
-- Dagster asset graph and executable structured-source job.
-- MCP-ready service boundary.
+- Typed research contracts for literature, source records, agent runs, briefs, therapy ideas, validation packets, omics readouts, and compute jobs.
+- Local SQLite development storage and hosted Postgres/Neon runtime support.
+- Dagster asset graph for observable ingestion, synthesis, validation, source health, embeddings, and compute lanes.
+- Structured source harvesters for PubChem, ChEMBL, UniProt, RCSB PDB, OpenFDA animal adverse events, PubMed, Europe PMC, PMC OA, OpenAlex, Crossref, ClinicalTrials.gov, and monitored X/Twitter topics.
+- Public candidate record layer under `twog/`.
+- Public JSON payloads for candidate checkout.
+- Neon-backed contribution intake API for candidate check-ins.
+- MCP-ready service boundary for future agent/human tool sharing.
+- RunPod/Docker worker foundation for expert-gated MD smoke tests.
 
-## Local Setup
+## Public Proof Layer
 
-```bash
-uv sync
-uv run pytest tests/test_ingestion_bridge_contracts.py
+The public website lives in `twog/`.
+
+Key routes:
+
+```text
+/                                           Mission homepage
+/candidates                                 Candidate index
+/candidates/twog-15f50d                     Example public candidate record
+/methods/candidate-record-v1                Candidate record method
+/api/public-candidates                      Public candidate payload index
+/api/public-candidates/{candidate_id}        One public candidate payload
+/api/public-candidates/{candidate_id}/contribution-template
+/api/public-candidates/{candidate_id}/contributions
 ```
 
-If using pip instead:
+The page is the readable record. The payload is the machine-readable record. The contribution endpoint is the public check-in path.
 
-```bash
-python -m venv .venv
-.venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest tests/test_ingestion_bridge_contracts.py
+## Check Out / Check In
+
+TWOG's public collaboration loop is designed as a gated evidence exchange:
+
+1. **Check out** a candidate payload.
+2. Inspect the evidence, rationale, risks, citations, method refs, and content hash.
+3. Do outside work: replication, critique, citation repair, artifact generation, validation design, or compute review.
+4. **Check in** a structured contribution packet.
+5. TWOG queues the packet for intake, provenance review, citation dedupe, and routing into evidence review, validation planning, or compute review.
+
+Outside submissions do not directly mutate a candidate record. That gate is intentional.
+
+## Repository Layout
+
+```text
+.
+├── src/hsa_research/ingestion_bridge/   Core research contracts, services, agents, stores
+├── src/hsa_dagster/                     Dagster definitions
+├── tests/                               Contract and worker tests
+├── docs/                                SOPs, architecture, setup, public explanations
+├── db/migrations/                       Backend research-store migrations
+├── runpod_workers/md_smoke/             TWOG-owned MD smoke worker
+├── twog/                                Public Next.js site and public candidate layer
+│   ├── app/                             Pages and API routes
+│   ├── data/                            Static public candidate snapshots
+│   ├── db/migrations/                   Public contribution-intake migration
+│   ├── lib/                             Candidate payload and contribution services
+│   └── scripts/                         Candidate sync and Neon migration scripts
+└── .github/workflows/                   Dagster, validation, and worker automation
 ```
 
 ## Dagster
 
-Validate definitions:
+Install and validate:
 
 ```bash
+uv sync
+uv run pytest tests/test_ingestion_bridge_contracts.py
 uv run dg check defs
 ```
 
@@ -47,46 +108,63 @@ Run locally:
 uv run dg dev
 ```
 
-Production deploys are handled by the existing Dagster+ GitHub Actions workflow
-on pushes to `main`.
+Production deploys are handled by Dagster+ GitHub Actions on pushes to `main`.
 
-## Current Job
+## Public Site
 
-Dagster job:
-
-```text
-structured_source_pipeline_job
-```
-
-This runs:
-
-```text
-structured source refresh -> claim extraction -> claim curation -> QA report
-```
-
-## Local Structured Pipeline
+Run the public site:
 
 ```bash
-uv run hsa-ingestion-bridge structured-pipeline --source pubchem --limit 1
+cd twog
+npm install
+npm run build
+npm start -- --port 3000
 ```
 
-## Source Standards
+Refresh candidate snapshots from the local Command Center:
 
-Structured source SOPs live in `docs/STRUCTURED_SOURCE_SOPS.md`. Each source has
-an explicit evidence boundary so the system does not overstate what an API
-record can prove.
+```bash
+cd twog
+npm run sync:candidates
+```
 
-## Homepage Direction
+## Neon Contribution Intake
 
-The future-state homepage strategy lives in
-`docs/HOMEPAGE_CREATIVE_BRIEF.md`. It defines the platform narrative, section
-plan, motion direction, asset checklist, CTAs, and language guardrails for
-positioning TWOG Autoresearch as agent-assisted research infrastructure without
-overclaiming clinical outcomes.
+The public checkout routes are read-only. The check-in route writes to Neon/Postgres:
 
-## Codex Project Context
+```text
+POST /api/public-candidates/{candidate_id}/contributions
+```
 
-Future Codex sessions should start with `AGENTS.md` and
-`docs/CODEX_PROJECT_CONTEXT.md`. These files summarize the active architecture,
-hosted Dagster+ state, current agent lanes, validation commands, and recent
-smoke runs.
+Set one database URL:
+
+```bash
+NEON_DATABASE_URL=postgresql://...
+```
+
+Supported aliases:
+
+- `DATABASE_URL`
+- `POSTGRES_URL`
+- `HSA_DATABASE_URL`
+
+Apply the public-site migration:
+
+```bash
+cd twog
+npm run db:migrate
+```
+
+The migration creates `candidate_contribution_intake`, with indexes by candidate, status, requested action, and created time.
+
+## Safety Boundary
+
+TWOG candidate records do not certify efficacy, safety, dosing, clinical readiness, veterinary use, or regulatory fitness. They are research artifacts for inspection, challenge, and improvement.
+
+Any medical or veterinary decision belongs with qualified professionals.
+
+## Why It Matters
+
+TWOG is built for Graffiti, Brady, and every dog whose disease deserves more scientific attention than the market has given it.
+
+It is also a bet that AI can be used for something practical and humane: helping more people ask better questions, learn faster, and contribute to research that would otherwise stay out of reach.

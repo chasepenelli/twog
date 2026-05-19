@@ -1,0 +1,1911 @@
+{
+  "-1": {
+    "name": "Noise / unclassified",
+    "top_terms": [
+      "dogs",
+      "canine",
+      "dog",
+      "hemangiosarcoma",
+      "epigenetic",
+      "sarcoma",
+      "exosomes",
+      "endothelial",
+      "osteosarcoma",
+      "mir",
+      "carcinoma",
+      "diagnosis"
+    ],
+    "n_papers": 8054,
+    "track_mix": {
+      "treatment": 3105,
+      "supplements": 1933,
+      "cross_cutting": 1056,
+      "untagged": 692,
+      "breed_screening": 625,
+      "early_detection": 519,
+      "splenic_hsa": 124
+    }
+  },
+  "0": {
+    "name": "Canine cancer VOC detection",
+    "top_terms": [
+      "dogs",
+      "detection",
+      "trained",
+      "urine",
+      "volatile organic",
+      "scent",
+      "volatile",
+      "vocs",
+      "breath",
+      "organic compounds",
+      "canine",
+      "scent detection"
+    ],
+    "n_papers": 154,
+    "track_mix": {
+      "early_detection": 132,
+      "cross_cutting": 12,
+      "untagged": 9,
+      "treatment": 1
+    }
+  },
+  "1": {
+    "name": "sirolimus rapamycin transplant immunosuppression",
+    "top_terms": [
+      "sirolimus",
+      "rapamycin",
+      "sirolimus rapamycin",
+      "rapamycin sirolimus",
+      "target rapamycin",
+      "eluting",
+      "tacrolimus",
+      "transplant",
+      "topical",
+      "cyclosporine",
+      "recipients",
+      "stent"
+    ],
+    "n_papers": 178,
+    "track_mix": {
+      "treatment": 157,
+      "untagged": 19,
+      "supplements": 1,
+      "breed_screening": 1
+    }
+  },
+  "2": {
+    "name": "metronomic anti-angiogenic chemotherapy",
+    "top_terms": [
+      "metronomic",
+      "metronomic chemotherapy",
+      "meeting",
+      "angiogenic therapy",
+      "neuroendocrine tumors",
+      "chemotherapy patients",
+      "anti angiogenic",
+      "neuroendocrine",
+      "center retrospective",
+      "low dose",
+      "metastatic breast",
+      "angiogenic"
+    ],
+    "n_papers": 79,
+    "track_mix": {
+      "treatment": 73,
+      "cross_cutting": 4,
+      "untagged": 2
+    }
+  },
+  "3": {
+    "name": "JAK-STAT inflammatory signaling",
+    "top_terms": [
+      "jak stat",
+      "jak",
+      "stat",
+      "stat signaling",
+      "stat pathway",
+      "signaling pathway",
+      "drosophila",
+      "stat3",
+      "jak2",
+      "role jak",
+      "stats",
+      "pathway jak"
+    ],
+    "n_papers": 347,
+    "track_mix": {
+      "cross_cutting": 284,
+      "untagged": 37,
+      "treatment": 20,
+      "supplements": 4,
+      "early_detection": 1,
+      "breed_screening": 1
+    }
+  },
+  "4": {
+    "name": "PDGFR tyrosine kinase inhibitors",
+    "top_terms": [
+      "pdgfr",
+      "pdgf",
+      "receptor pdgfr",
+      "derived growth",
+      "platelet derived",
+      "platelet",
+      "pdgfr pdgfr",
+      "growth factor",
+      "factor receptor",
+      "bb",
+      "hfc",
+      "tomato"
+    ],
+    "n_papers": 56,
+    "track_mix": {
+      "untagged": 22,
+      "cross_cutting": 17,
+      "treatment": 11,
+      "early_detection": 6
+    }
+  },
+  "5": {
+    "name": "Protein tyrosine kinase families",
+    "top_terms": [
+      "tyrosine",
+      "tyrosine kinase",
+      "tyrosine protein",
+      "protein kinase",
+      "receptor tyrosine",
+      "kinase tyrosine",
+      "kinase receptor",
+      "protein tyrosine",
+      "family tyrosine",
+      "spleen tyrosine",
+      "syk",
+      "bruton"
+    ],
+    "n_papers": 160,
+    "track_mix": {
+      "cross_cutting": 157,
+      "treatment": 3
+    }
+  },
+  "6": {
+    "name": "Tyrosine kinase inhibitors",
+    "top_terms": [
+      "tyrosine kinase",
+      "tyrosine",
+      "kinase inhibitors",
+      "inhibitors",
+      "kinase inhibitor",
+      "les",
+      "protein tyrosine",
+      "la",
+      "est",
+      "cellules",
+      "receptor tyrosine",
+      "le"
+    ],
+    "n_papers": 65,
+    "track_mix": {
+      "treatment": 57,
+      "cross_cutting": 4,
+      "untagged": 3,
+      "supplements": 1
+    }
+  },
+  "7": {
+    "name": "Liposomal muramyl tripeptide immunotherapy",
+    "top_terms": [
+      "mtp pe",
+      "mtp",
+      "pe",
+      "muramyl",
+      "tripeptide",
+      "muramyl tripeptide",
+      "liposome",
+      "phosphatidylethanolamine",
+      "tripeptide phosphatidylethanolamine",
+      "liposome encapsulated",
+      "encapsulated",
+      "liposomes"
+    ],
+    "n_papers": 66,
+    "track_mix": {
+      "treatment": 36,
+      "cross_cutting": 19,
+      "untagged": 10,
+      "breed_screening": 1
+    }
+  },
+  "8": {
+    "name": "Withaferin A anticancer mechanisms",
+    "top_terms": [
+      "somnifera",
+      "withaferin",
+      "withania",
+      "withania somnifera",
+      "ashwagandha",
+      "wa",
+      "withanolide",
+      "withanolides",
+      "withaferin wa",
+      "dunal",
+      "plant",
+      "anticancer"
+    ],
+    "n_papers": 141,
+    "track_mix": {
+      "supplements": 141
+    }
+  },
+  "9": {
+    "name": "Canine renal allograft survival",
+    "top_terms": [
+      "canine renal",
+      "allograft survival",
+      "canine",
+      "prolongation",
+      "allograft",
+      "renal",
+      "allografts",
+      "survival canine",
+      "islets",
+      "uv",
+      "pretreatment",
+      "islet"
+    ],
+    "n_papers": 60,
+    "track_mix": {
+      "treatment": 47,
+      "untagged": 13
+    }
+  },
+  "10": {
+    "name": "Canine cardiac adrenergic physiology",
+    "top_terms": [
+      "canine",
+      "propranolol",
+      "cardiac",
+      "canine cardiac",
+      "splenic",
+      "purkinje",
+      "canine splenic",
+      "canine heart",
+      "ventricular",
+      "adrenergic",
+      "canine model",
+      "vasoconstrictor"
+    ],
+    "n_papers": 264,
+    "track_mix": {
+      "cross_cutting": 180,
+      "untagged": 72,
+      "treatment": 5,
+      "supplements": 4,
+      "early_detection": 2,
+      "breed_screening": 1
+    }
+  },
+  "11": {
+    "name": "Low-dose aspirin cancer prevention",
+    "top_terms": [
+      "aspirin",
+      "dose aspirin",
+      "low dose",
+      "colorectal",
+      "prevention",
+      "aspree",
+      "colorectal cancer",
+      "cardiovascular",
+      "crc",
+      "trial",
+      "asa",
+      "lda"
+    ],
+    "n_papers": 178,
+    "track_mix": {
+      "supplements": 172,
+      "cross_cutting": 3,
+      "treatment": 2,
+      "untagged": 1
+    }
+  },
+  "12": {
+    "name": "Nanosecond pulsed electric field cancer",
+    "top_terms": [
+      "nspef",
+      "nanosecond",
+      "electric",
+      "pulsed electric",
+      "nanosecond pulsed",
+      "pulsed",
+      "nspefs",
+      "electric fields",
+      "electric field",
+      "fields",
+      "pulses",
+      "pulse"
+    ],
+    "n_papers": 199,
+    "track_mix": {
+      "treatment": 193,
+      "supplements": 3,
+      "untagged": 1,
+      "early_detection": 1,
+      "cross_cutting": 1
+    }
+  },
+  "13": {
+    "name": "Electrochemotherapy veterinary oncology",
+    "top_terms": [
+      "electrochemotherapy",
+      "ect",
+      "bleomycin",
+      "pulses",
+      "electroporation",
+      "electrochemotherapy ect",
+      "electric pulses",
+      "electric",
+      "cisplatin",
+      "cutaneous",
+      "local",
+      "dogs"
+    ],
+    "n_papers": 203,
+    "track_mix": {
+      "treatment": 198,
+      "supplements": 3,
+      "early_detection": 2
+    }
+  },
+  "14": {
+    "name": "G-CSF plerixafor hematopoietic mobilization",
+    "top_terms": [
+      "mobilization",
+      "plerixafor",
+      "stem",
+      "stem cell",
+      "cell mobilization",
+      "asct",
+      "multiple myeloma",
+      "myeloma",
+      "csf",
+      "autologous",
+      "hematopoietic stem",
+      "hematopoietic"
+    ],
+    "n_papers": 53,
+    "track_mix": {
+      "treatment": 53
+    }
+  },
+  "15": {
+    "name": "Galectin carbohydrate binding cancer",
+    "top_terms": [
+      "galectin",
+      "gal",
+      "galactoside binding",
+      "galactoside",
+      "galectin gal",
+      "lectin",
+      "carbohydrate",
+      "galectins",
+      "binding protein",
+      "binding lectin",
+      "endothelial",
+      "adhesion"
+    ],
+    "n_papers": 446,
+    "track_mix": {
+      "supplements": 423,
+      "treatment": 13,
+      "untagged": 6,
+      "breed_screening": 2,
+      "cross_cutting": 1,
+      "early_detection": 1
+    }
+  },
+  "16": {
+    "name": "Metformin antidiabetic cancer prevention",
+    "top_terms": [
+      "metformin",
+      "diabetes",
+      "type diabetes",
+      "glp",
+      "metformin use",
+      "t2dm",
+      "effect metformin",
+      "antidiabetic",
+      "prevention",
+      "t2d",
+      "mellitus",
+      "diabetes mellitus"
+    ],
+    "n_papers": 138,
+    "track_mix": {
+      "supplements": 130,
+      "treatment": 5,
+      "cross_cutting": 2,
+      "breed_screening": 1
+    }
+  },
+  "17": {
+    "name": "Fucoidan anticancer mechanisms",
+    "top_terms": [
+      "fucoidan",
+      "fucoidans",
+      "brown algae",
+      "algae",
+      "brown",
+      "sulfated",
+      "lmwf",
+      "polysaccharide",
+      "polysaccharides",
+      "marine",
+      "molecular weight",
+      "fucoxanthin"
+    ],
+    "n_papers": 54,
+    "track_mix": {
+      "supplements": 54
+    }
+  },
+  "18": {
+    "name": "botanical influenza antiviral mechanisms",
+    "top_terms": [
+      "influenza",
+      "influenza virus",
+      "virus",
+      "antiviral",
+      "anti influenza",
+      "mdck",
+      "h1n1",
+      "influenza viruses",
+      "viruses",
+      "egcg",
+      "iav",
+      "neuraminidase"
+    ],
+    "n_papers": 89,
+    "track_mix": {
+      "supplements": 75,
+      "breed_screening": 4,
+      "untagged": 4,
+      "treatment": 4,
+      "early_detection": 2
+    }
+  },
+  "19": {
+    "name": "Tumor treating fields glioblastoma",
+    "top_terms": [
+      "ttfields",
+      "tumor treating",
+      "treating fields",
+      "fields",
+      "fields ttfields",
+      "ttfields therapy",
+      "treating",
+      "glioblastoma",
+      "electric",
+      "electric fields",
+      "gbm",
+      "alternating electric"
+    ],
+    "n_papers": 100,
+    "track_mix": {
+      "treatment": 92,
+      "supplements": 3,
+      "breed_screening": 2,
+      "cross_cutting": 2,
+      "early_detection": 1
+    }
+  },
+  "20": {
+    "name": "Irreversible electroporation hepatocellular carcinoma",
+    "top_terms": [
+      "ire",
+      "irreversible electroporation",
+      "electroporation",
+      "ablation",
+      "irreversible",
+      "electroporation ire",
+      "thermal",
+      "non thermal",
+      "ablative",
+      "thermal ablation",
+      "hcc",
+      "local"
+    ],
+    "n_papers": 124,
+    "track_mix": {
+      "treatment": 123,
+      "untagged": 1
+    }
+  },
+  "21": {
+    "name": "Stereotactic body radiotherapy outcomes",
+    "top_terms": [
+      "sbrt",
+      "stereotactic",
+      "stereotactic body",
+      "body radiotherapy",
+      "radiotherapy",
+      "radiation",
+      "radiotherapy sbrt",
+      "gy",
+      "radiation therapy",
+      "body radiation",
+      "prostate",
+      "linac"
+    ],
+    "n_papers": 82,
+    "track_mix": {
+      "treatment": 72,
+      "supplements": 9,
+      "breed_screening": 1
+    }
+  },
+  "22": {
+    "name": "Angiosarcoma treatment clinical outcomes",
+    "top_terms": [
+      "angiosarcoma",
+      "rare",
+      "case",
+      "sarcoma",
+      "angiosarcomas",
+      "sarcomas",
+      "year old",
+      "epithelioid",
+      "case report",
+      "cutaneous angiosarcoma",
+      "year",
+      "angiosarcoma rare"
+    ],
+    "n_papers": 1980,
+    "track_mix": {
+      "treatment": 1372,
+      "early_detection": 334,
+      "cross_cutting": 120,
+      "untagged": 60,
+      "supplements": 50,
+      "breed_screening": 35,
+      "splenic_hsa": 9
+    }
+  },
+  "23": {
+    "name": "Hound Dog cultural interpretation",
+    "top_terms": [
+      "dog",
+      "hound",
+      "dog dog",
+      "chapter",
+      "black",
+      "big",
+      "interpreting",
+      "eat",
+      "records",
+      "canine",
+      "behavior",
+      "dogs"
+    ],
+    "n_papers": 74,
+    "track_mix": {
+      "breed_screening": 69,
+      "untagged": 5
+    }
+  },
+  "24": {
+    "name": "Canine plasma pharmacokinetics",
+    "top_terms": [
+      "ginsenoside",
+      "ms",
+      "dog plasma",
+      "beagle",
+      "panax",
+      "notoginseng",
+      "dogs",
+      "plasma",
+      "ginsenosides",
+      "ms ms",
+      "panax notoginseng",
+      "rg1"
+    ],
+    "n_papers": 63,
+    "track_mix": {
+      "supplements": 62,
+      "cross_cutting": 1
+    }
+  },
+  "25": {
+    "name": "N-acetylcysteine canine cytoprotection",
+    "top_terms": [
+      "acetylcysteine",
+      "nac",
+      "dogs",
+      "nitroglycerin",
+      "reperfusion",
+      "coronary",
+      "kg",
+      "acetylcysteine nac",
+      "mg kg",
+      "acetyl cysteine",
+      "mg",
+      "ischemia"
+    ],
+    "n_papers": 92,
+    "track_mix": {
+      "supplements": 89,
+      "cross_cutting": 1,
+      "treatment": 1,
+      "breed_screening": 1
+    }
+  },
+  "26": {
+    "name": "PI3K/AKT/mTOR pathway inhibition",
+    "top_terms": [
+      "mtor",
+      "pi3k",
+      "akt mtor",
+      "akt",
+      "pi3k akt",
+      "mtor pathway",
+      "mtor signaling",
+      "signaling pathway",
+      "targeting pi3k",
+      "inhibitors",
+      "figure",
+      "pik3r1"
+    ],
+    "n_papers": 246,
+    "track_mix": {
+      "cross_cutting": 109,
+      "treatment": 78,
+      "untagged": 34,
+      "supplements": 24,
+      "breed_screening": 1
+    }
+  },
+  "27": {
+    "name": "Cold atmospheric plasma anticancer",
+    "top_terms": [
+      "cap",
+      "plasma",
+      "atmospheric",
+      "cold atmospheric",
+      "atmospheric plasma",
+      "cold",
+      "plasma cap",
+      "plasma activated",
+      "rons",
+      "nitrogen species",
+      "non thermal",
+      "oxygen nitrogen"
+    ],
+    "n_papers": 217,
+    "track_mix": {
+      "treatment": 216,
+      "untagged": 1
+    }
+  },
+  "28": {
+    "name": "Plasma surface endothelial biocompatibility",
+    "top_terms": [
+      "plasma",
+      "surface",
+      "plasma treated",
+      "endothelial",
+      "plasma treatment",
+      "surfaces",
+      "adhesion",
+      "endothelial cells",
+      "biocompatibility",
+      "coating",
+      "scaffolds",
+      "stents"
+    ],
+    "n_papers": 83,
+    "track_mix": {
+      "treatment": 77,
+      "untagged": 2,
+      "cross_cutting": 2,
+      "early_detection": 1,
+      "supplements": 1
+    }
+  },
+  "29": {
+    "name": "Canine mitral valve echocardiography",
+    "top_terms": [
+      "dogs",
+      "atrial",
+      "echocardiographic",
+      "left",
+      "mitral",
+      "mitral valve",
+      "left atrial",
+      "cardiac",
+      "valve disease",
+      "valve",
+      "right",
+      "mmvd"
+    ],
+    "n_papers": 114,
+    "track_mix": {
+      "early_detection": 75,
+      "untagged": 17,
+      "breed_screening": 12,
+      "supplements": 6,
+      "cross_cutting": 4
+    }
+  },
+  "30": {
+    "name": "Sulforaphane isothiocyanate anticancer mechanisms",
+    "top_terms": [
+      "sfn",
+      "sulforaphane",
+      "sulforaphane sfn",
+      "cruciferous",
+      "cruciferous vegetables",
+      "broccoli",
+      "vegetables",
+      "isothiocyanate",
+      "isothiocyanates",
+      "glucosinolates",
+      "itcs",
+      "nrf2"
+    ],
+    "n_papers": 188,
+    "track_mix": {
+      "supplements": 184,
+      "treatment": 3,
+      "cross_cutting": 1
+    }
+  },
+  "31": {
+    "name": "Salmonella antimicrobial resistance genes",
+    "top_terms": [
+      "salmonella",
+      "enterica",
+      "salmonella enterica",
+      "antimicrobial resistance",
+      "antimicrobial",
+      "isolates",
+      "serovar",
+      "strains",
+      "typhimurium",
+      "amr",
+      "meat",
+      "antibiotic"
+    ],
+    "n_papers": 58,
+    "track_mix": {
+      "treatment": 53,
+      "supplements": 2,
+      "untagged": 1,
+      "breed_screening": 1,
+      "cross_cutting": 1
+    }
+  },
+  "32": {
+    "name": "Canine shear wave elastography",
+    "top_terms": [
+      "elastography",
+      "shear wave",
+      "swe",
+      "shear",
+      "wave",
+      "dogs",
+      "stiffness",
+      "ultrasound",
+      "ablation",
+      "elastographic",
+      "strain",
+      "imaging"
+    ],
+    "n_papers": 55,
+    "track_mix": {
+      "early_detection": 53,
+      "breed_screening": 1,
+      "cross_cutting": 1
+    }
+  },
+  "33": {
+    "name": "Canine leishmaniasis bartonella infections",
+    "top_terms": [
+      "dogs",
+      "leishmaniasis",
+      "cruzi",
+      "chagas",
+      "chagas disease",
+      "leishmania",
+      "bartonella",
+      "trypanosoma cruzi",
+      "trypanosoma",
+      "canine",
+      "infantum",
+      "visceral leishmaniasis"
+    ],
+    "n_papers": 105,
+    "track_mix": {
+      "supplements": 39,
+      "untagged": 31,
+      "early_detection": 16,
+      "breed_screening": 9,
+      "treatment": 5,
+      "cross_cutting": 3,
+      "splenic_hsa": 2
+    }
+  },
+  "34": {
+    "name": "Companion dog aging biomarkers",
+    "top_terms": [
+      "dogs",
+      "aging",
+      "dog",
+      "age",
+      "dog aging",
+      "cognitive",
+      "aging project",
+      "companion",
+      "cognitive dysfunction",
+      "companion dogs",
+      "owners",
+      "ccd"
+    ],
+    "n_papers": 177,
+    "track_mix": {
+      "cross_cutting": 107,
+      "breed_screening": 27,
+      "early_detection": 25,
+      "untagged": 9,
+      "supplements": 7,
+      "treatment": 2
+    }
+  },
+  "35": {
+    "name": "Boswellic acids anticancer mechanisms",
+    "top_terms": [
+      "boswellic",
+      "boswellic acid",
+      "boswellia",
+      "akba",
+      "serrata",
+      "keto",
+      "frankincense",
+      "gum",
+      "boswellia serrata",
+      "resin",
+      "gum resin",
+      "acetyl"
+    ],
+    "n_papers": 135,
+    "track_mix": {
+      "supplements": 133,
+      "untagged": 1,
+      "treatment": 1
+    }
+  },
+  "36": {
+    "name": "VEGFR angiogenesis inhibition therapy",
+    "top_terms": [
+      "vegfr",
+      "angiogenesis",
+      "vegf",
+      "endothelial",
+      "gt",
+      "lt",
+      "lt gt",
+      "endothelial growth",
+      "vascular endothelial",
+      "growth factor",
+      "tumor angiogenesis",
+      "neuropilin"
+    ],
+    "n_papers": 165,
+    "track_mix": {
+      "cross_cutting": 75,
+      "treatment": 59,
+      "supplements": 22,
+      "untagged": 5,
+      "breed_screening": 2,
+      "early_detection": 2
+    }
+  },
+  "37": {
+    "name": "Canine breed genomic variants",
+    "top_terms": [
+      "dogs",
+      "breeds",
+      "dog",
+      "breed",
+      "genome",
+      "canine",
+      "variants",
+      "domestic",
+      "wide association",
+      "domestic dog",
+      "genome wide",
+      "genetics"
+    ],
+    "n_papers": 113,
+    "track_mix": {
+      "breed_screening": 94,
+      "cross_cutting": 6,
+      "untagged": 5,
+      "early_detection": 5,
+      "supplements": 3
+    }
+  },
+  "38": {
+    "name": "Canine pericardial effusion management",
+    "top_terms": [
+      "pericardial",
+      "effusion",
+      "pericardial effusion",
+      "dogs",
+      "right",
+      "cardiac",
+      "dog",
+      "echocardiography",
+      "atrial",
+      "tamponade",
+      "pericardiocentesis",
+      "cardiac tamponade"
+    ],
+    "n_papers": 87,
+    "track_mix": {
+      "early_detection": 73,
+      "treatment": 9,
+      "untagged": 4,
+      "breed_screening": 1
+    }
+  },
+  "39": {
+    "name": "Fisetin senolytic aging intervention",
+    "top_terms": [
+      "fisetin",
+      "effects fisetin",
+      "fis",
+      "flavonoid",
+      "aging",
+      "senescent",
+      "senescence",
+      "senolytic",
+      "senescent cells",
+      "fisetin treatment",
+      "oxidative",
+      "antioxidant"
+    ],
+    "n_papers": 98,
+    "track_mix": {
+      "cross_cutting": 93,
+      "supplements": 4,
+      "untagged": 1
+    }
+  },
+  "40": {
+    "name": "canine hemangiosarcoma therapeutic targets",
+    "top_terms": [
+      "canine",
+      "dogs",
+      "hemangiosarcoma",
+      "toceranib",
+      "canine mammary",
+      "mammary",
+      "hsa",
+      "mast",
+      "mast cell",
+      "veterinary",
+      "splenic",
+      "canine hemangiosarcoma"
+    ],
+    "n_papers": 1531,
+    "track_mix": {
+      "treatment": 548,
+      "cross_cutting": 286,
+      "untagged": 197,
+      "breed_screening": 185,
+      "early_detection": 145,
+      "supplements": 136,
+      "splenic_hsa": 34
+    }
+  },
+  "41": {
+    "name": "Canine tumor epidemiology",
+    "top_terms": [
+      "dogs",
+      "breed",
+      "canine",
+      "tumours",
+      "veterinary",
+      "lymphoma",
+      "age",
+      "breeds",
+      "mammary",
+      "dog",
+      "risk factors",
+      "neoplasms"
+    ],
+    "n_papers": 158,
+    "track_mix": {
+      "breed_screening": 110,
+      "untagged": 25,
+      "early_detection": 15,
+      "cross_cutting": 4,
+      "supplements": 3,
+      "splenic_hsa": 1
+    }
+  },
+  "42": {
+    "name": "Canine hemangiosarcoma clinical manifestations",
+    "top_terms": [
+      "dog",
+      "dogs",
+      "hemangiosarcoma",
+      "splenic",
+      "old",
+      "year old",
+      "year",
+      "abdominal",
+      "examination",
+      "diagnosis",
+      "presented",
+      "case"
+    ],
+    "n_papers": 918,
+    "track_mix": {
+      "breed_screening": 269,
+      "early_detection": 166,
+      "untagged": 162,
+      "splenic_hsa": 129,
+      "treatment": 128,
+      "cross_cutting": 39,
+      "supplements": 25
+    }
+  },
+  "43": {
+    "name": "Contrast-enhanced canine splenic imaging",
+    "top_terms": [
+      "splenic",
+      "dogs",
+      "contrast enhanced",
+      "contrast",
+      "ultrasonography",
+      "ultrasound",
+      "ct",
+      "spleen",
+      "lesions",
+      "ceus",
+      "splenic lesions",
+      "masses"
+    ],
+    "n_papers": 100,
+    "track_mix": {
+      "splenic_hsa": 87,
+      "early_detection": 9,
+      "untagged": 2,
+      "treatment": 1,
+      "supplements": 1
+    }
+  },
+  "44": {
+    "name": "Cadmium pectin plant responses",
+    "top_terms": [
+      "pectin",
+      "cd",
+      "cell wall",
+      "cadmium",
+      "wall",
+      "rice",
+      "soluble pectin",
+      "cu",
+      "cadmium cd",
+      "soluble",
+      "drying",
+      "csp"
+    ],
+    "n_papers": 114,
+    "track_mix": {
+      "supplements": 103,
+      "cross_cutting": 9,
+      "treatment": 2
+    }
+  },
+  "45": {
+    "name": "Mesenchymal stem cell exosomes",
+    "top_terms": [
+      "exosomes",
+      "stem",
+      "mesenchymal stem",
+      "mscs",
+      "mesenchymal",
+      "msc",
+      "exos",
+      "derived exosomes",
+      "stem cell",
+      "stem cells",
+      "cell derived",
+      "healing"
+    ],
+    "n_papers": 440,
+    "track_mix": {
+      "treatment": 356,
+      "supplements": 42,
+      "cross_cutting": 28,
+      "untagged": 10,
+      "early_detection": 2,
+      "breed_screening": 2
+    }
+  },
+  "46": {
+    "name": "Hericium erinaceus anticancer bioactives",
+    "top_terms": [
+      "erinaceus",
+      "hericium",
+      "hericium erinaceus",
+      "mushroom",
+      "rnase",
+      "mane",
+      "lion mane",
+      "fruiting",
+      "pectin",
+      "lion",
+      "polysaccharides",
+      "polysaccharide"
+    ],
+    "n_papers": 57,
+    "track_mix": {
+      "supplements": 56,
+      "early_detection": 1
+    }
+  },
+  "47": {
+    "name": "Drug repurposing clinical applications",
+    "top_terms": [
+      "repurposing",
+      "drug repurposing",
+      "drug discovery",
+      "discovery",
+      "existing drugs",
+      "drug therapy",
+      "rare diseases",
+      "repurposed",
+      "drug development",
+      "existing",
+      "learning",
+      "ai"
+    ],
+    "n_papers": 150,
+    "track_mix": {
+      "treatment": 102,
+      "untagged": 32,
+      "supplements": 8,
+      "cross_cutting": 5,
+      "breed_screening": 3
+    }
+  },
+  "48": {
+    "name": "Nanoparticle drug delivery cancer",
+    "top_terms": [
+      "drug delivery",
+      "delivery",
+      "nanoparticles",
+      "delivery systems",
+      "nanomedicine",
+      "nanomedicines",
+      "imaging",
+      "liposomes",
+      "oxide nanoparticles",
+      "iron oxide",
+      "liposomal",
+      "delivery vehicles"
+    ],
+    "n_papers": 89,
+    "track_mix": {
+      "treatment": 73,
+      "supplements": 7,
+      "breed_screening": 4,
+      "early_detection": 2,
+      "cross_cutting": 2,
+      "untagged": 1
+    }
+  },
+  "49": {
+    "name": "Doxorubicin sorafenib nanocarriers",
+    "top_terms": [
+      "doxorubicin",
+      "dox",
+      "nanoparticles",
+      "delivery",
+      "peg",
+      "liposomes",
+      "sorafenib",
+      "paclitaxel",
+      "liposomal",
+      "drug release",
+      "release",
+      "albumin"
+    ],
+    "n_papers": 193,
+    "track_mix": {
+      "treatment": 140,
+      "supplements": 37,
+      "cross_cutting": 7,
+      "untagged": 6,
+      "breed_screening": 2,
+      "early_detection": 1
+    }
+  },
+  "50": {
+    "name": "Circulating tumor DNA detection",
+    "top_terms": [
+      "liquid biopsy",
+      "biopsy",
+      "liquid",
+      "circulating tumor",
+      "circulating",
+      "ctdna",
+      "detection",
+      "tumor dna",
+      "cfdna",
+      "biomarkers",
+      "biomarker",
+      "ctcs"
+    ],
+    "n_papers": 185,
+    "track_mix": {
+      "early_detection": 133,
+      "treatment": 34,
+      "supplements": 7,
+      "cross_cutting": 5,
+      "untagged": 3,
+      "breed_screening": 3
+    }
+  },
+  "51": {
+    "name": "HPV cervical squamous carcinoma",
+    "top_terms": [
+      "hpv",
+      "p16",
+      "cervical",
+      "brca1",
+      "squamous",
+      "hpv associated",
+      "human papillomavirus",
+      "papillomavirus",
+      "squamous cell",
+      "lesions",
+      "mmr",
+      "cervical cancer"
+    ],
+    "n_papers": 53,
+    "track_mix": {
+      "cross_cutting": 36,
+      "supplements": 6,
+      "treatment": 5,
+      "breed_screening": 4,
+      "early_detection": 1,
+      "untagged": 1
+    }
+  },
+  "52": {
+    "name": "Betulinic acid anticancer mechanisms",
+    "top_terms": [
+      "betulinic",
+      "betulinic acid",
+      "ba",
+      "betulin",
+      "acid ba",
+      "derivatives",
+      "pentacyclic",
+      "triterpenoid",
+      "anticancer",
+      "triterpene",
+      "antitumor",
+      "apoptosis"
+    ],
+    "n_papers": 133,
+    "track_mix": {
+      "supplements": 128,
+      "cross_cutting": 2,
+      "treatment": 2,
+      "untagged": 1
+    }
+  },
+  "53": {
+    "name": "Thymoquinone anticancer apoptosis mechanisms",
+    "top_terms": [
+      "tq",
+      "thymoquinone",
+      "thymoquinone tq",
+      "sativa",
+      "nigella",
+      "effects thymoquinone",
+      "nigella sativa",
+      "cancer cells",
+      "anticancer",
+      "apoptosis",
+      "fu",
+      "fluorouracil"
+    ],
+    "n_papers": 151,
+    "track_mix": {
+      "supplements": 145,
+      "treatment": 4,
+      "untagged": 1,
+      "cross_cutting": 1
+    }
+  },
+  "54": {
+    "name": "pomegranate extract antiangiogenic potential",
+    "top_terms": [
+      "pomegranate",
+      "peel",
+      "extract",
+      "granatum",
+      "pomegranate peel",
+      "punica",
+      "punica granatum",
+      "extracts",
+      "fruit",
+      "peel extract",
+      "pomegranate extract",
+      "antioxidant"
+    ],
+    "n_papers": 155,
+    "track_mix": {
+      "supplements": 151,
+      "treatment": 4
+    }
+  },
+  "55": {
+    "name": "Green tea EGCG anticancer",
+    "top_terms": [
+      "egcg",
+      "tea",
+      "green tea",
+      "epigallocatechin",
+      "gallate",
+      "epigallocatechin gallate",
+      "green",
+      "gallate egcg",
+      "catechins",
+      "catechin",
+      "tea catechins",
+      "polyphenol"
+    ],
+    "n_papers": 68,
+    "track_mix": {
+      "supplements": 63,
+      "treatment": 4,
+      "breed_screening": 1
+    }
+  },
+  "56": {
+    "name": "Oncolytic virus immunotherapy",
+    "top_terms": [
+      "oncolytic",
+      "oncolytic viruses",
+      "virotherapy",
+      "viruses",
+      "oncolytic virotherapy",
+      "virus",
+      "ovs",
+      "ov",
+      "reovirus",
+      "oncolytic virus",
+      "pd",
+      "immunotherapy"
+    ],
+    "n_papers": 63,
+    "track_mix": {
+      "treatment": 55,
+      "supplements": 4,
+      "cross_cutting": 2,
+      "breed_screening": 1,
+      "untagged": 1
+    }
+  },
+  "57": {
+    "name": "plant phytochemicals cancer prevention",
+    "top_terms": [
+      "plants",
+      "medicinal",
+      "medicinal plants",
+      "compounds",
+      "phytochemicals",
+      "plant",
+      "anticancer",
+      "dietary",
+      "natural products",
+      "products",
+      "herbal",
+      "curcumin"
+    ],
+    "n_papers": 206,
+    "track_mix": {
+      "supplements": 190,
+      "breed_screening": 5,
+      "treatment": 5,
+      "cross_cutting": 2,
+      "untagged": 2,
+      "early_detection": 2
+    }
+  },
+  "58": {
+    "name": "Pterostilbene cancer apoptosis mechanisms",
+    "top_terms": [
+      "pterostilbene",
+      "pte",
+      "resveratrol",
+      "pts",
+      "stilbenes",
+      "mta1",
+      "pt",
+      "pterostilbene pte",
+      "anticancer",
+      "cancer cells",
+      "effects pterostilbene",
+      "apoptosis"
+    ],
+    "n_papers": 146,
+    "track_mix": {
+      "supplements": 142,
+      "early_detection": 2,
+      "treatment": 2
+    }
+  },
+  "59": {
+    "name": "Extracellular vesicles reproductive biology",
+    "top_terms": [
+      "evs",
+      "extracellular vesicles",
+      "vesicles",
+      "extracellular",
+      "milk",
+      "exosomes",
+      "ev",
+      "bovine",
+      "vesicles evs",
+      "isolation",
+      "sevs",
+      "vesicle"
+    ],
+    "n_papers": 129,
+    "track_mix": {
+      "treatment": 107,
+      "untagged": 11,
+      "supplements": 7,
+      "cross_cutting": 4
+    }
+  },
+  "60": {
+    "name": "Ferroptosis lipid peroxidation mechanisms",
+    "top_terms": [
+      "ferroptosis",
+      "fsp1",
+      "peroxidation",
+      "lipid peroxidation",
+      "iron",
+      "lipid",
+      "cell death",
+      "iron dependent",
+      "mitochondrial",
+      "nadh",
+      "coq10",
+      "gpx4"
+    ],
+    "n_papers": 77,
+    "track_mix": {
+      "supplements": 46,
+      "treatment": 20,
+      "cross_cutting": 6,
+      "untagged": 3,
+      "breed_screening": 2
+    }
+  },
+  "61": {
+    "name": "EZH2 inhibitor sarcoma therapy",
+    "top_terms": [
+      "ezh2",
+      "tazemetostat",
+      "sarcoma",
+      "methylation",
+      "histone",
+      "osteosarcoma",
+      "ews",
+      "ewing",
+      "ewing sarcoma",
+      "epigenetic",
+      "saha",
+      "histone acetylation"
+    ],
+    "n_papers": 104,
+    "track_mix": {
+      "treatment": 79,
+      "supplements": 9,
+      "cross_cutting": 8,
+      "untagged": 3,
+      "early_detection": 3,
+      "breed_screening": 2
+    }
+  },
+  "62": {
+    "name": "Polyphenol drug transporter bioavailability",
+    "top_terms": [
+      "curcumin",
+      "quercetin",
+      "bcrp",
+      "flavonoids",
+      "resveratrol",
+      "mdck",
+      "gp",
+      "transporter",
+      "mdckii",
+      "efflux",
+      "transporters",
+      "mrp2"
+    ],
+    "n_papers": 134,
+    "track_mix": {
+      "supplements": 122,
+      "treatment": 6,
+      "untagged": 3,
+      "cross_cutting": 2,
+      "early_detection": 1
+    }
+  },
+  "63": {
+    "name": "Polycystic ovary syndrome metformin",
+    "top_terms": [
+      "pcos",
+      "polycystic",
+      "polycystic ovary",
+      "ovary syndrome",
+      "ovary",
+      "metformin",
+      "syndrome pcos",
+      "syndrome",
+      "ovarian",
+      "women",
+      "letrozole",
+      "polycystic ovarian"
+    ],
+    "n_papers": 77,
+    "track_mix": {
+      "supplements": 52,
+      "treatment": 19,
+      "untagged": 4,
+      "cross_cutting": 2
+    }
+  },
+  "64": {
+    "name": "PROTAC targeted protein degradation",
+    "top_terms": [
+      "protacs",
+      "degradation",
+      "targeted protein",
+      "protein degradation",
+      "proteolysis targeting",
+      "protac",
+      "chimeras",
+      "targeting chimeras",
+      "proteolysis",
+      "tpd",
+      "e3",
+      "chimeras protacs"
+    ],
+    "n_papers": 56,
+    "track_mix": {
+      "treatment": 50,
+      "cross_cutting": 3,
+      "breed_screening": 2,
+      "supplements": 1
+    }
+  },
+  "65": {
+    "name": "Extracellular vesicles liquid biopsy",
+    "top_terms": [
+      "evs",
+      "extracellular vesicles",
+      "vesicles",
+      "extracellular",
+      "exosomes",
+      "vinyl chloride",
+      "vinyl",
+      "mirnas",
+      "liquid biopsy",
+      "ev",
+      "adducts",
+      "vesicles evs"
+    ],
+    "n_papers": 95,
+    "track_mix": {
+      "treatment": 51,
+      "cross_cutting": 16,
+      "early_detection": 12,
+      "untagged": 6,
+      "supplements": 6,
+      "breed_screening": 4
+    }
+  },
+  "66": {
+    "name": "Cellular senescence aging mechanisms",
+    "top_terms": [
+      "senescence",
+      "senescent",
+      "aging",
+      "senescent cells",
+      "senolytic",
+      "cellular senescence",
+      "sasp",
+      "age",
+      "senescence associated",
+      "age related",
+      "senolytics",
+      "associated secretory"
+    ],
+    "n_papers": 513,
+    "track_mix": {
+      "cross_cutting": 398,
+      "supplements": 47,
+      "treatment": 40,
+      "untagged": 19,
+      "breed_screening": 8,
+      "early_detection": 1
+    }
+  },
+  "67": {
+    "name": "Bromodomain kinase cancer inhibitors",
+    "top_terms": [
+      "brd4",
+      "bet",
+      "bromodomain",
+      "gbm",
+      "jq1",
+      "alk",
+      "glioblastoma",
+      "inhibitors",
+      "ros1",
+      "extra terminal",
+      "lymphoma",
+      "btk"
+    ],
+    "n_papers": 216,
+    "track_mix": {
+      "treatment": 159,
+      "cross_cutting": 24,
+      "supplements": 16,
+      "untagged": 8,
+      "breed_screening": 5,
+      "early_detection": 3,
+      "splenic_hsa": 1
+    }
+  },
+  "68": {
+    "name": "Transgenerational epigenetic immune memory",
+    "top_terms": [
+      "epigenetic",
+      "inheritance",
+      "transgenerational",
+      "methylation",
+      "sepsis",
+      "mdscs",
+      "epigenetic inheritance",
+      "dna methylation",
+      "myeloid derived",
+      "derived suppressor",
+      "environmental",
+      "plants"
+    ],
+    "n_papers": 193,
+    "track_mix": {
+      "cross_cutting": 85,
+      "treatment": 55,
+      "breed_screening": 19,
+      "untagged": 16,
+      "supplements": 16,
+      "early_detection": 2
+    }
+  },
+  "69": {
+    "name": "LSD1 histone demethylation fibrosis",
+    "top_terms": [
+      "lsd1",
+      "epigenetic",
+      "demethylase",
+      "fibrosis",
+      "histone",
+      "gut",
+      "lysine specific",
+      "lysine",
+      "endometriosis",
+      "specific demethylase",
+      "microbiota",
+      "demethylase lsd1"
+    ],
+    "n_papers": 337,
+    "track_mix": {
+      "treatment": 193,
+      "cross_cutting": 53,
+      "supplements": 48,
+      "untagged": 24,
+      "breed_screening": 19
+    }
+  },
+  "70": {
+    "name": "Epigenetic clocks aging acceleration",
+    "top_terms": [
+      "age",
+      "epigenetic",
+      "aging",
+      "clocks",
+      "cognitive",
+      "biomarkers",
+      "dementia",
+      "epigenetic age",
+      "older",
+      "acceleration",
+      "epigenetic clocks",
+      "heart"
+    ],
+    "n_papers": 190,
+    "track_mix": {
+      "cross_cutting": 81,
+      "supplements": 37,
+      "treatment": 34,
+      "untagged": 28,
+      "breed_screening": 7,
+      "early_detection": 3
+    }
+  },
+  "71": {
+    "name": "hsa-miR dysregulation cancer biomarkers",
+    "top_terms": [
+      "mir",
+      "hsa mir",
+      "hsa",
+      "5p",
+      "mirnas",
+      "rnas",
+      "exosomes",
+      "3p",
+      "micrornas",
+      "lncrnas",
+      "mirna",
+      "exosomal"
+    ],
+    "n_papers": 222,
+    "track_mix": {
+      "cross_cutting": 115,
+      "treatment": 77,
+      "untagged": 16,
+      "early_detection": 7,
+      "breed_screening": 4,
+      "supplements": 3
+    }
+  },
+  "72": {
+    "name": "YAP TAZ TEAD pathway",
+    "top_terms": [
+      "yap",
+      "yap1",
+      "hippo",
+      "tead",
+      "taz",
+      "yap taz",
+      "tead4",
+      "hippo pathway",
+      "g9a",
+      "yes associated",
+      "hippo signaling",
+      "yes"
+    ],
+    "n_papers": 61,
+    "track_mix": {
+      "treatment": 48,
+      "supplements": 7,
+      "cross_cutting": 3,
+      "breed_screening": 2,
+      "untagged": 1
+    }
+  },
+  "73": {
+    "name": "PD-L1 PD-1 checkpoint blockade",
+    "top_terms": [
+      "checkpoint",
+      "pd",
+      "immunotherapy",
+      "immune checkpoint",
+      "cancer immunotherapy",
+      "pd l1",
+      "checkpoint blockade",
+      "l1",
+      "blockade",
+      "inhibitors",
+      "ovarian",
+      "checkpoints"
+    ],
+    "n_papers": 74,
+    "track_mix": {
+      "treatment": 52,
+      "cross_cutting": 15,
+      "supplements": 5,
+      "early_detection": 2
+    }
+  },
+  "74": {
+    "name": "Super enhancer HDAC inhibitor cancer",
+    "top_terms": [
+      "super",
+      "cxcr4",
+      "enhancers",
+      "super enhancers",
+      "enhancer",
+      "histone",
+      "super enhancer",
+      "ses",
+      "entinostat",
+      "hdac",
+      "pd",
+      "transcription"
+    ],
+    "n_papers": 117,
+    "track_mix": {
+      "treatment": 94,
+      "supplements": 12,
+      "cross_cutting": 5,
+      "untagged": 5,
+      "breed_screening": 1
+    }
+  },
+  "75": {
+    "name": "Tumor microenvironment immune remodeling",
+    "top_terms": [
+      "microenvironment",
+      "tme",
+      "tumor microenvironment",
+      "epigenetic",
+      "hcc",
+      "tams",
+      "microenvironment tme",
+      "carcinoma",
+      "immunotherapy",
+      "metastasis",
+      "tumor associated",
+      "ehmt2"
+    ],
+    "n_papers": 454,
+    "track_mix": {
+      "treatment": 232,
+      "cross_cutting": 167,
+      "supplements": 40,
+      "breed_screening": 6,
+      "untagged": 6,
+      "early_detection": 3
+    }
+  },
+  "76": {
+    "name": "Polycomb chromatin repression",
+    "top_terms": [
+      "prc1",
+      "histone",
+      "polycomb",
+      "kdm2b",
+      "chromatin",
+      "lysine",
+      "repressive",
+      "bcor",
+      "epigenetic",
+      "g9a",
+      "stem",
+      "polycomb repressive"
+    ],
+    "n_papers": 110,
+    "track_mix": {
+      "treatment": 90,
+      "cross_cutting": 13,
+      "supplements": 4,
+      "breed_screening": 3
+    }
+  }
+}

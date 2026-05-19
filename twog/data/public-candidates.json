@@ -1,0 +1,562 @@
+{
+  "generatedAt": "2026-05-19T16:12:34.370Z",
+  "source": "http://127.0.0.1:8792",
+  "candidates": [
+    {
+      "candidate": {
+        "artifact_ids": [],
+        "biomarkers": [
+          "VEGFR-2 protein expression by IHC",
+          "PDGFR-β protein expression by IHC"
+        ],
+        "candidate_id": "twog-candidate-447eb8089965",
+        "candidate_kind": "target_strategy",
+        "candidate_therapies": [
+          "sorafenib"
+        ],
+        "committee_run_id": "061c825f-92cb-4abd-8ec8-76dcfdbc5c11",
+        "content_hash": "e2db321f0e806f38fc2f18cf70bb0151f071e94f207d4cda4c27b5a12e6b6813",
+        "created_at": "2026-05-19T14:54:35.087923Z",
+        "display_id": "TWOG-15F50D",
+        "evidence_refs": [
+          "C1",
+          "C20",
+          "C22"
+        ],
+        "latest_snapshot_id": "9a89c6f0-b847-5df7-abaa-c808a6b00b13",
+        "metadata": {
+          "latest_snapshot_version": 2,
+          "snapshot_source": "therapy_idea"
+        },
+        "primary_compute_job_id": null,
+        "priority_score": 0.82,
+        "public_status": "investigating",
+        "rationale_md": "C1 reports a retrospective survival signal (363 vs 27 days, p=0.079) for sorafenib in canine HSA. C20 confirms VEGFR-2 and PDGFR-β expression in canine splenic HSA. C22 documents sorafenib activity in human angiosarcoma phase II trials. Toceranib and masitinib failed in canine HSA per C1, suggesting sorafenib's broader kinase profile may be mechanistically necessary.",
+        "risk_flags": [
+          "Sorafenib survival data in canine HSA is retrospective, small, and non-significant (p=0.079); C1 limitation acknowledged.",
+          "Human angiosarcoma phase II data (C22) show limited PFS (1.8–3.8 months) and modest disease control, limiting enthusiasm for direct translation.",
+          "Canine PK parameters and tumor drug exposure are absent from all supplied citations.",
+          "VEGFR-2/PDGFR-β expression heterogeneity and missing outcome-correlation evidence map to C20; stale validation ref retired."
+        ],
+        "source_brief_id": "79dca761-4c4f-4589-b206-d534bf3cd908",
+        "source_evaluation_id": "1fece332-1f3c-4d30-bb1f-a33330cc84d8",
+        "source_program_id": null,
+        "summary": "Canine HSA patients with confirmed VEGFR-2 and PDGFR-β overexpression will show improved survival with sorafenib versus metronomic chemotherapy, providing a biomarker-stratified comparative oncology bridge to human angiosarcoma trials.",
+        "targets": [
+          "VEGFR-2",
+          "PDGFR-β",
+          "RAF kinases"
+        ],
+        "therapy_idea_id": "d99c1393-e033-46c2-aee9-ae036daa2414",
+        "title": "Sorafenib Repositioning in VEGFR-2/PDGFR-β-Expressing Canine HSA as a Cross-Species Translational Model",
+        "updated_at": "2026-05-19T15:07:55.670111Z",
+        "validation_decision_id": "validation_decision:6d5c3ce1e4116bf8",
+        "validation_packet_id": "validation_packet:fb9fb489c1ae67e7",
+        "visibility": "draft_public"
+      },
+      "decision_events": [
+        {
+          "action": "snapshot_generated",
+          "actor": "twog_system",
+          "candidate_id": "twog-candidate-447eb8089965",
+          "event_id": "a1ce153d-45ee-55c1-8291-a9b71761bcdd",
+          "metadata": {},
+          "new_status": "investigating",
+          "occurred_at": "2026-05-19T15:07:55.670041Z",
+          "prior_status": null,
+          "rationale_md": "Generated candidate snapshot version 2.",
+          "related_agent_run_id": null,
+          "related_compute_job_id": null,
+          "related_snapshot_id": "9a89c6f0-b847-5df7-abaa-c808a6b00b13",
+          "related_study_id": null,
+          "related_validation_decision_id": null
+        },
+        {
+          "action": "evidence_added",
+          "actor": "twog_system",
+          "candidate_id": "twog-candidate-447eb8089965",
+          "event_id": "77cb91da-4c3c-5120-9bb7-2453d0947176",
+          "metadata": {
+            "confidence": 0.9,
+            "outcome": "promote_broader_program",
+            "packet_id": "validation_packet:fb9fb489c1ae67e7",
+            "validation_ready": false
+          },
+          "new_status": "investigating",
+          "occurred_at": "2026-05-19T15:07:55.670020Z",
+          "prior_status": null,
+          "rationale_md": "The specific validation packet remains blocked, but the follow-up evidence points to a broader strong program-level signal. Keep the drug-specific claim subordinate to a biomarker-stratified therapeutic strategy instead of forcing protocol validation now.",
+          "related_agent_run_id": null,
+          "related_compute_job_id": null,
+          "related_snapshot_id": "9a89c6f0-b847-5df7-abaa-c808a6b00b13",
+          "related_study_id": null,
+          "related_validation_decision_id": "validation_decision:6d5c3ce1e4116bf8"
+        },
+        {
+          "action": "snapshot_generated",
+          "actor": "twog_system",
+          "candidate_id": "twog-candidate-447eb8089965",
+          "event_id": "42386caa-e50f-5c6e-ae7a-68a47915ccac",
+          "metadata": {},
+          "new_status": "investigating",
+          "occurred_at": "2026-05-19T14:54:35.087836Z",
+          "prior_status": null,
+          "rationale_md": "Generated candidate snapshot version 1.",
+          "related_agent_run_id": null,
+          "related_compute_job_id": null,
+          "related_snapshot_id": "588617b8-d065-5cba-8b82-ff2a5b52c010",
+          "related_study_id": null,
+          "related_validation_decision_id": null
+        },
+        {
+          "action": "evidence_added",
+          "actor": "twog_system",
+          "candidate_id": "twog-candidate-447eb8089965",
+          "event_id": "dfc3f74e-aea8-5858-a9a2-acd672e16380",
+          "metadata": {
+            "confidence": 0.9,
+            "outcome": "promote_broader_program",
+            "packet_id": "validation_packet:fb9fb489c1ae67e7",
+            "validation_ready": false
+          },
+          "new_status": "investigating",
+          "occurred_at": "2026-05-19T14:54:35.087825Z",
+          "prior_status": null,
+          "rationale_md": "The specific validation packet remains blocked, but the follow-up evidence points to a broader strong program-level signal. Keep the drug-specific claim subordinate to a biomarker-stratified therapeutic strategy instead of forcing protocol validation now.",
+          "related_agent_run_id": null,
+          "related_compute_job_id": null,
+          "related_snapshot_id": "588617b8-d065-5cba-8b82-ff2a5b52c010",
+          "related_study_id": null,
+          "related_validation_decision_id": "validation_decision:6d5c3ce1e4116bf8"
+        },
+        {
+          "action": "proposed",
+          "actor": "twog_system",
+          "candidate_id": "twog-candidate-447eb8089965",
+          "event_id": "2d2e6fc9-ed7f-5353-b6cd-89351cbc8593",
+          "metadata": {},
+          "new_status": "investigating",
+          "occurred_at": "2026-05-19T14:54:35.087778Z",
+          "prior_status": null,
+          "rationale_md": "Public candidate record generated from a persisted TWOG therapy idea.",
+          "related_agent_run_id": null,
+          "related_compute_job_id": null,
+          "related_snapshot_id": "588617b8-d065-5cba-8b82-ff2a5b52c010",
+          "related_study_id": null,
+          "related_validation_decision_id": null
+        }
+      ],
+      "latest_snapshot": {
+        "artifact_ids": [],
+        "candidate_id": "twog-candidate-447eb8089965",
+        "candidate_kind": "target_strategy",
+        "citation_refs": [
+          "C1",
+          "C20",
+          "C22"
+        ],
+        "commit_sha": "local",
+        "compute_job_ids": [],
+        "content_hash": "e2db321f0e806f38fc2f18cf70bb0151f071e94f207d4cda4c27b5a12e6b6813",
+        "created_at": "2026-05-19T15:07:55.670053Z",
+        "decision_event_ids": [
+          "77cb91da-4c3c-5120-9bb7-2453d0947176",
+          "a1ce153d-45ee-55c1-8291-a9b71761bcdd"
+        ],
+        "metadata": {
+          "source": "public_candidate_snapshot_generator"
+        },
+        "method_refs": [],
+        "payload": {
+          "artifacts": [],
+          "biology": {
+            "biomarkers": [
+              "VEGFR-2 protein expression by IHC",
+              "PDGFR-β protein expression by IHC"
+            ],
+            "candidate_therapies": [
+              "sorafenib"
+            ],
+            "targets": [
+              "VEGFR-2",
+              "PDGFR-β",
+              "RAF kinases"
+            ],
+            "therapy_family_hints": []
+          },
+          "computational_evidence": [],
+          "evidence": {
+            "evidence_refs": [
+              "C1",
+              "C20",
+              "C22"
+            ],
+            "evidence_strength": "medium",
+            "next_experiments": [
+              "Canine VEGFR-2/PDGFR-β IHC scoring protocol standardization across splenic, hepatic, and cardiac HSA subtypes.",
+              "Canine sorafenib PK study: Cmax, AUC, oral bioavailability, tumor drug exposure.",
+              "Canine vs. human VEGFR-2 binding domain homology analysis for sorafenib.",
+              "Prospective biomarker-selected canine HSA pilot trial comparing sorafenib vs. doxorubicin-based standard of care."
+            ],
+            "risks": [
+              "Sorafenib survival data in canine HSA is retrospective, small, and non-significant (p=0.079); C1 limitation acknowledged.",
+              "Human angiosarcoma phase II data (C22) show limited PFS (1.8–3.8 months) and modest disease control, limiting enthusiasm for direct translation.",
+              "Canine PK parameters and tumor drug exposure are absent from all supplied citations.",
+              "VEGFR-2/PDGFR-β expression heterogeneity and missing outcome-correlation evidence map to C20; stale validation ref retired."
+            ],
+            "validation_decisions": [
+              {
+                "blocking_reasons": [
+                  "human_approval_required",
+                  "recommend_only_runner",
+                  "validation_follow_up_needs_more_evidence",
+                  "validation_follow_up_needs_human_review",
+                  "validation_citation_provenance_unresolved",
+                  "VEGFR-2/PDGFR-β expression heterogeneity and missing outcome-correlation evidence map to C20; stale validation ref retired.",
+                  "No explicit prioritized experimental roadmap is provided; the 12 unresolved questions are comprehensive but unranked, reducing immediate actionability for validation planning teams.",
+                  "Therapy_relevance_score metadata for H3 contains 'bevacizumab' as a relevance term despite bevacizumab not appearing in the hypothesis text, suggesting a pipeline scoring artifact that could corrupt downstream hypothesis ranking.",
+                  "All 14 citations are missing DOI, PMID, and publication year; evidence quality and recency cannot be independently verified, which is a critical audit failure for a translational brief.",
+                  "The PFS claim is now source-qualified to research_brief:79dca761-4c4f-4589-b206-d534bf3cd908#C22; it remains outside this follow-up citation set, so the active gap is the unsupported human-to-canine mechanistic bridge.",
+                  "The focal claim—sorafenib survival benefit in canine HSA—rests on a single non-significant data point (p=0.079) from an unverifiable cohort cited within a narrative review (C3); no primary study is in the evidence payload.",
+                  "Canine sorafenib pharmacokinetic and pharmacodynamic data (oral bioavailability, Cmax, AUC, VEGFR-2 IC50 coverage) are entirely absent, making target engagement assessment impossible.",
+                  "The focal citation C22 (human angiosarcoma sorafenib PFS 1.8–3.8 months) is absent from the evidence payload; the brief cannot formally evaluate the primary translational anchor it was commissioned to review.",
+                  "No canine-specific sorafenib PK/PD data (oral bioavailability, Cmax, AUC, free-drug vs. VEGFR-2 IC50) are present; dose-response translational inference is unsupported.",
+                  "The focal question — defining a metronomic chemotherapy comparator arm for canine HSA — is entirely unresolved by the 17 supplied citations; the brief cannot support downstream hypothesis validation planning without additional canine-specific evidence.",
+                  "Zero canine HSA survival-by-treatment data are present; C17 (hemothorax etiology) and C9 (intracranial HSA case series, n=2) contribute negligible protocol-relevant content and inflate the citation count without closing the gap.",
+                  "Canine PK parameters and tumor drug exposure are absent from all supplied citations."
+                ],
+                "broader_program_signal": "strong",
+                "confidence": 0.9,
+                "confidence_changers": [
+                  "A direct canine HSA study with source-traceable response or survival endpoints.",
+                  "Drug exposure data showing canine concentrations reach the proposed mechanistic range.",
+                  "Biomarker-linked response data separating predictive from merely prognostic evidence.",
+                  "Evidence that a biomarker-stratified therapy family outperforms any single unstratified drug claim."
+                ],
+                "decision_id": "validation_decision:6d5c3ce1e4116bf8",
+                "evidence_refs": [],
+                "outcome": "promote_broader_program",
+                "packet_id": "validation_packet:fb9fb489c1ae67e7",
+                "specific_claim_viability": "weak",
+                "summary": "The specific validation packet remains blocked, but the follow-up evidence points to a broader strong program-level signal. Keep the drug-specific claim subordinate to a biomarker-stratified therapeutic strategy instead of forcing protocol validation now.",
+                "validation_ready": false
+              }
+            ]
+          },
+          "identity": {
+            "candidate_id": "twog-candidate-447eb8089965",
+            "candidate_kind": "target_strategy",
+            "disease_scope": "canine hemangiosarcoma and human angiosarcoma",
+            "display_id": "TWOG-15F50D",
+            "priority_score": 0.82,
+            "public_status": "investigating",
+            "title": "Sorafenib Repositioning in VEGFR-2/PDGFR-β-Expressing Canine HSA as a Cross-Species Translational Model"
+          },
+          "linked_records": {
+            "compute_job_ids": [],
+            "therapy_idea_id": "d99c1393-e033-46c2-aee9-ae036daa2414",
+            "validation_decision_ids": [
+              "validation_decision:6d5c3ce1e4116bf8"
+            ]
+          },
+          "literature": [
+            {
+              "dedupe": {
+                "dedupe_key": "doi:10.3390/vetsci10060387",
+                "dedupe_keys": [
+                  "doi:10.3390/vetsci10060387",
+                  "pmid:37368773",
+                  "pmcid:pmc10302982",
+                  "research_object:ecb904ac-27f1-48da-a798-d225583b8f75",
+                  "title:molecular profile of canine hemangiosarcoma and potential novel therapeutic targets",
+                  "chunk:570a373d-13f8-4714-bdd9-2f851d8f5052",
+                  "chunk:db838766-ee52-48bd-a4e1-4c0b3b3e4a99",
+                  "chunk:c5cc9fa1-e2cc-4c54-be41-0ac87befae84",
+                  "chunk:357e0d26-3b1e-44d5-96e5-cae4bad9eea7",
+                  "chunk:7aaff878-3621-4c75-a908-15407e74bcd2",
+                  "chunk:b6800d7f-b3ef-41cd-b5c8-81ce922664a5",
+                  "chunk:611f271e-c10e-4a4b-a7ae-f46baf5946ac",
+                  "chunk:441ad600-8f80-401b-8684-7d443ab8a295",
+                  "chunk:559d769c-1760-4c0c-a184-b32c2ec97349",
+                  "chunk:365c4d1c-4b51-43cb-9f6f-d08f41522e97",
+                  "chunk:46229150-14d5-4181-8272-dcdde6872fa8",
+                  "chunk:e58fec2a-2988-4490-88c0-ff70f9e31561",
+                  "chunk:6948dd3e-a8b5-49c9-ab76-9f37b2650bd1",
+                  "chunk:c95ed9cb-ec3c-4f6e-880a-2824e156019f",
+                  "chunk:09a761b8-5e1c-4bc4-aaf8-29b3d3c73c00"
+                ],
+                "duplicate_citation_ids": [
+                  "C2",
+                  "C3",
+                  "C4",
+                  "C5",
+                  "C6",
+                  "C7",
+                  "C8",
+                  "C9",
+                  "C10",
+                  "C11",
+                  "C13",
+                  "C14",
+                  "C15",
+                  "C19"
+                ],
+                "duplicate_count": 14,
+                "duplicate_matches": [
+                  {
+                    "citation_id": "C2",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  },
+                  {
+                    "citation_id": "C3",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  },
+                  {
+                    "citation_id": "C4",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  },
+                  {
+                    "citation_id": "C5",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  },
+                  {
+                    "citation_id": "C6",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  },
+                  {
+                    "citation_id": "C7",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  },
+                  {
+                    "citation_id": "C8",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  },
+                  {
+                    "citation_id": "C9",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  },
+                  {
+                    "citation_id": "C10",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  },
+                  {
+                    "citation_id": "C11",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  },
+                  {
+                    "citation_id": "C13",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  },
+                  {
+                    "citation_id": "C14",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  },
+                  {
+                    "citation_id": "C15",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  },
+                  {
+                    "citation_id": "C19",
+                    "matched_key": "doi:10.3390/vetsci10060387"
+                  }
+                ],
+                "merged_citation_ids": [
+                  "C1",
+                  "C2",
+                  "C3",
+                  "C4",
+                  "C5",
+                  "C6",
+                  "C7",
+                  "C8",
+                  "C9",
+                  "C10",
+                  "C11",
+                  "C13",
+                  "C14",
+                  "C15",
+                  "C19"
+                ],
+                "primary_citation_id": "C1"
+              },
+              "evidence_kind": "direct_canine_context",
+              "identifiers": {
+                "doi": "10.3390/vetsci10060387",
+                "pmcid": "PMC10302982",
+                "pmid": "37368773"
+              },
+              "provenance": {
+                "chunk_ids": [
+                  "570a373d-13f8-4714-bdd9-2f851d8f5052",
+                  "db838766-ee52-48bd-a4e1-4c0b3b3e4a99",
+                  "c5cc9fa1-e2cc-4c54-be41-0ac87befae84",
+                  "357e0d26-3b1e-44d5-96e5-cae4bad9eea7",
+                  "7aaff878-3621-4c75-a908-15407e74bcd2",
+                  "b6800d7f-b3ef-41cd-b5c8-81ce922664a5",
+                  "611f271e-c10e-4a4b-a7ae-f46baf5946ac",
+                  "441ad600-8f80-401b-8684-7d443ab8a295",
+                  "559d769c-1760-4c0c-a184-b32c2ec97349",
+                  "365c4d1c-4b51-43cb-9f6f-d08f41522e97",
+                  "46229150-14d5-4181-8272-dcdde6872fa8",
+                  "e58fec2a-2988-4490-88c0-ff70f9e31561",
+                  "6948dd3e-a8b5-49c9-ab76-9f37b2650bd1",
+                  "c95ed9cb-ec3c-4f6e-880a-2824e156019f",
+                  "09a761b8-5e1c-4bc4-aaf8-29b3d3c73c00"
+                ],
+                "dedupe_keys": [
+                  "doi:10.3390/vetsci10060387"
+                ],
+                "research_object_ids": [
+                  "ecb904ac-27f1-48da-a798-d225583b8f75"
+                ]
+              },
+              "publication_year": 2023,
+              "published_at": "2023-06-05",
+              "ref": "C1",
+              "resolved": true,
+              "section_labels": [
+                "full_text:3_2_pik3ca",
+                "full_text:3_6_vegf_angiogenesis_and_hypoxia",
+                "full_text:2_hemangiosarcoma_carcinogenesis",
+                "full_text:3_1_nras",
+                "full_text:introduction",
+                "full_text:3_7_pd_1_pd_l1_complex",
+                "full_text:3_3_pten",
+                "title_abstract",
+                "full_text:3_5_cdkn2a",
+                "full_text:3_4_tp53"
+              ],
+              "source_brief_id": "79dca761-4c4f-4589-b206-d534bf3cd908",
+              "source_key": "europe_pmc",
+              "source_url": "https://europepmc.org/article/MED/37368773",
+              "supports": "C1 reports a retrospective survival signal (363 vs 27 days, p=0.079) for sorafenib in canine HSA. Toceranib and masitinib failed in canine HSA per C1, suggesting sorafenib's broader kinase profile may be mechanistically necessary. Sorafenib survival data in canine HSA is retrospective, small, and non-significant (p=0.079); C1 limitation acknowledged.",
+              "title": "Molecular Profile of Canine Hemangiosarcoma and Potential Novel Therapeutic Targets."
+            },
+            {
+              "dedupe": {
+                "dedupe_key": "doi:10.29374/2527-2179.bjvm001524",
+                "dedupe_keys": [
+                  "doi:10.29374/2527-2179.bjvm001524",
+                  "pmid:39131208",
+                  "pmcid:pmc11315467",
+                  "research_object:680ca933-9a41-446a-965e-a55d67eea657",
+                  "title:analysis of vegfr 2 and pdgfr expression in canine splenic hemangiosarcoma to identify drug repositioning candidates",
+                  "chunk:b78ed2fb-d024-401d-ae98-332ff28a5d24"
+                ],
+                "duplicate_citation_ids": [],
+                "duplicate_count": 0,
+                "merged_citation_ids": [
+                  "C20"
+                ],
+                "primary_citation_id": "C20"
+              },
+              "evidence_kind": "direct_canine_target_expression",
+              "identifiers": {
+                "doi": "10.29374/2527-2179.bjvm001524",
+                "pmcid": "PMC11315467",
+                "pmid": "39131208"
+              },
+              "provenance": {
+                "chunk_ids": [
+                  "b78ed2fb-d024-401d-ae98-332ff28a5d24"
+                ],
+                "dedupe_keys": [
+                  "doi:10.29374/2527-2179.bjvm001524"
+                ],
+                "research_object_ids": [
+                  "680ca933-9a41-446a-965e-a55d67eea657"
+                ]
+              },
+              "publication_year": 2024,
+              "published_at": "2024-08-06",
+              "ref": "C20",
+              "resolved": true,
+              "section_labels": [
+                "full_text:discussion"
+              ],
+              "source_brief_id": "79dca761-4c4f-4589-b206-d534bf3cd908",
+              "source_key": "europe_pmc",
+              "source_url": "https://europepmc.org/article/MED/39131208",
+              "supports": "C20 confirms VEGFR-2 and PDGFR-β expression in canine splenic HSA. VEGFR-2/PDGFR-β expression heterogeneity and missing outcome-correlation evidence map to C20; stale validation ref retired.",
+              "title": "Analysis of VEGFR-2 and PDGFR-β expression in canine splenic hemangiosarcoma to identify drug repositioning candidates."
+            },
+            {
+              "dedupe": {
+                "dedupe_key": "doi:10.3390/cancers17193163",
+                "dedupe_keys": [
+                  "doi:10.3390/cancers17193163",
+                  "pmid:41097691",
+                  "pmcid:pmc12524160",
+                  "research_object:c5d80ecc-1726-4803-906e-11c49b1fe72c",
+                  "title:novel therapeutic approaches for cutaneous angiosarcoma particularly focusing on immune checkpoint inhibitors",
+                  "chunk:04fc9bab-8659-4af2-b536-66d333e78f98"
+                ],
+                "duplicate_citation_ids": [],
+                "duplicate_count": 0,
+                "merged_citation_ids": [
+                  "C22"
+                ],
+                "primary_citation_id": "C22"
+              },
+              "evidence_kind": "human_analog_context",
+              "identifiers": {
+                "doi": "10.3390/cancers17193163",
+                "pmcid": "PMC12524160",
+                "pmid": "41097691"
+              },
+              "provenance": {
+                "chunk_ids": [
+                  "04fc9bab-8659-4af2-b536-66d333e78f98"
+                ],
+                "dedupe_keys": [
+                  "doi:10.3390/cancers17193163"
+                ],
+                "research_object_ids": [
+                  "c5d80ecc-1726-4803-906e-11c49b1fe72c"
+                ]
+              },
+              "publication_year": 2025,
+              "published_at": "2025-09-29",
+              "ref": "C22",
+              "resolved": true,
+              "section_labels": [
+                "full_text:5_1_2_sorafenib"
+              ],
+              "source_brief_id": "79dca761-4c4f-4589-b206-d534bf3cd908",
+              "source_key": "europe_pmc",
+              "source_url": "https://europepmc.org/article/MED/41097691",
+              "supports": "C22 documents sorafenib activity in human angiosarcoma phase II trials. Human angiosarcoma phase II data (C22) show limited PFS (1.8–3.8 months) and modest disease control, limiting enthusiasm for direct translation. The PFS claim is now source-qualified to research_brief:79dca761-4c4f-4589-b206-d534bf3cd908#C22; it remains outside this follow-up citation set, so the active gap is the unsupported human-to-canine mechanistic bridge.",
+              "title": "Novel Therapeutic Approaches for Cutaneous Angiosarcoma, Particularly Focusing on Immune Checkpoint Inhibitors."
+            }
+          ],
+          "rationale": {
+            "hypothesis": "Canine HSA patients with confirmed VEGFR-2 and PDGFR-β overexpression will show improved survival with sorafenib versus metronomic chemotherapy, providing a biomarker-stratified comparative oncology bridge to human angiosarcoma trials.",
+            "mechanism": "Sorafenib inhibits VEGFR-2 and PDGFR-β, suppressing tumor angiogenesis and endothelial cell proliferation in vascular-origin tumors; broader kinase coverage versus toceranib/masitinib may explain differential activity in canine HSA.",
+            "rationale_md": "C1 reports a retrospective survival signal (363 vs 27 days, p=0.079) for sorafenib in canine HSA. C20 confirms VEGFR-2 and PDGFR-β expression in canine splenic HSA. C22 documents sorafenib activity in human angiosarcoma phase II trials. Toceranib and masitinib failed in canine HSA per C1, suggesting sorafenib's broader kinase profile may be mechanistically necessary.",
+            "translational_path": "Prospective biomarker-stratified canine HSA pilot trial (VEGFR-2/PDGFR-β IHC selection) → canine PK/PD and tumor drug exposure study → cross-species VEGFR-2 binding homology analysis → inform biomarker-selected human angiosarcoma phase II design."
+          },
+          "reproducibility": {
+            "agent_run_id": "4b634420-4983-45e1-b619-a19722e6cdd1",
+            "commit_sha": "local",
+            "committee_run_id": "061c825f-92cb-4abd-8ec8-76dcfdbc5c11",
+            "pipeline_version": "v2-public-candidate-literature",
+            "source_brief_id": "79dca761-4c4f-4589-b206-d534bf3cd908",
+            "source_evaluation_id": "1fece332-1f3c-4d30-bb1f-a33330cc84d8",
+            "source_program_id": null
+          }
+        },
+        "pipeline_version": "v2-public-candidate-literature",
+        "public_status": "investigating",
+        "snapshot_id": "9a89c6f0-b847-5df7-abaa-c808a6b00b13",
+        "snapshot_version": 2,
+        "source_refs": [
+          "C1",
+          "C20",
+          "C22",
+          "validation_packet:fb9fb489c1ae67e7"
+        ],
+        "title": "Sorafenib Repositioning in VEGFR-2/PDGFR-β-Expressing Canine HSA as a Cross-Species Translational Model"
+      }
+    }
+  ]
+}

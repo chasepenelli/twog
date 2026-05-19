@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TWOG Update #2 — The Pipeline Found Drug Candidates. Now We're Stress-Testing Them.</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Georgia', serif; color: #1a1a1a; background: #fff; line-height: 1.9; max-width: 640px; margin: 0 auto; padding: 40px 20px 80px; }
+  h1 { font-size: 1.9rem; line-height: 1.25; margin-bottom: 8px; letter-spacing: -0.02em; }
+  h2 { font-size: 1.25rem; margin-top: 48px; margin-bottom: 16px; }
+  p { margin-bottom: 18px; font-size: 1.05rem; color: #333; }
+  .date { font-size: 0.85rem; color: #999; font-style: italic; margin-bottom: 32px; }
+  .divider { border: none; border-top: 1px solid #e0e0e0; margin: 40px 0; }
+  strong { color: #1a1a1a; }
+  .highlight { background: #f0fdf4; border-left: 3px solid #22c55e; padding: 16px 20px; margin: 24px 0; border-radius: 0 6px 6px 0; }
+  .highlight p { margin-bottom: 0; color: #15803d; font-weight: 500; }
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 24px 0; }
+  .stat-box { text-align: center; padding: 20px 12px; border: 1px solid #e5e5e5; border-radius: 8px; }
+  .stat-num { font-size: 2rem; font-weight: 700; color: #1a1a1a; line-height: 1; font-family: 'SF Mono', 'Consolas', monospace; }
+  .stat-label { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 6px; }
+  .checklist { list-style: none; padding: 0; margin: 24px 0; }
+  .checklist li { padding: 8px 0 8px 28px; position: relative; font-size: 1.05rem; color: #333; }
+  .checklist li::before { content: ''; position: absolute; left: 0; top: 14px; width: 16px; height: 16px; border-radius: 50%; border: 2px solid #22c55e; }
+  .checklist li.done::before { background: #22c55e; border-color: #22c55e; }
+  ul { margin: 16px 0; padding-left: 24px; }
+  li { margin-bottom: 10px; font-size: 1.05rem; color: #333; }
+  a { color: #1a1a1a; text-decoration: underline; text-underline-offset: 3px; }
+  .cta { display: inline-block; margin-top: 20px; padding: 12px 28px; background: #1a1a1a; color: #fff; text-decoration: none; font-size: 0.85rem; letter-spacing: 0.05em; text-transform: uppercase; border-radius: 4px; }
+  .cta:hover { background: #333; }
+  .closing { margin-top: 40px; padding-top: 24px; border-top: 1px solid #e0e0e0; }
+  .signature { font-size: 0.95rem; color: #666; font-style: italic; margin-top: 24px; }
+</style>
+</head>
+<body>
+
+<h1>The Pipeline Found Drug Candidates. Now We're Stress-Testing Them.</h1>
+<p class="date">TWOG Update #2 &mdash; March 20, 2026</p>
+
+<hr class="divider">
+
+<p>When someone you love gets a cancer diagnosis, you learn fast that "promising" and "proven" are very different words. Our pipeline has been designing potential drug molecules for canine hemangiosarcoma around the clock &mdash; 32,000 candidates and counting. But a designed molecule is just a blueprint. Before we spend a dollar making any of them real, we need to know: <strong>will this actually work?</strong></p>
+
+<p>So we built a system to answer that question.</p>
+
+<hr class="divider">
+
+<h2>From "Looks Good on Paper" to "Ready for the Lab"</h2>
+
+<p>Think of it like this: the first phase of our pipeline is an architect sketching thousands of key designs for a specific lock. The new phase we just built is a <strong>stress-testing facility</strong>. We take the best keys and ask:</p>
+
+<ul>
+<li><strong>Does the key stay in the lock when you shake it?</strong> &mdash; We simulate the molecule interacting with its target protein over time. If it drifts away, it was never a real match.</li>
+<li><strong>Does the key accidentally open other doors?</strong> &mdash; We test against 30+ other proteins to make sure it only hits the intended target.</li>
+<li><strong>Will the key survive the journey?</strong> &mdash; We check if the drug dissolves properly, gets absorbed, and doesn't produce toxic byproducts.</li>
+<li><strong>Has someone already patented this key?</strong> &mdash; We search patent and scientific databases before spending a cent.</li>
+<li><strong>Does it work better with other keys?</strong> &mdash; We model our triple therapy combination to check if the drugs amplify each other.</li>
+<li><strong>Is it designed for the right species?</strong> &mdash; We build canine-specific protein structures because these drugs are for dogs, not humans.</li>
+</ul>
+
+<p>TWOG now runs all of these checks automatically on every drug candidate. Each piece works in parallel, shares a database, and contributes to a go/no-go recommendation for each compound.</p>
+
+<hr class="divider">
+
+<h2>What We Found</h2>
+
+<div class="highlight">
+<p>We tested our top 5 candidates. All five passed safety screening. All five recommended for synthesis.</p>
+</div>
+
+<p>All five show oral feasibility &mdash; meaning they could potentially be given as a pill. All five have workable safety profiles. We also generated <strong>57 backup compounds</strong>. If any lead fails in the lab, we already have the next candidates scored and ready.</p>
+
+<p>The molecular dynamics simulations &mdash; where we simulate the drug interacting with its target over time &mdash; gave us our first real challenge. They flagged areas that need deeper investigation. This is exactly what a validation step is supposed to do. Better to find questions now, computationally, than after spending thousands on synthesis.</p>
+
+<hr class="divider">
+
+<h2>The Numbers</h2>
+
+<div class="stat-grid">
+<div class="stat-box"><div class="stat-num">316</div><div class="stat-label">Research Cycles</div></div>
+<div class="stat-box"><div class="stat-num">602</div><div class="stat-label">Papers Read</div></div>
+<div class="stat-box"><div class="stat-num">32,180</div><div class="stat-label">Molecules Designed</div></div>
+<div class="stat-box"><div class="stat-num">20,650</div><div class="stat-label">Docking Simulations</div></div>
+</div>
+
+<p>The pipeline runs 24/7 on cloud infrastructure. The validation results are live &mdash; anyone can see them right now, including interactive 3D models of each molecule and color-coded scoring rubrics.</p>
+
+<a href="https://twog.bio/validation" class="cta">See the live results &rarr;</a>
+
+<hr class="divider">
+
+<h2>The Patent Landscape</h2>
+
+<p>Our IP scout searched patent databases for anything that might cover our molecules. One of our candidates &mdash; GRF-DL-14543 &mdash; has a <strong>completely clear patent landscape</strong>. Others share structural similarity with existing patents, which doesn't stop research but is important to know early. This is the kind of intelligence that saves months of legal headaches later.</p>
+
+<hr class="divider">
+
+<h2>Why This Matters</h2>
+
+<p>Hemangiosarcoma is the most common cancer in many large dog breeds. Median survival after diagnosis is weeks to months. There are no targeted therapies approved for it. The standard of care hasn't changed meaningfully in decades.</p>
+
+<p>Our top compound targets PI3K &mdash; a protein that drives cancer cell survival in virtually every hemangiosarcoma tumor. <strong>No one has built a PI3K-selective inhibitor specifically designed and validated for dogs before.</strong> We're not waiting for human oncology drugs to trickle down to veterinary medicine. We're building from scratch, for the right species, from day one.</p>
+
+<hr class="divider">
+
+<h2>What's Next</h2>
+
+<ul class="checklist">
+<li class="done">Design drug candidates (32,180 molecules)</li>
+<li class="done">Computational validation (9 dimensions)</li>
+<li>Full-protein molecular dynamics confirmation</li>
+<li>Send first compound to lab for physical synthesis</li>
+<li>Biochemical assay &mdash; does it actually work in a test tube?</li>
+</ul>
+
+<p>Every piece of this is open. The pipeline runs autonomously. The results update in real-time. Follow along at <a href="https://twog.bio">twog.bio</a>.</p>
+
+<hr class="divider">
+
+<div class="closing">
+<p>We started this because of Graffiti &mdash; our corgi who was diagnosed with hemangiosarcoma. Every dog that gets this diagnosis deserves more than "there's nothing we can do." We're proving that's not true.</p>
+
+<p>Thank you for following this journey. We'll be back with results from the lab.</p>
+
+<p class="signature">Chase &amp; Kara Penelli<br>TWOG &mdash; Targeted Workflow for Oncology Generation<br><a href="https://twog.bio">twog.bio</a></p>
+</div>
+
+</body>
+</html>

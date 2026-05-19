@@ -1,0 +1,552 @@
+{
+  "-1": {
+    "name": "Noise / unclassified",
+    "top_terms": [
+      "canine",
+      "epigenetic",
+      "doxorubicin",
+      "dogs",
+      "hsa",
+      "propranolol",
+      "gt",
+      "hemangiosarcoma",
+      "immunotherapy",
+      "resistance",
+      "lt",
+      "chemotherapy"
+    ],
+    "n_papers": 1420,
+    "track_mix": {
+      "untagged": 882,
+      "treatment": 299,
+      "cross_cutting": 171,
+      "early_detection": 32,
+      "supplements": 30,
+      "breed_screening": 6
+    }
+  },
+  "0": {
+    "name": "mTOR inhibitors immunosuppression transplantation",
+    "top_terms": [
+      "sirolimus",
+      "rapamycin",
+      "target rapamycin",
+      "mtor",
+      "eluting",
+      "stent",
+      "tacrolimus",
+      "transplant",
+      "topical",
+      "safety",
+      "mtor inhibitor",
+      "everolimus"
+    ],
+    "n_papers": 176,
+    "track_mix": {
+      "untagged": 165,
+      "treatment": 11
+    }
+  },
+  "1": {
+    "name": "Metronomic low-dose chemotherapy",
+    "top_terms": [
+      "metronomic",
+      "metronomic chemotherapy",
+      "chemotherapy",
+      "dose metronomic",
+      "breast cancer",
+      "low dose",
+      "chemotherapy breast",
+      "chemotherapy patients",
+      "pulse",
+      "center retrospective",
+      "metastatic breast",
+      "rhythm"
+    ],
+    "n_papers": 79,
+    "track_mix": {
+      "treatment": 60,
+      "untagged": 16,
+      "cross_cutting": 3
+    }
+  },
+  "2": {
+    "name": "JAK-STAT signaling pathway",
+    "top_terms": [
+      "stat",
+      "jak",
+      "jak stat",
+      "stat signaling",
+      "signaling",
+      "pathway",
+      "stat pathway",
+      "signaling pathway",
+      "stat3",
+      "drosophila",
+      "cytokine",
+      "janus"
+    ],
+    "n_papers": 353,
+    "track_mix": {
+      "untagged": 275,
+      "cross_cutting": 60,
+      "treatment": 14,
+      "supplements": 3,
+      "early_detection": 1
+    }
+  },
+  "3": {
+    "name": "Canine behavior and culture",
+    "top_terms": [
+      "dog",
+      "canine",
+      "behavior canine",
+      "dog dog",
+      "chapter",
+      "behavior",
+      "black",
+      "big",
+      "mama",
+      "dogs",
+      "interpreting",
+      "records"
+    ],
+    "n_papers": 102,
+    "track_mix": {
+      "untagged": 102
+    }
+  },
+  "4": {
+    "name": "Liposomal muramyl tripeptide osteosarcoma",
+    "top_terms": [
+      "mtp",
+      "pe",
+      "muramyl",
+      "tripeptide",
+      "muramyl tripeptide",
+      "liposome",
+      "lipophilic",
+      "liposomes",
+      "liposomal",
+      "macrophages",
+      "phosphatidyl",
+      "ethanolamine"
+    ],
+    "n_papers": 134,
+    "track_mix": {
+      "untagged": 102,
+      "treatment": 23,
+      "cross_cutting": 9
+    }
+  },
+  "5": {
+    "name": "Canine organ allograft survival",
+    "top_terms": [
+      "canine",
+      "canine renal",
+      "allograft survival",
+      "allograft",
+      "transplantation",
+      "prolongation",
+      "renal",
+      "allografts",
+      "survival canine",
+      "renal allograft",
+      "liver transplantation",
+      "islets"
+    ],
+    "n_papers": 63,
+    "track_mix": {
+      "untagged": 63
+    }
+  },
+  "6": {
+    "name": "Canine cardiac electromechanical models",
+    "top_terms": [
+      "canine",
+      "propranolol",
+      "cardiac",
+      "canine cardiac",
+      "splenic",
+      "canine splenic",
+      "canine heart",
+      "canine model",
+      "heart",
+      "adrenergic",
+      "isolated",
+      "coronary"
+    ],
+    "n_papers": 255,
+    "track_mix": {
+      "untagged": 252,
+      "cross_cutting": 2,
+      "treatment": 1
+    }
+  },
+  "7": {
+    "name": "Tyrosine kinase inhibitor development",
+    "top_terms": [
+      "tyrosine",
+      "tyrosine kinase",
+      "kinase inhibitors",
+      "inhibitors",
+      "kinase inhibitor",
+      "met tyrosine",
+      "receptor tyrosine",
+      "la",
+      "les",
+      "protein tyrosine",
+      "inhibiteurs",
+      "inhibiteur"
+    ],
+    "n_papers": 66,
+    "track_mix": {
+      "treatment": 37,
+      "untagged": 26,
+      "cross_cutting": 3
+    }
+  },
+  "8": {
+    "name": "Tyrosine kinase receptor signaling",
+    "top_terms": [
+      "tyrosine",
+      "tyrosine kinase",
+      "tyrosine protein",
+      "protein kinase",
+      "receptor tyrosine",
+      "kinase receptor",
+      "kinase tyrosine",
+      "protein tyrosine",
+      "btk",
+      "syk",
+      "bruton",
+      "family tyrosine"
+    ],
+    "n_papers": 170,
+    "track_mix": {
+      "untagged": 125,
+      "cross_cutting": 44,
+      "treatment": 1
+    }
+  },
+  "9": {
+    "name": "PDGFR signaling and inhibition",
+    "top_terms": [
+      "pdgfr",
+      "platelet derived",
+      "derived growth",
+      "platelet",
+      "receptor pdgfr",
+      "pdgf",
+      "growth factor",
+      "pdgfr alpha",
+      "derived",
+      "factor receptor",
+      "bb",
+      "pdgf bb"
+    ],
+    "n_papers": 58,
+    "track_mix": {
+      "untagged": 40,
+      "treatment": 9,
+      "cross_cutting": 6,
+      "early_detection": 3
+    }
+  },
+  "10": {
+    "name": "Angiosarcoma treatment modalities",
+    "top_terms": [
+      "angiosarcoma",
+      "sarcoma",
+      "case",
+      "rare",
+      "vascular",
+      "cardiac",
+      "angiosarcomas",
+      "sarcomas",
+      "cardiac angiosarcoma",
+      "soft",
+      "soft tissue",
+      "cutaneous angiosarcoma"
+    ],
+    "n_papers": 379,
+    "track_mix": {
+      "treatment": 236,
+      "untagged": 83,
+      "cross_cutting": 27,
+      "early_detection": 23,
+      "supplements": 9,
+      "breed_screening": 1
+    }
+  },
+  "11": {
+    "name": "Circulating tumor biomarker detection",
+    "top_terms": [
+      "liquid biopsy",
+      "biopsy",
+      "liquid",
+      "circulating",
+      "circulating tumor",
+      "biomarkers",
+      "biomarker",
+      "detection",
+      "ctdna",
+      "dna",
+      "diagnosis",
+      "tumor dna"
+    ],
+    "n_papers": 153,
+    "track_mix": {
+      "early_detection": 127,
+      "untagged": 21,
+      "cross_cutting": 4,
+      "treatment": 1
+    }
+  },
+  "12": {
+    "name": "PI3K/AKT/mTOR pathway inhibition",
+    "top_terms": [
+      "pi3k akt",
+      "akt",
+      "mtor",
+      "pi3k",
+      "akt mtor",
+      "pathway",
+      "mtor signaling",
+      "mtor pathway",
+      "signaling",
+      "signaling pathway",
+      "la",
+      "inhibitors"
+    ],
+    "n_papers": 336,
+    "track_mix": {
+      "untagged": 142,
+      "treatment": 85,
+      "cross_cutting": 81,
+      "supplements": 28
+    }
+  },
+  "13": {
+    "name": "Canine hemangiosarcoma therapeutic targets",
+    "top_terms": [
+      "canine",
+      "dogs",
+      "hemangiosarcoma",
+      "dog",
+      "splenic",
+      "hsa",
+      "veterinary",
+      "mammary",
+      "toceranib",
+      "diagnosis",
+      "canine mammary",
+      "year old"
+    ],
+    "n_papers": 2025,
+    "track_mix": {
+      "untagged": 994,
+      "treatment": 556,
+      "early_detection": 187,
+      "cross_cutting": 176,
+      "breed_screening": 67,
+      "supplements": 45
+    }
+  },
+  "14": {
+    "name": "Hemangiosarcoma vascular tumors organs",
+    "top_terms": [
+      "hemangiosarcoma",
+      "hemangiosarcoma hemangiosarcoma",
+      "hemangiosarcoma liver",
+      "hemangiosarcoma spleen",
+      "spleen",
+      "hemangioma hemangiosarcoma",
+      "hemangioma",
+      "primary hemangiosarcoma",
+      "spleen hemangiosarcoma",
+      "liver rat",
+      "hemangiosarcoma nasal",
+      "cutaneous hemangiosarcoma"
+    ],
+    "n_papers": 56,
+    "track_mix": {
+      "untagged": 43,
+      "early_detection": 6,
+      "cross_cutting": 4,
+      "treatment": 3
+    }
+  },
+  "15": {
+    "name": "AI-enabled drug repurposing discovery",
+    "top_terms": [
+      "repurposing",
+      "drug repurposing",
+      "drugs",
+      "discovery",
+      "drug discovery",
+      "drug therapy",
+      "diseases",
+      "existing",
+      "cov",
+      "approved",
+      "covid 19",
+      "sars"
+    ],
+    "n_papers": 162,
+    "track_mix": {
+      "untagged": 140,
+      "treatment": 19,
+      "cross_cutting": 2,
+      "supplements": 1
+    }
+  },
+  "16": {
+    "name": "VEGF pathway angiogenesis inhibition",
+    "top_terms": [
+      "vegfr",
+      "angiogenesis",
+      "vegf",
+      "endothelial",
+      "angiogenic",
+      "vascular",
+      "vascular endothelial",
+      "gt",
+      "induced",
+      "endothelial growth",
+      "lt",
+      "growth factor"
+    ],
+    "n_papers": 291,
+    "track_mix": {
+      "treatment": 80,
+      "untagged": 78,
+      "cross_cutting": 77,
+      "supplements": 50,
+      "early_detection": 6
+    }
+  },
+  "17": {
+    "name": "microRNA biomarkers cancer expression",
+    "top_terms": [
+      "mir",
+      "hsa mir",
+      "hsa",
+      "mirnas",
+      "5p",
+      "mirna",
+      "3p",
+      "micrornas",
+      "5p hsa",
+      "rnas",
+      "microrna",
+      "gene"
+    ],
+    "n_papers": 243,
+    "track_mix": {
+      "untagged": 193,
+      "cross_cutting": 32,
+      "treatment": 13,
+      "early_detection": 3,
+      "supplements": 2
+    }
+  },
+  "18": {
+    "name": "Nanoparticle drug delivery systems",
+    "top_terms": [
+      "delivery",
+      "drug delivery",
+      "nanoparticles",
+      "imaging",
+      "systems",
+      "delivery systems",
+      "agents",
+      "brain",
+      "diseases",
+      "drugs",
+      "nanomedicine",
+      "applications"
+    ],
+    "n_papers": 84,
+    "track_mix": {
+      "untagged": 45,
+      "treatment": 35,
+      "cross_cutting": 2,
+      "early_detection": 2
+    }
+  },
+  "19": {
+    "name": "Doxorubicin-sorafenib nanoparticle delivery",
+    "top_terms": [
+      "doxorubicin",
+      "dox",
+      "chemotherapy",
+      "sorafenib",
+      "nanoparticles",
+      "hsa",
+      "loaded",
+      "doxorubicin sorafenib",
+      "gt",
+      "tace",
+      "delivery",
+      "lt"
+    ],
+    "n_papers": 180,
+    "track_mix": {
+      "treatment": 119,
+      "untagged": 52,
+      "cross_cutting": 9
+    }
+  },
+  "20": {
+    "name": "Histone modifications and methylation",
+    "top_terms": [
+      "epigenetic",
+      "modifications",
+      "histone",
+      "dna",
+      "methylation",
+      "dna methylation",
+      "epigenetic regulation",
+      "mechanisms",
+      "regulation",
+      "epigenetic modifications",
+      "changes",
+      "epigenetic mechanisms"
+    ],
+    "n_papers": 227,
+    "track_mix": {
+      "untagged": 158,
+      "cross_cutting": 41,
+      "treatment": 19,
+      "supplements": 5,
+      "breed_screening": 2,
+      "early_detection": 2
+    }
+  },
+  "21": {
+    "name": "Tumor microenvironment immunotherapy resistance",
+    "top_terms": [
+      "microenvironment",
+      "checkpoint",
+      "tumor microenvironment",
+      "immunotherapy",
+      "tme",
+      "immune checkpoint",
+      "pd",
+      "checkpoint blockade",
+      "microenvironment tme",
+      "blockade",
+      "cancer immunotherapy",
+      "immune cells"
+    ],
+    "n_papers": 196,
+    "track_mix": {
+      "cross_cutting": 84,
+      "treatment": 76,
+      "untagged": 28,
+      "early_detection": 5,
+      "supplements": 3
+    }
+  }
+}
