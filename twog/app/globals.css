@@ -3132,6 +3132,157 @@ section {
   text-transform: none;
 }
 
+.candidate-contribution-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 0.74fr) minmax(320px, 0.88fr);
+  gap: clamp(1rem, 3vw, 2rem);
+  max-width: 1180px;
+  margin: 1.2rem auto;
+  border: 1px solid var(--line-strong);
+  background:
+    linear-gradient(135deg, rgba(109, 40, 217, 0.1), transparent 38%),
+    rgba(251, 250, 244, 0.8);
+  box-shadow: 10px 10px 0 rgba(5, 5, 5, 0.07);
+}
+
+.contribution-intro,
+.candidate-contribution-form {
+  padding: clamp(1rem, 2.2vw, 1.6rem);
+}
+
+.contribution-intro {
+  display: grid;
+  align-content: space-between;
+  gap: 1rem;
+  border-right: 1px solid var(--line-strong);
+}
+
+.contribution-intro h2 {
+  font-size: clamp(2rem, 4vw, 4.35rem);
+  font-weight: 500;
+  line-height: 0.98;
+  text-wrap: balance;
+}
+
+.contribution-intro p:not(.section-kicker) {
+  color: var(--muted-ink);
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.contribution-receipt {
+  display: grid;
+  gap: 0.45rem;
+  border: 1px solid var(--line-strong);
+  background: var(--foreground);
+  color: var(--background);
+  padding: 0.85rem;
+}
+
+.contribution-receipt span,
+.contribution-receipt code,
+.contribution-receipt strong,
+.candidate-contribution-form label span,
+.candidate-contribution-form button,
+.contribution-result {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.contribution-receipt code {
+  color: rgba(251, 250, 244, 0.72);
+}
+
+.contribution-receipt strong {
+  color: var(--lavender);
+}
+
+.candidate-contribution-form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.candidate-contribution-form label {
+  display: grid;
+  gap: 0.38rem;
+}
+
+.candidate-contribution-form label span {
+  color: var(--soft-ink);
+}
+
+.candidate-contribution-form input,
+.candidate-contribution-form select,
+.candidate-contribution-form textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: rgba(251, 250, 244, 0.9);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.92rem;
+  outline: none;
+  padding: 0.72rem 0.78rem;
+}
+
+.candidate-contribution-form textarea {
+  resize: vertical;
+}
+
+.candidate-contribution-form input:focus,
+.candidate-contribution-form select:focus,
+.candidate-contribution-form textarea:focus {
+  border-color: var(--purple);
+  box-shadow: 0 0 0 2px rgba(109, 40, 217, 0.14);
+}
+
+.contribution-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.contribution-form-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.candidate-contribution-form button {
+  min-height: 3.5rem;
+  border: 1px solid var(--line-strong);
+  background: var(--foreground);
+  color: var(--background);
+  cursor: pointer;
+  transition: transform 180ms ease, background 180ms ease;
+}
+
+.candidate-contribution-form button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  background: var(--violet);
+}
+
+.candidate-contribution-form button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.contribution-result {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid var(--line-strong);
+  padding: 0.75rem;
+}
+
+.contribution-result.success {
+  background: var(--purple-paper);
+  color: var(--accent-ink);
+}
+
+.contribution-result.error {
+  background: rgba(185, 50, 50, 0.1);
+  color: var(--red);
+}
+
 .method-callout {
   max-width: 1180px;
   margin: 1rem auto 0;
@@ -3236,6 +3387,7 @@ section {
   .learning-studio-board,
   .public-cta-grid,
   .candidate-technical-story,
+  .candidate-contribution-panel,
   .reference-group,
   .candidate-layout,
   .candidate-hero,
@@ -3249,6 +3401,11 @@ section {
 
   .candidate-story-rail {
     position: static;
+  }
+
+  .contribution-intro {
+    border-right: 0;
+    border-bottom: 1px solid var(--line-strong);
   }
 
   .method-thesis {
@@ -3363,6 +3520,8 @@ section {
   .learning-rule-line,
   .lesson-strip,
   .learning-output-note,
+  .contribution-form-grid,
+  .contribution-form-grid.two,
   .method-audit-grid,
   .payload-exchange-board,
   .payload-exchange-steps,

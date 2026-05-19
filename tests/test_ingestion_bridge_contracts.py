@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from hsa_research.ingestion_bridge import dagster_assets as dagster_asset_module
 from hsa_research.ingestion_bridge import cli as cli_module
 from hsa_research.ingestion_bridge import command_center_web
+from hsa_research.ingestion_bridge import candidate_contribution_intake
 from hsa_research.ingestion_bridge import entity_resolution
 from hsa_research.ingestion_bridge import evidence_fit
 from hsa_research.ingestion_bridge import source_query_params
@@ -5599,6 +5600,136 @@ def test_dagster_source_health_report_lives_in_control_panel_group():
     assert dagster_asset_module.source_health_report.group_names_by_key == {
         dagster_asset_module.dg.AssetKey(["source_health_report"]): "control_panel"
     }
+
+
+def test_candidate_contribution_database_url_prefers_neon():
+    assert (
+        candidate_contribution_intake.candidate_contribution_database_url(
+            {
+                "NEON_DATABASE_URL": "postgresql://neon",
+                "HSA_DATABASE_URL": "postgresql://hsa",
+            }
+        )
+        == "postgresql://neon"
+    )
+    assert (
+        candidate_contribution_intake.candidate_contribution_database_url(
+            {
+                "HSA_DATABASE_URL": "postgresql://hsa",
+            }
+        )
+        == "postgresql://hsa"
+    )
+
+
+def test_candidate_contribution_intake_report_summarizes_rows():
+    report = candidate_contribution_intake.build_candidate_contribution_intake_report_from_rows(
+        [
+            {
+                "contribution_id": "11111111-1111-1111-1111-111111111111",
+                "candidate_id": "twog-candidate-447eb8089965",
+                "display_id": "TWOG-15F50D",
+                "snapshot_content_hash": "abc123",
+                "source_payload_url": "/api/public-candidates/twog-candidate-447eb8089965",
+                "status": "queued_for_intake",
+                "contribution_type": "evidence",
+                "relation_to_current_record": "extends",
+                "requested_system_action": "evidence_review",
+                "contributor": {"contact": "reviewer@example.com"},
+                "evidence": [{"url": "https://example.com/paper"}],
+                "artifacts": [],
+                "created_at": datetime(2026, 5, 19, tzinfo=UTC),
+            },
+            {
+                "contribution_id": "22222222-2222-2222-2222-222222222222",
+                "candidate_id": "twog-candidate-447eb8089965",
+                "display_id": "TWOG-15F50D",
+                "status": "queued_for_intake",
+                "contribution_type": "critique",
+                "relation_to_current_record": "extends",
+                "requested_system_action": "no_action",
+                "contributor": {"contact": "smoke@example.com"},
+                "evidence": [],
+                "artifacts": [],
+            },
+        ],
+        statuses=["queued_for_intake"],
+        limit=25,
+    )
+
+    assert report["summary"]["row_count"] == 2
+    assert report["summary"]["queued_for_intake"] == 2
+    assert report["summary"]["actionable_count"] == 1
+    assert report["requested_action_counts"] == {"evidence_review": 1, "no_action": 1}
+    assert report["recommended_route_counts"]["accepted_for_evidence_review"] == 1
+    assert report["rows"][0]["created_at"] == "2026-05-19T00:00:00+00:00"
+
+
+def test_dagster_candidate_contribution_intake_report_lives_in_control_panel_group():
+    assert dagster_asset_module.candidate_contribution_intake_report.group_names_by_key == {
+        dagster_asset_module.dg.AssetKey(["candidate_contribution_intake_report"]): "control_panel"
+    }
+
+
+def test_dagster_candidate_contribution_intake_report_uses_report_builder(monkeypatch):
+    calls = []
+
+    def fake_report(**kwargs):
+        calls.append(kwargs)
+        return {
+            "storage_configured": True,
+            "table_available": True,
+            "summary": {
+                "row_count": 1,
+                "queued_for_intake": 1,
+                "triage_in_progress": 0,
+                "needs_more_information": 0,
+                "actionable_count": 1,
+                "no_action_count": 0,
+            },
+            "status_counts": {"queued_for_intake": 1},
+            "requested_action_counts": {"evidence_review": 1},
+            "recommended_route_counts": {"accepted_for_evidence_review": 1},
+            "rows": [
+                {
+                    "contribution_id": "11111111-1111-1111-1111-111111111111",
+                    "display_id": "TWOG-15F50D",
+                    "status": "queued_for_intake",
+                    "contribution_type": "evidence",
+                    "requested_system_action": "evidence_review",
+                    "recommended_route": "accepted_for_evidence_review",
+                    "evidence_count": 1,
+                    "artifact_count": 0,
+                    "created_at": "2026-05-19T00:00:00+00:00",
+                    "route_reason": "Queue for citation/provenance review before synthesis.",
+                }
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(candidate_contribution_intake, "build_candidate_contribution_intake_report", fake_report)
+    result = dagster_asset_module.candidate_contribution_intake_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "statuses": ["queued_for_intake"],
+                "candidate_ids": ["twog-candidate-447eb8089965"],
+                "limit": 10,
+                "include_packet": False,
+            }
+        )
+    )
+
+    assert calls == [
+        {
+            "statuses": ["queued_for_intake"],
+            "candidate_ids": ["twog-candidate-447eb8089965"],
+            "limit": 10,
+            "include_packet": False,
+        }
+    ]
+    assert result.value["summary"]["row_count"] == 1
+    assert result.metadata["row_count"].value == 1
+    assert result.metadata["intake_rows"].records[0].data["display_id"] == "TWOG-15F50D"
 
 
 def test_dagster_full_text_source_specific_assets_use_injected_repository(monkeypatch):
