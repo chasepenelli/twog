@@ -4493,6 +4493,16 @@ if dg is not None:
                     "the latest job for that queue item."
                 ),
             ),
+            "runner_kind": dg.Field(
+                str,
+                default_value="runpod",
+                description="Use `local` for Docker-first worker execution or `runpod` for serverless endpoint dispatch.",
+            ),
+            "compute_profile": dg.Field(
+                str,
+                default_value="gpu",
+                description="Requested compute profile for the created compute job.",
+            ),
             "approved_by": dg.Field(str, default_value="dagster-md-smoke"),
             "approval_note": dg.Field(str, is_required=False),
             "timeout_seconds": dg.Field(int, default_value=45),
@@ -4519,6 +4529,8 @@ if dg is not None:
             approve_queue_item=config["approve_queue_item"],
             create_compute_job=config["create_compute_job"],
             force_new_compute_job=config["force_new_compute_job"],
+            runner_kind=config["runner_kind"],
+            compute_profile=config["compute_profile"],
             approved_by=config["approved_by"],
             approval_note=config.get("approval_note"),
             timeout_seconds=config["timeout_seconds"],
@@ -4546,7 +4558,10 @@ if dg is not None:
             "runner_kind": dg.Field(
                 str,
                 default_value="runpod",
-                description="Compute runner kind for new jobs and optional list filter.",
+                description=(
+                    "Compute runner kind for new jobs and optional list filter. Use `local` for the "
+                    "Docker-first synchronous worker path, or `runpod` for serverless endpoint dispatch."
+                ),
             ),
             "compute_profile": dg.Field(
                 str,
@@ -4585,7 +4600,10 @@ if dg is not None:
             "dry_run": dg.Field(
                 bool,
                 default_value=True,
-                description="Keep submission in dry-run mode. Live RunPod submission is blocked until configured.",
+                description=(
+                    "Keep submission in dry-run mode. Set false only after the selected runner and exact "
+                    "expert-approved packet are configured."
+                ),
             ),
             "recover_runpod_job_id": dg.Field(
                 str,

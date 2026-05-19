@@ -352,6 +352,31 @@ CommandCenterArea = Literal[
 ]
 CommandCenterSeverity = Literal["info", "watch", "blocking"]
 
+CommandCenterEntityType = Literal[
+    "research_program",
+    "therapy_idea",
+    "promotion_candidate",
+    "validation_packet",
+    "research_lead",
+    "research_brief",
+    "agent_run",
+    "validation_request",
+    "compute_job",
+]
+
+CommandCenterBoardStage = Literal[
+    "new_signal",
+    "needs_evidence",
+    "committee_ready",
+    "validation_ready",
+    "queued_running",
+    "reviewed",
+    "parked",
+]
+
+CommandCenterActivitySource = Literal["ui", "agent", "autopilot", "system"]
+CommandCenterActivitySeverity = Literal["info", "watch", "blocked", "success"]
+
 XTopicIdentifierType = Literal[
     "doi",
     "pmid",
@@ -1422,6 +1447,59 @@ class CommandCenterResult(StrictBaseModel):
     recommendations: list[CommandCenterRecommendation] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class CommandCenterBoardStageRecord(StrictBaseModel):
+    entity_type: CommandCenterEntityType
+    entity_id: str = Field(min_length=1, max_length=260)
+    board_stage: CommandCenterBoardStage = "new_signal"
+    actor: str = Field(default="command_center_operator", max_length=200)
+    note: str | None = Field(default=None, max_length=1000)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def stage_key(self) -> str:
+        return f"{self.entity_type}:{self.entity_id}"
+
+    @model_validator(mode="after")
+    def normalize_command_center_board_stage(self) -> "CommandCenterBoardStageRecord":
+        self.entity_id = self.entity_id.strip()
+        self.actor = self.actor.strip() or "command_center_operator"
+        if self.note is not None:
+            self.note = self.note.strip() or None
+        return self
+
+
+class CommandCenterActivityEventRecord(StrictBaseModel):
+    event_id: UUID = Field(default_factory=uuid4)
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    actor: str = Field(default="system", max_length=200)
+    source: CommandCenterActivitySource = "system"
+    event_type: str = Field(min_length=3, max_length=120)
+    entity_type: CommandCenterEntityType
+    entity_id: str = Field(min_length=1, max_length=260)
+    title: str = Field(min_length=3, max_length=500)
+    summary: str = Field(default="", max_length=2000)
+    from_stage: CommandCenterBoardStage | None = None
+    to_stage: CommandCenterBoardStage | None = None
+    severity: CommandCenterActivitySeverity = "info"
+    correlation_id: str | None = Field(default=None, max_length=260)
+    related: dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_command_center_activity_event(self) -> "CommandCenterActivityEventRecord":
+        self.actor = self.actor.strip() or "system"
+        self.event_type = re.sub(r"\s+", "_", self.event_type.strip().lower())
+        self.entity_id = self.entity_id.strip()
+        self.title = self.title.strip()
+        self.summary = self.summary.strip()
+        if self.correlation_id is not None:
+            self.correlation_id = self.correlation_id.strip() or None
+        return self
 
 
 class ResearchBriefPlaygroundPrompt(StrictBaseModel):

@@ -34,6 +34,8 @@ from hsa_research.ingestion_bridge.contracts import (
     ClaimSearchRequest,
     ClaimSearchResult,
     ClaimType,
+    CommandCenterActivityEventRecord,
+    CommandCenterBoardStageRecord,
     CommandCenterRequest,
     ComputeJobRecord,
     ComputeJobReportRequest,
@@ -9383,6 +9385,94 @@ def test_command_center_web_lists_idea_records(tmp_path):
     assert any(item.get("plan_id") == str(plan.plan_id) for item in payload["items"])
 
 
+def test_command_center_board_stage_and_activity_round_trip(tmp_path):
+    for repo in (
+        InMemoryResearchRepository(),
+        SQLiteResearchRepository(tmp_path / "command-center-board.sqlite3", seed=False),
+    ):
+        stage = repo.upsert_command_center_board_stage(
+            CommandCenterBoardStageRecord(
+                entity_type="therapy_idea",
+                entity_id="idea-1",
+                board_stage="validation_ready",
+                actor="operator",
+            )
+        )
+        event = repo.append_command_center_activity_event(
+            CommandCenterActivityEventRecord(
+                actor="operator",
+                source="ui",
+                event_type="idea.stage_changed",
+                entity_type="therapy_idea",
+                entity_id="idea-1",
+                title="Moved to Validation Ready",
+                from_stage="needs_evidence",
+                to_stage="validation_ready",
+                severity="success",
+            )
+        )
+
+        assert repo.get_command_center_board_stage("therapy_idea", "idea-1") == stage
+        assert repo.list_command_center_board_stages(board_stage="validation_ready")[0].entity_id == "idea-1"
+        assert repo.list_command_center_activity_events(entity_type="therapy_idea")[0] == event
+        with pytest.raises(ValidationError):
+            CommandCenterBoardStageRecord(
+                entity_type="therapy_idea",
+                entity_id="idea-1",
+                board_stage="not_a_stage",  # type: ignore[arg-type]
+            )
+
+
+def test_command_center_big_ideas_stage_and_queue_work_payloads(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "command-center-big-ideas.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    idea = TherapyIdea(
+        title="Vimentin-targeted peptide program",
+        hypothesis="Cell-surface vimentin may define a peptide-targetable HSA vulnerability.",
+        rationale="The program needs a focused evidence brief before validation strategy.",
+        candidate_therapies=["vimentin-binding peptide"],
+        targets=["VIM"],
+        biomarkers=["surface vimentin"],
+        evidence_refs=["C1", "C2"],
+        evidence_strength="medium",
+        risks=["Cell-surface expression context is incomplete."],
+        next_experiments=["Run processed omics readout and peptide specialist review."],
+        priority_score=0.78,
+    )
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            topic="VIM peptide lane",
+            source_key="pubmed",
+            status="ready_for_promotion",
+            promotion_state="ready_for_validation_plan",
+        )
+    )
+
+    board = command_center_web.big_ideas_payload(service, {"query": ["vimentin"]})
+    stage = command_center_web.update_big_idea_stage_payload(
+        service,
+        "therapy_idea",
+        str(idea.idea_id),
+        {"stage": "validation_ready", "operator": "tester"},
+    )
+    queued = command_center_web.queue_big_idea_work_payload(
+        service,
+        "therapy_idea",
+        str(idea.idea_id),
+        {"action": "evidence_brief", "operator": "tester"},
+    )
+    events = command_center_web.activity_events_payload(service)
+
+    assert board["total"] >= 1
+    assert any(item["entity_id"] == str(idea.idea_id) for item in board["items"])
+    assert stage["stage"]["board_stage"] == "validation_ready"
+    assert queued["queue_item"]["topic"].startswith("Evidence follow-up for Vimentin-targeted peptide program")
+    assert events["items"][0]["event_type"] == "idea.evidence_brief_queued"
+    assert repo.get_command_center_board_stage("therapy_idea", str(idea.idea_id)) is not None
+    assert repo.list_research_brief_queue_items(topic_query="vimentin", limit=10)
+
+
 def test_command_center_web_lists_research_briefs_with_quality_state(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "command-center-web-briefs.sqlite3", seed=False)
     service = HSAResearchService(repo)
@@ -11576,6 +11666,70 @@ def test_md_live_submit_allows_approved_packet_and_sends_worker_fields(tmp_path,
     assert worker_input["protein_pdb"] == _MINIMAL_MD_PDB
     assert worker_input["compound_smiles"] == "CCO"
     assert worker_input["simulation_steps"] == 10
+
+
+def test_local_compute_runner_uses_same_md_gate_and_persists_worker_output(tmp_path, monkeypatch):
+    repo = SQLiteResearchRepository(tmp_path / "local-compute-job.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    item = repo.upsert_validation_request_queue_item(_md_queue_item(_md_runpod_input(enable_docking=True)))
+    service.approve_validation_request_queue_item(item.queue_item_id, approved_by="unit-test")
+    created = service.build_compute_job_report(
+        ComputeJobReportRequest(
+            queue_item_id=item.queue_item_id,
+            create_from_queue_item=True,
+            runner_kind="local",
+            compute_profile="cpu",
+            approved_by="unit-test",
+        )
+    ).created_job
+    assert created is not None
+    assert created.runner_kind == "local"
+
+    monkeypatch.setenv("HSA_LOCAL_COMPUTE_MODE", "in_process")
+    monkeypatch.setenv("HSA_LOCAL_COMPUTE_ENDPOINT_ID", "local-md-smoke-v1")
+
+    blocked_without_packet = service.submit_compute_job(created.compute_job_id, dry_run=False)
+    assert blocked_without_packet is not None
+    assert blocked_without_packet.status == "blocked"
+    assert blocked_without_packet.last_error == "md_expert_review_packet_required"
+
+    packet = service.create_md_expert_review_packet(created.compute_job_id, endpoint_id="local-md-smoke-v1")
+    assert packet is not None
+    service.record_md_expert_approval(
+        packet.packet_id,
+        decision="approved",
+        reviewer_name="Dr. Test",
+        reviewer_contact="expert@example.com",
+    )
+
+    def fake_worker(worker_input):
+        assert worker_input["compound_smiles"] == "CCO"
+        assert worker_input["enable_docking"] is True
+        return {
+            "status": "completed",
+            "worker_version": "unit-test-local-worker",
+            "stages": [{"stage": "docking", "status": "completed", "best_affinity_kcal_mol": -7.4}],
+            "artifacts": {"docked_ligand_pdbqt": {"file_name": "docked_ligand.pdbqt"}},
+            "errors": [],
+        }
+
+    monkeypatch.setattr(compute_runners, "_run_md_smoke_worker_in_process", fake_worker)
+
+    submitted = service.submit_compute_job(created.compute_job_id, dry_run=False)
+
+    assert submitted is not None
+    assert submitted.status == "completed"
+    assert submitted.external_run_id == f"local:{created.compute_job_id}"
+    assert submitted.runpod_job_id is None
+    assert submitted.metadata["local_compute_mode"] == "in_process"
+    assert submitted.metadata["md_expert_approval_id"]
+    assert submitted.output_payload["local_worker_response"]["worker_version"] == "unit-test-local-worker"
+    assert submitted.output_payload["local_worker_response"]["stages"][0]["best_affinity_kcal_mol"] == -7.4
+
+    polled = service.poll_compute_job(created.compute_job_id)
+    assert polled is not None
+    assert polled.status == "completed"
+    assert polled.metadata["local_compute_poll_note"].startswith("Local compute runs synchronously")
 
 
 def test_force_new_compute_job_does_not_reuse_failed_runpod_state(tmp_path):

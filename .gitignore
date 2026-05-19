@@ -195,6 +195,9 @@ cython_debug/
 # Local Dagster instance state
 .dagster-home/
 
+# Local agent worktrees
+.claude/
+
 # PyPI configuration file
 .pypirc
 

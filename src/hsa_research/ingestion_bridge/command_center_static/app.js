@@ -1,6 +1,8 @@
 const state = {
   runtime: null,
   commandCenter: null,
+  bigIdeas: null,
+  activityEvents: null,
   actionItems: null,
   validationQueue: null,
   validationAutopilot: null,
@@ -11,15 +13,22 @@ const state = {
   validationTools: null,
   agentRuns: null,
   agentPerformance: null,
+  computeJobs: null,
+  selectedBigIdeaKey: null,
+  bigIdeaSortables: [],
 };
 
 const $ = (id) => document.getElementById(id);
+const isStaticPreview = () => window.location.protocol === "file:";
 
 document.addEventListener("DOMContentLoaded", () => {
   $("refreshButton").addEventListener("click", refreshAll);
   document.querySelectorAll(".tab-button").forEach((button) => {
     button.addEventListener("click", () => showPage(button.dataset.page));
   });
+  $("bigIdeaStage").addEventListener("change", refreshBigIdeas);
+  $("bigIdeaQuery").addEventListener("input", debounce(refreshBigIdeas, 250));
+  $("activityFilter").addEventListener("change", refreshActivityEvents);
   $("validationStatus").addEventListener("change", refreshValidationQueue);
   $("validationSource").addEventListener("change", refreshValidationQueue);
   $("leadStatus").addEventListener("change", () => Promise.all([refreshActionItems(), refreshResearchLeads()]));
@@ -41,6 +50,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("autopilotPreviewButton").addEventListener("click", refreshValidationAutopilot);
   $("autopilotDryRunButton").addEventListener("click", () => runValidationAutopilot(true));
   $("autopilotRunButton").addEventListener("click", () => runValidationAutopilot(false));
+  $("bigIdeaBoard").addEventListener("click", handleBigIdeaBoardClick);
+  $("ideaDetailClose").addEventListener("click", closeIdeaDetail);
+  $("ideaDetailContent").addEventListener("click", handleBigIdeaBoardClick);
   $("actionItemsList").addEventListener("click", handleQueueAction);
   $("validationRows").addEventListener("click", handleValidationAction);
   $("researchLeadRows").addEventListener("click", handleQueueAction);
@@ -51,9 +63,15 @@ document.addEventListener("DOMContentLoaded", () => {
 async function refreshAll() {
   $("refreshButton").disabled = true;
   try {
+    if (isStaticPreview()) {
+      renderStaticPreview();
+      return;
+    }
     await Promise.all([
       refreshRuntime(),
       refreshCommandCenter(),
+      refreshBigIdeas(),
+      refreshActivityEvents(),
       refreshActionItems(),
       refreshValidationQueue(),
       refreshValidationAutopilot(),
@@ -64,6 +82,7 @@ async function refreshAll() {
       refreshValidationTools(),
       refreshAgentRuns(),
       refreshAgentPerformance(),
+      refreshComputeJobs(),
     ]);
     showToast("Command center refreshed.");
   } catch (error) {
@@ -86,6 +105,36 @@ async function refreshCommandCenter() {
   renderRecommendations(report.recommendations || []);
   renderAgentRuns(report.recent_agent_runs || []);
   renderBriefQueue((report.research_brief_queue || {}).items || []);
+}
+
+async function refreshBigIdeas() {
+  if (isStaticPreview()) {
+    renderStaticPreview();
+    return;
+  }
+  const params = new URLSearchParams();
+  const stage = $("bigIdeaStage").value.trim();
+  const query = $("bigIdeaQuery").value.trim();
+  if (stage) params.append("stage", stage);
+  if (query) params.append("query", query);
+  params.append("limit", "150");
+  const payload = await getJson(`/api/big-ideas?${params.toString()}`);
+  state.bigIdeas = payload;
+  renderBigIdeas(payload);
+}
+
+async function refreshActivityEvents() {
+  if (isStaticPreview()) {
+    renderStaticPreview();
+    return;
+  }
+  const params = new URLSearchParams();
+  const source = $("activityFilter").value.trim();
+  if (source) params.append("source", source);
+  params.append("limit", "100");
+  const payload = await getJson(`/api/activity-events?${params.toString()}`);
+  state.activityEvents = payload;
+  renderActivityEvents(payload);
 }
 
 async function refreshActionItems() {
@@ -199,6 +248,12 @@ async function refreshAgentPerformance() {
   renderAgentPerformance(payload);
 }
 
+async function refreshComputeJobs() {
+  const payload = await getJson("/api/compute-jobs?limit=50");
+  state.computeJobs = payload;
+  renderComputeJobs(payload);
+}
+
 function showPage(pageId) {
   document.querySelectorAll(".page-view").forEach((page) => {
     page.classList.toggle("active", page.id === pageId);
@@ -206,6 +261,9 @@ function showPage(pageId) {
   document.querySelectorAll(".tab-button").forEach((button) => {
     button.classList.toggle("active", button.dataset.page === pageId);
   });
+  const active = Array.from(document.querySelectorAll(".tab-button")).find((button) => button.dataset.page === pageId);
+  const pageTitle = $("pageTitle");
+  if (active && pageTitle) pageTitle.textContent = active.textContent.trim();
 }
 
 function renderRuntime(payload) {
@@ -225,6 +283,158 @@ function renderRuntime(payload) {
   }
 }
 
+function renderStaticPreview() {
+  const now = new Date().toISOString();
+  const stages = [
+    { key: "new_signal", label: "New Signal" },
+    { key: "needs_evidence", label: "Needs Evidence" },
+    { key: "committee_ready", label: "Committee Ready" },
+    { key: "validation_ready", label: "Validation Ready" },
+    { key: "queued_running", label: "Queued / Running" },
+    { key: "reviewed", label: "Reviewed" },
+    { key: "parked", label: "Parked" },
+  ];
+  const items = [
+    {
+      entity_type: "research_program",
+      entity_id: "preview-vascular-program",
+      type_label: "Research program",
+      board_stage: "needs_evidence",
+      board_stage_label: "Needs Evidence",
+      title: "Vascular injury / coagulation ecology",
+      summary: "Big-picture program tracking angiogenesis, vascular damage, clotting biology, and HSA transfer risk.",
+      status: "active",
+      readiness: "bounded evidence loop",
+      score: 0.72,
+      score_label: "confidence",
+      evidence_refs: ["program-review", "omics-packet"],
+      candidate_therapies: ["VEGF-axis strategy"],
+      targets: ["KDR", "VIM"],
+      biomarkers: ["vascular injury score"],
+      risks: ["Needs tighter direct canine evidence."],
+      blockers: ["evidence gap"],
+      next_experiments: ["Run focused evidence brief", "Score processed omics matrix"],
+      next_action: "Acquire the next evidence packet before committee expansion.",
+      payload: {},
+    },
+    {
+      entity_type: "therapy_idea",
+      entity_id: "preview-vim-peptide",
+      type_label: "Therapy idea",
+      board_stage: "validation_ready",
+      board_stage_label: "Validation Ready",
+      title: "Vimentin-targeted peptide strategy",
+      summary: "High-level peptide lane that asks whether surface VIM can define a selective HSA vulnerability.",
+      status: "ready_for_validation_plan",
+      readiness: "ready for packet",
+      score: 0.81,
+      score_label: "priority",
+      evidence_refs: ["brief-vim", "omics-readout"],
+      candidate_therapies: ["targeted peptide"],
+      targets: ["VIM"],
+      biomarkers: ["surface vimentin"],
+      risks: ["Cell-surface expression context must be proven."],
+      blockers: [],
+      next_experiments: ["Peptide specialist review", "Target expression review"],
+      next_action: "Create a validation packet with expression, assayability, and specificity readouts.",
+      payload: {},
+    },
+    {
+      entity_type: "validation_packet",
+      entity_id: "preview-omics-packet",
+      type_label: "Validation packet",
+      board_stage: "queued_running",
+      board_stage_label: "Queued / Running",
+      title: "Processed omics readout packet",
+      summary: "CPU-first readout for VIM, mesenchymal/ECM, angiogenesis/endothelial, and vascular injury scores.",
+      status: "queued",
+      readiness: "running",
+      score: 0.63,
+      score_label: "support",
+      evidence_refs: ["geo-matrix", "gene-set-scores"],
+      candidate_therapies: [],
+      targets: ["VIM", "KDR"],
+      biomarkers: ["ECM score", "coagulation score"],
+      risks: ["Dataset labels may be incomplete."],
+      blockers: ["needs review"],
+      next_experiments: ["OpenRouter omics review"],
+      next_action: "Review computed readouts and decide whether the idea moves to expert panel.",
+      payload: {},
+    },
+  ];
+  const counts = stages.reduce((acc, stage) => ({ ...acc, [stage.key]: 0 }), {});
+  items.forEach((item) => {
+    counts[item.board_stage] = (counts[item.board_stage] || 0) + 1;
+  });
+  state.runtime = {
+    validation_dispatch: {
+      dispatch_ready: false,
+      default_model: "static preview",
+      message: "Open through the local Command Center server for live data and actions.",
+    },
+  };
+  state.bigIdeas = { stages, total: items.length, stage_counts: counts, items, updated_at: now };
+  state.activityEvents = {
+    total: 3,
+    items: [
+      {
+        event_id: "preview-1",
+        event_type: "idea.stage_changed",
+        source: "ui",
+        severity: "success",
+        title: "Vimentin peptide lane promoted",
+        summary: "Moved into Validation Ready after committee review and omics packet creation.",
+        occurred_at: now,
+        entity_type: "therapy_idea",
+        entity_id: "preview-vim-peptide",
+      },
+      {
+        event_id: "preview-2",
+        event_type: "validation.queued",
+        source: "validation",
+        severity: "info",
+        title: "Omics review queued",
+        summary: "Processed-first omics readout awaits specialist interpretation.",
+        occurred_at: now,
+        entity_type: "validation_packet",
+        entity_id: "preview-omics-packet",
+      },
+      {
+        event_id: "preview-3",
+        event_type: "program.needs_evidence",
+        source: "system",
+        severity: "watch",
+        title: "Program needs one evidence pass",
+        summary: "The board is constrained to bounded loops before therapy idea expansion.",
+        occurred_at: now,
+        entity_type: "research_program",
+        entity_id: "preview-vascular-program",
+      },
+    ],
+  };
+  renderRuntime(state.runtime);
+  $("runtimeStatus").textContent = "Static preview | run the local server for live data";
+  $("runtimeStatus").className = "runtime-status blocked";
+  renderSummary({
+    brief_queue_total: 12,
+    brief_queue_ready: 4,
+    brief_queue_failed: 0,
+    research_leads_total: 18,
+    research_leads_actionable: 7,
+    research_leads_followup: 5,
+    source_health_failed: 1,
+    source_health_triage: 3,
+    source_health_watch: 2,
+    recommendation_count: 6,
+    blocking_recommendations: 1,
+  });
+  renderBigIdeas(state.bigIdeas);
+  renderActivityEvents(state.activityEvents);
+  $("actionSummary").textContent = "Static preview. Run the local server to load live queues.";
+  $("actionItemsList").innerHTML = `<div class="empty-state">Live action items load from the Command Center API.</div>`;
+  showToast("Static preview loaded. Use twog-command-center for live data.");
+}
+
 function validationDispatchReady() {
   return Boolean(((state.runtime || {}).validation_dispatch || {}).dispatch_ready);
 }
@@ -241,6 +451,242 @@ function renderSummary(summary) {
     `${value(summary.source_health_triage)} triage, ${value(summary.source_health_watch)} watch`;
   $("metricRecommendations").textContent = value(summary.recommendation_count);
   $("metricRecommendationsMeta").textContent = `${value(summary.blocking_recommendations)} blocking`;
+}
+
+function renderBigIdeas(payload) {
+  const stages = payload.stages || [];
+  const items = payload.items || [];
+  const counts = payload.stage_counts || {};
+  $("bigIdeaSummary").textContent =
+    `${value(payload.total)} cards | ` +
+    stages.map((stage) => `${stage.label}: ${value(counts[stage.key])}`).join(" | ");
+
+  destroyBigIdeaSortables();
+  $("bigIdeaBoard").innerHTML = stages.map((stage) => {
+    const cards = items.filter((item) => item.board_stage === stage.key);
+    return `
+      <section class="board-column" data-stage="${escapeAttribute(stage.key)}">
+        <div class="board-column-header">
+          <strong>${escapeHtml(stage.label)}</strong>
+          <span>${cards.length}</span>
+        </div>
+        <div class="board-card-list" data-stage-list="${escapeAttribute(stage.key)}">
+          ${cards.length ? cards.map(renderBigIdeaCard).join("") : `<div class="empty-column">No cards</div>`}
+        </div>
+      </section>
+    `;
+  }).join("");
+  initBigIdeaDrag();
+  if (state.selectedBigIdeaKey) {
+    const selected = findBigIdeaByKey(state.selectedBigIdeaKey);
+    if (selected) renderIdeaDetail(selected);
+  }
+}
+
+function renderBigIdeaCard(item) {
+  const key = bigIdeaKey(item);
+  const score = item.score !== null && item.score !== undefined ? Math.round(Number(item.score) * 100) : null;
+  const blockers = (item.blockers || []).length;
+  const evidence = (item.evidence_refs || []).length;
+  const tags = [
+    ...(item.candidate_therapies || []),
+    ...(item.targets || []),
+    ...(item.biomarkers || []),
+  ].slice(0, 5);
+  return `
+    <article class="board-card" data-entity-type="${escapeAttribute(item.entity_type)}" data-entity-id="${escapeAttribute(item.entity_id)}" data-key="${escapeAttribute(key)}">
+      <button class="card-open" type="button" data-action="open-big-idea" data-key="${escapeAttribute(key)}">
+        <span class="work-lane">${escapeHtml(item.type_label || item.entity_type)}</span>
+        <strong>${escapeHtml(item.title || "Untitled")}</strong>
+        <span>${escapeHtml(trimText(item.summary || item.hypothesis || "", 150))}</span>
+      </button>
+      <div class="board-card-meta">
+        ${score !== null ? tag(`${item.score_label || "score"} ${score}`, "info") : ""}
+        ${tag(item.readiness || item.status || "unknown", item.status || "info")}
+        ${evidence ? tag(`${evidence} refs`, "info") : tag("no refs", "watch")}
+        ${blockers ? tag(`${blockers} blockers`, "blocking") : ""}
+      </div>
+      <div class="tag-row compact-tags">${tags.map((label) => tag(label, "info")).join("")}</div>
+      <div class="card-actions">
+        <button type="button" data-action="big-idea-work" data-work="evidence_brief" data-key="${escapeAttribute(key)}">Queue Evidence</button>
+        <button type="button" data-action="big-idea-work" data-work="validation_packet" data-key="${escapeAttribute(key)}">Queue Validation</button>
+      </div>
+    </article>
+  `;
+}
+
+function initBigIdeaDrag() {
+  if (!window.Sortable) return;
+  document.querySelectorAll("[data-stage-list]").forEach((list) => {
+    const sortable = window.Sortable.create(list, {
+      group: "big-ideas",
+      animation: 120,
+      draggable: ".board-card",
+      ghostClass: "drag-ghost",
+      onEnd: handleBigIdeaDrop,
+    });
+    state.bigIdeaSortables.push(sortable);
+  });
+}
+
+function destroyBigIdeaSortables() {
+  (state.bigIdeaSortables || []).forEach((sortable) => sortable.destroy());
+  state.bigIdeaSortables = [];
+}
+
+async function handleBigIdeaDrop(event) {
+  const card = event.item;
+  const stage = event.to?.dataset?.stageList;
+  if (!card || !stage) return;
+  const entityType = card.dataset.entityType;
+  const entityId = card.dataset.entityId;
+  if (isStaticPreview()) {
+    showToast("Static preview move only. Run the local server to persist stages.");
+    return;
+  }
+  try {
+    await postJson(`/api/big-ideas/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/stage`, {
+      stage,
+      operator: $("operatorName").value.trim() || "command_center_operator",
+    });
+    showToast("Board stage updated.");
+    await Promise.all([refreshBigIdeas(), refreshActivityEvents()]);
+  } catch (error) {
+    showToast(error.message || String(error));
+    await refreshBigIdeas();
+  }
+}
+
+async function handleBigIdeaBoardClick(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button || button.disabled) return;
+  const key = button.dataset.key;
+  const item = findBigIdeaByKey(key);
+  if (!item) return;
+  if (button.dataset.action === "open-big-idea") {
+    state.selectedBigIdeaKey = key;
+    renderIdeaDetail(item);
+    return;
+  }
+  if (button.dataset.action === "big-idea-stage") {
+    if (isStaticPreview()) {
+      showToast("Static preview action only. Run the local server to persist stages.");
+      return;
+    }
+    button.disabled = true;
+    try {
+      await postJson(`/api/big-ideas/${encodeURIComponent(item.entity_type)}/${encodeURIComponent(item.entity_id)}/stage`, {
+        stage: button.dataset.stage,
+        operator: $("operatorName").value.trim() || "command_center_operator",
+      });
+      showToast("Board stage updated.");
+      await Promise.all([refreshBigIdeas(), refreshActivityEvents()]);
+    } catch (error) {
+      showToast(error.message || String(error));
+    } finally {
+      button.disabled = false;
+    }
+    return;
+  }
+  if (button.dataset.action === "big-idea-work") {
+    if (isStaticPreview()) {
+      showToast("Static preview action only. Run the local server to queue work.");
+      return;
+    }
+    button.disabled = true;
+    try {
+      const payload = await postJson(`/api/big-ideas/${encodeURIComponent(item.entity_type)}/${encodeURIComponent(item.entity_id)}/queue-work`, {
+        action: button.dataset.work,
+        operator: $("operatorName").value.trim() || "command_center_operator",
+      });
+      showToast(bigIdeaWorkToast(button.dataset.work, payload));
+      await Promise.all([refreshBigIdeas(), refreshActivityEvents(), refreshCommandCenter(), refreshResearchBriefs(), refreshValidationQueue()]);
+    } catch (error) {
+      showToast(error.message || String(error));
+    } finally {
+      button.disabled = false;
+    }
+  }
+}
+
+function renderIdeaDetail(item) {
+  $("ideaDetailDrawer").classList.add("open");
+  $("ideaDetailDrawer").setAttribute("aria-hidden", "false");
+  $("ideaDetailTitle").textContent = item.title || "Untitled idea";
+  const stageButtons = (state.bigIdeas?.stages || []).map((stage) =>
+    `<button type="button" data-action="big-idea-stage" data-stage="${escapeAttribute(stage.key)}" data-key="${escapeAttribute(bigIdeaKey(item))}">${escapeHtml(stage.label)}</button>`
+  ).join("");
+  $("ideaDetailContent").innerHTML = `
+    <div class="detail-section">
+      <div class="tag-row">
+        ${tag(item.type_label || item.entity_type, "info")}
+        ${tag(item.board_stage_label || item.board_stage, "info")}
+        ${tag(item.readiness || item.status || "unknown", item.status || "info")}
+      </div>
+      <p>${escapeHtml(item.summary || item.hypothesis || "No summary recorded.")}</p>
+      <p class="subtext">${escapeHtml(item.next_action || "")}</p>
+    </div>
+    <div class="detail-actions">${stageButtons}</div>
+    <div class="detail-actions">
+      <button type="button" data-action="big-idea-work" data-work="evidence_brief" data-key="${escapeAttribute(bigIdeaKey(item))}">Queue Evidence Brief</button>
+      <button type="button" data-action="big-idea-work" data-work="validation_packet" data-key="${escapeAttribute(bigIdeaKey(item))}">Queue Validation Packet</button>
+      <button type="button" data-action="big-idea-work" data-work="promote" data-key="${escapeAttribute(bigIdeaKey(item))}">Promote</button>
+      <button type="button" data-action="big-idea-work" data-work="demote" data-key="${escapeAttribute(bigIdeaKey(item))}">Demote</button>
+      <button type="button" data-action="big-idea-work" data-work="park" data-key="${escapeAttribute(bigIdeaKey(item))}">Park</button>
+    </div>
+    <div class="detail-grid two-up">
+      <div><strong>Evidence Refs</strong>${renderInlineList(item.evidence_refs || [])}</div>
+      <div><strong>Missing Evidence</strong>${renderInlineList(item.missing_evidence || [])}</div>
+      <div><strong>Risks / Blockers</strong>${renderInlineList([...(item.risks || []), ...(item.blockers || [])])}</div>
+      <div><strong>Next Experiments</strong>${renderInlineList(item.next_experiments || [])}</div>
+      <div><strong>Targets</strong>${renderInlineList(item.targets || [])}</div>
+      <div><strong>Biomarkers</strong>${renderInlineList(item.biomarkers || [])}</div>
+    </div>
+    ${renderJsonDetails("Raw payload", item.payload || {})}
+  `;
+}
+
+function closeIdeaDetail() {
+  $("ideaDetailDrawer").classList.remove("open");
+  $("ideaDetailDrawer").setAttribute("aria-hidden", "true");
+}
+
+function findBigIdeaByKey(key) {
+  return (state.bigIdeas?.items || []).find((item) => bigIdeaKey(item) === key);
+}
+
+function bigIdeaKey(item) {
+  return `${item?.entity_type || ""}:${item?.entity_id || ""}`;
+}
+
+function bigIdeaWorkToast(action, payload) {
+  if (action === "evidence_brief") return `Queued evidence brief ${shortId(payload.queue_item?.queue_item_id)}.`;
+  if (action === "validation_packet") {
+    const result = payload.result || {};
+    return `Validation packet queue: ${result.queued_count || 0} queued, ${result.existing_queue_count || 0} existing.`;
+  }
+  return "Big Ideas card updated.";
+}
+
+function renderActivityEvents(payload) {
+  const events = payload.items || [];
+  if (!events.length) {
+    $("activityStream").innerHTML = `<div class="empty-state">No activity events yet.</div>`;
+    return;
+  }
+  $("activityStream").innerHTML = events.map((event) => `
+    <article class="activity-item ${escapeAttribute(event.severity || "info")}">
+      <div class="activity-dot"></div>
+      <div>
+        <div class="activity-header">
+          <strong>${escapeHtml(event.title || event.event_type)}</strong>
+          ${tag(event.source || "system", event.severity || "info")}
+        </div>
+        <p>${escapeHtml(event.summary || "")}</p>
+        <span class="subtext">${escapeHtml(formatDateTime(event.occurred_at))} | ${escapeHtml(event.entity_type || "")} ${escapeHtml(shortId(event.entity_id || ""))}</span>
+      </div>
+    </article>
+  `).join("");
 }
 
 function renderValidationQueue(payload) {
@@ -900,6 +1346,34 @@ function renderAgentRuns(items) {
   `).join("");
 }
 
+function renderComputeJobs(payload) {
+  const counts = Object.entries(payload.status_counts || {})
+    .map(([status, count]) => `${status}: ${count}`)
+    .join(" | ");
+  $("computeJobSummary").textContent =
+    `${value(payload.visible)} visible of ${value(payload.total)} compute jobs` + (counts ? ` | ${counts}` : "");
+  const items = payload.items || [];
+  if (!items.length) {
+    $("computeJobList").innerHTML = `<div class="empty-state">No compute jobs recorded yet.</div>`;
+    return;
+  }
+  $("computeJobList").innerHTML = items.map((job) => `
+    <div class="list-item">
+      <div class="list-item-header">
+        <strong>${escapeHtml(job.title || "Compute job")}</strong>
+        ${tag(job.status || "unknown", job.status || "info")}
+      </div>
+      <div class="subtext">${escapeHtml(job.validation_type || "validation")} | ${escapeHtml(job.runner_kind || "runner")} | ${escapeHtml(formatDateTime(job.updated_at))}</div>
+      <div class="tag-row">
+        ${tag(job.compute_profile || "compute", "info")}
+        ${job.runpod_job_id ? tag(`runpod ${shortId(job.runpod_job_id)}`, "info") : ""}
+        ${job.last_error ? tag("error", "failed") : ""}
+      </div>
+      ${job.last_error ? `<pre>${escapeHtml(job.last_error)}</pre>` : ""}
+    </div>
+  `).join("");
+}
+
 function renderAgentRunsPage(payload) {
   const statuses = Object.entries(payload.status_counts || {})
     .map(([status, count]) => `${status}: ${count}`)
@@ -1366,6 +1840,11 @@ function percent(input) {
 function shortId(input) {
   const value = String(input || "");
   return value.length > 12 ? `${value.slice(0, 8)}...` : value;
+}
+
+function trimText(input, length) {
+  const value = String(input || "").trim();
+  return value.length > length ? `${value.slice(0, length - 3)}...` : value;
 }
 
 function formatDateTime(input) {

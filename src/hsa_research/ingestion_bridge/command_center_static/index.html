@@ -4,433 +4,333 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>TWOG Command Center</title>
-    <link rel="stylesheet" href="/assets/styles.css">
+    <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">TWOG v2 operations</p>
-        <h1>Command Center</h1>
-      </div>
-      <div class="toolbar">
-        <div id="runtimeStatus" class="runtime-status">Checking runtime...</div>
-        <label class="operator-field">
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <span class="brand-mark">TWOG</span>
+          <div>
+            <p class="eyebrow">v2 command layer</p>
+            <h1>Research Engine</h1>
+          </div>
+        </div>
+        <nav class="side-nav" aria-label="Command center pages">
+          <button class="tab-button active" type="button" data-page="bigIdeasPage">Big Ideas</button>
+          <button class="tab-button" type="button" data-page="operationsPage">Operations</button>
+          <button class="tab-button" type="button" data-page="researchPage">Research Library</button>
+          <button class="tab-button" type="button" data-page="validationPage">Validation</button>
+          <button class="tab-button" type="button" data-page="agentsPage">Agents</button>
+          <button class="tab-button" type="button" data-page="toolsPage">Tools</button>
+          <button class="tab-button" type="button" data-page="computePage">Compute</button>
+        </nav>
+        <div class="sidebar-footer">
           <span>Operator</span>
           <input id="operatorName" type="text" value="command_center_operator" autocomplete="off">
-        </label>
-        <button id="refreshButton" class="primary-button" type="button">Refresh</button>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Scientific mission control</p>
+            <h2 id="pageTitle">Big Ideas Cockpit</h2>
+          </div>
+          <div class="toolbar">
+            <div id="runtimeStatus" class="runtime-status">Checking runtime...</div>
+            <button id="refreshButton" class="primary-button" type="button">Refresh</button>
+          </div>
+        </header>
+
+        <main>
+          <section class="status-grid" aria-label="Operational summary">
+            <article class="metric">
+              <span class="metric-label">Brief Queue</span>
+              <strong id="metricBriefQueue">0</strong>
+              <span id="metricBriefQueueMeta">0 ready, 0 failed</span>
+            </article>
+            <article class="metric">
+              <span class="metric-label">Research Leads</span>
+              <strong id="metricResearchLeads">0</strong>
+              <span id="metricResearchLeadsMeta">0 actionable, 0 follow-up</span>
+            </article>
+            <article class="metric">
+              <span class="metric-label">Source Health</span>
+              <strong id="metricSourceHealth">0</strong>
+              <span id="metricSourceHealthMeta">0 triage, 0 watch</span>
+            </article>
+            <article class="metric">
+              <span class="metric-label">Recommendations</span>
+              <strong id="metricRecommendations">0</strong>
+              <span id="metricRecommendationsMeta">0 blocking</span>
+            </article>
+          </section>
+
+          <section id="bigIdeasPage" class="page-view active">
+            <section class="cockpit-hero">
+              <div>
+                <p class="eyebrow">Opportunity board</p>
+                <h2>Big Ideas Cockpit</h2>
+                <p>Move programs, therapy ideas, promotion candidates, and validation packets through the current discovery workflow.</p>
+              </div>
+              <div class="filters">
+                <label>
+                  <span>Stage</span>
+                  <select id="bigIdeaStage">
+                    <option value="">All stages</option>
+                    <option value="new_signal">New Signal</option>
+                    <option value="needs_evidence">Needs Evidence</option>
+                    <option value="committee_ready">Committee Ready</option>
+                    <option value="validation_ready">Validation Ready</option>
+                    <option value="queued_running">Queued / Running</option>
+                    <option value="reviewed">Reviewed</option>
+                    <option value="parked">Parked</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Search</span>
+                  <input id="bigIdeaQuery" type="search" placeholder="VIM, KDR, peptide, omics">
+                </label>
+              </div>
+            </section>
+
+            <section class="cockpit-grid">
+              <div class="board-panel">
+                <div id="bigIdeaSummary" class="summary-line">Loading Big Ideas board...</div>
+                <div id="bigIdeaBoard" class="idea-board" aria-label="Big Ideas workflow board"></div>
+              </div>
+              <aside class="stream-panel">
+                <div class="panel-header compact-header">
+                  <div>
+                    <h2>Activity Stream</h2>
+                    <p>What changed, what queued, what failed, and what moved.</p>
+                  </div>
+                  <label>
+                    <span>View</span>
+                    <select id="activityFilter">
+                      <option value="">All</option>
+                      <option value="ui">UI</option>
+                      <option value="agent">Agents</option>
+                      <option value="system">System</option>
+                    </select>
+                  </label>
+                </div>
+                <div id="activityStream" class="activity-stream"></div>
+              </aside>
+            </section>
+          </section>
+
+          <section id="operationsPage" class="page-view">
+            <section class="two-column">
+              <article class="panel">
+                <div class="panel-header">
+                  <div>
+                    <h2>Action Items</h2>
+                    <p>Readable operating queue across recommendations, validation requests, and research leads.</p>
+                  </div>
+                  <div class="filters">
+                    <label>
+                      <span>Lead status</span>
+                      <select id="leadStatus">
+                        <option value="new,watching,followup">Active</option>
+                        <option value="new">New</option>
+                        <option value="watching">Watching</option>
+                        <option value="followup">Follow-up</option>
+                        <option value="dismissed">Dismissed</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+                <div id="actionSummary" class="summary-line">Loading action items...</div>
+                <div id="actionItemsList" class="action-list"></div>
+              </article>
+
+              <article class="panel">
+                <div class="panel-header">
+                  <div>
+                    <h2>Recommendations</h2>
+                    <p>System-generated next actions from queues, source health, full text, and agent state.</p>
+                  </div>
+                </div>
+                <div id="recommendationsList" class="stacked-list"></div>
+              </article>
+            </section>
+
+            <section class="two-column">
+              <article class="panel">
+                <div class="panel-header">
+                  <div>
+                    <h2>Validation Autopilot</h2>
+                    <p>Conservative lane for approving and dispatching low-risk validation reviews.</p>
+                  </div>
+                </div>
+                <div class="filters inline-controls">
+                  <label><span>Max/run</span><input id="autopilotMaxPerRun" type="number" min="1" max="10" value="2"></label>
+                  <label><span>Manual grace hours</span><input id="autopilotGraceHours" type="number" min="0" max="168" step="0.5" value="6"></label>
+                  <label class="checkbox-field"><input id="autopilotForce" type="checkbox"><span>Force</span></label>
+                  <button id="autopilotPreviewButton" type="button">Preview</button>
+                  <button id="autopilotDryRunButton" type="button">Dry Run</button>
+                  <button id="autopilotRunButton" class="primary-button" type="button">Run Once</button>
+                </div>
+                <div id="autopilotSummary" class="summary-line">Loading autopilot preview...</div>
+                <div id="autopilotList" class="stacked-list"></div>
+              </article>
+
+              <article class="panel">
+                <div class="panel-header">
+                  <div>
+                    <h2>Recent Agent Runs</h2>
+                    <p>Latest agent ledger rows by status and source.</p>
+                  </div>
+                </div>
+                <div id="agentRunsList" class="stacked-list"></div>
+              </article>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header"><div><h2>Research Leads</h2><p>Promote useful leads into synthesis or demote low-signal items.</p></div></div>
+              <div id="researchLeadSummary" class="summary-line">Loading research leads...</div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Status</th><th>Priority</th><th>Lead</th><th>Why It Matters</th><th>Tags</th><th>Actions</th></tr></thead>
+                  <tbody id="researchLeadRows"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section id="researchPage" class="page-view">
+            <section class="panel">
+              <div class="panel-header">
+                <div><h2>Research Briefs</h2><p>Persisted synthesis outputs with quality state, citations, hypotheses, and brief text.</p></div>
+                <div class="filters">
+                  <label><span>Quality</span><select id="briefQuality"><option value="">All</option><option value="ready_for_validation">Ready for validation</option><option value="needs_evaluation">Needs evaluation</option><option value="needs_followup_research">Needs follow-up</option><option value="needs_human_review">Needs human review</option><option value="brief_failed">Brief failed</option></select></label>
+                  <label><span>Source</span><input id="briefSource" type="text" placeholder="pubmed"></label>
+                  <label><span>Search</span><input id="briefQuery" type="search" placeholder="VEGF, KDR, assay"></label>
+                </div>
+              </div>
+              <div id="briefSummary" class="summary-line">Loading research briefs...</div>
+              <div id="briefList" class="brief-list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <div><h2>Idea Library</h2><p>Persistent idea records generated by committees and validation planning agents.</p></div>
+                <div class="filters">
+                  <label><span>Type</span><select id="ideaKind"><option value="">All</option><option value="therapy_idea">Therapy ideas</option><option value="validation_hypothesis">Validation hypotheses</option></select></label>
+                  <label><span>Source</span><input id="ideaSource" type="text" placeholder="pubmed"></label>
+                  <label><span>Search</span><input id="ideaQuery" type="search" placeholder="KDR, pazopanib, omics"></label>
+                </div>
+              </div>
+              <div id="ideaSummary" class="summary-line">Loading idea records...</div>
+              <div id="ideaList" class="idea-list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header"><div><h2>Research Brief Queue</h2><p>Current synthesis backlog, failures, and completed work.</p></div></div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Status</th><th>Priority</th><th>Topic</th><th>Source</th><th>Attempts</th><th>Last Error</th></tr></thead>
+                  <tbody id="briefQueueRows"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section id="validationPage" class="page-view">
+            <section class="panel">
+              <div class="panel-header">
+                <div><h2>Validation Queue</h2><p>Approve and dispatch validation work from generated research plans.</p></div>
+                <div class="filters">
+                  <label><span>Status</span><select id="validationStatus"><option value="">All</option><option value="needs_approval">Needs approval</option><option value="approved">Approved</option><option value="blocked">Blocked</option><option value="dispatched">Dispatched</option><option value="completed">Completed</option><option value="failed">Failed</option></select></label>
+                  <label><span>Source</span><input id="validationSource" type="text" placeholder="pubmed"></label>
+                </div>
+              </div>
+              <div id="validationSummary" class="summary-line">Loading validation queue...</div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Status</th><th>Priority</th><th>Validation</th><th>Context</th><th>Blockers</th><th>Actions</th></tr></thead>
+                  <tbody id="validationRows"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <div><h2>Promotion Candidates</h2><p>Evaluated hypotheses and therapy ideas ready for committee review, validation planning, or evidence repair.</p></div>
+                <div class="filters"><label><span>Search</span><input id="promotionQuery" type="search" placeholder="toceranib, VEGFR, omics"></label></div>
+              </div>
+              <div id="promotionSummary" class="summary-line">Loading promotion candidates...</div>
+              <div id="promotionList" class="idea-list"></div>
+            </section>
+          </section>
+
+          <section id="agentsPage" class="page-view">
+            <section class="panel">
+              <div class="panel-header">
+                <div><h2>Agent Performance</h2><p>Hybrid performance view across operator reviews and OpenRouter evaluator reviews.</p></div>
+                <div class="filters">
+                  <label><span>Scan limit</span><input id="agentPerformanceLimit" type="number" min="1" max="2000" value="500"></label>
+                  <label><span>Min sample</span><input id="agentPerformanceMinSample" type="number" min="1" max="100" value="3"></label>
+                  <label><span>Eval limit</span><input id="agentPerformanceEvalLimit" type="number" min="1" max="100" value="25"></label>
+                  <button id="agentPerformanceEvaluateButton" class="primary-button" type="button">Evaluate Reviewed Runs</button>
+                </div>
+              </div>
+              <div id="agentPerformanceSummary" class="summary-line">Loading agent performance...</div>
+              <div class="performance-split">
+                <div><h3 class="subsection-title">Top Rows</h3><div class="table-wrap"><table><thead><tr><th>Group</th><th>Score</th><th>Coverage</th><th>Useful</th><th>Follow-up</th><th>Bad</th><th>Unclear</th><th>Flags</th></tr></thead><tbody id="agentPerformanceTopRows"></tbody></table></div></div>
+                <div><h3 class="subsection-title">Bottom Rows</h3><div class="table-wrap"><table><thead><tr><th>Group</th><th>Score</th><th>Coverage</th><th>Useful</th><th>Follow-up</th><th>Bad</th><th>Unclear</th><th>Flags</th></tr></thead><tbody id="agentPerformanceBottomRows"></tbody></table></div></div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <div><h2>Agent Runs</h2><p>Durable ledger for every agent invocation.</p></div>
+                <div class="filters">
+                  <label><span>Agent</span><input id="agentName" type="text" placeholder="therapy_committee"></label>
+                  <label><span>Status</span><select id="agentStatus"><option value="">All</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="running">Running</option><option value="queued">Queued</option></select></label>
+                  <label><span>Source</span><input id="agentSource" type="text" placeholder="pubmed"></label>
+                  <label><span>Search</span><input id="agentQuery" type="search" placeholder="KDR, validation, error"></label>
+                </div>
+              </div>
+              <div id="agentRunSummary" class="summary-line">Loading agent runs...</div>
+              <div id="agentRunCards" class="agent-run-list"></div>
+            </section>
+          </section>
+
+          <section id="toolsPage" class="page-view">
+            <section class="panel">
+              <div class="panel-header">
+                <div><h2>Validation Tool Catalog</h2><p>Recommend-only validation lanes, inputs, quality gates, and dispatch blockers.</p></div>
+                <div class="filters"><label><span>Search</span><input id="toolQuery" type="search" placeholder="omics, safety, assay"></label></div>
+              </div>
+              <div id="toolSummary" class="summary-line">Loading validation tools...</div>
+              <div id="toolList" class="idea-list"></div>
+            </section>
+          </section>
+
+          <section id="computePage" class="page-view">
+            <section class="panel">
+              <div class="panel-header"><div><h2>Compute Jobs</h2><p>Approval-first compute lanes, including MD smoke and future GPU work.</p></div></div>
+              <div id="computeJobSummary" class="summary-line">Loading compute jobs...</div>
+              <div id="computeJobList" class="stacked-list"></div>
+            </section>
+          </section>
+        </main>
       </div>
-    </header>
+    </div>
 
-    <main>
-      <section class="status-grid" aria-label="Operational summary">
-        <article class="metric">
-          <span class="metric-label">Brief Queue</span>
-          <strong id="metricBriefQueue">0</strong>
-          <span id="metricBriefQueueMeta">0 ready, 0 failed</span>
-        </article>
-        <article class="metric">
-          <span class="metric-label">Research Leads</span>
-          <strong id="metricResearchLeads">0</strong>
-          <span id="metricResearchLeadsMeta">0 actionable, 0 follow-up</span>
-        </article>
-        <article class="metric">
-          <span class="metric-label">Source Health</span>
-          <strong id="metricSourceHealth">0</strong>
-          <span id="metricSourceHealthMeta">0 triage, 0 watch</span>
-        </article>
-        <article class="metric">
-          <span class="metric-label">Recommendations</span>
-          <strong id="metricRecommendations">0</strong>
-          <span id="metricRecommendationsMeta">0 blocking</span>
-        </article>
-      </section>
-
-      <nav class="page-tabs" aria-label="Command center pages">
-        <button class="tab-button active" type="button" data-page="operationsPage">Operations</button>
-        <button class="tab-button" type="button" data-page="briefsPage">Briefs</button>
-        <button class="tab-button" type="button" data-page="ideasPage">Ideas</button>
-        <button class="tab-button" type="button" data-page="promotionPage">Promotion</button>
-        <button class="tab-button" type="button" data-page="toolsPage">Validation Tools</button>
-        <button class="tab-button" type="button" data-page="agentsPage">Agents</button>
-      </nav>
-
-      <section id="operationsPage" class="page-view active">
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h2>Action Items</h2>
-            <p>Readable operating queue across recommendations, validation requests, and research leads.</p>
-          </div>
-          <div class="filters">
-            <label>
-              <span>Lead status</span>
-              <select id="leadStatus">
-                <option value="new,watching,followup">Active</option>
-                <option value="new">New</option>
-                <option value="watching">Watching</option>
-                <option value="followup">Follow-up</option>
-                <option value="dismissed">Dismissed</option>
-              </select>
-            </label>
-          </div>
-        </div>
-        <div id="actionSummary" class="summary-line">Loading action items...</div>
-        <div id="actionItemsList" class="action-list"></div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h2>Validation Autopilot</h2>
-            <p>Conservative hourly lane for approving and dispatching a few low-risk validation reviews when the queue has gone quiet.</p>
-          </div>
-          <div class="filters">
-            <label>
-              <span>Max/run</span>
-              <input id="autopilotMaxPerRun" type="number" min="1" max="10" value="2">
-            </label>
-            <label>
-              <span>Manual grace hours</span>
-              <input id="autopilotGraceHours" type="number" min="0" max="168" step="0.5" value="6">
-            </label>
-            <label class="checkbox-field">
-              <input id="autopilotForce" type="checkbox">
-              <span>Force</span>
-            </label>
-            <button id="autopilotPreviewButton" type="button">Preview</button>
-            <button id="autopilotDryRunButton" type="button">Dry Run</button>
-            <button id="autopilotRunButton" class="primary-button" type="button">Run Once</button>
-          </div>
-        </div>
-        <div id="autopilotSummary" class="summary-line">Loading autopilot preview...</div>
-        <div id="autopilotList" class="stacked-list"></div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h2>Validation Queue</h2>
-            <p>Approve and dispatch validation work from generated research plans.</p>
-          </div>
-          <div class="filters">
-            <label>
-              <span>Status</span>
-              <select id="validationStatus">
-                <option value="">All</option>
-                <option value="needs_approval">Needs approval</option>
-                <option value="approved">Approved</option>
-                <option value="blocked">Blocked</option>
-                <option value="dispatched">Dispatched</option>
-                <option value="completed">Completed</option>
-                <option value="failed">Failed</option>
-              </select>
-            </label>
-            <label>
-              <span>Source</span>
-              <input id="validationSource" type="text" placeholder="pubmed">
-            </label>
-          </div>
-        </div>
-        <div id="validationSummary" class="summary-line">Loading validation queue...</div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Status</th>
-                <th>Priority</th>
-                <th>Validation</th>
-                <th>Context</th>
-                <th>Blockers</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="validationRows"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h2>Research Leads</h2>
-            <p>Promote useful leads into the synthesis path or demote low-signal items.</p>
-          </div>
-        </div>
-        <div id="researchLeadSummary" class="summary-line">Loading research leads...</div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Status</th>
-                <th>Priority</th>
-                <th>Lead</th>
-                <th>Why It Matters</th>
-                <th>Tags</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="researchLeadRows"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="two-column">
-        <article class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Recommendations</h2>
-              <p>System-generated next actions from queue, source, embedding, full-text, and agent state.</p>
-            </div>
-          </div>
-          <div id="recommendationsList" class="stacked-list"></div>
-        </article>
-
-        <article class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Recent Agent Runs</h2>
-              <p>Latest agent ledger rows by status and source.</p>
-            </div>
-          </div>
-          <div id="agentRunsList" class="stacked-list"></div>
-        </article>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h2>Research Brief Queue</h2>
-            <p>Current synthesis backlog, failures, and completed work.</p>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Status</th>
-                <th>Priority</th>
-                <th>Topic</th>
-                <th>Source</th>
-                <th>Attempts</th>
-                <th>Last Error</th>
-              </tr>
-            </thead>
-            <tbody id="briefQueueRows"></tbody>
-          </table>
-        </div>
-      </section>
-      </section>
-
-      <section id="briefsPage" class="page-view">
-        <section class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Research Briefs</h2>
-              <p>Persisted synthesis outputs with quality state, citations, hypotheses, and full brief text.</p>
-            </div>
-            <div class="filters">
-              <label>
-                <span>Quality</span>
-                <select id="briefQuality">
-                  <option value="">All</option>
-                  <option value="ready_for_validation">Ready for validation</option>
-                  <option value="needs_evaluation">Needs evaluation</option>
-                  <option value="needs_followup_research">Needs follow-up</option>
-                  <option value="needs_human_review">Needs human review</option>
-                  <option value="brief_failed">Brief failed</option>
-                </select>
-              </label>
-              <label>
-                <span>Source</span>
-                <input id="briefSource" type="text" placeholder="pubmed">
-              </label>
-              <label>
-                <span>Search</span>
-                <input id="briefQuery" type="search" placeholder="VEGF, KDR, assay">
-              </label>
-            </div>
-          </div>
-          <div id="briefSummary" class="summary-line">Loading research briefs...</div>
-          <div id="briefList" class="brief-list"></div>
-        </section>
-      </section>
-
-      <section id="ideasPage" class="page-view">
-        <section class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Idea Library</h2>
-              <p>Persistent idea records generated by committees and validation planning agents.</p>
-            </div>
-            <div class="filters">
-              <label>
-                <span>Type</span>
-                <select id="ideaKind">
-                  <option value="">All</option>
-                  <option value="therapy_idea">Therapy ideas</option>
-                  <option value="validation_hypothesis">Validation hypotheses</option>
-                </select>
-              </label>
-              <label>
-                <span>Source</span>
-                <input id="ideaSource" type="text" placeholder="pubmed">
-              </label>
-              <label>
-                <span>Search</span>
-                <input id="ideaQuery" type="search" placeholder="KDR, pazopanib, omics">
-              </label>
-            </div>
-          </div>
-          <div id="ideaSummary" class="summary-line">Loading idea records...</div>
-          <div id="ideaList" class="idea-list"></div>
-        </section>
-      </section>
-
-      <section id="promotionPage" class="page-view">
-        <section class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Promotion Candidates</h2>
-              <p>Evaluated brief hypotheses and therapy ideas ready for committee review, validation planning, or evidence repair.</p>
-            </div>
-            <div class="filters">
-              <label>
-                <span>Search</span>
-                <input id="promotionQuery" type="search" placeholder="toceranib, VEGFR, omics">
-              </label>
-            </div>
-          </div>
-          <div id="promotionSummary" class="summary-line">Loading promotion candidates...</div>
-          <div id="promotionList" class="idea-list"></div>
-        </section>
-      </section>
-
-      <section id="toolsPage" class="page-view">
-        <section class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Validation Tool Catalog</h2>
-              <p>Recommend-only validation lanes, required inputs, quality gates, and dispatch blockers.</p>
-            </div>
-            <div class="filters">
-              <label>
-                <span>Search</span>
-                <input id="toolQuery" type="search" placeholder="omics, safety, assay">
-              </label>
-            </div>
-          </div>
-          <div id="toolSummary" class="summary-line">Loading validation tools...</div>
-          <div id="toolList" class="idea-list"></div>
-        </section>
-      </section>
-
-      <section id="agentsPage" class="page-view">
-        <section class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Agent Performance</h2>
-              <p>Hybrid performance view across operator reviews and OpenRouter specialist evaluator reviews.</p>
-            </div>
-            <div class="filters">
-              <label>
-                <span>Scan limit</span>
-                <input id="agentPerformanceLimit" type="number" min="1" max="2000" value="500">
-              </label>
-              <label>
-                <span>Min sample</span>
-                <input id="agentPerformanceMinSample" type="number" min="1" max="100" value="3">
-              </label>
-              <label>
-                <span>Eval limit</span>
-                <input id="agentPerformanceEvalLimit" type="number" min="1" max="100" value="25">
-              </label>
-              <button id="agentPerformanceEvaluateButton" class="primary-button" type="button">Evaluate Reviewed Runs</button>
-            </div>
-          </div>
-          <div id="agentPerformanceSummary" class="summary-line">Loading agent performance...</div>
-          <div class="performance-split">
-            <div>
-              <h3 class="subsection-title">Top Rows</h3>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Group</th>
-                      <th>Score</th>
-                      <th>Coverage</th>
-                      <th>Useful</th>
-                      <th>Follow-up</th>
-                      <th>Bad</th>
-                      <th>Unclear</th>
-                      <th>Flags</th>
-                    </tr>
-                  </thead>
-                  <tbody id="agentPerformanceTopRows"></tbody>
-                </table>
-              </div>
-            </div>
-            <div>
-              <h3 class="subsection-title">Bottom Rows</h3>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Group</th>
-                      <th>Score</th>
-                      <th>Coverage</th>
-                      <th>Useful</th>
-                      <th>Follow-up</th>
-                      <th>Bad</th>
-                      <th>Unclear</th>
-                      <th>Flags</th>
-                    </tr>
-                  </thead>
-                  <tbody id="agentPerformanceBottomRows"></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Agent Runs</h2>
-              <p>Durable ledger for every agent invocation, including inputs, outputs, summaries, errors, and model profile.</p>
-            </div>
-            <div class="filters">
-              <label>
-                <span>Agent</span>
-                <input id="agentName" type="text" placeholder="therapy_committee">
-              </label>
-              <label>
-                <span>Status</span>
-                <select id="agentStatus">
-                  <option value="">All</option>
-                  <option value="completed">Completed</option>
-                  <option value="failed">Failed</option>
-                  <option value="running">Running</option>
-                  <option value="queued">Queued</option>
-                </select>
-              </label>
-              <label>
-                <span>Source</span>
-                <input id="agentSource" type="text" placeholder="pubmed">
-              </label>
-              <label>
-                <span>Search</span>
-                <input id="agentQuery" type="search" placeholder="KDR, validation, error">
-              </label>
-            </div>
-          </div>
-          <div id="agentRunSummary" class="summary-line">Loading agent runs...</div>
-          <div id="agentRunCards" class="agent-run-list"></div>
-        </section>
-      </section>
-    </main>
+    <aside id="ideaDetailDrawer" class="detail-drawer" aria-hidden="true">
+      <div class="detail-drawer-header">
+        <div><p class="eyebrow">Card detail</p><h2 id="ideaDetailTitle">Select an idea</h2></div>
+        <button id="ideaDetailClose" type="button" aria-label="Close detail">Close</button>
+      </div>
+      <div id="ideaDetailContent" class="detail-drawer-content"></div>
+    </aside>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script src="/assets/app.js"></script>
+    <script src="./sortable.min.js"></script>
+    <script src="./app.js"></script>
   </body>
 </html>

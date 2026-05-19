@@ -21,6 +21,8 @@ from .contracts import (
     ClaimDirection,
     ClaimSearchRequest,
     ClaimSearchResult,
+    CommandCenterActivityEventRecord,
+    CommandCenterBoardStageRecord,
     ComputeJobRecord,
     CommitHypothesisRequest,
     DocumentChunk,
@@ -417,6 +419,44 @@ class ResearchRepository(Protocol):
     ) -> ComputeJobRecord | None:
         """Update compute job lifecycle fields."""
 
+    def upsert_command_center_board_stage(
+        self,
+        record: CommandCenterBoardStageRecord,
+    ) -> CommandCenterBoardStageRecord:
+        """Persist the command-center board stage for one entity."""
+
+    def get_command_center_board_stage(
+        self,
+        entity_type: str,
+        entity_id: str,
+    ) -> CommandCenterBoardStageRecord | None:
+        """Return the persisted command-center board stage for one entity."""
+
+    def list_command_center_board_stages(
+        self,
+        *,
+        entity_type: str | None = None,
+        board_stage: str | None = None,
+        limit: int | None = 500,
+    ) -> list[CommandCenterBoardStageRecord]:
+        """Return persisted command-center board stages."""
+
+    def append_command_center_activity_event(
+        self,
+        record: CommandCenterActivityEventRecord,
+    ) -> CommandCenterActivityEventRecord:
+        """Append one command-center activity event."""
+
+    def list_command_center_activity_events(
+        self,
+        *,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        source: str | None = None,
+        limit: int | None = 100,
+    ) -> list[CommandCenterActivityEventRecord]:
+        """Return command-center activity events newest first."""
+
     def upsert_md_expert_review_packet(
         self,
         record: MDExpertReviewPacketRecord,
@@ -610,6 +650,8 @@ class InMemoryResearchRepository:
         self.validation_plans: dict[UUID, ValidationPlanRecord] = {}
         self.validation_request_queue: dict[UUID, ValidationRequestQueueItem] = {}
         self.compute_jobs: dict[UUID, ComputeJobRecord] = {}
+        self.command_center_board_stages: dict[str, CommandCenterBoardStageRecord] = {}
+        self.command_center_activity_events: dict[UUID, CommandCenterActivityEventRecord] = {}
         self.md_expert_review_packets: dict[UUID, MDExpertReviewPacketRecord] = {}
         self.md_expert_approvals: dict[UUID, MDExpertApprovalRecord] = {}
         self.research_brief_queue: dict[UUID, ResearchBriefQueueItem] = {}
@@ -1525,6 +1567,63 @@ class InMemoryResearchRepository:
         updated = record.model_copy(update=update)
         self.compute_jobs[compute_job_id] = updated
         return updated
+
+    def upsert_command_center_board_stage(
+        self,
+        record: CommandCenterBoardStageRecord,
+    ) -> CommandCenterBoardStageRecord:
+        existing = self.command_center_board_stages.get(record.stage_key)
+        if existing is not None:
+            record = record.model_copy(update={"created_at": existing.created_at})
+        self.command_center_board_stages[record.stage_key] = record
+        return record
+
+    def get_command_center_board_stage(
+        self,
+        entity_type: str,
+        entity_id: str,
+    ) -> CommandCenterBoardStageRecord | None:
+        return self.command_center_board_stages.get(f"{entity_type}:{entity_id}")
+
+    def list_command_center_board_stages(
+        self,
+        *,
+        entity_type: str | None = None,
+        board_stage: str | None = None,
+        limit: int | None = 500,
+    ) -> list[CommandCenterBoardStageRecord]:
+        records = list(self.command_center_board_stages.values())
+        if entity_type:
+            records = [record for record in records if record.entity_type == entity_type]
+        if board_stage:
+            records = [record for record in records if record.board_stage == board_stage]
+        records.sort(key=lambda record: record.updated_at, reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def append_command_center_activity_event(
+        self,
+        record: CommandCenterActivityEventRecord,
+    ) -> CommandCenterActivityEventRecord:
+        self.command_center_activity_events[record.event_id] = record
+        return record
+
+    def list_command_center_activity_events(
+        self,
+        *,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        source: str | None = None,
+        limit: int | None = 100,
+    ) -> list[CommandCenterActivityEventRecord]:
+        records = list(self.command_center_activity_events.values())
+        if entity_type:
+            records = [record for record in records if record.entity_type == entity_type]
+        if entity_id:
+            records = [record for record in records if record.entity_id == entity_id]
+        if source:
+            records = [record for record in records if record.source == source]
+        records.sort(key=lambda record: record.occurred_at, reverse=True)
+        return records[:limit] if limit is not None else records
 
     def upsert_md_expert_review_packet(
         self,

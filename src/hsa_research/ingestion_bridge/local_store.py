@@ -25,6 +25,8 @@ from .contracts import (
     CandidateDossierRequest,
     ClaimSearchRequest,
     ClaimSearchResult,
+    CommandCenterActivityEventRecord,
+    CommandCenterBoardStageRecord,
     ComputeJobRecord,
     CommitHypothesisRequest,
     DocumentChunk,
@@ -2517,6 +2519,143 @@ class SQLiteResearchRepository(ResearchRepository):
         updated = record.model_copy(update=update)
         return self.upsert_compute_job(updated)
 
+    def upsert_command_center_board_stage(
+        self,
+        record: CommandCenterBoardStageRecord,
+    ) -> CommandCenterBoardStageRecord:
+        existing = self.get_command_center_board_stage(record.entity_type, record.entity_id)
+        if existing is not None:
+            record = record.model_copy(update={"created_at": existing.created_at})
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into command_center_board_stages (
+              entity_type, entity_id, board_stage, actor, updated_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?)
+            on conflict(entity_type, entity_id) do update set
+              board_stage = excluded.board_stage,
+              actor = excluded.actor,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                record.entity_type,
+                record.entity_id,
+                record.board_stage,
+                record.actor,
+                record.updated_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_command_center_board_stage(
+        self,
+        entity_type: str,
+        entity_id: str,
+    ) -> CommandCenterBoardStageRecord | None:
+        row = self.conn.execute(
+            """
+            select payload from command_center_board_stages
+            where entity_type = ? and entity_id = ?
+            """,
+            (entity_type, entity_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return CommandCenterBoardStageRecord.model_validate(json.loads(row["payload"]))
+
+    def list_command_center_board_stages(
+        self,
+        *,
+        entity_type: str | None = None,
+        board_stage: str | None = None,
+        limit: int | None = 500,
+    ) -> list[CommandCenterBoardStageRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if entity_type:
+            clauses.append("entity_type = ?")
+            params.append(entity_type)
+        if board_stage:
+            clauses.append("board_stage = ?")
+            params.append(board_stage)
+        sql = "select payload from command_center_board_stages"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by updated_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            CommandCenterBoardStageRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
+    def append_command_center_activity_event(
+        self,
+        record: CommandCenterActivityEventRecord,
+    ) -> CommandCenterActivityEventRecord:
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into command_center_activity_events (
+              event_id, occurred_at, actor, source, event_type, entity_type,
+              entity_id, severity, correlation_id, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(event_id) do update set
+              payload = excluded.payload
+            """,
+            (
+                str(record.event_id),
+                record.occurred_at.isoformat(),
+                record.actor,
+                record.source,
+                record.event_type,
+                record.entity_type,
+                record.entity_id,
+                record.severity,
+                record.correlation_id,
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def list_command_center_activity_events(
+        self,
+        *,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        source: str | None = None,
+        limit: int | None = 100,
+    ) -> list[CommandCenterActivityEventRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if entity_type:
+            clauses.append("entity_type = ?")
+            params.append(entity_type)
+        if entity_id:
+            clauses.append("entity_id = ?")
+            params.append(entity_id)
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        sql = "select payload from command_center_activity_events"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by occurred_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            CommandCenterActivityEventRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
     def upsert_md_expert_review_packet(
         self,
         record: MDExpertReviewPacketRecord,
@@ -3935,6 +4074,41 @@ class SQLiteResearchRepository(ResearchRepository):
               on compute_jobs(runner_kind, updated_at desc);
             create index if not exists compute_jobs_queue_item_idx
               on compute_jobs(queue_item_id, updated_at desc);
+
+            create table if not exists command_center_board_stages (
+              entity_type text not null,
+              entity_id text not null,
+              board_stage text not null,
+              actor text not null,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp,
+              primary key (entity_type, entity_id)
+            );
+
+            create index if not exists command_center_board_stages_stage_idx
+              on command_center_board_stages(board_stage, updated_at desc);
+
+            create table if not exists command_center_activity_events (
+              event_id text primary key,
+              occurred_at text not null,
+              actor text not null,
+              source text not null,
+              event_type text not null,
+              entity_type text not null,
+              entity_id text not null,
+              severity text not null,
+              correlation_id text,
+              payload text not null,
+              created_at text not null default current_timestamp
+            );
+
+            create index if not exists command_center_activity_events_time_idx
+              on command_center_activity_events(occurred_at desc);
+            create index if not exists command_center_activity_events_entity_idx
+              on command_center_activity_events(entity_type, entity_id, occurred_at desc);
+            create index if not exists command_center_activity_events_source_idx
+              on command_center_activity_events(source, occurred_at desc);
 
             create table if not exists md_expert_review_packets (
               packet_id text primary key,

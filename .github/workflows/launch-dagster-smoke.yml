@@ -176,7 +176,7 @@ jobs:
             echo "::error::TWITTERAPI_IO_KEY is required for x_topic_monitor_review_job."
             exit 1
           fi
-          if [ "$DAGSTER_CLOUD_JOB" = "compute_job_job" ] && printf '%s' "$DAGSTER_CLOUD_CONFIG_JSON" | grep -q '"dry_run"[[:space:]]*:[[:space:]]*false'; then
+          if [ "$DAGSTER_CLOUD_JOB" = "compute_job_job" ] && printf '%s' "$DAGSTER_CLOUD_CONFIG_JSON" | grep -q '"dry_run"[[:space:]]*:[[:space:]]*false' && ! printf '%s' "$DAGSTER_CLOUD_CONFIG_JSON" | grep -q '"runner_kind"[[:space:]]*:[[:space:]]*"local"'; then
             if [ -z "$RUNPOD_API_KEY" ] || [ -z "$HSA_RUNPOD_ENDPOINT_ID" ]; then
               echo "::error::RUNPOD_API_KEY and HSA_RUNPOD_ENDPOINT_ID are required for live compute_job_job submissions."
               exit 1

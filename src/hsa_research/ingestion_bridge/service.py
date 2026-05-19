@@ -216,7 +216,13 @@ from .agent_performance import (
 from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
 from .claim_extractor import extract_claims_for_chunks
-from .compute_runners import ComputeRunnerConfigError, ComputeRunnerRequestError, RunPodComputeRunner
+from .compute_runners import (
+    LOCAL_COMPUTE_DEFAULT_ENDPOINT_ID,
+    ComputeRunnerConfigError,
+    ComputeRunnerRequestError,
+    LocalComputeRunner,
+    RunPodComputeRunner,
+)
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, build_embedding_provider, select_embedding_model_from_coverage
 from .evidence_fit import assess_research_followup_ingest_evidence_fit
 from .evidence_gap_resolver import (
@@ -723,6 +729,21 @@ def _md_expert_packet_hash(
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _compute_runner_endpoint_id(record: ComputeJobRecord) -> str:
+    metadata = record.metadata if isinstance(record.metadata, dict) else {}
+    if record.runner_kind == "local":
+        return (
+            str(metadata.get("local_compute_endpoint_id") or "").strip()
+            or os.getenv("HSA_LOCAL_COMPUTE_ENDPOINT_ID", LOCAL_COMPUTE_DEFAULT_ENDPOINT_ID).strip()
+            or LOCAL_COMPUTE_DEFAULT_ENDPOINT_ID
+        )
+    return (
+        str(metadata.get("runpod_endpoint_id") or "").strip()
+        or os.getenv("HSA_RUNPOD_ENDPOINT_ID", "cbf4ffekmo36t9").strip()
+        or "cbf4ffekmo36t9"
+    )
 
 
 def _md_worker_error_history(record: ComputeJobRecord) -> list[dict[str, Any]]:
@@ -2287,6 +2308,8 @@ class HSAResearchService:
         approve_queue_item: bool = True,
         create_compute_job: bool = True,
         force_new_compute_job: bool = False,
+        runner_kind: str = "runpod",
+        compute_profile: str = "gpu",
         approved_by: str = "md-smoke-seed",
         approval_note: str | None = None,
         protein_pdb: str | None = None,
@@ -2297,7 +2320,7 @@ class HSAResearchService:
         """Create a real MD queue item from live structure/compound APIs.
 
         This is intentionally narrow: it seeds one expert-gated MD smoke test,
-        then reuses the existing queue -> compute -> expert-review -> RunPod path.
+        then reuses the existing queue -> compute -> expert-review path.
         """
 
         normalized_pdb_id = re.sub(r"[^A-Za-z0-9]", "", pdb_id or "").upper()
@@ -2326,7 +2349,7 @@ class HSAResearchService:
             preparation_method=(
                 "TWOG supplies a protein-only PDB with HETATM records, crystallographic waters, and "
                 "co-crystallized ligands stripped before submission. TWOG supplies canonical SMILES only "
-                "for the ligand; no upstream docking pose is generated. The RunPod worker is expected to "
+                "for the ligand; no upstream docking pose is generated. The compute worker is expected to "
                 "perform SMILES-to-3D embedding, protonation at pH 7.4, and small-molecule force-field "
                 "parameterization, or return structured prepared_ligand_artifact_or_error."
             ),
@@ -2352,7 +2375,7 @@ class HSAResearchService:
         task_id = uuid5(NAMESPACE_URL, f"{identity_basis}:task")
         brief_id = uuid5(NAMESPACE_URL, f"{identity_basis}:brief")
         approval = approval_note or (
-            "Seeded from live RCSB/PubChem APIs for one expert-gated RunPod MD smoke test. "
+            "Seeded from live RCSB/PubChem APIs for one expert-gated MD smoke test. "
             "Live submission still requires exact packet-hash MD expert approval."
         )
         queue_item = ValidationRequestQueueItem(
@@ -2367,7 +2390,7 @@ class HSAResearchService:
             title=f"MD smoke: {compound_name} against {target_name}",
             objective=(
                 "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, "
-                "then send it through MD expert packet review before RunPod submission."
+                "then send it through MD expert packet review before compute submission."
             ),
             rationale=(
                 "The hosted database currently has no durable MD queue item. This seed route "
@@ -2388,7 +2411,7 @@ class HSAResearchService:
                         f"{compound_name} canonical SMILES."
                     ),
                     assay_type="in silico MD smoke test",
-                    readout="RunPod worker contract acceptance and structured preparation/runtime failure modes.",
+                    readout="Compute worker contract acceptance and structured preparation/runtime failure modes.",
                     endpoint="MD compute lane readiness",
                 ),
                 quality_gates=[
@@ -2442,8 +2465,8 @@ class HSAResearchService:
         if create_compute_job:
             compute_job = self.create_compute_job_from_validation_queue_item(
                 queue_item.queue_item_id,
-                runner_kind="runpod",
-                compute_profile="gpu",
+                runner_kind=runner_kind,
+                compute_profile=compute_profile,
                 approved_by=approved_by if approve_queue_item else None,
                 approval_note=approval if approve_queue_item else None,
                 dagster_run_id=dagster_run_id,
@@ -2456,6 +2479,8 @@ class HSAResearchService:
                     "simulation_steps": simulation_steps,
                     "temperature": temperature,
                     "enable_docking": enable_docking,
+                    "runner_kind": runner_kind,
+                    "compute_profile": compute_profile,
                     "force_new_compute_job": force_new_compute_job,
                 },
             )
@@ -2824,7 +2849,7 @@ class HSAResearchService:
                     "submitted_at": datetime.now(UTC).isoformat(),
                 },
             )
-        if record.runner_kind != "runpod":
+        if record.runner_kind not in {"runpod", "local"}:
             return self.repository.update_compute_job(
                 compute_job_id,
                 status="blocked",
@@ -2837,7 +2862,7 @@ class HSAResearchService:
             )
         gate_metadata: dict[str, Any] = {}
         if record.validation_type == "md":
-            gate_error, gate_metadata = self._md_live_submit_gate(record)
+            gate_error, gate_metadata = self._md_live_submit_gate(record, endpoint_id=_compute_runner_endpoint_id(record))
             if gate_error:
                 return self.repository.update_compute_job(
                     compute_job_id,
@@ -2851,7 +2876,10 @@ class HSAResearchService:
                     },
                 )
         try:
-            submission = RunPodComputeRunner.from_env().submit(record)
+            if record.runner_kind == "runpod":
+                submission = RunPodComputeRunner.from_env().submit(record)
+            else:
+                submission = LocalComputeRunner.from_env().submit(record)
         except (ComputeRunnerConfigError, ComputeRunnerRequestError) as exc:
             return self.repository.update_compute_job(
                 compute_job_id,
@@ -2863,22 +2891,24 @@ class HSAResearchService:
                     "blocked_reason": type(exc).__name__,
                 },
             )
-        return self.repository.update_compute_job(
-            compute_job_id,
-            status=submission["status"],
-            output_payload=submission["output_payload"],
-            external_run_id=submission["external_run_id"],
-            runpod_job_id=submission["runpod_job_id"],
-            dagster_run_id=dagster_run_id,
-            metadata=submission["metadata"] | gate_metadata | {"submission_mode": "live"},
-        )
+        update_kwargs: dict[str, Any] = {
+            "status": submission["status"],
+            "output_payload": submission["output_payload"],
+            "external_run_id": submission["external_run_id"],
+            "dagster_run_id": dagster_run_id,
+            "last_error": submission.get("last_error"),
+            "metadata": submission["metadata"] | gate_metadata | {"submission_mode": "live"},
+        }
+        if submission.get("runpod_job_id"):
+            update_kwargs["runpod_job_id"] = submission["runpod_job_id"]
+        return self.repository.update_compute_job(compute_job_id, **update_kwargs)
 
-    def _md_live_submit_gate(self, record: ComputeJobRecord) -> tuple[str | None, dict[str, Any]]:
+    def _md_live_submit_gate(self, record: ComputeJobRecord, *, endpoint_id: str | None = None) -> tuple[str | None, dict[str, Any]]:
         try:
             input_packet = _md_input_packet_from_compute_job(record)
         except Exception as exc:
             return f"md_input_packet_invalid: {exc}", {}
-        endpoint_id = os.getenv("HSA_RUNPOD_ENDPOINT_ID", "cbf4ffekmo36t9").strip() or "cbf4ffekmo36t9"
+        endpoint_id = endpoint_id or _compute_runner_endpoint_id(record)
         packet_hash = _md_expert_packet_hash(
             input_packet,
             endpoint_id=endpoint_id,
@@ -2914,6 +2944,16 @@ class HSAResearchService:
         record = self.repository.get_compute_job(compute_job_id)
         if record is None:
             return None
+        if record.runner_kind == "local":
+            return self.repository.update_compute_job(
+                compute_job_id,
+                dagster_run_id=dagster_run_id,
+                last_error=None,
+                metadata={
+                    "local_compute_polled_at": datetime.now(UTC).isoformat(),
+                    "local_compute_poll_note": "Local compute runs synchronously during submit; persisted output is already final.",
+                },
+            )
         if record.runner_kind != "runpod":
             return self.repository.update_compute_job(
                 compute_job_id,
@@ -2953,6 +2993,17 @@ class HSAResearchService:
         record = self.repository.get_compute_job(compute_job_id)
         if record is None:
             return None
+        if record.runner_kind == "local":
+            return self.repository.update_compute_job(
+                compute_job_id,
+                status="blocked" if record.status in {"queued", "submitted", "running"} else record.status,
+                dagster_run_id=dagster_run_id,
+                last_error="local_runner_synchronous_no_cancel" if record.status in {"queued", "submitted", "running"} else None,
+                metadata={
+                    "local_compute_cancel_checked_at": datetime.now(UTC).isoformat(),
+                    "local_compute_cancel_note": "Local compute runs synchronously during submit and has no remote handle to cancel.",
+                },
+            )
         if record.runner_kind != "runpod":
             return self.repository.update_compute_job(
                 compute_job_id,

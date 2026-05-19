@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -24,11 +25,15 @@ from .contracts import (
     AgentPerformanceEvaluationRequest,
     AgentPerformanceReportRequest,
     AgentRunReviewRecord,
+    CommandCenterActivityEventRecord,
+    CommandCenterBoardStageRecord,
     CommandCenterRequest,
     HypothesisPromotionReportRequest,
+    ResearchBriefQueueRequest,
     ResearchFollowupRefinementRequest,
     ResearchFollowupLoopRequest,
     ResearchBriefQualityReportRequest,
+    ResearchProgramBoardRequest,
     TherapyIdeaLibraryRequest,
     ValidationAutopilotRequest,
     ValidationPacketRequest,
@@ -41,6 +46,26 @@ from .validation_agents import DEFAULT_VALIDATION_AGENT_MODEL
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
+
+BIG_IDEA_STAGES = (
+    "new_signal",
+    "needs_evidence",
+    "committee_ready",
+    "validation_ready",
+    "queued_running",
+    "reviewed",
+    "parked",
+)
+
+BIG_IDEA_STAGE_LABELS = {
+    "new_signal": "New Signal",
+    "needs_evidence": "Needs Evidence",
+    "committee_ready": "Committee Ready",
+    "validation_ready": "Validation Ready",
+    "queued_running": "Queued / Running",
+    "reviewed": "Reviewed",
+    "parked": "Parked",
+}
 
 
 def build_command_center_payload(
@@ -296,6 +321,90 @@ def validation_packets_payload(
     return service.build_validation_packets(request).model_dump(mode="json")
 
 
+def big_ideas_payload(
+    service: HSAResearchService,
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Return the Big Ideas cockpit board payload."""
+
+    params = params or {}
+    limit = max(1, min(_int_param(params, "limit", 100), 300))
+    query = (_str_param(params, "query") or "").casefold()
+    stage_filter = _str_param(params, "stage")
+    items = _collect_big_idea_items(service, limit=limit)
+    if query:
+        items = [item for item in items if query in _big_idea_search_text(item)]
+    if stage_filter:
+        items = [item for item in items if item.get("board_stage") == stage_filter]
+    stage_counts: dict[str, int] = {stage: 0 for stage in BIG_IDEA_STAGES}
+    for item in items:
+        stage = str(item.get("board_stage") or "new_signal")
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+    return {
+        "stages": [{"key": key, "label": BIG_IDEA_STAGE_LABELS[key]} for key in BIG_IDEA_STAGES],
+        "total": len(items),
+        "stage_counts": stage_counts,
+        "items": items,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def activity_events_payload(
+    service: HSAResearchService,
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Return explicit and derived command-center activity events."""
+
+    params = params or {}
+    limit = max(1, min(_int_param(params, "limit", 100), 300))
+    entity_type = _str_param(params, "entity_type")
+    entity_id = _str_param(params, "entity_id")
+    source = _str_param(params, "source")
+    explicit = [
+        _command_center_activity_event(record.model_dump(mode="json"))
+        for record in service.repository.list_command_center_activity_events(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            source=source,
+            limit=limit,
+        )
+    ]
+    derived = _derived_activity_events(service, limit=limit)
+    if entity_type:
+        derived = [item for item in derived if item.get("entity_type") == entity_type]
+    if entity_id:
+        derived = [item for item in derived if item.get("entity_id") == entity_id]
+    if source:
+        derived = [item for item in derived if item.get("source") == source]
+    events = explicit + derived
+    events.sort(key=lambda item: str(item.get("occurred_at") or ""), reverse=True)
+    events = events[:limit]
+    return {"total": len(events), "items": events}
+
+
+def compute_jobs_payload(
+    service: HSAResearchService,
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Return compute jobs for the redesigned command center."""
+
+    params = params or {}
+    items = service.repository.list_compute_jobs(
+        status=_str_param(params, "status"),
+        runner_kind=_str_param(params, "runner_kind"),
+        limit=max(1, min(_int_param(params, "limit", 50), 200)),
+    )
+    status_counts: dict[str, int] = {}
+    for job in service.repository.list_compute_jobs(limit=None):
+        status_counts[str(job.status)] = status_counts.get(str(job.status), 0) + 1
+    return {
+        "total": sum(status_counts.values()),
+        "visible": len(items),
+        "status_counts": dict(sorted(status_counts.items())),
+        "items": [item.model_dump(mode="json") for item in items],
+    }
+
+
 def list_research_briefs_payload(
     service: HSAResearchService,
     params: Mapping[str, list[str]] | None = None,
@@ -533,6 +642,155 @@ def update_research_lead_status_payload(
         },
     )
     return {"item": None if updated is None else updated.model_dump(mode="json")}
+
+
+def update_big_idea_stage_payload(
+    service: HSAResearchService,
+    entity_type: str,
+    entity_id: str,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist a command-center board stage for a Big Ideas card."""
+
+    payload = payload or {}
+    stage = str(payload.get("stage") or payload.get("board_stage") or "").strip()
+    if stage not in BIG_IDEA_STAGES:
+        raise ValueError("Invalid command-center board stage")
+    entity_type = entity_type.strip()
+    entity_id = entity_id.strip()
+    if entity_type not in _command_center_entity_types():
+        raise ValueError("Invalid command-center entity type")
+    actor = str(payload.get("operator") or payload.get("actor") or "command_center_operator").strip()
+    previous = service.repository.get_command_center_board_stage(entity_type, entity_id)
+    previous_stage = previous.board_stage if previous else _infer_big_idea_stage(_find_big_idea_item(service, entity_type, entity_id))
+    record = service.repository.upsert_command_center_board_stage(
+        CommandCenterBoardStageRecord(
+            entity_type=entity_type,  # type: ignore[arg-type]
+            entity_id=entity_id,
+            board_stage=stage,  # type: ignore[arg-type]
+            actor=actor,
+            note=str(payload.get("note") or "").strip() or None,
+            metadata={"command_center": {"operator": actor}},
+        )
+    )
+    event = _append_activity_event(
+        service,
+        event_type="idea.stage_changed",
+        entity_type=entity_type,
+        entity_id=entity_id,
+        title=f"Moved to {BIG_IDEA_STAGE_LABELS[stage]}",
+        summary=str(payload.get("note") or "").strip(),
+        actor=actor,
+        source="ui",
+        severity="success",
+        from_stage=previous_stage,
+        to_stage=stage,
+        payload={"stage": stage, "previous_stage": previous_stage},
+    )
+    item = _find_big_idea_item(service, entity_type, entity_id)
+    if item is not None:
+        item["board_stage"] = stage
+        item["board_stage_label"] = BIG_IDEA_STAGE_LABELS[stage]
+    return {
+        "item": item,
+        "stage": record.model_dump(mode="json"),
+        "event": event.model_dump(mode="json"),
+    }
+
+
+def queue_big_idea_work_payload(
+    service: HSAResearchService,
+    entity_type: str,
+    entity_id: str,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create explicit follow-up work from a Big Ideas card."""
+
+    payload = payload or {}
+    action = str(payload.get("action") or "").strip()
+    if action not in {"evidence_brief", "validation_packet", "park", "promote", "demote"}:
+        raise ValueError("Invalid Big Ideas queue action")
+    item = _find_big_idea_item(service, entity_type, entity_id)
+    if item is None:
+        raise LookupError("Big Ideas card not found")
+    actor = str(payload.get("operator") or "command_center_operator").strip()
+    if action in {"park", "promote", "demote"}:
+        stage = {"park": "parked", "promote": "validation_ready", "demote": "needs_evidence"}[action]
+        return update_big_idea_stage_payload(
+            service,
+            entity_type,
+            entity_id,
+            {"stage": stage, "operator": actor, "note": f"Action: {action}"},
+        )
+    if action == "evidence_brief":
+        queue_item = service.queue_research_brief(
+            ResearchBriefQueueRequest(
+                topic=_big_idea_evidence_brief_topic(item),
+                disease_scope=str(item.get("disease_scope") or "canine hemangiosarcoma and human angiosarcoma"),
+                source_key=item.get("source_key") or None,
+                priority=35,
+                brief_style="technical",
+                model_profile="research_brief",
+                review_mode="openrouter_required",
+                metadata={
+                    "command_center": {
+                        "queued_from": "big_ideas_cockpit",
+                        "operator": actor,
+                    },
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "card_title": item.get("title"),
+                    "evidence_refs": item.get("evidence_refs") or [],
+                    "missing_evidence": item.get("missing_evidence") or [],
+                },
+            )
+        )
+        event = _append_activity_event(
+            service,
+            event_type="idea.evidence_brief_queued",
+            entity_type=entity_type,
+            entity_id=entity_id,
+            title="Queued evidence brief",
+            summary=str(queue_item.topic),
+            actor=actor,
+            source="ui",
+            severity="success",
+            related={"queue_item_id": str(queue_item.queue_item_id)},
+            payload={"queue_item": queue_item.model_dump(mode="json")},
+        )
+        return {"action": action, "queue_item": queue_item.model_dump(mode="json"), "event": event.model_dump(mode="json")}
+    result = service.build_validation_packets(
+        ValidationPacketRequest(
+            candidate_id=item.get("candidate_id") if item.get("candidate_id") else None,
+            therapy_idea_id=_uuid_from_value(item.get("therapy_idea_id")),
+            topic_query=item.get("title") if not item.get("candidate_id") and not item.get("therapy_idea_id") else None,
+            queue_if_ready=True,
+            dry_run=False,
+            priority=35,
+            limit=1,
+            metadata={
+                "command_center": {
+                    "queued_from": "big_ideas_cockpit",
+                    "operator": actor,
+                },
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+            },
+        )
+    )
+    event = _append_activity_event(
+        service,
+        event_type="idea.validation_packet_queued",
+        entity_type=entity_type,
+        entity_id=entity_id,
+        title="Queued validation packet work",
+        summary=f"{result.queued_count} queued, {result.existing_queue_count} existing",
+        actor=actor,
+        source="ui",
+        severity="success" if result.queued_count or result.existing_queue_count else "watch",
+        payload=result.model_dump(mode="json"),
+    )
+    return {"action": action, "result": result.model_dump(mode="json"), "event": event.model_dump(mode="json")}
 
 
 def run_research_followup_loop_payload(
@@ -865,6 +1123,429 @@ def run_validation_autopilot_payload(
     return service.run_validation_autopilot(request).model_dump(mode="json")
 
 
+def _collect_big_idea_items(service: HSAResearchService, *, limit: int = 100) -> list[dict[str, Any]]:
+    stage_overrides = {
+        f"{record.entity_type}:{record.entity_id}": record
+        for record in service.repository.list_command_center_board_stages(limit=None)
+    }
+    items: list[dict[str, Any]] = []
+    programs = service.list_research_programs(ResearchProgramBoardRequest(limit=min(limit, 100))).programs
+    for program in programs:
+        item = {
+            "entity_type": "research_program",
+            "entity_id": str(program.program_id),
+            "program_id": str(program.program_id),
+            "type_label": "Research Program",
+            "title": program.title,
+            "summary": program.thesis,
+            "hypothesis": program.thesis,
+            "disease_scope": program.disease_scope,
+            "status": program.status,
+            "readiness": program.gate_decision,
+            "score": program.confidence_score,
+            "score_label": "confidence",
+            "candidate_therapies": program.therapy_families,
+            "targets": [],
+            "biomarkers": [],
+            "evidence_refs": program.evidence_refs,
+            "missing_evidence": [task.objective for task in program.evidence_tasks if task.status in {"proposed", "queued"}][:8],
+            "risks": program.confidence_decrease_criteria,
+            "blockers": program.stop_criteria if program.gate_decision == "archive" else [],
+            "next_experiments": program.downstream_therapy_opportunities,
+            "next_action": _program_next_action(program.status, program.gate_decision),
+            "created_at": program.created_at.isoformat(),
+            "updated_at": program.updated_at.isoformat(),
+            "payload": program.model_dump(mode="json"),
+        }
+        items.append(_with_board_stage(service, item, stage_overrides))
+
+    therapy_result = service.list_therapy_ideas(TherapyIdeaLibraryRequest(limit=min(limit, 200)))
+    for record in therapy_result.ideas:
+        payload = _command_center_therapy_idea_record(record.model_dump(mode="json"))
+        item = {
+            **payload,
+            "entity_type": "therapy_idea",
+            "entity_id": payload["idea_id"],
+            "therapy_idea_id": payload["idea_id"],
+            "type_label": "Therapy Idea",
+            "summary": payload.get("hypothesis") or payload.get("rationale") or "",
+            "score": payload.get("priority_score"),
+            "score_label": "priority",
+            "readiness": payload.get("promotion_state") or payload.get("status"),
+            "blockers": payload.get("risks") or [],
+            "missing_evidence": [],
+            "next_action": _therapy_idea_next_action(payload.get("status"), payload.get("promotion_state")),
+            "payload": record.model_dump(mode="json"),
+        }
+        items.append(_with_board_stage(service, item, stage_overrides))
+
+    promotion = service.build_hypothesis_promotion_report(
+        HypothesisPromotionReportRequest(
+            include_blocked=True,
+            include_ready_for_committee=True,
+            include_ready_for_validation=True,
+            limit=min(limit, 100),
+        )
+    )
+    for candidate in promotion.candidates:
+        payload = candidate.model_dump(mode="json")
+        item = {
+            "entity_type": "promotion_candidate",
+            "entity_id": candidate.candidate_id,
+            "candidate_id": candidate.candidate_id,
+            "therapy_idea_id": str(candidate.therapy_idea_id) if candidate.therapy_idea_id else None,
+            "type_label": "Promotion Candidate",
+            "title": candidate.title,
+            "summary": candidate.hypothesis,
+            "hypothesis": candidate.hypothesis,
+            "disease_scope": (candidate.metadata or {}).get(
+                "disease_scope", "canine hemangiosarcoma and human angiosarcoma"
+            ),
+            "status": candidate.promotion_state,
+            "readiness": candidate.promotion_state,
+            "score": candidate.score,
+            "score_label": "promotion",
+            "candidate_therapies": candidate.candidate_therapies,
+            "targets": candidate.targets,
+            "biomarkers": candidate.biomarkers,
+            "evidence_refs": candidate.evidence_refs,
+            "missing_evidence": candidate.blockers,
+            "risks": candidate.risks,
+            "blockers": candidate.blockers,
+            "next_experiments": candidate.next_experiments,
+            "next_action": candidate.recommended_next_action,
+            "created_at": payload.get("created_at"),
+            "updated_at": payload.get("updated_at"),
+            "payload": payload,
+        }
+        items.append(_with_board_stage(service, item, stage_overrides))
+
+    packets = service.build_validation_packets(ValidationPacketRequest(limit=min(limit, 100), dry_run=True)).packets
+    for packet in packets:
+        payload = packet.model_dump(mode="json")
+        item = {
+            "entity_type": "validation_packet",
+            "entity_id": packet.packet_id,
+            "packet_id": packet.packet_id,
+            "candidate_id": packet.candidate_id,
+            "therapy_idea_id": str(packet.therapy_idea_id) if packet.therapy_idea_id else None,
+            "type_label": "Validation Packet",
+            "title": packet.title,
+            "summary": packet.hypothesis,
+            "hypothesis": packet.hypothesis,
+            "disease_scope": packet.disease_scope,
+            "status": packet.status,
+            "readiness": packet.readiness,
+            "score": packet.score,
+            "score_label": "packet",
+            "candidate_therapies": packet.candidate_therapies,
+            "targets": packet.targets,
+            "biomarkers": packet.biomarkers,
+            "evidence_refs": packet.evidence_refs,
+            "direct_evidence_refs": packet.direct_evidence_refs,
+            "analog_evidence_refs": packet.analog_evidence_refs,
+            "missing_evidence": packet.missing_evidence,
+            "risks": packet.risk_annotations or packet.safety_risks,
+            "blockers": packet.dispatch_blockers or packet.protocol_blockers,
+            "next_experiments": packet.next_experiments,
+            "next_action": _validation_packet_next_action(packet.status, packet.readiness),
+            "queue_items": [item.model_dump(mode="json") for item in packet.queue_items],
+            "matched_tools": [match.model_dump(mode="json") for match in packet.matched_tools],
+            "created_at": packet.created_at.isoformat(),
+            "updated_at": packet.updated_at.isoformat(),
+            "payload": payload,
+        }
+        items.append(_with_board_stage(service, item, stage_overrides))
+
+    deduped: dict[str, dict[str, Any]] = {}
+    for item in items:
+        key = f"{item['entity_type']}:{item['entity_id']}"
+        deduped[key] = item
+    ordered = list(deduped.values())
+    ordered.sort(key=lambda item: (float(item.get("score") or 0), str(item.get("updated_at") or "")), reverse=True)
+    return ordered[:limit]
+
+
+def _with_board_stage(
+    service: HSAResearchService,
+    item: dict[str, Any],
+    stage_overrides: Mapping[str, CommandCenterBoardStageRecord],
+) -> dict[str, Any]:
+    key = f"{item['entity_type']}:{item['entity_id']}"
+    override = stage_overrides.get(key)
+    stage = override.board_stage if override else _infer_big_idea_stage(item)
+    item["board_stage"] = stage
+    item["board_stage_label"] = BIG_IDEA_STAGE_LABELS.get(stage, stage)
+    if override:
+        item["board_stage_actor"] = override.actor
+        item["board_stage_updated_at"] = override.updated_at.isoformat()
+    return item
+
+
+def _infer_big_idea_stage(item: Mapping[str, Any] | None) -> str:
+    if not item:
+        return "new_signal"
+    status = str(item.get("status") or "").casefold()
+    readiness = str(item.get("readiness") or item.get("promotion_state") or "").casefold()
+    if status in {"archived", "rejected"} or readiness in {"archive", "blocked"}:
+        return "parked"
+    if status in {"queued_for_validation", "queued", "running", "dispatched"} or "queued" in readiness:
+        return "queued_running"
+    if readiness in {"ready_for_validation_plan", "ready_for_validation_queue", "ready_for_validation_strategy"}:
+        return "validation_ready"
+    if readiness in {"ready_for_committee", "ready_for_therapy_ideas"} or status == "ready_for_promotion":
+        return "committee_ready"
+    if readiness in {"needs_more_evidence", "needs_citation_repair", "needs_one_more_pass"}:
+        return "needs_evidence"
+    return "new_signal"
+
+
+def _find_big_idea_item(service: HSAResearchService, entity_type: str, entity_id: str) -> dict[str, Any] | None:
+    for item in _collect_big_idea_items(service, limit=300):
+        if item.get("entity_type") == entity_type and str(item.get("entity_id")) == entity_id:
+            return item
+    return None
+
+
+def _big_idea_search_text(item: Mapping[str, Any]) -> str:
+    fields = [
+        item.get("title"),
+        item.get("summary"),
+        item.get("hypothesis"),
+        item.get("status"),
+        item.get("readiness"),
+        " ".join(_string_list(item.get("candidate_therapies"))),
+        " ".join(_string_list(item.get("targets"))),
+        " ".join(_string_list(item.get("biomarkers"))),
+        " ".join(_string_list(item.get("evidence_refs"))),
+    ]
+    return " ".join(str(field or "") for field in fields).casefold()
+
+
+def _program_next_action(status: str, gate_decision: str) -> str:
+    if gate_decision == "ready_for_therapy_ideas":
+        return "Run or review therapy committee output."
+    if gate_decision == "ready_for_validation_strategy":
+        return "Build validation strategy from the program packet."
+    if status == "needs_one_more_pass":
+        return "Run the capped evidence loop, then force a gate decision."
+    if status == "archived":
+        return "Parked; reopen only with new evidence."
+    return "Review thesis and decisive questions."
+
+
+def _therapy_idea_next_action(status: Any, promotion_state: Any) -> str:
+    if status == "queued_for_validation" or promotion_state == "queued_for_validation":
+        return "Monitor validation queue and agent outputs."
+    if promotion_state == "ready_for_validation_plan":
+        return "Queue a validation packet."
+    if promotion_state == "ready_for_committee":
+        return "Route through committee review."
+    if promotion_state in {"needs_more_evidence", "needs_citation_repair"}:
+        return "Queue focused evidence work."
+    if status in {"archived", "rejected"}:
+        return "Parked; no action."
+    return "Promote, demote, or queue evidence work."
+
+
+def _validation_packet_next_action(status: str, readiness: str) -> str:
+    if status == "queued_for_validation" or readiness == "queued_for_validation":
+        return "Monitor queued validation work."
+    if readiness in {"ready_for_validation_plan", "ready_for_validation_queue"}:
+        return "Queue validation packet work."
+    if readiness in {"needs_more_evidence", "needs_citation_repair"}:
+        return "Queue evidence repair or follow-up brief."
+    if status == "blocked":
+        return "Inspect blockers before dispatch."
+    return "Review packet and matched validation tools."
+
+
+def _big_idea_evidence_brief_topic(item: Mapping[str, Any]) -> str:
+    missing = _string_list(item.get("missing_evidence"))[:3]
+    title = str(item.get("title") or "untitled idea").strip()
+    if missing:
+        return f"Evidence follow-up for {title}: {'; '.join(missing)}"
+    return f"Evidence follow-up for {title}: strengthen provenance, contradictions, and validation readiness."
+
+
+def _derived_activity_events(service: HSAResearchService, *, limit: int) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for run in service.repository.list_agent_runs(limit=min(limit, 50)):
+        events.append(
+            _derived_event(
+                event_id=f"agent_run:{run.agent_run_id}:{run.status}",
+                occurred_at=(run.completed_at or run.started_at).isoformat(),
+                source="agent",
+                event_type=f"agent.{run.status}",
+                entity_type="agent_run",
+                entity_id=str(run.agent_run_id),
+                title=f"{run.agent_name} {run.status}",
+                summary=_safe_summary_text(run.summary) or _safe_summary_text(run.output_payload),
+                severity="blocked" if str(run.status) == "failed" else "success" if str(run.status) == "completed" else "info",
+            )
+        )
+    for item in service.list_validation_request_queue_items(limit=min(limit, 50)):
+        events.append(
+            _derived_event(
+                event_id=f"validation_request:{item.queue_item_id}:{item.status}",
+                occurred_at=item.updated_at.isoformat(),
+                source="system",
+                event_type=f"validation_request.{item.status}",
+                entity_type="validation_request",
+                entity_id=str(item.queue_item_id),
+                title=f"Validation {item.status}",
+                summary=item.title,
+                severity="blocked" if item.status in {"blocked", "failed"} else "success" if item.status == "completed" else "info",
+            )
+        )
+    for item in service.list_research_brief_queue_items(limit=min(limit, 50)):
+        events.append(
+            _derived_event(
+                event_id=f"research_brief:{item.queue_item_id}:{item.status}",
+                occurred_at=item.updated_at.isoformat(),
+                source="system",
+                event_type=f"research_brief.{item.status}",
+                entity_type="research_brief",
+                entity_id=str(item.queue_item_id),
+                title=f"Brief {item.status}",
+                summary=item.topic,
+                severity="blocked" if item.status == "failed" else "success" if item.status == "completed" else "info",
+            )
+        )
+    for job in service.repository.list_compute_jobs(limit=min(limit, 50)):
+        events.append(
+            _derived_event(
+                event_id=f"compute_job:{job.compute_job_id}:{job.status}",
+                occurred_at=job.updated_at.isoformat(),
+                source="system",
+                event_type=f"compute.{job.status}",
+                entity_type="compute_job",
+                entity_id=str(job.compute_job_id),
+                title=f"Compute {job.status}",
+                summary=job.title,
+                severity="blocked" if job.status in {"failed", "blocked"} else "success" if job.status == "completed" else "info",
+            )
+        )
+    return events
+
+
+def _derived_event(
+    *,
+    event_id: str,
+    occurred_at: str,
+    source: str,
+    event_type: str,
+    entity_type: str,
+    entity_id: str,
+    title: str,
+    summary: str,
+    severity: str,
+) -> dict[str, Any]:
+    return {
+        "event_id": event_id,
+        "occurred_at": occurred_at,
+        "actor": source,
+        "source": source,
+        "event_type": event_type,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "title": title,
+        "summary": summary,
+        "severity": severity,
+        "related": {},
+        "payload": {},
+        "derived": True,
+    }
+
+
+def _append_activity_event(
+    service: HSAResearchService,
+    *,
+    event_type: str,
+    entity_type: str,
+    entity_id: str,
+    title: str,
+    summary: str = "",
+    actor: str = "command_center_operator",
+    source: str = "ui",
+    severity: str = "info",
+    from_stage: str | None = None,
+    to_stage: str | None = None,
+    related: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
+) -> CommandCenterActivityEventRecord:
+    return service.repository.append_command_center_activity_event(
+        CommandCenterActivityEventRecord(
+            actor=actor,
+            source=source,  # type: ignore[arg-type]
+            event_type=event_type,
+            entity_type=entity_type,  # type: ignore[arg-type]
+            entity_id=entity_id,
+            title=title,
+            summary=summary,
+            from_stage=from_stage,  # type: ignore[arg-type]
+            to_stage=to_stage,  # type: ignore[arg-type]
+            severity=severity,  # type: ignore[arg-type]
+            related=related or {},
+            payload=payload or {},
+        )
+    )
+
+
+def _command_center_activity_event(record: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "event_id": str(record.get("event_id")),
+        "occurred_at": record.get("occurred_at"),
+        "actor": record.get("actor"),
+        "source": record.get("source"),
+        "event_type": record.get("event_type"),
+        "entity_type": record.get("entity_type"),
+        "entity_id": record.get("entity_id"),
+        "title": record.get("title"),
+        "summary": record.get("summary"),
+        "from_stage": record.get("from_stage"),
+        "to_stage": record.get("to_stage"),
+        "severity": record.get("severity"),
+        "related": record.get("related") or {},
+        "payload": record.get("payload") or {},
+        "derived": False,
+    }
+
+
+def _command_center_entity_types() -> set[str]:
+    return {
+        "research_program",
+        "therapy_idea",
+        "promotion_candidate",
+        "validation_packet",
+        "research_lead",
+        "research_brief",
+        "agent_run",
+        "validation_request",
+        "compute_job",
+    }
+
+
+def _uuid_from_value(value: Any) -> UUID | None:
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except ValueError:
+        return None
+
+
+def _safe_summary_text(payload: Any) -> str:
+    if isinstance(payload, str):
+        return payload[:240]
+    if isinstance(payload, Mapping):
+        for key in ("summary", "topic", "title", "decision_summary", "reason"):
+            value = payload.get(key)
+            if value:
+                return str(value)[:240]
+    return ""
+
+
 def _collect_idea_records(service: HSAResearchService) -> list[dict[str, Any]]:
     validation_items = service.list_validation_request_queue_items(limit=None)
     validation_by_idea: dict[str, list[dict[str, Any]]] = {}
@@ -1182,6 +1863,9 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
             if parsed.path.startswith("/assets/"):
                 self._send_static(parsed.path.removeprefix("/assets/"))
                 return
+            if parsed.path in {"/app.js", "/sortable.min.js", "/styles.css"}:
+                self._send_static(parsed.path.removeprefix("/"))
+                return
             if parsed.path == "/api/command-center":
                 self._send_json(build_command_center_payload(service_factory(), parse_qs(parsed.query)))
                 return
@@ -1190,6 +1874,12 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
                 return
             if parsed.path == "/api/action-items":
                 self._send_json(build_action_items_payload(service_factory(), parse_qs(parsed.query)))
+                return
+            if parsed.path == "/api/big-ideas":
+                self._send_json(big_ideas_payload(service_factory(), parse_qs(parsed.query)))
+                return
+            if parsed.path == "/api/activity-events":
+                self._send_json(activity_events_payload(service_factory(), parse_qs(parsed.query)))
                 return
             if parsed.path == "/api/validation-requests":
                 self._send_json(list_validation_queue_payload(service_factory(), parse_qs(parsed.query)))
@@ -1220,6 +1910,9 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
                 return
             if parsed.path == "/api/validation-packets":
                 self._send_json(validation_packets_payload(service_factory(), parse_qs(parsed.query)))
+                return
+            if parsed.path == "/api/compute-jobs":
+                self._send_json(compute_jobs_payload(service_factory(), parse_qs(parsed.query)))
                 return
             parts = [part for part in PurePosixPath(parsed.path).parts if part != "/"]
             if len(parts) == 3 and parts[:2] == ["api", "agent-runs"]:
@@ -1261,6 +1954,22 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
                 try:
                     payload = self._read_json_body()
                     self._send_json(run_validation_autopilot_payload(service_factory(), payload))
+                except (json.JSONDecodeError, ValueError) as exc:
+                    self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            if len(parts) == 5 and parts[:2] == ["api", "big-ideas"] and parts[4] == "stage":
+                try:
+                    payload = self._read_json_body()
+                    self._send_json(update_big_idea_stage_payload(service_factory(), parts[2], parts[3], payload))
+                except (json.JSONDecodeError, ValueError) as exc:
+                    self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            if len(parts) == 5 and parts[:2] == ["api", "big-ideas"] and parts[4] == "queue-work":
+                try:
+                    payload = self._read_json_body()
+                    self._send_json(queue_big_idea_work_payload(service_factory(), parts[2], parts[3], payload))
+                except LookupError as exc:
+                    self._send_error(HTTPStatus.NOT_FOUND, str(exc))
                 except (json.JSONDecodeError, ValueError) as exc:
                     self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
                 return
@@ -1341,7 +2050,10 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
-            self.wfile.write(content)
+            try:
+                self.wfile.write(content)
+            except BrokenPipeError:
+                return
 
         def _send_json(self, payload: Mapping[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
             content = json.dumps(payload, indent=2, sort_keys=True, default=str).encode("utf-8")
@@ -1350,7 +2062,10 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
-            self.wfile.write(content)
+            try:
+                self.wfile.write(content)
+            except BrokenPipeError:
+                return
 
         def _send_error(self, status: HTTPStatus, message: str) -> None:
             self._send_json({"error": message, "status": int(status)}, status=status)
