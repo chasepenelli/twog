@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { CandidateContributionPanel } from '@/components/CandidateContributionPanel';
 import {
   formatPublicDate,
   getCandidate,
@@ -267,6 +268,13 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
           ))}
         </div>
       </section>
+
+      <CandidateContributionPanel
+        candidateId={candidate.candidate_id}
+        displayId={displayId}
+        payloadPath={payloadPath}
+        snapshotHash={shortHash(candidate.content_hash ?? snapshot?.content_hash)}
+      />
 
       <section className="record-panel method-callout">
         <p className="section-kicker">Reproducibility</p>
