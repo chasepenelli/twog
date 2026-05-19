@@ -78,6 +78,7 @@ on:
           - "embedding_index_job"
           - "embedding_maintenance_job"
           - "structured_source_pipeline_job"
+          - "candidate_contribution_intake_report_job"
       config_json:
         description: "Optional Dagster run config JSON"
         type: string
