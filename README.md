@@ -8,6 +8,17 @@ The practical aim is to make serious scientific work easier to inspect. TWOG doe
 
 Live site: [twog.bio](https://twog.bio)
 
+## For Reviewers
+
+If you are evaluating TWOG from the outside, start here:
+
+- [Public site](https://twog.bio): mission, methods, and candidate records.
+- [Candidate index](https://twog.bio/candidates): inspectable public records generated from the internal pipeline.
+- [Example candidate](https://twog.bio/candidates/twog-15f50d): a candidate page with rationale, evidence, risks, method references, decision history, and a machine-readable payload.
+- [Candidate record method](https://twog.bio/methods/candidate-record-v1): how public records, evidence refs, content hashes, and check-in submissions work.
+
+The important design choice is that TWOG does not treat a web page as marketing copy. A candidate page is intended to be a public research artifact: readable by a person, exportable as JSON, traceable back to pipeline records, and open to structured critique.
+
 ## Why This Exists
 
 Canine hemangiosarcoma is aggressive, common in dogs, and underserved by conventional drug discovery economics. It also overlaps with human vascular cancers such as angiosarcoma, making it a meaningful comparative oncology problem.
@@ -39,8 +50,33 @@ public evidence
 - Public candidate record layer under `twog/`.
 - Public JSON payloads for candidate checkout.
 - Neon-backed contribution intake API for candidate check-ins.
+- Dagster-readable candidate contribution intake report for operator triage.
 - MCP-ready service boundary for future agent/human tool sharing.
 - RunPod/Docker worker foundation for expert-gated MD smoke tests.
+
+## Architecture At A Glance
+
+```mermaid
+flowchart LR
+    A["Public scientific sources"] --> B["Structured ingestion"]
+    B --> C["Research object store"]
+    C --> D["Agent synthesis and critique"]
+    D --> E["Research programs"]
+    E --> F["Therapy ideas"]
+    F --> G["Candidate records"]
+    G --> H["Public payloads"]
+    H --> I["Contributor check-in"]
+    I --> J["Neon intake table"]
+    J --> K["Dagster intake report"]
+    K --> L["Evidence review / validation queues"]
+    L --> M["Compute and artifact records"]
+```
+
+There are three deliberate boundaries:
+
+- **Evidence boundary:** ingestion and chunking are deterministic where possible, with LLMs used for synthesis and critique rather than silent data mutation.
+- **Public boundary:** candidate pages expose payloads and accept check-ins, but public submissions do not directly alter candidate state.
+- **Compute boundary:** GPU jobs are approval-first and ledgered; smoke workers prove artifact flow before any heavier scientific claim is made.
 
 ## Public Proof Layer
 
@@ -72,6 +108,23 @@ TWOG's public collaboration loop is designed as a gated evidence exchange:
 5. TWOG queues the packet for intake, provenance review, citation dedupe, and routing into evidence review, validation planning, or compute review.
 
 Outside submissions do not directly mutate a candidate record. That gate is intentional.
+
+## What Is Live Now
+
+- Mission-first public website on `twog.bio`.
+- Static public candidate records with JSON payloads.
+- Neon/Postgres-backed contribution intake endpoint.
+- Production storage readiness check on candidate contribution routes.
+- Manual Dagster report job for contribution intake visibility.
+- Internal records for research programs, therapy ideas, briefs, validation packets, omics readouts, agent runs, reviews, and compute jobs.
+
+## What Comes Next
+
+- Operator triage actions for public contributions: accept, reject, request more information, route to evidence review, route to validation planning, or route to compute review.
+- More candidate records exported from the internal system.
+- Stronger public method pages for docking, MD smoke tests, omics readouts, and synthesis review.
+- Dedicated GPU compute path using TWOG-owned containers and persisted artifacts.
+- A cleaner public audit trail connecting candidate pages back to agent runs, evidence packets, and compute outputs.
 
 ## Repository Layout
 
