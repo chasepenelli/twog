@@ -23,6 +23,7 @@ from .contracts import (
     CommandCenterRequest,
     CommitHypothesisRequest,
     DoiOpenAccessFollowupQueueRequest,
+    EntityLookupRequest,
     EvidenceGapResolverRequest,
     FullTextTriageRequest,
     FullTextOpsRequest,
@@ -1429,6 +1430,52 @@ def run_agent_performance_evaluation_tool(
 
 
 if mcp is not None:
+
+    @mcp.tool()
+    def twog_entity_resolve(
+        query: str,
+        category: str | None = None,
+        organism: str | None = None,
+        min_confidence: float = 0.7,
+        agent_run_id: str | None = None,
+    ) -> dict:
+        """Resolve a biomedical entity through TWOG-owned aliases and provenance."""
+
+        return get_service().resolve_entity_lookup(
+            EntityLookupRequest(
+                query=query,
+                category=category,  # type: ignore[arg-type]
+                organism=organism,
+                min_confidence=min_confidence,
+                agent_run_id=UUID(agent_run_id) if agent_run_id else None,
+            )
+        ).model_dump(mode="json")
+
+    @mcp.tool()
+    def twog_entity_resolve_bulk(
+        queries: list[str],
+        category: str | None = None,
+        organism: str | None = None,
+        min_confidence: float = 0.7,
+        agent_run_id: str | None = None,
+    ) -> dict:
+        """Resolve a bounded batch of biomedical entities through TWOG-owned aliases."""
+
+        requests = [
+            EntityLookupRequest(
+                query=query,
+                category=category,  # type: ignore[arg-type]
+                organism=organism,
+                min_confidence=min_confidence,
+                agent_run_id=UUID(agent_run_id) if agent_run_id else None,
+            )
+            for query in queries[:1000]
+        ]
+        responses = get_service().resolve_entity_lookup_bulk(requests)
+        return {
+            "results": [response.model_dump(mode="json") for response in responses],
+            "total": len(responses),
+        }
 
     @mcp.tool()
     def search_claims(

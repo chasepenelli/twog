@@ -30,6 +30,7 @@ from .contracts import (
     EntityMention,
     MDExpertApprovalRecord,
     MDExpertReviewPacketRecord,
+    PrimitiveCallEvent,
     RawSourceRecord,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
@@ -45,6 +46,7 @@ from .contracts import (
     ScrapeSourceProfileReview,
     SourceFollowupQueueItem,
     SourceQuery,
+    SourceVersionRecord,
     TextEmbedding,
     TextEmbeddingSearchRequest,
     TextEmbeddingSearchResult,
@@ -537,6 +539,30 @@ class PostgresResearchRepository(ResearchRepository):
         )
         return EntityAlias.model_validate(_payload(row))
 
+    def list_entity_aliases(
+        self,
+        *,
+        entity_type: str | None = None,
+        query: str | None = None,
+        limit: int | None = None,
+    ) -> list[EntityAlias]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if entity_type:
+            clauses.append("entity_type = %s")
+            params.append(entity_type)
+        if query:
+            clauses.append("(lower(alias_normalized) like lower(%s) or lower(normalized_key) like lower(%s))")
+            params.extend((f"%{query}%", f"%{query}%"))
+        sql = "select payload from entity_aliases"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by entity_type, alias_normalized, normalized_key"
+        if limit is not None:
+            sql += " limit %s"
+            params.append(limit)
+        return [EntityAlias.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
+
     def upsert_entity_mention(self, mention: EntityMention) -> EntityMention:
         payload = mention.model_dump(mode="json")
         self._execute(
@@ -625,6 +651,101 @@ class PostgresResearchRepository(ResearchRepository):
             sql += " limit %s"
             params.append(limit)
         return [EntityMention.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
+
+    def upsert_source_version(self, record: SourceVersionRecord) -> SourceVersionRecord:
+        payload = record.model_dump(mode="json")
+        self._execute(
+            """
+            insert into source_versions (
+              source_key, source_version, materialized_at, source_url, artifact_id, payload
+            )
+            values (%s, %s, %s, %s, %s, %s)
+            on conflict(source_key) do update set
+              source_version = excluded.source_version,
+              materialized_at = excluded.materialized_at,
+              source_url = excluded.source_url,
+              artifact_id = excluded.artifact_id,
+              payload = excluded.payload,
+              updated_at = now()
+            """,
+            (
+                record.source_key,
+                record.source_version,
+                record.materialized_at,
+                record.source_url,
+                str(record.artifact_id) if record.artifact_id else None,
+                self._json(payload),
+            ),
+        )
+        row = self._fetchone("select payload from source_versions where source_key = %s", (record.source_key,))
+        return SourceVersionRecord.model_validate(_payload(row))
+
+    def list_source_versions(
+        self,
+        *,
+        source_key: str | None = None,
+        limit: int | None = 100,
+    ) -> list[SourceVersionRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if source_key:
+            clauses.append("source_key = %s")
+            params.append(source_key)
+        sql = "select payload from source_versions"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by materialized_at desc"
+        if limit is not None:
+            sql += " limit %s"
+            params.append(limit)
+        return [SourceVersionRecord.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
+
+    def create_primitive_call_event(self, event: PrimitiveCallEvent) -> PrimitiveCallEvent:
+        payload = event.model_dump(mode="json")
+        self._execute(
+            """
+            insert into primitive_call_events (
+              event_id, primitive_name, status, request_hash, result_hash,
+              agent_run_id, payload, created_at
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                str(event.event_id),
+                event.primitive_name,
+                event.status,
+                event.request_hash,
+                event.result_hash,
+                str(event.agent_run_id) if event.agent_run_id else None,
+                self._json(payload),
+                event.created_at,
+            ),
+        )
+        return event
+
+    def list_primitive_call_events(
+        self,
+        *,
+        primitive_name: str | None = None,
+        agent_run_id: UUID | None = None,
+        limit: int | None = 50,
+    ) -> list[PrimitiveCallEvent]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if primitive_name:
+            clauses.append("primitive_name = %s")
+            params.append(primitive_name)
+        if agent_run_id:
+            clauses.append("agent_run_id = %s")
+            params.append(str(agent_run_id))
+        sql = "select payload from primitive_call_events"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by created_at desc"
+        if limit is not None:
+            sql += " limit %s"
+            params.append(limit)
+        return [PrimitiveCallEvent.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
 
     def upsert_document_chunk(self, chunk: DocumentChunk) -> DocumentChunk:
         payload = chunk.model_dump(mode="json")
@@ -3470,6 +3591,36 @@ class PostgresResearchRepository(ResearchRepository):
               on entity_mentions(chunk_id, chunk_char_start);
             create index if not exists entity_mentions_entity_idx
               on entity_mentions(entity_id);
+
+            create table if not exists source_versions (
+              source_key text primary key,
+              source_version text not null,
+              materialized_at timestamptz not null,
+              source_url text,
+              artifact_id text,
+              payload jsonb not null,
+              created_at timestamptz not null default now(),
+              updated_at timestamptz not null default now()
+            );
+
+            create index if not exists source_versions_materialized_idx
+              on source_versions(materialized_at desc);
+
+            create table if not exists primitive_call_events (
+              event_id text primary key,
+              primitive_name text not null,
+              status text not null,
+              request_hash text not null,
+              result_hash text,
+              agent_run_id text,
+              payload jsonb not null,
+              created_at timestamptz not null default now()
+            );
+
+            create index if not exists primitive_call_events_name_idx
+              on primitive_call_events(primitive_name, created_at desc);
+            create index if not exists primitive_call_events_agent_idx
+              on primitive_call_events(agent_run_id, created_at desc);
 
             create table if not exists claims (
               claim_id text primary key,

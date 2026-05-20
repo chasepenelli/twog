@@ -90,6 +90,10 @@ class SourceKind(str, Enum):
     CANINE_ONCOLOGY = "canine_oncology"
     OMICS = "omics"
     CHEMISTRY = "chemistry"
+    ENTITY_NOMENCLATURE = "entity_nomenclature"
+    ONTOLOGY = "ontology"
+    PATHWAY = "pathway"
+    ORTHOLOGY = "orthology"
     TARGET_STRUCTURE = "target_structure"
     SAFETY = "safety"
     INTERNAL = "internal"
@@ -3093,6 +3097,222 @@ class EntityResolutionResult(StrictBaseModel):
     aliases_upserted: int = 0
     mentions_upserted: int = 0
     errors: list[str] = Field(default_factory=list)
+
+
+EntityLookupCategory = Literal["compound", "target", "disease", "pathway"]
+EntityLookupMatchType = Literal["exact", "synonym", "fuzzy", "cross_ref"]
+PrimitiveName = Literal["entity_lookup", "compound_similarity", "ortholog_lookup", "bioactivity_query"]
+PrimitiveCallStatus = Literal["completed", "failed"]
+
+
+class SourceVersionRecord(StrictBaseModel):
+    source_key: str
+    source_version: str
+    materialized_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    source_url: str | None = None
+    artifact_id: UUID | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PrimitiveCallEvent(StrictBaseModel):
+    event_id: UUID = Field(default_factory=uuid4)
+    primitive_name: PrimitiveName
+    status: PrimitiveCallStatus = "completed"
+    request_hash: str
+    result_hash: str | None = None
+    agent_run_id: UUID | None = None
+    source_versions: dict[str, str] = Field(default_factory=dict)
+    input_payload: dict[str, Any] = Field(default_factory=dict)
+    output_payload: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EntityLookupRequest(StrictBaseModel):
+    query: str = Field(min_length=1)
+    category: EntityLookupCategory | None = None
+    organism: str | None = Field(default=None, description="NCBI taxonomy ID, e.g. 9606 or 9615.")
+    min_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    agent_run_id: UUID | None = None
+
+
+class EntityLookupResult(StrictBaseModel):
+    query: str
+    canonical_id: str
+    canonical_title: str
+    category: EntityLookupCategory
+    organism: str | None = None
+    match_type: EntityLookupMatchType
+    match_confidence: float = Field(ge=0.0, le=1.0)
+    source_table: str
+    source_version: str
+    alternate_ids: dict[str, str] = Field(default_factory=dict)
+    resolved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    resolution_id: UUID = Field(default_factory=uuid4)
+
+
+class EntityLookupFailure(StrictBaseModel):
+    query: str
+    category: EntityLookupCategory | None = None
+    organism: str | None = None
+    reason: Literal["no_match", "ambiguous", "low_confidence"]
+    candidates: list[EntityLookupResult] = Field(default_factory=list)
+    resolved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class EntityLookupResponse(StrictBaseModel):
+    request: EntityLookupRequest
+    result: EntityLookupResult | None = None
+    failure: EntityLookupFailure | None = None
+    event_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _result_or_failure(self) -> "EntityLookupResponse":
+        if (self.result is None) == (self.failure is None):
+            raise ValueError("Exactly one of result or failure is required")
+        return self
+
+
+class EntityLookupIndexRequest(StrictBaseModel):
+    source_keys: list[str] = Field(default_factory=list)
+    limit_per_source: int | None = Field(default=1000, ge=1)
+
+
+class EntityLookupIndexSourceSummary(StrictBaseModel):
+    source_key: str
+    records_seen: int = Field(default=0, ge=0)
+    entities_upserted: int = Field(default=0, ge=0)
+    aliases_upserted: int = Field(default=0, ge=0)
+    source_version: str | None = None
+    errors: list[str] = Field(default_factory=list)
+
+
+class EntityLookupIndexResult(StrictBaseModel):
+    request: EntityLookupIndexRequest
+    source_summaries: list[EntityLookupIndexSourceSummary] = Field(default_factory=list)
+    records_seen: int = Field(default=0, ge=0)
+    entities_upserted: int = Field(default=0, ge=0)
+    aliases_upserted: int = Field(default=0, ge=0)
+    source_versions_upserted: int = Field(default=0, ge=0)
+    errors: list[str] = Field(default_factory=list)
+    materialized_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+FingerprintType = Literal["ecfp2", "ecfp4", "ecfp6", "ecfp8"]
+SimilarityMethod = Literal["tanimoto", "tversky"]
+
+
+class CompoundSimilaritySearchRequest(StrictBaseModel):
+    query_smiles: str | None = None
+    query_compound_id: str | None = None
+    fingerprint_type: FingerprintType = "ecfp4"
+    similarity_method: SimilarityMethod = "tanimoto"
+    threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+    max_results: int = Field(default=100, ge=1, le=500)
+    target_filter: str | None = None
+    activity_filter: str | None = None
+    min_activity_confidence: int = Field(default=5, ge=0, le=9)
+    agent_run_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _query_required(self) -> "CompoundSimilaritySearchRequest":
+        if not self.query_smiles and not self.query_compound_id:
+            raise ValueError("query_smiles or query_compound_id is required")
+        return self
+
+
+class CompoundSimilarityMatch(StrictBaseModel):
+    compound_id: str
+    title: str | None = None
+    smiles: str
+    inchi_key: str | None = None
+    similarity_score: float = Field(ge=0.0, le=1.0)
+    fingerprint_type: FingerprintType = "ecfp4"
+    bioactivity_count: int = Field(default=0, ge=0)
+
+
+class CompoundSimilaritySearchResult(StrictBaseModel):
+    query_smiles: str
+    query_compound_id: str | None = None
+    matches: list[CompoundSimilarityMatch] = Field(default_factory=list)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    fingerprint_corpus_version: str
+    search_id: UUID = Field(default_factory=uuid4)
+    searched_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class OrthologMappingRequest(StrictBaseModel):
+    source_gene_id: str
+    source_organism: str
+    target_organism: str
+    min_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    agent_run_id: UUID | None = None
+
+
+class OrthologMapping(StrictBaseModel):
+    source_gene_id: str
+    source_title: str
+    source_organism: str
+    target_gene_id: str
+    target_title: str
+    target_organism: str
+    relationship: Literal["one_to_one", "one_to_many", "many_to_many", "paralog"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    sources: list[str] = Field(default_factory=list)
+    source_versions: dict[str, str] = Field(default_factory=dict)
+    evidence_types: list[Literal["sequence_based", "synteny_based", "curated", "phylogeny_based"]] = Field(
+        default_factory=list
+    )
+    mapping_id: UUID = Field(default_factory=uuid4)
+    computed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class OrthologMappingResult(StrictBaseModel):
+    request: OrthologMappingRequest
+    mappings: list[OrthologMapping] = Field(default_factory=list)
+    found: bool = False
+
+
+ActivityType = Literal["IC50", "Ki", "Kd", "EC50", "ED50", "AC50", "DC50", "Potency", "Activity"]
+
+
+class BioactivityQuery(StrictBaseModel):
+    compound_id: str | None = None
+    target_id: str | None = None
+    activity_type: list[ActivityType] = Field(default_factory=list)
+    max_value_nm: float | None = Field(default=None, gt=0)
+    min_confidence: int = Field(default=5, ge=0, le=9)
+    require_strict_relation: bool = True
+    require_publication: bool = False
+    min_supporting_records: int = Field(default=1, ge=1)
+    agent_run_id: UUID | None = None
+
+
+class BioactivityRecord(StrictBaseModel):
+    activity_id: str
+    compound_id: str
+    target_id: str
+    assay_id: str | None = None
+    activity_type: ActivityType
+    value: float | None = None
+    unit: str | None = None
+    standardized_value_nm: float | None = None
+    relation: Literal["=", "<", ">", "<=", ">=", "~"] | None = None
+    is_strict: bool = False
+    confidence_score: int = Field(default=0, ge=0, le=9)
+    publication_id: str | None = None
+    publication_doi: str | None = None
+    source_version: str
+
+
+class BioactivityQueryResult(StrictBaseModel):
+    query: BioactivityQuery
+    records: list[BioactivityRecord] = Field(default_factory=list)
+    compound_aggregates: list[dict[str, Any]] = Field(default_factory=list)
+    target_aggregates: list[dict[str, Any]] = Field(default_factory=list)
+    chembl_version: str
+    queried_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ClaimSearchRequest(StrictBaseModel):

@@ -22,6 +22,7 @@ from .contracts import (
     CommandCenterRequest,
     ComputeJobReportRequest,
     EvidenceGapResolverRequest,
+    EntityLookupIndexRequest,
     FullTextOpsRequest,
     HypothesisPromotionReportRequest,
     MDExpertAgentReviewRequest,
@@ -74,6 +75,7 @@ from .query_policy import (
     build_chemistry_source_queries,
     build_clinical_trial_source_queries,
     build_omics_source_queries,
+    build_research_primitive_source_queries,
     build_safety_source_queries,
     build_scholarly_source_queries,
     build_target_structure_source_queries,
@@ -87,6 +89,7 @@ from .source_sets import (
     LITERATURE_CORPUS_SOURCE_LIMITS,
     LITERATURE_FULL_TEXT_SOURCE_KEYS,
     LITERATURE_FULL_TEXT_SOURCE_LIMITS,
+    PRIMITIVE_SOURCE_KEYS,
     STRUCTURED_SOURCE_KEYS,
 )
 
@@ -102,6 +105,8 @@ CANINE_DATA_OMICS_SMOKE_KEYS = CANINE_DATA_OMICS_SOURCE_KEYS
 LITERATURE_CLINICAL_SMOKE_KEYS = LITERATURE_CLINICAL_SOURCE_KEYS
 ALL_API_SMOKE_KEYS = ALL_API_SOURCE_KEYS
 HOSTED_API_REPORT_KEYS = ALL_API_SMOKE_KEYS
+ENTITY_LOOKUP_INDEX_SOURCE_KEYS = (*PRIMITIVE_SOURCE_KEYS, "pubchem", "chembl", "uniprot")
+RESEARCH_PRIMITIVE_SOURCE_SMOKE_KEYS = ("hgnc", "ncbi_gene", "ensembl_xrefs", "pubchem", "reactome")
 LITERATURE_FULL_TEXT_SMOKE_LIMITS = {
     source_key: 1 for source_key in LITERATURE_FULL_TEXT_SOURCE_KEYS
 }
@@ -749,6 +754,14 @@ _ENTITY_RESOLUTION_TABLE_COLUMNS = (
     "passes_minimum_bar",
     "errors",
 )
+_ENTITY_LOOKUP_INDEX_TABLE_COLUMNS = (
+    "source_key",
+    "records_seen",
+    "entities_upserted",
+    "aliases_upserted",
+    "source_version",
+    "errors",
+)
 _COMPUTE_JOB_TABLE_COLUMNS = (
     "compute_job_id",
     "queue_item_id",
@@ -790,6 +803,7 @@ def build_source_queries() -> list[SourceQuery]:
         *build_omics_source_queries(),
         *build_chemistry_source_queries(),
         *build_target_structure_source_queries(),
+        *build_research_primitive_source_queries(),
         *build_safety_source_queries(),
     ]
 
@@ -1078,6 +1092,25 @@ if dg is not None:
             "entity_resolution_table": _metadata_table(
                 _entity_resolution_source_rows(report),
                 _ENTITY_RESOLUTION_TABLE_COLUMNS,
+            ),
+        }
+
+    def _entity_lookup_index_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        errors = report.get("errors", [])
+        totals = report.get("totals", {})
+        return {
+            "source_count": len(report.get("source_keys", [])),
+            "source_keys": dg.MetadataValue.json(report.get("source_keys", [])),
+            "records_seen": dg.MetadataValue.int(int(totals.get("records_seen") or 0)),
+            "entities_upserted": dg.MetadataValue.int(int(totals.get("entities_upserted") or 0)),
+            "aliases_upserted": dg.MetadataValue.int(int(totals.get("aliases_upserted") or 0)),
+            "source_versions_upserted": dg.MetadataValue.int(int(totals.get("source_versions_upserted") or 0)),
+            "error_count": len(errors),
+            "errors": dg.MetadataValue.json(errors),
+            "coverage": dg.MetadataValue.json(report.get("coverage", {})),
+            "source_table": _metadata_table(
+                report.get("sources", []),
+                _ENTITY_LOOKUP_INDEX_TABLE_COLUMNS,
             ),
         }
 
@@ -3104,6 +3137,36 @@ if dg is not None:
             source_limits={source_key: 1 for source_key in STRUCTURED_SOURCE_MULTISOURCE_SMOKE_KEYS},
             extract_limit=250,
             curate_limit=250,
+        )
+
+    @dg.asset(group_name="research_primitives")
+    def research_primitive_source_smoke_report(research_repository: ResearchRepositoryResource) -> dict:
+        """Small hosted-runtime validation run for primitive source ingestion."""
+
+        from .structured_orchestration import run_structured_sources_pipeline
+
+        repository = research_repository.build_repository()
+        return run_structured_sources_pipeline(
+            repository,
+            source_keys=RESEARCH_PRIMITIVE_SOURCE_SMOKE_KEYS,
+            source_limits={source_key: 2 for source_key in RESEARCH_PRIMITIVE_SOURCE_SMOKE_KEYS},
+            extract_limit=50,
+            curate_limit=50,
+        )
+
+    @dg.asset(group_name="research_primitives")
+    def research_primitive_source_pipeline_report(research_repository: ResearchRepositoryResource) -> dict:
+        """Manual primitive-source refresh for entity, compound, pathway, and ontology lookup data."""
+
+        from .structured_orchestration import run_structured_sources_pipeline
+
+        repository = research_repository.build_repository()
+        return run_structured_sources_pipeline(
+            repository,
+            source_keys=ENTITY_LOOKUP_INDEX_SOURCE_KEYS,
+            source_limits={source_key: 5 for source_key in ENTITY_LOOKUP_INDEX_SOURCE_KEYS},
+            extract_limit=500,
+            curate_limit=500,
         )
 
     @dg.asset(group_name="literature_clinical_refresh")
@@ -7057,6 +7120,34 @@ if dg is not None:
         }
         return dg.MaterializeResult(value=report, metadata=_entity_resolution_report_metadata(report))
 
+    @dg.asset(group_name="research_primitives")
+    def entity_lookup_index_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
+        """Materialize source-derived entity aliases for TWOG-owned primitive lookup."""
+
+        from .research_primitives import materialize_entity_lookup_index
+
+        repository = research_repository.build_repository()
+        result = materialize_entity_lookup_index(
+            repository,
+            EntityLookupIndexRequest(
+                source_keys=list(ENTITY_LOOKUP_INDEX_SOURCE_KEYS),
+                limit_per_source=1000,
+            ),
+        )
+        report = {
+            "source_keys": list(ENTITY_LOOKUP_INDEX_SOURCE_KEYS),
+            "sources": [summary.model_dump(mode="json") for summary in result.source_summaries],
+            "totals": {
+                "records_seen": result.records_seen,
+                "entities_upserted": result.entities_upserted,
+                "aliases_upserted": result.aliases_upserted,
+                "source_versions_upserted": result.source_versions_upserted,
+            },
+            "errors": list(result.errors),
+            "coverage": repository.coverage_summary(),
+        }
+        return dg.MaterializeResult(value=report, metadata=_entity_lookup_index_metadata(report))
+
     @dg.asset(group_name="embedding_index")
     def embedding_index_report(research_repository: ResearchRepositoryResource) -> dg.MaterializeResult:
         """Deterministic local embedding index over persisted document chunks."""
@@ -7468,6 +7559,8 @@ if dg is not None:
         structured_source_pipeline_report,
         structured_source_smoke_report,
         structured_source_multisource_smoke_report,
+        research_primitive_source_smoke_report,
+        research_primitive_source_pipeline_report,
         literature_clinical_smoke_report,
         all_api_smoke_report,
         literature_corpus_harvest_report,
@@ -7547,6 +7640,7 @@ if dg is not None:
         clinicaltrials_gov_source_followup_ingest_report,
         unpaywall_source_followup_ingest_report,
         entity_resolution_report,
+        entity_lookup_index_report,
         embedding_index_report,
         embedding_maintenance_report,
     ]
@@ -7562,6 +7656,14 @@ if dg is not None:
     structured_source_multisource_smoke_job = dg.define_asset_job(
         "structured_source_multisource_smoke_job",
         selection=dg.AssetSelection.assets(structured_source_multisource_smoke_report),
+    )
+    research_primitive_source_smoke_job = dg.define_asset_job(
+        "research_primitive_source_smoke_job",
+        selection=dg.AssetSelection.assets(research_primitive_source_smoke_report),
+    )
+    research_primitive_source_pipeline_job = dg.define_asset_job(
+        "research_primitive_source_pipeline_job",
+        selection=dg.AssetSelection.assets(research_primitive_source_pipeline_report),
     )
     literature_clinical_smoke_job = dg.define_asset_job(
         "literature_clinical_smoke_job",
@@ -7886,6 +7988,10 @@ if dg is not None:
         "entity_resolution_job",
         selection=dg.AssetSelection.assets(entity_resolution_report),
     )
+    entity_lookup_index_job = dg.define_asset_job(
+        "entity_lookup_index_job",
+        selection=dg.AssetSelection.assets(entity_lookup_index_report),
+    )
     embedding_index_job = dg.define_asset_job(
         "embedding_index_job",
         selection=dg.AssetSelection.assets(embedding_index_report),
@@ -8057,6 +8163,8 @@ if dg is not None:
             structured_source_pipeline_job,
             structured_source_smoke_job,
             structured_source_multisource_smoke_job,
+            research_primitive_source_smoke_job,
+            research_primitive_source_pipeline_job,
             literature_clinical_smoke_job,
             all_api_smoke_job,
             literature_corpus_harvest_job,
@@ -8137,6 +8245,7 @@ if dg is not None:
             unpaywall_source_followup_ingest_job,
             full_text_source_date_ops_job,
             entity_resolution_job,
+            entity_lookup_index_job,
             embedding_index_job,
             embedding_maintenance_job,
         ],
@@ -8168,6 +8277,8 @@ else:
     structured_source_pipeline_job = None
     structured_source_smoke_job = None
     structured_source_multisource_smoke_job = None
+    research_primitive_source_smoke_job = None
+    research_primitive_source_pipeline_job = None
     literature_clinical_smoke_job = None
     all_api_smoke_job = None
     literature_corpus_harvest_job = None
@@ -8248,6 +8359,7 @@ else:
     unpaywall_source_followup_ingest_job = None
     full_text_source_date_ops_job = None
     entity_resolution_job = None
+    entity_lookup_index_job = None
     embedding_index_job = None
     embedding_maintenance_job = None
     structured_source_pipeline_weekly_schedule = None

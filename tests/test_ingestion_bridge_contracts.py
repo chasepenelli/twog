@@ -49,6 +49,9 @@ from hsa_research.ingestion_bridge.contracts import (
     EvidenceGapResolverRequest,
     EvidenceGapResolverResult,
     EmbeddingCoverageSummary,
+    EntityAlias,
+    EntityLookupIndexRequest,
+    EntityLookupRequest,
     EntityMention,
     EvidenceLevel,
     FullTextTriageRequest,
@@ -76,7 +79,9 @@ from hsa_research.ingestion_bridge.contracts import (
     OmicsGeneSetScore,
     OmicsReadoutRequest,
     OmicsReadoutResult,
+    PrimitiveCallEvent,
     RawSourceRecord,
+    ResolvedEntity,
     ResearchChunkSearchRequest,
     ResearchObject,
     ResearchObjectType,
@@ -144,6 +149,7 @@ from hsa_research.ingestion_bridge.contracts import (
     SourceFollowupQueueItem,
     SourceFollowupQueueRequest,
     SourceQuery,
+    SourceVersionRecord,
     TextEmbedding,
     TextEmbeddingSearchRequest,
     TherapyCommitteeRequest,
@@ -243,19 +249,30 @@ from hsa_research.ingestion_bridge.harvesters_v2 import (
     ChEMBLHarvesterV2,
     ClinicalTrialsGovHarvesterV2,
     CrossrefHarvesterV2,
+    DOIDHarvesterV2,
+    EnsemblComparaHarvesterV2,
+    EnsemblXrefsHarvesterV2,
     EuropePMCHarvesterV2,
     GEOHarvesterV2,
     HARVESTERS_V2,
+    HGNCHarvesterV2,
     ICDCHarvesterV2,
+    MONDOHarvesterV2,
+    NCBIGeneHarvesterV2,
+    OMAHarvesterV2,
     OpenAlexHarvesterV2,
     OpenFDAAnimalEventsHarvesterV2,
     PMCOAHarvesterV2,
     PubChemHarvesterV2,
     PubMedHarvesterV2,
     RCSBPDBHarvesterV2,
+    ReactomeHarvesterV2,
     SRAHarvesterV2,
+    UniChemHarvesterV2,
     UniProtHarvesterV2,
     UnpaywallHarvesterV2,
+    VGNCHarvesterV2,
+    WikiPathwaysHarvesterV2,
 )
 from hsa_research.ingestion_bridge.local_ingest import LocalIngestionPipeline
 from hsa_research.ingestion_bridge import local_ingest as local_ingest_module
@@ -17558,6 +17575,240 @@ def test_geo_and_sra_v2_are_registered_harvesters():
     assert HARVESTERS_V2["sra"] is SRAHarvesterV2
 
 
+def test_research_primitive_sources_are_registered_harvesters():
+    assert HARVESTERS_V2["hgnc"] is HGNCHarvesterV2
+    assert HARVESTERS_V2["vgnc"] is VGNCHarvesterV2
+    assert HARVESTERS_V2["ncbi_gene"] is NCBIGeneHarvesterV2
+    assert HARVESTERS_V2["ensembl_xrefs"] is EnsemblXrefsHarvesterV2
+    assert HARVESTERS_V2["ensembl_compara"] is EnsemblComparaHarvesterV2
+    assert HARVESTERS_V2["unichem"] is UniChemHarvesterV2
+    assert HARVESTERS_V2["oma"] is OMAHarvesterV2
+    assert HARVESTERS_V2["mondo"] is MONDOHarvesterV2
+    assert HARVESTERS_V2["doid"] is DOIDHarvesterV2
+    assert HARVESTERS_V2["reactome"] is ReactomeHarvesterV2
+    assert HARVESTERS_V2["wikipathways"] is WikiPathwaysHarvesterV2
+
+
+def test_source_versions_and_primitive_call_events_round_trip_in_sqlite(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+    source_version = repo.upsert_source_version(
+        SourceVersionRecord(source_key="hgnc", source_version="2026.05", source_url="https://www.genenames.org/")
+    )
+    event = repo.create_primitive_call_event(
+        PrimitiveCallEvent(
+            primitive_name="entity_lookup",
+            request_hash="request-hash",
+            result_hash="result-hash",
+            source_versions={"hgnc": "2026.05"},
+            input_payload={"query": "VEGFR2"},
+            output_payload={"canonical_id": "entrezgene:3791"},
+        )
+    )
+
+    assert repo.list_source_versions(source_key="hgnc")[0].source_version == source_version.source_version
+    assert repo.list_primitive_call_events(primitive_name="entity_lookup")[0].event_id == event.event_id
+
+
+def test_entity_lookup_primitive_resolves_alias_and_records_event(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+    entity = repo.upsert_entity(
+        ResolvedEntity(
+            entity_type="target",
+            canonical_name="KDR",
+            normalized_key="kdr",
+            external_ids={"entrezgene": "3791", "uniprot": "P35968"},
+            resolver_name="hgnc-synonyms",
+            resolver_version="2026.05",
+            metadata={"organism_taxid": "9606"},
+        )
+    )
+    repo.upsert_entity_alias(
+        EntityAlias(
+            entity_id=entity.entity_id,
+            entity_type="target",
+            alias="VEGFR2",
+            alias_normalized="vegfr2",
+            canonical_name="KDR",
+            normalized_key="kdr",
+            resolver_name="hgnc-synonyms",
+            resolver_version="2026.05",
+            metadata={"organism_taxid": "9606", "hgnc": "HGNC:6307"},
+        )
+    )
+
+    response = service_module.HSAResearchService(repo).resolve_entity_lookup(
+        EntityLookupRequest(query="VEGFR2", category="target", organism="9606")
+    )
+
+    assert response.result is not None
+    assert response.result.canonical_id == "entrezgene:3791"
+    assert response.result.source_version == "2026.05"
+    assert response.event_id is not None
+    assert repo.list_primitive_call_events(primitive_name="entity_lookup")[0].event_id == response.event_id
+
+
+def test_entity_lookup_index_materializes_hgnc_aliases_from_source_records(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+    record = HGNCHarvesterV2().normalize(
+        {
+            "hgnc_id": "HGNC:6307",
+            "symbol": "KDR",
+            "name": "kinase insert domain receptor",
+            "alias_symbol": ["VEGFR2", "FLK1"],
+            "entrez_id": "3791",
+            "ensembl_gene_id": "ENSG00000128052",
+            "uniprot_ids": ["P35968"],
+            "taxonomy_id": "9606",
+            "source_version": "2026.05",
+        }
+    )
+    raw_id = repo.upsert_raw_record(record.raw_record)
+    repo.upsert_research_object(record.research_object, raw_id)
+
+    result = HSAResearchService(repo).materialize_entity_lookup_index(
+        EntityLookupIndexRequest(source_keys=["hgnc"], limit_per_source=10)
+    )
+    response = HSAResearchService(repo).resolve_entity_lookup(
+        EntityLookupRequest(query="VEGFR2", category="target", organism="9606")
+    )
+
+    assert result.records_seen == 1
+    assert result.entities_upserted == 1
+    assert result.aliases_upserted >= 3
+    assert result.source_summaries[0].source_version == "2026.05"
+    assert repo.list_source_versions(source_key="hgnc")[0].source_version == "2026.05"
+    assert response.result is not None
+    assert response.result.canonical_id == "entrezgene:3791"
+    assert response.result.source_table == "hgnc"
+    assert response.result.source_version == "2026.05"
+
+
+def test_entity_lookup_index_keeps_human_and_canine_symbols_organism_scoped(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+    human = HGNCHarvesterV2().normalize(
+        {
+            "hgnc_id": "HGNC:6307",
+            "symbol": "KDR",
+            "name": "kinase insert domain receptor",
+            "alias_symbol": ["VEGFR2"],
+            "entrez_id": "3791",
+            "taxonomy_id": "9606",
+            "source_version": "2026.05",
+        }
+    )
+    canine = VGNCHarvesterV2().normalize(
+        {
+            "vgnc_id": "VGNC:53234",
+            "symbol": "KDR",
+            "name": "kinase insert domain receptor",
+            "alias_symbol": ["VEGFR2"],
+            "taxonomy_id": "9615",
+            "source_version": "2026.05",
+        }
+    )
+    for record in (human, canine):
+        raw_id = repo.upsert_raw_record(record.raw_record)
+        repo.upsert_research_object(record.research_object, raw_id)
+
+    HSAResearchService(repo).materialize_entity_lookup_index(
+        EntityLookupIndexRequest(source_keys=["hgnc", "vgnc"], limit_per_source=10)
+    )
+    human_response = HSAResearchService(repo).resolve_entity_lookup(
+        EntityLookupRequest(query="VEGFR2", category="target", organism="9606")
+    )
+    canine_response = HSAResearchService(repo).resolve_entity_lookup(
+        EntityLookupRequest(query="VEGFR2", category="target", organism="9615")
+    )
+
+    assert human_response.result is not None
+    assert canine_response.result is not None
+    assert human_response.result.organism == "9606"
+    assert canine_response.result.organism == "9615"
+    assert human_response.result.canonical_id == "entrezgene:3791"
+    assert canine_response.result.canonical_id == "VGNC:53234"
+
+
+def test_entity_lookup_prefers_source_backed_alias_over_local_fallback(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+    fallback = repo.upsert_entity(
+        ResolvedEntity(
+            entity_type="target",
+            canonical_name="KDR",
+            normalized_key="target:uniprot_accession:p35968",
+            external_ids={"uniprot_accession": "P35968"},
+            resolver_name="local_deterministic_entity_resolver",
+            resolver_version="0.1",
+            metadata={"organism_taxid": "9606"},
+        )
+    )
+    repo.upsert_entity_alias(
+        EntityAlias(
+            entity_id=fallback.entity_id,
+            entity_type="target",
+            alias="VEGFR2",
+            alias_normalized="vegfr2",
+            canonical_name="KDR",
+            normalized_key=fallback.normalized_key,
+            resolver_name="local_deterministic_entity_resolver",
+            resolver_version="0.1",
+            metadata={"organism_taxid": "9606"},
+        )
+    )
+    record = HGNCHarvesterV2().normalize(
+        {
+            "hgnc_id": "HGNC:6307",
+            "symbol": "KDR",
+            "name": "kinase insert domain receptor",
+            "alias_symbol": ["VEGFR2"],
+            "entrez_id": "3791",
+            "taxonomy_id": "9606",
+            "source_version": "2026.05",
+        }
+    )
+    raw_id = repo.upsert_raw_record(record.raw_record)
+    repo.upsert_research_object(record.research_object, raw_id)
+    HSAResearchService(repo).materialize_entity_lookup_index(
+        EntityLookupIndexRequest(source_keys=["hgnc"], limit_per_source=10)
+    )
+
+    response = HSAResearchService(repo).resolve_entity_lookup(
+        EntityLookupRequest(query="VEGFR2", category="target", organism="9606")
+    )
+
+    assert response.result is not None
+    assert response.failure is None
+    assert response.result.canonical_id == "entrezgene:3791"
+    assert response.result.source_table == "hgnc"
+
+
+def test_entity_lookup_index_does_not_create_targets_from_pubchem_compounds(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "hsa.sqlite3")
+    record = PubChemHarvesterV2().normalize(
+        {
+            "query_term": "propranolol",
+            "properties": {
+                "CID": 4946,
+                "Title": "Propranolol",
+                "CanonicalSMILES": "CC(C)NCC(COC1=CC=CC2=CC=CC=C21)O",
+                "InChIKey": "AQHHHDLHHXJYJD-UHFFFAOYSA-N",
+            },
+            "synonyms": ["Propranolol", "Inderal"],
+        }
+    )
+    raw_id = repo.upsert_raw_record(record.raw_record)
+    repo.upsert_research_object(record.research_object, raw_id)
+
+    result = HSAResearchService(repo).materialize_entity_lookup_index(
+        EntityLookupIndexRequest(source_keys=["pubchem"], limit_per_source=10)
+    )
+    response = HSAResearchService(repo).resolve_entity_lookup(EntityLookupRequest(query="Inderal", category="compound"))
+
+    assert result.entities_upserted == 1
+    assert not repo.list_entities(entity_type="target")
+    assert response.result is not None
+    assert response.result.canonical_id == "pubchem:4946"
+
+
 def test_pubchem_v2_normalizer_extracts_compound_metadata():
     payload = {
         "query_term": "propranolol",
@@ -17809,6 +18060,70 @@ def test_uniprot_v2_normalizer_extracts_target_metadata():
     assert record.research_object.metadata["gene_match_verified"] is True
     assert record.research_object.metadata["alphafold_ids"] == ["AF-P35968-F1"]
     assert "AlphaFold IDs: AF-P35968-F1" in harvester.text_for_chunking(record)
+
+
+def test_hgnc_v2_normalizer_extracts_gene_nomenclature_metadata():
+    payload = {
+        "hgnc_id": "HGNC:6307",
+        "symbol": "KDR",
+        "name": "kinase insert domain receptor",
+        "alias_symbol": ["VEGFR2", "FLK1"],
+        "entrez_id": "3791",
+        "ensembl_gene_id": "ENSG00000128052",
+        "uniprot_ids": ["P35968"],
+        "taxonomy_id": "9606",
+        "source_version": "2026.05",
+    }
+
+    record = HGNCHarvesterV2().normalize(payload)
+
+    assert record.raw_record.source_key == "hgnc"
+    assert record.research_object.object_type == "knowledge_entry"
+    assert record.research_object.identifiers["hgnc_id"] == "HGNC:6307"
+    assert record.research_object.metadata["aliases"] == ["VEGFR2", "FLK1"]
+    assert record.research_object.metadata["cross_references"]["entrez_id"] == "3791"
+    assert "Aliases: VEGFR2; FLK1" in HGNCHarvesterV2().text_for_chunking(record)
+
+
+def test_ncbi_gene_v2_normalizer_extracts_gene_identifier_metadata():
+    payload = {
+        "uid": "3791",
+        "name": "KDR",
+        "description": "kinase insert domain receptor",
+        "otheraliases": "VEGFR2, FLK1",
+        "organism": {"scientificname": "Homo sapiens", "taxid": 9606},
+    }
+
+    record = NCBIGeneHarvesterV2().normalize(payload)
+
+    assert record.raw_record.source_key == "ncbi_gene"
+    assert record.research_object.identifiers["ncbi_gene_id"] == "3791"
+    assert record.research_object.metadata["aliases"] == ["VEGFR2", "FLK1"]
+    assert record.research_object.metadata["organism_taxid"] == "9606"
+
+
+def test_reactome_and_ontology_normalizers_extract_primitive_metadata():
+    pathway = ReactomeHarvesterV2().normalize(
+        {
+            "stId": "R-HSA-194138",
+            "displayName": "VEGF ligand-receptor interactions",
+            "query_term": "angiogenesis",
+        }
+    )
+    disease = MONDOHarvesterV2().normalize(
+        {
+            "obo_id": "MONDO:0004992",
+            "label": "angiosarcoma",
+            "synonym": ["hemangiosarcoma"],
+            "ontology_name": "mondo",
+            "query_term": "angiosarcoma",
+        }
+    )
+
+    assert pathway.research_object.identifiers["reactome_id"] == "R-HSA-194138"
+    assert pathway.research_object.metadata["pathway_name"] == "VEGF ligand-receptor interactions"
+    assert disease.research_object.identifiers["ontology_id"] == "MONDO:0004992"
+    assert disease.research_object.metadata["synonyms"] == ["hemangiosarcoma"]
 
 
 def test_rcsb_pdb_v2_normalizer_extracts_structure_metadata():
