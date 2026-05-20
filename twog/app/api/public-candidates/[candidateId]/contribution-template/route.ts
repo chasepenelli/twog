@@ -5,6 +5,10 @@ import {
   publicCandidatePayloadPath,
   shortHash,
 } from '@/lib/public-candidates';
+import {
+  CANDIDATE_CONTRIBUTIONS_PAUSED,
+  CANDIDATE_CONTRIBUTIONS_PAUSED_MESSAGE,
+} from '@/lib/public-contribution-status';
 
 export async function GET(
   _request: Request,
@@ -42,9 +46,13 @@ export async function GET(
       snapshot_content_hash: contentHash,
       snapshot_short_hash: shortHash(contentHash),
       check_in_status: {
-        live_submission_api: 'enabled_when_neon_storage_is_configured',
+        live_submission_api: CANDIDATE_CONTRIBUTIONS_PAUSED
+          ? 'paused'
+          : 'enabled_when_neon_storage_is_configured',
         current_path:
-          'POST the completed contribution_packet JSON to contribution_submission_url. Email poppa@bradyandgraffiti.com if the storage endpoint is not configured.',
+          CANDIDATE_CONTRIBUTIONS_PAUSED
+            ? CANDIDATE_CONTRIBUTIONS_PAUSED_MESSAGE
+            : 'POST the completed contribution_packet JSON to contribution_submission_url. Email poppa@bradyandgraffiti.com if the storage endpoint is not configured.',
         intended_queue:
           'candidate_contribution_intake -> provenance review -> citation repair/dedupe -> validation or compute queue',
       },

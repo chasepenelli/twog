@@ -1,6 +1,10 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import {
+  CANDIDATE_CONTRIBUTIONS_PAUSED,
+  CANDIDATE_CONTRIBUTIONS_PAUSED_MESSAGE,
+} from '@/lib/public-contribution-status';
 
 const CONTRIBUTION_TYPES = [
   'evidence',
@@ -60,6 +64,11 @@ export function CandidateContributionPanel({
   const [result, setResult] = useState<IntakeStatus | null>(null);
 
   useEffect(() => {
+    if (CANDIDATE_CONTRIBUTIONS_PAUSED) {
+      setStorageConfigured(false);
+      return;
+    }
+
     let cancelled = false;
     fetch(submissionUrl)
       .then((response) => response.json())
@@ -90,6 +99,15 @@ export function CandidateContributionPanel({
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setResult(null);
+
+    if (CANDIDATE_CONTRIBUTIONS_PAUSED) {
+      setResult({
+        error: 'candidate_contribution_intake_paused',
+        message: CANDIDATE_CONTRIBUTIONS_PAUSED_MESSAGE,
+      });
+      return;
+    }
+
     if (!contact.trim() || !title.trim() || !summary.trim() || !claim.trim()) {
       setResult({
         error: 'missing_required_fields',
@@ -152,7 +170,15 @@ export function CandidateContributionPanel({
         <div className="contribution-receipt">
           <span>{displayId}</span>
           <code>{snapshotHash}</code>
-          <strong>{storageConfigured === null ? 'checking intake' : storageConfigured ? 'intake online' : 'email fallback'}</strong>
+          <strong>
+            {CANDIDATE_CONTRIBUTIONS_PAUSED
+              ? 'intake paused'
+              : storageConfigured === null
+                ? 'checking intake'
+                : storageConfigured
+                  ? 'intake online'
+                  : 'email fallback'}
+          </strong>
         </div>
         <div className="method-actions">
           <a href={payloadPath} className="record-link" target="_blank" rel="noreferrer">
@@ -164,104 +190,117 @@ export function CandidateContributionPanel({
         </div>
       </div>
 
-      <form className="candidate-contribution-form" onSubmit={handleSubmit}>
-        <div className="contribution-form-grid">
-          <label>
-            <span>Contribution</span>
-            <select value={contributionType} onChange={(event) => setContributionType(event.target.value as typeof contributionType)}>
-              {CONTRIBUTION_TYPES.map((value) => (
-                <option key={value} value={value}>
-                  {value.replaceAll('_', ' ')}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Relation</span>
-            <select value={relation} onChange={(event) => setRelation(event.target.value as typeof relation)}>
-              {RELATIONS.map((value) => (
-                <option key={value} value={value}>
-                  {value.replaceAll('_', ' ')}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Route</span>
-            <select value={requestedAction} onChange={(event) => setRequestedAction(event.target.value as typeof requestedAction)}>
-              {ACTIONS.map((value) => (
-                <option key={value} value={value}>
-                  {value.replaceAll('_', ' ')}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
+      <form
+        className="candidate-contribution-form"
+        data-paused={CANDIDATE_CONTRIBUTIONS_PAUSED}
+        onSubmit={handleSubmit}
+      >
+        {CANDIDATE_CONTRIBUTIONS_PAUSED && (
+          <div className="contribution-paused-note" role="status">
+            <strong>Check-in paused</strong>
+            <span>{CANDIDATE_CONTRIBUTIONS_PAUSED_MESSAGE}</span>
+          </div>
+        )}
 
-        <div className="contribution-form-grid two">
+        <fieldset className="contribution-form-fieldset" disabled={CANDIDATE_CONTRIBUTIONS_PAUSED || isSubmitting}>
+          <div className="contribution-form-grid">
+            <label>
+              <span>Contribution</span>
+              <select value={contributionType} onChange={(event) => setContributionType(event.target.value as typeof contributionType)}>
+                {CONTRIBUTION_TYPES.map((value) => (
+                  <option key={value} value={value}>
+                    {value.replaceAll('_', ' ')}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Relation</span>
+              <select value={relation} onChange={(event) => setRelation(event.target.value as typeof relation)}>
+                {RELATIONS.map((value) => (
+                  <option key={value} value={value}>
+                    {value.replaceAll('_', ' ')}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Route</span>
+              <select value={requestedAction} onChange={(event) => setRequestedAction(event.target.value as typeof requestedAction)}>
+                {ACTIONS.map((value) => (
+                  <option key={value} value={value}>
+                    {value.replaceAll('_', ' ')}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="contribution-form-grid two">
+            <label>
+              <span>Name</span>
+              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Your name or group" />
+            </label>
+            <label>
+              <span>Contact</span>
+              <input
+                value={contact}
+                onChange={(event) => setContact(event.target.value)}
+                placeholder="email or durable contact"
+                required
+              />
+            </label>
+          </div>
+
           <label>
-            <span>Name</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Your name or group" />
+            <span>Title</span>
+            <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Short label for the contribution" required />
           </label>
           <label>
-            <span>Contact</span>
-            <input
-              value={contact}
-              onChange={(event) => setContact(event.target.value)}
-              placeholder="email or durable contact"
+            <span>Summary</span>
+            <textarea
+              value={summary}
+              onChange={(event) => setSummary(event.target.value)}
+              placeholder="What should TWOG review?"
               required
+              rows={3}
             />
           </label>
-        </div>
-
-        <label>
-          <span>Title</span>
-          <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Short label for the contribution" required />
-        </label>
-        <label>
-          <span>Summary</span>
-          <textarea
-            value={summary}
-            onChange={(event) => setSummary(event.target.value)}
-            placeholder="What should TWOG review?"
-            required
-            rows={3}
-          />
-        </label>
-        <label>
-          <span>Claim or question</span>
-          <textarea
-            value={claim}
-            onChange={(event) => setClaim(event.target.value)}
-            placeholder="What claim does this support, challenge, correct, or extend?"
-            required
-            rows={3}
-          />
-        </label>
-
-        <div className="contribution-form-grid two">
           <label>
-            <span>Evidence title</span>
-            <input value={evidenceTitle} onChange={(event) => setEvidenceTitle(event.target.value)} placeholder="Paper, dataset, artifact" />
+            <span>Claim or question</span>
+            <textarea
+              value={claim}
+              onChange={(event) => setClaim(event.target.value)}
+              placeholder="What claim does this support, challenge, correct, or extend?"
+              required
+              rows={3}
+            />
           </label>
+
+          <div className="contribution-form-grid two">
+            <label>
+              <span>Evidence title</span>
+              <input value={evidenceTitle} onChange={(event) => setEvidenceTitle(event.target.value)} placeholder="Paper, dataset, artifact" />
+            </label>
+            <label>
+              <span>Evidence URL</span>
+              <input value={evidenceUrl} onChange={(event) => setEvidenceUrl(event.target.value)} placeholder="https://..." type="url" />
+            </label>
+          </div>
+
           <label>
-            <span>Evidence URL</span>
-            <input value={evidenceUrl} onChange={(event) => setEvidenceUrl(event.target.value)} placeholder="https://..." type="url" />
+            <span>Limits or conflicts</span>
+            <textarea
+              value={limitations}
+              onChange={(event) => setLimitations(event.target.value)}
+              placeholder="Known caveats, uncertainty, conflicts, or replication limits"
+              rows={2}
+            />
           </label>
-        </div>
+        </fieldset>
 
-        <label>
-          <span>Limits or conflicts</span>
-          <textarea
-            value={limitations}
-            onChange={(event) => setLimitations(event.target.value)}
-            placeholder="Known caveats, uncertainty, conflicts, or replication limits"
-            rows={2}
-          />
-        </label>
-
-        <button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? 'Submitting...' : 'Submit to intake queue'}
+        <button type="submit" disabled={CANDIDATE_CONTRIBUTIONS_PAUSED || isSubmitting}>
+          {CANDIDATE_CONTRIBUTIONS_PAUSED ? 'Intake paused' : isSubmitting ? 'Submitting...' : 'Submit to intake queue'}
         </button>
         {result && (
           <div className={result.contribution_id ? 'contribution-result success' : 'contribution-result error'}>

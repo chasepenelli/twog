@@ -10,6 +10,10 @@ import {
   publicCandidateEvidenceBundlePath,
   publicCandidatePayloadPath,
 } from '@/lib/public-candidates';
+import {
+  CANDIDATE_CONTRIBUTIONS_PAUSED,
+  CANDIDATE_CONTRIBUTIONS_PAUSED_MESSAGE,
+} from '@/lib/public-contribution-status';
 
 export const runtime = 'nodejs';
 
@@ -35,12 +39,15 @@ export async function GET(
   return NextResponse.json({
     endpoint: `/api/public-candidates/${candidate.candidate.candidate_id}/contributions`,
     method: 'POST',
-    storage_configured: isCandidateContributionStorageConfigured(),
+    storage_configured: !CANDIDATE_CONTRIBUTIONS_PAUSED && isCandidateContributionStorageConfigured(),
+    intake_paused: CANDIDATE_CONTRIBUTIONS_PAUSED,
     candidate_payload_url: publicCandidatePayloadPath(candidate.candidate.candidate_id),
     evidence_bundle_url: publicCandidateEvidenceBundlePath(candidate.candidate.candidate_id),
-    status: 'intake_queue',
+    status: CANDIDATE_CONTRIBUTIONS_PAUSED ? 'intake_paused' : 'intake_queue',
     description:
-      'Submit a bounded contribution packet for review. Accepted packets are queued for TWOG intake and do not directly change the public candidate record.',
+      CANDIDATE_CONTRIBUTIONS_PAUSED
+        ? CANDIDATE_CONTRIBUTIONS_PAUSED_MESSAGE
+        : 'Submit a bounded contribution packet for review. Accepted packets are queued for TWOG intake and do not directly change the public candidate record.',
     required_fields: [
       'contribution_type',
       'contributor.contact',
@@ -57,6 +64,16 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ candidateId: string }> }
 ) {
+  if (CANDIDATE_CONTRIBUTIONS_PAUSED) {
+    return NextResponse.json(
+      {
+        error: 'candidate_contribution_intake_paused',
+        message: CANDIDATE_CONTRIBUTIONS_PAUSED_MESSAGE,
+      },
+      { status: 503 }
+    );
+  }
+
   const contentLength = Number(request.headers.get('content-length') ?? 0);
   if (contentLength > MAX_BODY_BYTES) {
     return NextResponse.json(
