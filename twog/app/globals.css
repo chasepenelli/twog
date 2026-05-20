@@ -38,6 +38,9 @@
   --background: var(--paper);
   --foreground: var(--ink);
 
+  --font-ibm-plex-sans: "IBM Plex Sans";
+  --font-ibm-plex-mono: "IBM Plex Mono";
+  --font-ibm-plex-serif: "IBM Plex Serif";
   --font-sans: var(--font-ibm-plex-sans), "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: var(--font-ibm-plex-mono), "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --font-serif: var(--font-ibm-plex-serif), "IBM Plex Serif", Georgia, "Times New Roman", serif;
