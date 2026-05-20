@@ -5,7 +5,7 @@ export const NAV_LINKS = [
   { href: '/candidates', label: 'Candidates' },
   { href: '/methods', label: 'Methods' },
   { href: '/architecture', label: 'Architecture' },
-  { href: CONTACT_MAILTO, label: 'Contact' },
+  { href: '/#contact', label: 'Contact' },
 ] as const;
 
 export const DISCOVERY_TYPES: Record<string, { label: string; icon: string }> = {

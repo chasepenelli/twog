@@ -79,6 +79,45 @@ const boundaries = [
   },
 ] as const;
 
+const testingPath = [
+  {
+    label: 'Proof record',
+    mode: 'inspectable substrate',
+    detail:
+      'The candidate record captures mechanism, citations, risks, methods, decision history, payload links, and known gaps.',
+  },
+  {
+    label: 'Validation packet',
+    mode: 'explicit test plan',
+    detail:
+      'A promising record becomes a bounded question with required inputs, readouts, controls, blockers, and success criteria.',
+  },
+  {
+    label: 'Simulation lane',
+    mode: 'artifact-backed compute',
+    detail:
+      'Approval-gated Docker and GPU jobs can produce docking, MD smoke, plots, logs, and reproducible configuration artifacts.',
+  },
+  {
+    label: 'Review gate',
+    mode: 'specialist critique',
+    detail:
+      'Agents and operators decide whether simulated findings are coherent enough to justify more evidence or lab discussion.',
+  },
+  {
+    label: 'Lab handoff',
+    mode: 'confirmation-ready',
+    detail:
+      'The system prepares assay context, controls, thresholds, materials, and metrics for humans or partners to review.',
+  },
+  {
+    label: 'Result update',
+    mode: 'record revision',
+    detail:
+      'Wet-lab confirmation, failure, or ambiguity feeds back into the candidate record and decision log.',
+  },
+] as const;
+
 const stack = [
   'Dagster',
   'Neon Postgres',
@@ -108,7 +147,7 @@ function ArchitectureNode({ node }: { node: (typeof architectureNodes)[number] }
 export const metadata = {
   title: 'Architecture — TWOG',
   description:
-    'The technical architecture behind TWOG: deterministic ingestion, Dagster materialized assets, operator-gated writes, public candidate records, and approval-first compute.',
+    'The technical architecture behind TWOG: deterministic ingestion, Dagster materialized assets, operator-gated writes, public candidate records, approval-first compute, and validation-ready testing packets.',
 };
 
 export default function ArchitecturePage() {
@@ -119,20 +158,28 @@ export default function ArchitecturePage() {
           <p className="section-kicker">System architecture</p>
           <h1>Architecture</h1>
           <p>
-            TWOG is a research engine with typed lanes, versioned methods, public
-            records, and operator-gated writes.
+            TWOG is a research engine for moving from inspectable proof records to
+            durable validation packets, approval-gated compute, and lab-ready
+            confirmation plans.
           </p>
         </div>
         <aside className="method-status-card architecture-status-card">
           <span className="lab-label">Operating posture</span>
-          <strong>LLMs argue and synthesize. Operator approval is the write gate.</strong>
+          <strong>
+            Simulations prioritize hypotheses. Lab confirmation decides what survives.
+          </strong>
         </aside>
       </section>
 
       <section className="architecture-map-section">
         <div className="section-heading layered-heading" data-layer="SYSTEM MAP">
           <p className="section-kicker">System shape</p>
-          <h2>Evidence enters through deterministic rails. Claims leave through public records.</h2>
+          <h2>Evidence enters through deterministic rails. Claims leave as testable records.</h2>
+          <p>
+            The public record is not the end of the system. It is the first durable
+            artifact: a reviewable object that can be challenged, routed into validation,
+            tested in simulation, and prepared for lab confirmation.
+          </p>
         </div>
 
         <div className="architecture-map-shell" aria-label="TWOG architecture system map">
@@ -166,6 +213,29 @@ export default function ArchitecturePage() {
         <div className="architecture-service-band">
           <span>Service boundary</span>
           <p>{serviceBoundary}</p>
+        </div>
+      </section>
+
+      <section className="method-audit-section architecture-validation-section">
+        <div className="section-heading layered-heading" data-layer="PROOF TO LAB">
+          <p className="section-kicker">Durable testing framework</p>
+          <h2>Public proofs become validation packets, then confirmation work.</h2>
+          <p>
+            TWOG is designed to connect public reasoning to testable execution without
+            pretending that simulation is proof. Candidate records preserve the logic.
+            Validation packets define the readouts. Compute produces reproducible
+            artifacts. Lab work confirms, rejects, or narrows the finding.
+          </p>
+        </div>
+
+        <div className="architecture-boundary-grid architecture-testing-grid">
+          {testingPath.map((item) => (
+            <article key={item.label}>
+              <span className="lab-label">{item.mode}</span>
+              <h3>{item.label}</h3>
+              <p>{item.detail}</p>
+            </article>
+          ))}
         </div>
       </section>
 

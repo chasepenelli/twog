@@ -3,200 +3,132 @@ import { ContactForm } from '@/components/ContactForm';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from '@/lib/constants';
 import { getFeaturedCandidate, shortHash } from '@/lib/public-candidates';
 
+const OPERATING_LOOP = [
+  {
+    label: 'Evidence',
+    text: 'Scientific sources enter an owned evidence layer with citations, chunks, entities, identifiers, and provenance.',
+  },
+  {
+    label: 'Review',
+    text: 'Specialist agents attack the thesis, expose weak assumptions, request missing proof, and preserve the critique.',
+  },
+  {
+    label: 'Record',
+    text: 'Operator-approved ideas become public proof records with status, rationale, risks, methods, and decisions.',
+  },
+] as const;
+
 const ENGINE_STEPS = [
-  ['01', 'Collect', 'Papers, datasets, molecules, safety records, and field notes enter one evidence library.'],
-  ['02', 'Translate', 'The system turns raw sources into claims, citations, chunks, entities, and searchable context.'],
-  ['03', 'Argue', 'Specialist agents compare the evidence, identify weak spots, and ask for missing proof.'],
-  ['04', 'Decide', 'Strong research programs become therapy ideas, validation plans, and candidate records.'],
-  ['05', 'Publish', 'The public page preserves rationale, methods, citations, status, decisions, and hashes.'],
+  ['01', 'Acquire', 'Papers, datasets, molecules, safety signals, and field notes become structured source records.'],
+  ['02', 'Challenge', 'Agents compare the evidence, surface contradictions, and ask for the missing citations.'],
+  ['03', 'Promote', 'Only ideas with enough signal move into public candidate records or validation packets.'],
+  ['04', 'Test', 'Strong records can route toward compute, partner review, assay design, and lab-ready handoff.'],
 ] as const;
 
-const PROOF_PRIMITIVES = [
-  {
-    label: 'Inspectable record',
-    text: 'A candidate page shows the idea, status, evidence, risks, methods, and decision history in one place.',
-  },
-  {
-    label: 'Citation trail',
-    text: 'Every evidence marker expands into a human-readable claim, source title, identifier, and link.',
-  },
-  {
-    label: 'Method versions',
-    text: 'Computational and review methods are versioned so old records stay explainable when protocols improve.',
-  },
-  {
-    label: 'Decision log',
-    text: 'Status changes are recorded with a rationale instead of disappearing into private notes.',
-  },
+const PROOF_POINTS = [
+  ['Claim', 'What the system believes might be true.'],
+  ['Evidence', 'Which citations, datasets, and artifacts support it.'],
+  ['Decision', 'Why the idea advanced, stalled, or got held back.'],
+  ['Next Test', 'The readout that would actually change confidence.'],
 ] as const;
 
-const RECORD_LAYERS = [
-  ['Rationale', 'Why this candidate, why now'],
-  ['Evidence', 'Citation-backed claims, not loose labels'],
-  ['Methods', 'Versioned process behind the record'],
-  ['Decision', 'Status changes with a reason attached'],
-] as const;
-
-const AI_GOOD_POINTS = [
-  ['Learn faster', 'Ask for the lesson, then keep asking better questions.'],
-  ['Organize the forgotten', 'Turn scattered neglected-disease evidence into usable context.'],
-  ['Challenge weak claims', 'Make missing citations, gaps, and uncertainty visible.'],
-  ['Build in public', 'Publish records that others can inspect, correct, and improve.'],
-] as const;
-
-const MOVEMENT_INPUTS = ['Papers', 'Omics', 'Safety', 'Molecules'];
-const REVIEW_STACK = ['Search', 'Challenge', 'Repair', 'Synthesize'];
-const MOVEMENT_OUTPUTS = ['Idea', 'Packet', 'Decision', 'Record'];
-const HERO_LOOP_PATH =
-  'M104 240 C104 122 242 68 398 94 C486 109 534 109 622 94 C778 68 916 122 916 240 C916 358 778 412 622 386 C534 371 486 371 398 386 C242 412 104 358 104 240 Z';
-
-const LESSON_COLUMNS = [
-  ['Ask', 'Plain-language lesson', 'Start with the question a real person would ask.'],
-  ['Map', 'Context and terms', 'Define the pathway, species context, assumptions, and unknowns.'],
-  ['Check', 'Evidence trail', 'Find the citations, contradictions, missing data, and next query.'],
-  ['Build', 'Reusable output', 'Turn the lesson into a brief, validation packet, or public record update.'],
+const VALIDATION_PATH = [
+  ['Proof record', 'Inspectable thesis, evidence, methods, status, and decision history.'],
+  ['Validation packet', 'Readouts, controls, blockers, missing inputs, and acceptance criteria.'],
+  ['Compute artifact', 'Docking, MD smoke, omics readouts, plots, logs, configs, and hashes where useful.'],
+  ['Lab handoff', 'A clearer experimental question for collaborators, reviewers, and wet-lab confirmation.'],
 ] as const;
 
 export default function Home() {
   const featured = getFeaturedCandidate();
   const candidate = featured?.candidate;
   const snapshot = featured?.latest_snapshot;
+  const hash = shortHash(candidate?.content_hash ?? snapshot?.content_hash);
 
   return (
     <div className="site-shell home-shell">
-      <section className="home-hero">
-        <div className="home-hero-copy">
-          <p className="section-kicker">TWOG / public research engine</p>
-          <div className="hero-wordmark-wrap" aria-label="TWOG animated wordmark">
-            <div className="hero-loop-system" aria-hidden="true">
-              <svg className="hero-loop-svg" viewBox="0 0 1020 480" role="presentation">
-                <path className="hero-loop-shadow" d={HERO_LOOP_PATH} />
-                <path className="hero-loop-path" d={HERO_LOOP_PATH} />
-                {[
-                  ['source', '-0s'],
-                  ['agent', '-14s'],
-                  ['record', '-28s'],
-                ].map(([label, begin]) => (
-                  <g className="hero-loop-particle" key={label}>
-                    <circle cx="0" cy="0" r="6" />
-                    <animateMotion dur="42s" begin={begin} repeatCount="indefinite" path={HERO_LOOP_PATH} />
-                  </g>
-                ))}
-              </svg>
-              <div className="hero-loop-stations">
-                <span className="loop-station loop-station-one">Evidence</span>
-                <span className="loop-station loop-station-two">Review</span>
-                <span className="loop-station loop-station-three">Record</span>
-              </div>
-            </div>
-            <h1>
+      <section className="home-hero portal-hero">
+        <div className="portal-shell" aria-label="TWOG research portal entrance">
+          <div className="portal-hero-copy">
+            <p className="section-kicker">TWOG / public research engine</p>
+            <h1 className="portal-wordmark">
               <span>TWOG</span>
               <em>A Living Research Engine</em>
             </h1>
+            <p className="hero-subhead">
+              TWOG turns fragmented biomedical evidence into inspectable discovery
+              records: hypotheses, citations, agent critique, validation packets, compute
+              artifacts, and the next experiment worth running.
+            </p>
+            <div className="hero-actions">
+              <Link href="/candidates" className="artifact-button primary">
+                Inspect the first record
+              </Link>
+              <Link href="/architecture" className="artifact-button">
+                Read the architecture
+              </Link>
+              <Link href="#contact" className="artifact-button">
+                Contact
+              </Link>
+            </div>
           </div>
-          <p className="hero-subhead">
-            An AI-assisted system for turning biomedical evidence into public candidate
-            records: what was found, why it moved, what supports it, and the next
-            experiment still worth running.
+        </div>
+      </section>
+
+      <section className="home-section home-thesis-section" data-marker="THESIS / COMPARATIVE ONCOLOGY WEDGE">
+        <div className="home-section-grid">
+          <div className="home-section-header">
+            <p className="section-kicker">The thesis</p>
+            <h2>The scarce layer is not information. It is judgment that compounds.</h2>
+          </div>
+          <div className="home-section-copy">
+            <p>
+              Biology is drowning in papers, source databases, omics files, adverse-event
+              fragments, and half-remembered leads. TWOG is being built as the operating
+              layer that turns that material into durable scientific signal.
+            </p>
+            <p>
+              The first wedge is canine hemangiosarcoma: urgent, under-organized, and
+              translationally relevant. The larger play is a repeatable research engine
+              for overlooked disease areas where evidence exists but decision
+              infrastructure does not.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="home-section home-loop-section" data-marker="OPERATING LOOP / EVIDENCE REVIEW RECORD">
+        <div className="home-section-header narrow">
+          <p className="section-kicker">Operating loop</p>
+          <h2>Evidence. Review. Record.</h2>
+          <p>
+            TWOG is designed around a simple discipline: no claim gets promoted without a
+            trail someone else can inspect.
           </p>
-          <div className="hero-actions">
-            <Link href="/candidates" className="artifact-button primary">
-              Inspect the first record
-            </Link>
-            <Link href="/methods" className="artifact-button">
-              See how records work
-            </Link>
-            <a href={CONTACT_MAILTO} className="artifact-button">
-              Contact
-            </a>
-          </div>
+        </div>
+        <div className="home-principle-grid">
+          {OPERATING_LOOP.map((item) => (
+            <article className="home-principle" key={item.label}>
+              <span>{item.label}</span>
+              <p>{item.text}</p>
+            </article>
+          ))}
         </div>
       </section>
 
-      <section className="origin-panel">
-        <div className="origin-grid">
-          <div className="origin-copy layered-heading" data-layer="AI FOR GOOD">
-            <p className="section-kicker">Why it exists</p>
-            <h2>Modern AI should make hard problems more reachable.</h2>
-            <p>
-              TWOG began because canine hemangiosarcoma leaves too many families with too
-              few options and too little organized evidence. It is also a spontaneous
-              tumor model with translational signal to human angiosarcoma, which makes the
-              work part of a larger comparative oncology problem. The project is built
-              for Graffiti, Brady, and every dog after them.
-            </p>
-            <p>
-              The positive case for AI is simple: it can help more people learn faster,
-              organize ignored information, ask sharper questions, and turn care into
-              useful infrastructure. Not magic. Not replacement expertise. A force
-              multiplier for people willing to do the work in the open.
-            </p>
-            <p className="origin-manifesto">
-              When the tools can read with us, teach us, challenge us, and help us publish
-              the trail, neglected disease research can become less lonely and more
-              inspectable.
-            </p>
-          </div>
-
-          <div className="ai-good-system" aria-label="Modern AI for good diagram">
-            <div className="good-core">
-              <span>Modern AI for good</span>
-              <strong>Ask. Learn. Build.</strong>
-            </div>
-            <div className="good-ray good-ray-one" />
-            <div className="good-ray good-ray-two" />
-            <div className="good-ray good-ray-three" />
-            <div className="good-ray good-ray-four" />
-            <div className="good-points">
-              {AI_GOOD_POINTS.map(([label, text]) => (
-                <article className="good-point" key={label}>
-                  <span>{label}</span>
-                  <p>{text}</p>
-                </article>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="record-preview-section">
-        <div className="record-preview-grid">
-          <div className="section-heading layered-heading" data-layer="PUBLIC PROOF">
+      <section className="home-section home-proof-section" data-marker="PUBLIC PROOF / RECORD LAYER">
+        <div className="home-section-grid">
+          <div className="home-section-header">
             <p className="section-kicker">Public proof layer</p>
-            <h2>The candidate page is the audit trail.</h2>
+            <h2>Proof records turn AI output into an asset you can inspect.</h2>
             <p>
-              TWOG should not ask readers to trust a black box. If the system advances an
-              idea, the public page should make the reasoning inspectable: the claim, the
-              evidence behind it, the method used, the decision made, and the uncertainty
-              still attached.
-            </p>
-            <p>
-              The goal is not to make a candidate look finished. The goal is to make the
-              state of the work legible enough that a scientist, collaborator, or curious
-              reader can see what would need to be checked next.
+              A serious discovery engine cannot hide behind a polished summary. If TWOG
+              advances an idea, the record should show the mechanism, citation trail,
+              method version, risks, decision log, and remaining uncertainty.
             </p>
           </div>
 
-          <div className="proof-instrument" aria-label="Public proof record diagram">
-            <div className="record-sheet">
-              <div className="sheet-rule" />
-              <span className="lab-label">Public record</span>
-              <strong>{candidate?.display_id ?? 'TWOG'}</strong>
-              <em>{shortHash(candidate?.content_hash ?? snapshot?.content_hash)}</em>
-            </div>
-            <div className="record-layers" aria-hidden="true">
-              {RECORD_LAYERS.map(([label, text]) => (
-                <div className="record-layer" key={label}>
-                  <span>{label}</span>
-                  <p>{text}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="candidate-snapshot-row">
-          <article className="home-record-card" aria-label="TWOG proof record preview">
+          <article className="home-record-card editorial-record-card" aria-label="TWOG proof record preview">
             <div className="proof-header">
               <span>Candidate snapshot</span>
               <code>{candidate?.display_id ?? 'TWOG'}</code>
@@ -205,7 +137,7 @@ export default function Home() {
             <p>{candidate?.summary ?? 'Static candidate snapshots make the research trail inspectable.'}</p>
             <div className="proof-metrics">
               <span>Status / {candidate?.public_status ?? 'draft'}</span>
-              <span>Hash / {shortHash(candidate?.content_hash ?? snapshot?.content_hash)}</span>
+              <span>Hash / {hash}</span>
               <span>Evidence / {candidate?.evidence_refs?.length ?? 0} refs</span>
             </div>
             {candidate && (
@@ -214,110 +146,63 @@ export default function Home() {
               </Link>
             )}
           </article>
+        </div>
 
-          <div className="proof-constellation">
-            {PROOF_PRIMITIVES.map((item) => (
-              <article className="proof-fragment" key={item.label}>
-                <span>{item.label}</span>
-                <p>{item.text}</p>
+        <div className="proof-point-grid">
+          {PROOF_POINTS.map(([label, text]) => (
+            <article className="proof-point" key={label}>
+              <span>{label}</span>
+              <p>{text}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="home-section home-engine-section" data-marker="ENGINE / AGENT CRITIQUE">
+        <div className="home-section-grid">
+          <div className="home-section-header">
+            <p className="section-kicker">Research engine</p>
+            <h2>The loop is the leverage.</h2>
+            <p>
+              A source is not valuable because it was collected. It becomes valuable when
+              it is structured, challenged, tied to the right question, and either
+              promoted or held back with a clear reason.
+            </p>
+            <p className="operator-line">
+              LLMs argue and synthesize. Operator approval is the write gate.
+            </p>
+          </div>
+
+          <div className="home-process-list" aria-label="TWOG operating loop">
+            {ENGINE_STEPS.map(([number, label, text]) => (
+              <article className="home-process-step" key={label}>
+                <code>{number}</code>
+                <div>
+                  <h3>{label}</h3>
+                  <p>{text}</p>
+                </div>
               </article>
             ))}
           </div>
         </div>
       </section>
 
-      <section className="engine-section">
-        <div className="section-heading layered-heading" data-layer="CLOSED LOOP">
-          <p className="section-kicker">How it moves</p>
-          <h2>Evidence enters. A record emerges.</h2>
+      <section className="home-section home-validation-section" data-marker="VALIDATION / HANDOFF PATH">
+        <div className="home-section-header narrow">
+          <p className="section-kicker">Durable testing framework</p>
+          <h2>From public proof to validation-grade handoff.</h2>
           <p>
-            TWOG is built to turn research motion into something inspectable. A source is
-            not useful just because it was collected. It has to be parsed, challenged,
-            connected to the right question, and either promoted into a public record or
-            held back with a clear reason.
+            Simulations can prioritize hypotheses and produce reproducible artifacts, but
+            they do not prove biology. The business-grade bridge is cheaper
+            prioritization upstream, cleaner review in the middle, and better questions
+            arriving at the lab.
           </p>
         </div>
 
-        <div className="movement-lab" aria-label="TWOG evidence movement diagram">
-          <div className="movement-panel intake-panel">
-            <span className="lab-label">01 / Intake</span>
-            <h3>Raw evidence is messy.</h3>
-            <p>
-              Literature, expression data, molecule records, and safety signals arrive
-              with different formats, confidence levels, and missing context.
-            </p>
-            <div className="packet-stack" aria-hidden="true">
-              {MOVEMENT_INPUTS.map((label) => (
-                <span key={label}>{label}</span>
-              ))}
-            </div>
-          </div>
-
-          <div className="review-chamber">
-            <div className="chamber-lines" aria-hidden="true">
-              <span />
-              <span />
-              <span />
-            </div>
-            <span className="lab-label">02 / Agent review chamber</span>
-            <h3>Agents do not just summarize. They argue with the evidence.</h3>
-            <p>
-              The useful behavior is not one perfect answer. It is a loop where specialist
-              agents surface citations, expose weak assumptions, flag underpowered claims
-              and confounders, request missing evidence, and narrow the next testable
-              hypothesis.
-            </p>
-            <div className="review-stack" aria-hidden="true">
-              {REVIEW_STACK.map((label) => (
-                <span key={label}>{label}</span>
-              ))}
-            </div>
-          </div>
-
-          <div className="movement-panel output-panel">
-            <span className="lab-label">03 / Public proof</span>
-            <h3>The output is a record, not a vibe.</h3>
-            <p>
-              If an idea moves forward, the page should show the rationale, citations,
-              methods, risks, blockers, and decision history that got it there.
-            </p>
-            <div className="record-output-stack" aria-hidden="true">
-              {MOVEMENT_OUTPUTS.map((label) => (
-                <span key={label}>{label}</span>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="movement-notes">
-          <article>
-            <span>What moves forward</span>
-            <p>
-              Ideas with enough evidence, a clear mechanism, and a concrete next readout
-              become candidate records or validation packets.
-            </p>
-          </article>
-          <article>
-            <span>What gets stopped</span>
-            <p>
-              Weak citations, missing provenance, unclear cross-species transfer, or
-              unsupported claims are held back as research notes rather than promoted into
-              candidate records.
-            </p>
-          </article>
-          <article>
-            <span>What becomes public</span>
-            <p>
-              The public layer shows the current state of the reasoning chain. It is built
-              for inspection, correction, and expert review.
-            </p>
-          </article>
-        </div>
-
-        <div className="flow-map">
-          {ENGINE_STEPS.map(([number, label, text]) => (
-            <article className="flow-step" key={label}>
-              <code>{number}</code>
+        <div className="validation-path-list">
+          {VALIDATION_PATH.map(([label, text], index) => (
+            <article className="validation-path-step" key={label}>
+              <code>{String(index + 1).padStart(2, '0')}</code>
               <h3>{label}</h3>
               <p>{text}</p>
             </article>
@@ -325,69 +210,21 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="learning-section">
-        <div className="learning-studio">
-          <div className="learning-studio-copy layered-heading" data-layer="LEARN / BUILD">
-            <p className="section-kicker">The learning layer</p>
-            <h2>The real unlock is being able to ask for the lesson.</h2>
-            <p>
-              TWOG is also a teaching surface. The same system that can search, cite, and
-              challenge research can slow down and explain the science. You can ask for a
-              pathway lesson, a citation map, a contradiction check, or the next practical
-              experiment.
-            </p>
-            <p>
-              That matters because learning is no longer separate from building. The lesson
-              becomes a better question. The better question becomes a focused search. The
-              focused search becomes a record someone else can inspect.
-            </p>
-          </div>
-
-          <div className="learning-studio-board" aria-label="Learning layer workflow">
-            <article className="learning-thesis-card">
-              <span>Learning is infrastructure</span>
-              <p>
-                The point is not to get a clever answer and move on. The point is to turn
-                curiosity into a reusable research object: something cited, versioned, and
-                useful to the next person who asks.
-              </p>
-            </article>
-
-            <div className="lesson-runway">
-              {LESSON_COLUMNS.map(([label, title, example], index) => (
-                <article className="lesson-strip" key={label}>
-                  <code>{String(index + 1).padStart(2, '0')}</code>
-                  <div>
-                    <h3>{label}</h3>
-                    <p>{title}</p>
-                  </div>
-                  <span>{example}</span>
-                </article>
-              ))}
-            </div>
-
-            <div className="learning-output-note">
-              <span>A question becomes a lesson</span>
-              <span>A lesson becomes a search</span>
-              <span>A search becomes a record</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="cta-section">
+      <section id="contact" className="home-section cta-section" data-marker="PUBLIC BUILD / FIELD NOTES">
         <div className="public-cta-grid">
-          <div className="public-cta-copy layered-heading" data-layer="FIELD NOTES">
+          <div className="public-cta-copy">
             <p className="section-kicker">Built in public</p>
-            <h2>Follow the search while the engine is still warm.</h2>
+            <h2>Follow the build of a research engine that can publish its own proof.</h2>
             <p>
-              TWOG is being built where people can see the work: the strange leads, the
-              promising candidates, the dead ends, the rewrites, the receipts, and the
-              moments where a question finally turns into something testable.
+              TWOG is being built where reviewers, collaborators, and serious backers can
+              inspect the work: the strange leads, the promising candidates, the dead
+              ends, the rewrites, the receipts, and the moments where a question turns
+              into something testable.
             </p>
             <p>
-              Sign up for field notes from the build: candidate drops, research lessons,
-              public proof records, and the occasional hard-won answer from the machine.
+              Sign up for field notes from the build: candidate drops, evidence gaps,
+              public proof records, method notes, and the operating lessons behind a new
+              kind of AI-native research infrastructure.
             </p>
           </div>
 
@@ -399,9 +236,9 @@ export default function Home() {
             <div className="signup-terminal">
               <p>Receive:</p>
               <span>candidate records</span>
-              <span>research lessons</span>
+              <span>evidence gaps</span>
               <span>decision logs</span>
-              <span>build notes</span>
+              <span>method notes</span>
             </div>
             <a
               href="https://pushingc.substack.com/subscribe"
