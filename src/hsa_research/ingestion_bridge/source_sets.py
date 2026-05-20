@@ -10,6 +10,19 @@ STRUCTURED_SOURCE_KEYS = (
     "rcsb_pdb",
     "openfda_animal_events",
 )
+PRIMITIVE_SOURCE_KEYS = (
+    "hgnc",
+    "vgnc",
+    "ncbi_gene",
+    "ensembl_xrefs",
+    "unichem",
+    "ensembl_compara",
+    "oma",
+    "mondo",
+    "doid",
+    "reactome",
+    "wikipathways",
+)
 CANINE_DATA_OMICS_SOURCE_KEYS = (
     "icdc",
     "geo",

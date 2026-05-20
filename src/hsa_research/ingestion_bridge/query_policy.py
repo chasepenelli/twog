@@ -392,6 +392,105 @@ def build_target_structure_source_queries() -> list[SourceQuery]:
     ]
 
 
+def build_research_primitive_source_queries() -> list[SourceQuery]:
+    """Create starter queries for TWOG-owned research primitive source data."""
+
+    priority_targets = "VEGFA OR KDR OR FLT4 OR KIT OR MTOR OR CD47 OR SIRPA OR TP53 OR VIM OR PECAM1 OR VWF"
+    priority_diseases = "hemangiosarcoma OR angiosarcoma OR vascular sarcoma OR splenic hemangiosarcoma"
+    priority_pathways = "angiogenesis OR coagulation OR endothelial migration OR extracellular matrix organization"
+    priority_compound_bridge = "CHEMBL941 OR CHEMBL13608 OR CHEMBL521 OR CID:4946"
+    return [
+        SourceQuery(
+            source_key="hgnc",
+            query_name="human_priority_target_nomenclature",
+            query_text=priority_targets,
+            query_params={"status": "Approved", "taxonomy_id": "9606"},
+            track="entity_resolution",
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+        ),
+        SourceQuery(
+            source_key="vgnc",
+            query_name="canine_priority_target_nomenclature",
+            query_text=priority_targets,
+            query_params={"status": "Approved", "taxonomy_id": "9615"},
+            track="entity_resolution",
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+        ),
+        SourceQuery(
+            source_key="ncbi_gene",
+            query_name="canine_human_priority_gene_ids",
+            query_text=priority_targets,
+            query_params={"organism_ids": ["9606", "9615"]},
+            track="entity_resolution",
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+        ),
+        SourceQuery(
+            source_key="ensembl_xrefs",
+            query_name="canine_human_priority_gene_xrefs",
+            query_text=priority_targets,
+            query_params={"species": ["homo_sapiens", "canis_lupus_familiaris"]},
+            track="entity_resolution",
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+        ),
+        SourceQuery(
+            source_key="unichem",
+            query_name="priority_compound_identifier_bridge",
+            query_text=priority_compound_bridge,
+            query_params={"allowed_prefixes": ["CHEMBL", "CID"]},
+            track="entity_cross_reference",
+            object_type=ResearchObjectType.COMPOUND_RECORD,
+        ),
+        SourceQuery(
+            source_key="ensembl_compara",
+            query_name="canine_human_priority_orthologs",
+            query_text=priority_targets,
+            query_params={"source_species": "homo_sapiens", "target_species": "canis_lupus_familiaris"},
+            track="orthology",
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+        ),
+        SourceQuery(
+            source_key="oma",
+            query_name="canine_human_priority_orthology",
+            query_text=priority_targets,
+            query_params={"source_taxon": "9606", "target_taxon": "9615"},
+            track="orthology",
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+        ),
+        SourceQuery(
+            source_key="mondo",
+            query_name="vascular_sarcoma_disease_synonyms",
+            query_text=priority_diseases,
+            query_params={"ontology": "mondo"},
+            track="disease_resolution",
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+        ),
+        SourceQuery(
+            source_key="doid",
+            query_name="vascular_sarcoma_disease_ontology",
+            query_text=priority_diseases,
+            query_params={"ontology": "doid"},
+            track="disease_resolution",
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+        ),
+        SourceQuery(
+            source_key="reactome",
+            query_name="vascular_pathway_synonyms",
+            query_text=priority_pathways,
+            query_params={"species": "Homo sapiens"},
+            track="pathway_resolution",
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+        ),
+        SourceQuery(
+            source_key="wikipathways",
+            query_name="vascular_pathway_lookup",
+            query_text=priority_pathways,
+            query_params={"organism": "Homo sapiens"},
+            track="pathway_resolution",
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+        ),
+    ]
+
+
 def build_safety_source_queries() -> list[SourceQuery]:
     """Create starter queries for veterinary safety signal metadata."""
 

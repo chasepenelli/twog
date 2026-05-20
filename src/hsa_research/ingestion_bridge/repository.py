@@ -31,6 +31,7 @@ from .contracts import (
     HypothesisDraft,
     MDExpertApprovalRecord,
     MDExpertReviewPacketRecord,
+    PrimitiveCallEvent,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
     ResearchProgramRecord,
@@ -46,6 +47,7 @@ from .contracts import (
     RunStatus,
     SourceFollowupQueueItem,
     SourceQuery,
+    SourceVersionRecord,
     ScrapeSourceProfileReview,
     ScrapeReviewRecord,
     TextEmbedding,
@@ -120,6 +122,15 @@ class ResearchRepository(Protocol):
     def upsert_entity_alias(self, alias: EntityAlias) -> EntityAlias:
         """Persist a deterministic alias for a resolved entity."""
 
+    def list_entity_aliases(
+        self,
+        *,
+        entity_type: str | None = None,
+        query: str | None = None,
+        limit: int | None = None,
+    ) -> list[EntityAlias]:
+        """Return resolved entity aliases by durable filters."""
+
     def upsert_entity_mention(self, mention: EntityMention) -> EntityMention:
         """Persist a chunk-level resolved entity mention."""
 
@@ -133,6 +144,29 @@ class ResearchRepository(Protocol):
         limit: int | None = None,
     ) -> list[EntityMention]:
         """Return chunk-level resolved entity mentions."""
+
+    def upsert_source_version(self, record: SourceVersionRecord) -> SourceVersionRecord:
+        """Persist the source version materialized into derived primitive indexes."""
+
+    def list_source_versions(
+        self,
+        *,
+        source_key: str | None = None,
+        limit: int | None = 100,
+    ) -> list[SourceVersionRecord]:
+        """Return source versions available to primitive indexes."""
+
+    def create_primitive_call_event(self, event: PrimitiveCallEvent) -> PrimitiveCallEvent:
+        """Persist an append-only primitive call provenance event."""
+
+    def list_primitive_call_events(
+        self,
+        *,
+        primitive_name: str | None = None,
+        agent_run_id: UUID | None = None,
+        limit: int | None = 50,
+    ) -> list[PrimitiveCallEvent]:
+        """Return primitive call events for audit and agent traceability."""
 
     def upsert_text_embedding(self, embedding: TextEmbedding) -> TextEmbedding:
         """Persist a text embedding for one document chunk and model."""
@@ -596,6 +630,8 @@ class InMemoryResearchRepository:
         self.entities: dict[tuple[str, str], ResolvedEntity] = {}
         self.entity_aliases: dict[tuple[str, str, str], EntityAlias] = {}
         self.entity_mentions: dict[UUID, EntityMention] = {}
+        self.source_versions: dict[str, SourceVersionRecord] = {}
+        self.primitive_call_events: dict[UUID, PrimitiveCallEvent] = {}
         self.text_embeddings: dict[UUID, TextEmbedding] = {}
         self.scrape_reviews: dict[UUID, ScrapeReviewRecord] = {}
         self.scrape_profile_reviews: dict[str, ScrapeSourceProfileReview] = {}
@@ -811,6 +847,26 @@ class InMemoryResearchRepository:
         self.entity_aliases[key] = alias
         return alias
 
+    def list_entity_aliases(
+        self,
+        *,
+        entity_type: str | None = None,
+        query: str | None = None,
+        limit: int | None = None,
+    ) -> list[EntityAlias]:
+        aliases = list(self.entity_aliases.values())
+        if entity_type:
+            aliases = [alias for alias in aliases if alias.entity_type == entity_type]
+        if query:
+            q = query.lower()
+            aliases = [
+                alias
+                for alias in aliases
+                if q in alias.alias_normalized.lower() or q in alias.normalized_key.lower()
+            ]
+        aliases.sort(key=lambda alias: (alias.entity_type, alias.alias_normalized, alias.normalized_key))
+        return aliases[:limit] if limit is not None else aliases
+
     def upsert_entity_mention(self, mention: EntityMention) -> EntityMention:
         existing = next(
             (
@@ -850,6 +906,41 @@ class InMemoryResearchRepository:
             mentions = [mention for mention in mentions if mention.entity_type == entity_type]
         mentions.sort(key=lambda mention: (str(mention.research_object_id), mention.chunk_index, mention.chunk_char_start))
         return mentions[:limit] if limit is not None else mentions
+
+    def upsert_source_version(self, record: SourceVersionRecord) -> SourceVersionRecord:
+        self.source_versions[record.source_key] = record
+        return record
+
+    def list_source_versions(
+        self,
+        *,
+        source_key: str | None = None,
+        limit: int | None = 100,
+    ) -> list[SourceVersionRecord]:
+        records = list(self.source_versions.values())
+        if source_key:
+            records = [record for record in records if record.source_key == source_key]
+        records.sort(key=lambda record: record.materialized_at, reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def create_primitive_call_event(self, event: PrimitiveCallEvent) -> PrimitiveCallEvent:
+        self.primitive_call_events[event.event_id] = event
+        return event
+
+    def list_primitive_call_events(
+        self,
+        *,
+        primitive_name: str | None = None,
+        agent_run_id: UUID | None = None,
+        limit: int | None = 50,
+    ) -> list[PrimitiveCallEvent]:
+        events = list(self.primitive_call_events.values())
+        if primitive_name:
+            events = [event for event in events if event.primitive_name == primitive_name]
+        if agent_run_id:
+            events = [event for event in events if event.agent_run_id == agent_run_id]
+        events.sort(key=lambda event: event.created_at, reverse=True)
+        return events[:limit] if limit is not None else events
 
     def upsert_text_embedding(self, embedding: TextEmbedding) -> TextEmbedding:
         existing = next(
