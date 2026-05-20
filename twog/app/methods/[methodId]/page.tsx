@@ -192,6 +192,7 @@ export default async function MethodDetailPage({ params }: { params: Promise<{ m
             conservative: it preserves uncertainty, separates source evidence from
             interpretation, and keeps every status change attached to a rationale.
           </p>
+          <p className="operator-gate-line">LLMs argue and synthesize. Operator approval is the write gate.</p>
         </article>
 
         <div className="method-flow-list" aria-label="Candidate record generation flow">

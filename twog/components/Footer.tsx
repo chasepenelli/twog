@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from '@/lib/constants';
 
 export default function Footer() {
@@ -9,7 +10,13 @@ export default function Footer() {
             For Graffiti &amp; Brady &mdash; The Work of Graffiti &mdash; Built by Chase
           </p>
         </div>
-        <div className="flex items-center gap-6">
+        <div className="flex flex-wrap items-center justify-center gap-6">
+          <Link
+            href="/architecture"
+            className="text-[0.6rem] uppercase tracking-[0.12em] text-[var(--gray-400)] hover:text-[var(--foreground)] transition-colors duration-300"
+          >
+            Architecture
+          </Link>
           <a
             href={CONTACT_MAILTO}
             className="text-[0.6rem] uppercase tracking-[0.12em] text-[var(--gray-400)] hover:text-[var(--foreground)] transition-colors duration-300"

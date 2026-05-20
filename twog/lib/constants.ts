@@ -4,6 +4,7 @@ export const CONTACT_MAILTO = `mailto:${CONTACT_EMAIL}`;
 export const NAV_LINKS = [
   { href: '/candidates', label: 'Candidates' },
   { href: '/methods', label: 'Methods' },
+  { href: '/architecture', label: 'Architecture' },
   { href: CONTACT_MAILTO, label: 'Contact' },
 ] as const;
 

@@ -1377,6 +1377,18 @@ section {
   line-height: 1.68;
 }
 
+.operator-gate-line {
+  margin-top: 0.4rem;
+  padding: 0.85rem 0.95rem;
+  border-left: 3px solid var(--purple);
+  background: var(--accent-soft);
+  color: var(--foreground) !important;
+  font-family: var(--font-mono);
+  font-size: clamp(0.82rem, 1vw, 0.96rem) !important;
+  letter-spacing: 0.02em;
+  line-height: 1.55 !important;
+}
+
 .method-flow-list {
   display: grid;
   gap: 0.8rem;
@@ -1498,6 +1510,83 @@ section {
   align-content: start;
   min-height: 16rem;
   padding: 1rem;
+}
+
+.architecture-page {
+  --architecture-card-bg: rgba(251, 250, 244, 0.78);
+}
+
+.architecture-status-card {
+  align-content: center;
+}
+
+.architecture-status-card strong {
+  font-size: clamp(1.2rem, 2.1vw, 2.1rem);
+  font-weight: 500;
+  line-height: 1.14;
+  text-wrap: balance;
+}
+
+.architecture-flow-list article {
+  background:
+    linear-gradient(90deg, rgba(109, 40, 217, 0.08), transparent 44%),
+    var(--architecture-card-bg);
+}
+
+.architecture-boundary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.architecture-boundary-grid article {
+  display: grid;
+  gap: 0.8rem;
+  align-content: start;
+  min-height: 15rem;
+  padding: clamp(1rem, 2vw, 1.3rem);
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--architecture-card-bg);
+  box-shadow: 8px 8px 0 rgba(5, 5, 5, 0.06);
+}
+
+.architecture-boundary-grid h3 {
+  font-size: clamp(1.15rem, 1.7vw, 1.5rem);
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.architecture-boundary-grid p {
+  color: var(--muted-ink);
+  font-size: clamp(0.98rem, 1.05vw, 1.08rem);
+  line-height: 1.68;
+}
+
+.architecture-stack {
+  max-width: 1180px;
+  margin: clamp(3rem, 6vw, 5rem) auto 0;
+}
+
+.architecture-stack-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.architecture-stack-list span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.4rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--line);
+  background: rgba(109, 40, 217, 0.08);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .method-payload-section {
@@ -3415,7 +3504,8 @@ section {
   .method-hero,
   .method-protocol,
   .payload-exchange-board,
-  .method-interpretation {
+  .method-interpretation,
+  .architecture-boundary-grid {
     grid-template-columns: 1fr;
   }
 
@@ -3543,6 +3633,7 @@ section {
   .contribution-form-grid,
   .contribution-form-grid.two,
   .method-audit-grid,
+  .architecture-boundary-grid,
   .payload-exchange-board,
   .payload-exchange-steps,
   .payload-endpoint-grid,
@@ -3563,7 +3654,8 @@ section {
     grid-row: auto;
   }
 
-  .method-audit-grid article {
+  .method-audit-grid article,
+  .architecture-boundary-grid article {
     min-height: auto;
   }
 
