@@ -5,7 +5,11 @@ import {
   isCandidateContributionStorageConfigured,
   normalizeCandidateContributionPacket,
 } from '@/lib/candidate-contributions';
-import { getCandidate, publicCandidatePayloadPath } from '@/lib/public-candidates';
+import {
+  getCandidate,
+  publicCandidateEvidenceBundlePath,
+  publicCandidatePayloadPath,
+} from '@/lib/public-candidates';
 
 export const runtime = 'nodejs';
 
@@ -33,6 +37,7 @@ export async function GET(
     method: 'POST',
     storage_configured: isCandidateContributionStorageConfigured(),
     candidate_payload_url: publicCandidatePayloadPath(candidate.candidate.candidate_id),
+    evidence_bundle_url: publicCandidateEvidenceBundlePath(candidate.candidate.candidate_id),
     status: 'intake_queue',
     description:
       'Submit a bounded contribution packet for review. Accepted packets are queued for TWOG intake and do not directly change the public candidate record.',

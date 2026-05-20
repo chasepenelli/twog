@@ -6,6 +6,7 @@ import {
   getCandidate,
   LiteratureRecord,
   publicCandidates,
+  publicCandidateEvidenceBundlePath,
   publicCandidatePayloadPath,
   readableKind,
   shortHash,
@@ -65,6 +66,7 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
   const displayId = candidate.display_id ?? candidate.candidate_id;
   const referenceGroups = uniqueGroups(literature);
   const payloadPath = publicCandidatePayloadPath(candidate.candidate_id);
+  const evidenceBundlePath = publicCandidateEvidenceBundlePath(candidate.candidate_id);
 
   return (
     <div className="site-shell page-shell">
@@ -292,12 +294,23 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
             references, decision events, and reproducibility fields used to render this page.
           </p>
         </div>
+        <div className="payload-receipt">
+          <span>Evidence bundle</span>
+          <code>{evidenceBundlePath}</code>
+          <p>
+            This checkout packet adds source-document compartments, chunk provenance,
+            artifact manifests, and the MD/compute reproducibility contract for follow-up work.
+          </p>
+        </div>
         <div className="method-actions">
           <Link href="/methods/candidate-record-v1" className="record-link">
             Read method
           </Link>
           <a href={payloadPath} className="record-link">
             Open JSON payload
+          </a>
+          <a href={evidenceBundlePath} className="record-link">
+            Open evidence bundle
           </a>
         </div>
       </section>

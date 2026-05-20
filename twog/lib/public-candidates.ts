@@ -45,6 +45,13 @@ export interface PublicCandidateSnapshot {
       next_experiments?: string[];
       validation_decisions?: CandidateValidationDecision[];
     };
+    computational_evidence?: Array<Record<string, unknown>>;
+    artifacts?: Array<Record<string, unknown>>;
+    linked_records?: {
+      compute_job_ids?: string[];
+      therapy_idea_id?: string;
+      validation_decision_ids?: string[];
+    };
     literature?: LiteratureRecord[];
     reproducibility?: {
       pipeline_version?: string;
@@ -133,6 +140,10 @@ export function getCandidate(candidateId: string): PublicCandidateDetail | undef
 
 export function publicCandidatePayloadPath(candidateId: string): string {
   return `/api/public-candidates/${encodeURIComponent(candidateId)}`;
+}
+
+export function publicCandidateEvidenceBundlePath(candidateId: string): string {
+  return `/api/public-candidates/${encodeURIComponent(candidateId)}/evidence-bundle`;
 }
 
 export function shortHash(value?: string | null): string {

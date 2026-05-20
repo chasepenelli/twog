@@ -63,6 +63,12 @@ const payloadAccess = [
       'The current public example used by the site. Display IDs such as TWOG-15F50D resolve to the same record page; the API uses the stable candidate ID.',
   },
   {
+    label: 'Evidence bundle',
+    path: '/api/public-candidates/twog-candidate-447eb8089965/evidence-bundle',
+    detail:
+      'Returns the actionable checkout packet: source-document dossier, chunk manifest, artifact manifest, compute/MD reproducibility contract, and check-in endpoints.',
+  },
+  {
     label: 'Contribution template',
     path: '/api/public-candidates/twog-candidate-447eb8089965/contribution-template',
     detail:
@@ -80,12 +86,12 @@ const exchangeSteps = [
   {
     label: 'Check out',
     detail:
-      'A reader opens the JSON payload and gets the exact candidate snapshot: rationale, evidence refs, decision history, risks, reproducibility fields, and content hash.',
+      'A reader opens the candidate payload for the exact snapshot, then the evidence bundle for source refs, chunk provenance, artifact manifests, and compute settings.',
   },
   {
     label: 'Do outside work',
     detail:
-      'They can replicate a claim, add missing evidence, challenge a citation, attach an artifact, or propose a validation readout against that exact snapshot.',
+      'They can replicate a claim, add missing evidence, challenge a citation, attach an artifact, or rerun a docking/MD method against the same snapshot hash.',
   },
   {
     label: 'Check in',
@@ -264,6 +270,14 @@ export default async function MethodDetailPage({ params }: { params: Promise<{ m
                 Open example JSON
               </a>
               <a
+                href="/api/public-candidates/twog-candidate-447eb8089965/evidence-bundle"
+                className="record-link"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open evidence bundle
+              </a>
+              <a
                 href="/api/public-candidates/twog-candidate-447eb8089965/contribution-template"
                 className="record-link"
                 target="_blank"
@@ -309,7 +323,13 @@ export default async function MethodDetailPage({ params }: { params: Promise<{ m
         </div>
 
         <article className="payload-explainer">
-          <h3>Why check-in needs a gate</h3>
+          <h3>Why the bundle is more than a citation list</h3>
+          <p>
+            The evidence bundle is the actionable checkout layer. It keeps the source
+            dossier, chunk IDs, research object IDs, artifact manifest, snapshot hash,
+            and compute/MD reproducibility contract together so a reviewer can work
+            against the same record TWOG published.
+          </p>
           <p>
             The public site should not let outside submissions directly change a
             candidate or dispatch validation jobs. A checked-in contribution should
