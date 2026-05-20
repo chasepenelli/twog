@@ -55,6 +55,10 @@ from .contracts import (
     EvidenceRefRepairRequest,
     EvidenceGapResolverRequest,
     EvidenceGapResolverResult,
+    EntityLookupIndexRequest,
+    EntityLookupIndexResult,
+    EntityLookupRequest,
+    EntityLookupResponse,
     FullTextTriageRequest,
     FullTextTriageResult,
     FullTextOpsRequest,
@@ -1035,6 +1039,21 @@ class HSAResearchService:
 
     def get_claim(self, claim_id: UUID):
         return self.repository.get_claim(claim_id)
+
+    def materialize_entity_lookup_index(self, request: EntityLookupIndexRequest | None = None) -> EntityLookupIndexResult:
+        from .research_primitives import materialize_entity_lookup_index
+
+        return materialize_entity_lookup_index(self.repository, request)
+
+    def resolve_entity_lookup(self, request: EntityLookupRequest) -> EntityLookupResponse:
+        from .research_primitives import resolve_entity_lookup
+
+        return resolve_entity_lookup(self.repository, request)
+
+    def resolve_entity_lookup_bulk(self, requests: list[EntityLookupRequest]) -> list[EntityLookupResponse]:
+        from .research_primitives import resolve_entity_lookup_bulk
+
+        return resolve_entity_lookup_bulk(self.repository, requests)
 
     def search_research_chunks(self, request: ResearchChunkSearchRequest) -> ResearchChunkSearchResults:
         embedding_model = self._select_embedding_model(request)

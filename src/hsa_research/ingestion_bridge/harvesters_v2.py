@@ -2263,6 +2263,701 @@ class RCSBPDBHarvesterV2(HarvesterV2):
         return "structure_metadata"
 
 
+class GeneNamesHarvesterV2(HarvesterV2):
+    """HGNC/VGNC REST harvester for authoritative gene symbol metadata."""
+
+    source_key = "hgnc"
+    rest_prefix = "https://rest.genenames.org"
+    organism_taxid = "9606"
+
+    def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
+        terms = _query_terms(query_text)
+        status = str(params.pop("status", "Approved") or "Approved")
+        taxonomy_id = str(params.pop("taxonomy_id", self.organism_taxid) or self.organism_taxid)
+        records: list[HarvestedRecord] = []
+        seen: set[str] = set()
+        for term in terms:
+            if len(records) >= limit:
+                break
+            try:
+                data = _get_json_with_headers(
+                    f"{self.rest_prefix}/{self._fetch_symbol_path()}/{urllib.parse.quote(term)}",
+                    {},
+                    {"Accept": "application/json"},
+                    attempts=1,
+                )
+                docs = (data.get("response") or {}).get("docs") or []
+            except RuntimeError:
+                data = {"response": {"docs": []}}
+                docs = []
+            if not docs:
+                data = _get_json_with_headers(
+                    f"{self.rest_prefix}/{self._search_path()}/{urllib.parse.quote(term)}",
+                    {},
+                    {"Accept": "application/json"},
+                )
+                docs = (data.get("response") or {}).get("docs") or []
+            for doc in docs:
+                if status and str(doc.get("status") or "").lower() not in {"", status.lower()}:
+                    continue
+                if taxonomy_id and str(doc.get("taxonomy_id") or taxonomy_id) != taxonomy_id:
+                    continue
+                source_id = str(doc.get(self._id_field()) or doc.get("hgnc_id") or doc.get("vgnc_id") or "")
+                if not source_id or source_id in seen:
+                    continue
+                seen.add(source_id)
+                records.append(self.normalize(doc | {"query_term": term, "source_version": "rest-current"}))
+                if len(records) >= limit:
+                    break
+        return records
+
+    def normalize(self, doc: dict[str, Any]) -> HarvestedRecord:
+        source_id = str(doc.get(self._id_field()) or doc.get("hgnc_id") or doc.get("vgnc_id") or doc.get("symbol"))
+        symbol = _first_value(doc.get("symbol")) or source_id
+        name = _first_value(doc.get("name")) or _first_value(doc.get("gene_name")) or symbol
+        aliases = _list_values(doc.get("alias_symbol")) + _list_values(doc.get("prev_symbol"))
+        taxonomy_id = str(doc.get("taxonomy_id") or self.organism_taxid)
+        identifiers = {
+            self._id_field(): source_id,
+            "gene_symbol": symbol,
+            "entrez_id": _first_value(doc.get("entrez_id")),
+            "ensembl_gene_id": _first_value(doc.get("ensembl_gene_id")),
+            "source_id": source_id,
+        }
+        identifiers = {key: str(value) for key, value in identifiers.items() if value}
+        source_url = self._source_url(source_id)
+        raw = _raw_record(self.source_key, source_id, source_url, doc)
+        obj = ResearchObject(
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+            title=f"{symbol} gene nomenclature",
+            abstract=_clean_markup(name),
+            canonical_url=source_url,
+            source_key=self.source_key,
+            dedupe_key=_dedupe_key(identifiers, self.source_key, source_id),
+            identifiers=identifiers,
+            metadata={
+                "query_term": doc.get("query_term"),
+                "symbol": symbol,
+                "name": name,
+                "aliases": aliases,
+                "organism_taxid": taxonomy_id,
+                "source_version": doc.get("source_version") or "rest-current",
+                "cross_references": {
+                    "entrez_id": _first_value(doc.get("entrez_id")),
+                    "ensembl_gene_id": _first_value(doc.get("ensembl_gene_id")),
+                    "uniprot_ids": _list_values(doc.get("uniprot_ids")),
+                },
+                "license_policy": "metadata",
+                "harvester": "v2",
+            },
+        )
+        return HarvestedRecord(raw_record=raw, research_object=obj)
+
+    def text_for_chunking(self, record: HarvestedRecord) -> str:
+        metadata = record.research_object.metadata
+        aliases = metadata.get("aliases") or []
+        return "\n\n".join(
+            part
+            for part in (
+                record.research_object.title,
+                record.research_object.abstract,
+                f"Aliases: {'; '.join(aliases)}" if aliases else None,
+                f"Organism taxonomy ID: {metadata.get('organism_taxid')}",
+                f"Cross references: {json.dumps(metadata.get('cross_references', {}), sort_keys=True)}",
+            )
+            if part
+        )
+
+    def chunk_section_label(self, record: HarvestedRecord) -> str:
+        _ = record
+        return "gene_nomenclature"
+
+    def _search_path(self) -> str:
+        return "search"
+
+    def _fetch_symbol_path(self) -> str:
+        return "fetch/symbol"
+
+    def _id_field(self) -> str:
+        return "hgnc_id"
+
+    def _source_url(self, source_id: str) -> str:
+        return f"https://www.genenames.org/data/gene-symbol-report/#!/hgnc_id/{urllib.parse.quote(source_id)}"
+
+
+class HGNCHarvesterV2(GeneNamesHarvesterV2):
+    source_key = "hgnc"
+    rest_prefix = "https://rest.genenames.org"
+    organism_taxid = "9606"
+
+
+class VGNCHarvesterV2(GeneNamesHarvesterV2):
+    source_key = "vgnc"
+    rest_prefix = "https://rest.genenames.org"
+    organism_taxid = "9615"
+
+    def _search_path(self) -> str:
+        return "vgnc/search"
+
+    def _fetch_symbol_path(self) -> str:
+        return "vgnc/fetch/symbol"
+
+    def _id_field(self) -> str:
+        return "vgnc_id"
+
+    def _source_url(self, source_id: str) -> str:
+        return f"https://vertebrate.genenames.org/data/gene-symbol-report/#!/vgnc_id/{urllib.parse.quote(source_id)}"
+
+
+class NCBIGeneHarvesterV2(HarvesterV2):
+    """NCBI Gene E-utilities harvester for gene IDs and synonyms."""
+
+    source_key = "ncbi_gene"
+
+    def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
+        terms = _query_terms(query_text)
+        organism_ids = _string_list(params.pop("organism_ids", ["9606", "9615"]))
+        records: list[HarvestedRecord] = []
+        seen: set[str] = set()
+        for term in terms:
+            if len(records) >= limit:
+                break
+            organism_query = " OR ".join(f"txid{organism_id}[Organism:exp]" for organism_id in organism_ids)
+            data = _get_json(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+                {
+                    "db": "gene",
+                    "term": f"{term}[Gene Name] AND ({organism_query})",
+                    "retmode": "json",
+                    "retmax": min(limit - len(records), 20),
+                },
+            )
+            ids = [gene_id for gene_id in (data.get("esearchresult") or {}).get("idlist") or [] if gene_id not in seen]
+            if not ids:
+                data = _get_json(
+                    "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+                    {
+                        "db": "gene",
+                        "term": f"{term}[All Fields] AND ({organism_query})",
+                        "retmode": "json",
+                        "retmax": min(limit - len(records), 20),
+                    },
+                )
+                ids = [
+                    gene_id
+                    for gene_id in (data.get("esearchresult") or {}).get("idlist") or []
+                    if gene_id not in seen
+                ]
+            if not ids:
+                continue
+            summary = _get_json(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+                {"db": "gene", "id": ",".join(ids), "retmode": "json"},
+            )
+            result = summary.get("result") or {}
+            for gene_id in result.get("uids") or ids:
+                if len(records) >= limit or gene_id in seen:
+                    break
+                doc = result.get(str(gene_id)) or {}
+                if not doc:
+                    continue
+                seen.add(str(gene_id))
+                records.append(self.normalize(doc | {"query_term": term, "source_version": "eutils-current"}))
+        return records
+
+    def normalize(self, doc: dict[str, Any]) -> HarvestedRecord:
+        gene_id = str(doc.get("uid") or doc.get("geneid") or doc.get("name"))
+        organism = doc.get("organism") or {}
+        symbol = _first_value(doc.get("nomenclaturesymbol")) or _first_value(doc.get("name")) or gene_id
+        description = _first_value(doc.get("description")) or _first_value(doc.get("summary"))
+        aliases = _split_aliases(doc.get("otheraliases"))
+        identifiers = {
+            "ncbi_gene_id": gene_id,
+            "gene_symbol": symbol,
+            "source_id": gene_id,
+        }
+        source_url = f"https://www.ncbi.nlm.nih.gov/gene/{gene_id}"
+        raw = _raw_record(self.source_key, gene_id, source_url, doc)
+        obj = ResearchObject(
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+            title=f"{symbol} NCBI Gene record",
+            abstract=_clean_markup(description),
+            canonical_url=source_url,
+            source_key=self.source_key,
+            dedupe_key=_dedupe_key(identifiers, self.source_key, gene_id),
+            identifiers=identifiers,
+            metadata={
+                "query_term": doc.get("query_term"),
+                "symbol": symbol,
+                "aliases": aliases,
+                "organism": organism.get("scientificname") or organism.get("commonname"),
+                "organism_taxid": str(organism.get("taxid")) if organism.get("taxid") is not None else None,
+                "source_version": doc.get("source_version") or "eutils-current",
+                "license_policy": "metadata",
+                "harvester": "v2",
+            },
+        )
+        return HarvestedRecord(raw_record=raw, research_object=obj)
+
+    def chunk_section_label(self, record: HarvestedRecord) -> str:
+        _ = record
+        return "gene_identifier_metadata"
+
+
+class EnsemblXrefsHarvesterV2(HarvesterV2):
+    """Ensembl REST xref harvester for gene symbol cross references."""
+
+    source_key = "ensembl_xrefs"
+
+    def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
+        terms = _query_terms(query_text)
+        species = _string_list(params.pop("species", ["homo_sapiens", "canis_lupus_familiaris"]))
+        records: list[HarvestedRecord] = []
+        seen: set[str] = set()
+        for term in terms:
+            for species_name in species:
+                if len(records) >= limit:
+                    break
+                data = _get_json_with_headers(
+                    f"https://rest.ensembl.org/xrefs/symbol/{urllib.parse.quote(species_name)}/{urllib.parse.quote(term)}",
+                    {"content-type": "application/json"},
+                    {"Accept": "application/json"},
+                )
+                rows = data if isinstance(data, list) else data.get("results") or []
+                for row in rows:
+                    source_id = str(row.get("id") or row.get("primary_id") or "")
+                    key = f"{species_name}:{source_id}:{row.get('dbname')}"
+                    if not source_id or key in seen:
+                        continue
+                    seen.add(key)
+                    records.append(self.normalize(row | {"query_term": term, "species": species_name, "source_version": "rest-current"}))
+                    if len(records) >= limit:
+                        break
+        return records
+
+    def normalize(self, row: dict[str, Any]) -> HarvestedRecord:
+        ensembl_id = str(row.get("id") or row.get("primary_id") or row.get("display_id"))
+        symbol = str(row.get("display_id") or row.get("query_term") or ensembl_id)
+        species_name = str(row.get("species") or "")
+        identifiers = {
+            "ensembl_gene_id": ensembl_id,
+            "gene_symbol": symbol,
+            "source_id": f"{species_name}:{ensembl_id}",
+        }
+        source_url = f"https://www.ensembl.org/id/{ensembl_id}"
+        raw = _raw_record(self.source_key, identifiers["source_id"], source_url, row)
+        obj = ResearchObject(
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+            title=f"{symbol} Ensembl xref",
+            abstract=_clean_markup(row.get("description")),
+            canonical_url=source_url,
+            source_key=self.source_key,
+            dedupe_key=_dedupe_key(identifiers, self.source_key, identifiers["source_id"]),
+            identifiers=identifiers,
+            metadata={
+                "query_term": row.get("query_term"),
+                "symbol": symbol,
+                "species": species_name,
+                "organism_taxid": "9606" if species_name == "homo_sapiens" else "9615" if species_name == "canis_lupus_familiaris" else None,
+                "dbname": row.get("dbname"),
+                "info_type": row.get("info_type"),
+                "source_version": row.get("source_version") or "rest-current",
+                "license_policy": "metadata",
+                "harvester": "v2",
+            },
+        )
+        return HarvestedRecord(raw_record=raw, research_object=obj)
+
+    def chunk_section_label(self, record: HarvestedRecord) -> str:
+        _ = record
+        return "ensembl_cross_reference"
+
+
+class EnsemblComparaHarvesterV2(HarvesterV2):
+    """Ensembl REST homology harvester for canine-human ortholog mapping."""
+
+    source_key = "ensembl_compara"
+
+    def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
+        source_species = str(params.pop("source_species", "homo_sapiens") or "homo_sapiens")
+        target_species = str(params.pop("target_species", "canis_lupus_familiaris") or "canis_lupus_familiaris")
+        records: list[HarvestedRecord] = []
+        seen: set[str] = set()
+        for term in _query_terms(query_text):
+            if len(records) >= limit:
+                break
+            data = _get_json_with_headers(
+                f"https://rest.ensembl.org/homology/symbol/{urllib.parse.quote(source_species)}/{urllib.parse.quote(term)}",
+                {"target_species": target_species, "content-type": "application/json"},
+                {"Accept": "application/json"},
+            )
+            for block in data.get("data") or []:
+                for homology in block.get("homologies") or []:
+                    target = homology.get("target") or {}
+                    source = homology.get("source") or block
+                    source_id = str(source.get("id") or term)
+                    target_id = str(target.get("id") or "")
+                    key = f"{source_species}:{source_id}:{target_species}:{target_id}"
+                    if not target_id or key in seen:
+                        continue
+                    seen.add(key)
+                    records.append(
+                        self.normalize(
+                            {
+                                "query_term": term,
+                                "source_species": source_species,
+                                "target_species": target_species,
+                                "source": source,
+                                "target": target,
+                                "homology": homology,
+                                "source_version": "rest-current",
+                            }
+                        )
+                    )
+                    if len(records) >= limit:
+                        break
+        return records
+
+    def normalize(self, payload: dict[str, Any]) -> HarvestedRecord:
+        source = payload.get("source") or {}
+        target = payload.get("target") or {}
+        homology = payload.get("homology") or {}
+        source_id = str(source.get("id") or payload.get("query_term"))
+        target_id = str(target.get("id") or "")
+        source_record_id = f"{payload.get('source_species')}:{source_id}:{payload.get('target_species')}:{target_id}"
+        identifiers = {
+            "ensembl_source_gene_id": source_id,
+            "ensembl_target_gene_id": target_id,
+            "source_id": source_record_id,
+        }
+        raw = _raw_record(self.source_key, source_record_id, f"https://www.ensembl.org/id/{source_id}", payload)
+        obj = ResearchObject(
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+            title=f"{payload.get('query_term')} Ensembl Compara homology",
+            abstract=f"Homology from {payload.get('source_species')} to {payload.get('target_species')}.",
+            canonical_url=f"https://www.ensembl.org/id/{source_id}",
+            source_key=self.source_key,
+            dedupe_key=_dedupe_key(identifiers, self.source_key, source_record_id),
+            identifiers=identifiers,
+            metadata={
+                "query_term": payload.get("query_term"),
+                "source_species": payload.get("source_species"),
+                "target_species": payload.get("target_species"),
+                "relationship": homology.get("type"),
+                "confidence": homology.get("taxonomy_level"),
+                "perc_id": target.get("perc_id"),
+                "perc_pos": target.get("perc_pos"),
+                "source_version": payload.get("source_version") or "rest-current",
+                "license_policy": "metadata",
+                "harvester": "v2",
+            },
+        )
+        return HarvestedRecord(raw_record=raw, research_object=obj)
+
+    def chunk_section_label(self, record: HarvestedRecord) -> str:
+        _ = record
+        return "ortholog_mapping"
+
+
+class OLSOntologyHarvesterV2(HarvesterV2):
+    """EBI OLS harvester for disease ontology lookup metadata."""
+
+    source_key = "mondo"
+    ontology = "mondo"
+
+    def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
+        ontology = str(params.pop("ontology", self.ontology) or self.ontology)
+        records: list[HarvestedRecord] = []
+        seen: set[str] = set()
+        for term in _query_terms(query_text):
+            if len(records) >= limit:
+                break
+            data = _get_json(
+                "https://www.ebi.ac.uk/ols4/api/search",
+                {"q": term, "ontology": ontology, "rows": min(10, max(1, limit - len(records)))},
+            )
+            for doc in (data.get("response") or {}).get("docs") or []:
+                source_id = str(doc.get("obo_id") or doc.get("short_form") or doc.get("iri") or "")
+                if not source_id or source_id in seen:
+                    continue
+                seen.add(source_id)
+                records.append(self.normalize(doc | {"query_term": term, "source_version": "ols-current"}))
+                if len(records) >= limit:
+                    break
+        return records
+
+    def normalize(self, doc: dict[str, Any]) -> HarvestedRecord:
+        source_id = str(doc.get("obo_id") or doc.get("short_form") or doc.get("iri") or doc.get("label"))
+        label = _first_value(doc.get("label")) or source_id
+        synonyms = _list_values(doc.get("synonym"))
+        source_url = str(doc.get("iri") or "")
+        identifiers = {"ontology_id": source_id, "source_id": source_id}
+        raw = _raw_record(self.source_key, source_id, source_url or None, doc)
+        obj = ResearchObject(
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+            title=f"{label} ontology term",
+            abstract=_clean_markup("; ".join(_list_values(doc.get("description"))) or None),
+            canonical_url=source_url or None,
+            source_key=self.source_key,
+            dedupe_key=_dedupe_key(identifiers, self.source_key, source_id),
+            identifiers=identifiers,
+            metadata={
+                "query_term": doc.get("query_term"),
+                "label": label,
+                "synonyms": synonyms,
+                "ontology_name": doc.get("ontology_name"),
+                "source_version": doc.get("source_version") or "ols-current",
+                "license_policy": "open_ontology_metadata",
+                "harvester": "v2",
+            },
+        )
+        return HarvestedRecord(raw_record=raw, research_object=obj)
+
+    def chunk_section_label(self, record: HarvestedRecord) -> str:
+        _ = record
+        return "ontology_term"
+
+
+class MONDOHarvesterV2(OLSOntologyHarvesterV2):
+    source_key = "mondo"
+    ontology = "mondo"
+
+
+class DOIDHarvesterV2(OLSOntologyHarvesterV2):
+    source_key = "doid"
+    ontology = "doid"
+
+
+class ReactomeHarvesterV2(HarvesterV2):
+    """Reactome Content Service search harvester for pathway metadata."""
+
+    source_key = "reactome"
+
+    def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
+        species = params.pop("species", "Homo sapiens")
+        records: list[HarvestedRecord] = []
+        seen: set[str] = set()
+        for term in _query_terms(query_text):
+            if len(records) >= limit:
+                break
+            data = _get_json(
+                "https://reactome.org/ContentService/search/query",
+                {"query": term, "species": species, "types": "Pathway", "cluster": "true"},
+            )
+            rows: list[dict[str, Any]] = []
+            for result in data.get("results") or []:
+                if isinstance(result, dict) and isinstance(result.get("entries"), list):
+                    rows.extend(entry for entry in result["entries"] if isinstance(entry, dict))
+                elif isinstance(result, dict):
+                    rows.append(result)
+            if not rows:
+                rows = data.get("entries") or []
+            for row in rows:
+                source_id = str(row.get("stId") or row.get("stableIdentifier") or row.get("id") or "")
+                if not source_id or source_id in seen:
+                    continue
+                seen.add(source_id)
+                records.append(self.normalize(row | {"query_term": term, "species": species, "source_version": "content-service-current"}))
+                if len(records) >= limit:
+                    break
+        return records
+
+    def normalize(self, row: dict[str, Any]) -> HarvestedRecord:
+        source_id = str(row.get("stId") or row.get("stableIdentifier") or row.get("id") or row.get("displayName"))
+        title = str(row.get("displayName") or row.get("name") or source_id)
+        source_url = f"https://reactome.org/content/detail/{source_id}"
+        identifiers = {"reactome_id": source_id, "source_id": source_id}
+        raw = _raw_record(self.source_key, source_id, source_url, row)
+        obj = ResearchObject(
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+            title=title,
+            abstract=_clean_markup(row.get("summation") or row.get("description")),
+            canonical_url=source_url,
+            source_key=self.source_key,
+            dedupe_key=_dedupe_key(identifiers, self.source_key, source_id),
+            identifiers=identifiers,
+            metadata={
+                "query_term": row.get("query_term"),
+                "species": row.get("species"),
+                "pathway_name": title,
+                "source_version": row.get("source_version") or "content-service-current",
+                "license_policy": "metadata",
+                "harvester": "v2",
+            },
+        )
+        return HarvestedRecord(raw_record=raw, research_object=obj)
+
+    def chunk_section_label(self, record: HarvestedRecord) -> str:
+        _ = record
+        return "pathway_metadata"
+
+
+class WikiPathwaysHarvesterV2(HarvesterV2):
+    """WikiPathways text search harvester for pathway lookup metadata."""
+
+    source_key = "wikipathways"
+
+    def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
+        organism = params.pop("organism", "Homo sapiens")
+        records: list[HarvestedRecord] = []
+        seen: set[str] = set()
+        for term in _query_terms(query_text):
+            if len(records) >= limit:
+                break
+            data = _get_json(
+                "https://webservice.wikipathways.org/findPathwaysByText",
+                {"query": term, "organism": organism, "format": "json"},
+            )
+            rows = data.get("pathways") or data.get("result") or []
+            for row in rows:
+                source_id = str(row.get("id") or row.get("identifier") or "")
+                if not source_id or source_id in seen:
+                    continue
+                seen.add(source_id)
+                records.append(self.normalize(row | {"query_term": term, "organism": organism, "source_version": "webservice-current"}))
+                if len(records) >= limit:
+                    break
+        return records
+
+    def normalize(self, row: dict[str, Any]) -> HarvestedRecord:
+        source_id = str(row.get("id") or row.get("identifier") or row.get("name"))
+        title = str(row.get("name") or row.get("title") or source_id)
+        source_url = str(row.get("url") or f"https://www.wikipathways.org/pathways/{source_id}.html")
+        identifiers = {"wikipathways_id": source_id, "source_id": source_id}
+        raw = _raw_record(self.source_key, source_id, source_url, row)
+        obj = ResearchObject(
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+            title=title,
+            abstract=_clean_markup(row.get("description")),
+            canonical_url=source_url,
+            source_key=self.source_key,
+            dedupe_key=_dedupe_key(identifiers, self.source_key, source_id),
+            identifiers=identifiers,
+            metadata={
+                "query_term": row.get("query_term"),
+                "organism": row.get("organism"),
+                "pathway_name": title,
+                "source_version": row.get("source_version") or "webservice-current",
+                "license_policy": "metadata",
+                "harvester": "v2",
+            },
+        )
+        return HarvestedRecord(raw_record=raw, research_object=obj)
+
+    def chunk_section_label(self, record: HarvestedRecord) -> str:
+        _ = record
+        return "pathway_metadata"
+
+
+class UniChemHarvesterV2(HarvesterV2):
+    """UniChem identifier bridge harvester for compound cross references."""
+
+    source_key = "unichem"
+
+    def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
+        records: list[HarvestedRecord] = []
+        for term in _query_terms(query_text):
+            if len(records) >= limit:
+                break
+            normalized = term.strip()
+            source_id = str(params.get("source_id") or _unichem_source_for_identifier(normalized) or "")
+            compound_id = _strip_identifier_prefix(normalized)
+            if not source_id or not compound_id:
+                continue
+            data = _get_json(
+                f"https://www.ebi.ac.uk/unichem/rest/src_compound_id/{urllib.parse.quote(compound_id)}/{urllib.parse.quote(source_id)}",
+                {},
+            )
+            rows = data if isinstance(data, list) else data.get("results") or []
+            for row in rows:
+                records.append(self.normalize(row | {"query_term": term, "source_id_query": source_id, "source_version": "rest-current"}))
+                if len(records) >= limit:
+                    break
+        return records
+
+    def normalize(self, row: dict[str, Any]) -> HarvestedRecord:
+        source_id = str(row.get("src_id") or row.get("source_id_query") or "")
+        src_compound_id = str(row.get("src_compound_id") or row.get("query_term") or "")
+        source_record_id = f"{source_id}:{src_compound_id}:{row.get('assignment') or row.get('src_url') or ''}"
+        identifiers = {"source_id": source_record_id, "unichem_source_id": source_id, "source_compound_id": src_compound_id}
+        raw = _raw_record(self.source_key, source_record_id, None, row)
+        obj = ResearchObject(
+            object_type=ResearchObjectType.COMPOUND_RECORD,
+            title=f"UniChem mapping for {src_compound_id}",
+            abstract="Compound identifier cross-reference from UniChem.",
+            source_key=self.source_key,
+            dedupe_key=_dedupe_key(identifiers, self.source_key, source_record_id),
+            identifiers=identifiers,
+            metadata={
+                "query_term": row.get("query_term"),
+                "source_id_query": source_id,
+                "source_compound_id": src_compound_id,
+                "mapping_payload": row,
+                "source_version": row.get("source_version") or "rest-current",
+                "license_policy": "metadata",
+                "harvester": "v2",
+            },
+        )
+        return HarvestedRecord(raw_record=raw, research_object=obj)
+
+    def chunk_section_label(self, record: HarvestedRecord) -> str:
+        _ = record
+        return "compound_identifier_bridge"
+
+
+class OMAHarvesterV2(HarvesterV2):
+    """OMA Browser placeholder harvester for orthology metadata lookups."""
+
+    source_key = "oma"
+
+    def fetch(self, query_text: str, limit: int = 25, **params: Any) -> list[HarvestedRecord]:
+        # OMA supports several identifier-specific routes. This first pass keeps
+        # the source registered and normalization tested while the exact ID path
+        # is selected by the ortholog materialization job.
+        records: list[HarvestedRecord] = []
+        for term in _query_terms(query_text)[:limit]:
+            records.append(
+                self.normalize(
+                    {
+                        "query_term": term,
+                        "source_taxon": params.get("source_taxon"),
+                        "target_taxon": params.get("target_taxon"),
+                        "source_version": "api-current",
+                    }
+                )
+            )
+        return records
+
+    def normalize(self, payload: dict[str, Any]) -> HarvestedRecord:
+        term = str(payload.get("query_term") or "unknown")
+        source_record_id = f"{payload.get('source_taxon') or 'source'}:{term}:{payload.get('target_taxon') or 'target'}"
+        identifiers = {"source_id": source_record_id}
+        raw = _raw_record(self.source_key, source_record_id, "https://omabrowser.org/", payload)
+        obj = ResearchObject(
+            object_type=ResearchObjectType.KNOWLEDGE_ENTRY,
+            title=f"{term} OMA orthology lookup seed",
+            abstract="OMA orthology lookup seed pending identifier-specific materialization.",
+            canonical_url="https://omabrowser.org/",
+            source_key=self.source_key,
+            dedupe_key=_dedupe_key(identifiers, self.source_key, source_record_id),
+            identifiers=identifiers,
+            metadata={
+                "query_term": term,
+                "source_taxon": payload.get("source_taxon"),
+                "target_taxon": payload.get("target_taxon"),
+                "source_version": payload.get("source_version") or "api-current",
+                "license_policy": "metadata",
+                "harvester": "v2",
+                "status": "lookup_seed",
+            },
+        )
+        return HarvestedRecord(raw_record=raw, research_object=obj)
+
+    def chunk_section_label(self, record: HarvestedRecord) -> str:
+        _ = record
+        return "ortholog_lookup_seed"
+
+
 class OpenFDAAnimalEventsHarvesterV2(HarvesterV2):
     """openFDA Animal and Veterinary adverse event harvester."""
 
@@ -2403,8 +3098,15 @@ HARVESTERS_V2: dict[str, type[HarvesterV2]] = {
     "avma_vctr": AVMAVCTRHarvesterV2,
     "chembl": ChEMBLHarvesterV2,
     "clinicaltrials_gov": ClinicalTrialsGovHarvesterV2,
+    "doid": DOIDHarvesterV2,
+    "ensembl_compara": EnsemblComparaHarvesterV2,
+    "ensembl_xrefs": EnsemblXrefsHarvesterV2,
     "geo": GEOHarvesterV2,
+    "hgnc": HGNCHarvesterV2,
     "icdc": ICDCHarvesterV2,
+    "mondo": MONDOHarvesterV2,
+    "ncbi_gene": NCBIGeneHarvesterV2,
+    "oma": OMAHarvesterV2,
     "openalex": OpenAlexHarvesterV2,
     "unpaywall": UnpaywallHarvesterV2,
     "crossref": CrossrefHarvesterV2,
@@ -2414,8 +3116,12 @@ HARVESTERS_V2: dict[str, type[HarvesterV2]] = {
     "pubchem": PubChemHarvesterV2,
     "pubmed": PubMedHarvesterV2,
     "rcsb_pdb": RCSBPDBHarvesterV2,
+    "reactome": ReactomeHarvesterV2,
     "sra": SRAHarvesterV2,
+    "unichem": UniChemHarvesterV2,
     "uniprot": UniProtHarvesterV2,
+    "vgnc": VGNCHarvesterV2,
+    "wikipathways": WikiPathwaysHarvesterV2,
 }
 
 HARVESTERS = HARVESTERS_V2
@@ -2436,6 +3142,40 @@ def _get_json(
     attempts: int = DEFAULT_REQUEST_ATTEMPTS,
 ) -> dict[str, Any]:
     return json.loads(_get_text(url, params, timeout_seconds=timeout_seconds, attempts=attempts))
+
+
+def _get_json_with_headers(
+    url: str,
+    params: dict[str, Any],
+    headers: dict[str, str],
+    *,
+    timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    attempts: int = DEFAULT_REQUEST_ATTEMPTS,
+) -> dict[str, Any]:
+    params = dict(params)
+    if "eutils.ncbi.nlm.nih.gov" in url and "api_key" not in params and os.getenv("NCBI_API_KEY"):
+        params["api_key"] = os.environ["NCBI_API_KEY"]
+    query = urllib.parse.urlencode({key: value for key, value in params.items() if value is not None})
+    request_headers = {"User-Agent": USER_AGENT, **headers}
+    request = urllib.request.Request(f"{url}?{query}", headers=request_headers)
+    last_error: Exception | None = None
+    attempts = max(1, attempts)
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in {429, 500, 502, 503, 504} or attempt == attempts - 1:
+                detail = exc.read().decode("utf-8", errors="replace")[:500]
+                raise RuntimeError(f"HTTP {exc.code} from {url}: {detail}") from exc
+            time.sleep(1.5 * (attempt + 1))
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            last_error = exc
+            if attempt == attempts - 1:
+                break
+            time.sleep(1.5 * (attempt + 1))
+    raise RuntimeError(f"Request failed for {url}: {last_error}") from last_error
 
 
 def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2704,6 +3444,49 @@ def _first(value: Any) -> Any:
     if isinstance(value, list):
         return value[0] if value else None
     return value
+
+
+def _first_value(value: Any) -> str | None:
+    first = _first(value)
+    if first is None:
+        return None
+    text = str(first).strip()
+    return text or None
+
+
+def _list_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list | tuple | set):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _split_aliases(value: Any) -> list[str]:
+    aliases: list[str] = []
+    for item in _list_values(value):
+        for part in re.split(r"[|,;]", item):
+            cleaned = part.strip()
+            if cleaned and cleaned not in aliases:
+                aliases.append(cleaned)
+    return aliases
+
+
+def _strip_identifier_prefix(identifier: str) -> str:
+    text = identifier.strip()
+    if text.upper().startswith("CID:"):
+        return text.split(":", 1)[1].strip()
+    return re.sub(r"^(pubchem|chembl)[:_ -]+", "", text, flags=re.I).strip()
+
+
+def _unichem_source_for_identifier(identifier: str) -> str | None:
+    text = identifier.strip().upper()
+    if text.startswith("CHEMBL"):
+        return "1"
+    if text.startswith("CID:") or text.isdigit():
+        return "22"
+    return None
 
 
 def _clean_markup(value: str | None) -> str | None:
