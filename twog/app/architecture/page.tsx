@@ -1,52 +1,67 @@
-const architectureSections = [
+const architectureNodes = [
   {
     step: '01',
-    label: 'Ingestion',
-    detail:
-      'Structured harvesters pull PubChem, ChEMBL, UniProt, RCSB PDB, OpenFDA animal adverse events, PubMed, Europe PMC, PMC OA, OpenAlex, Crossref, ClinicalTrials.gov, and monitored research social signal. Sources are pulled idempotently, normalized into typed research records, and chunked deterministically. LLMs are not in the ingestion path.',
+    label: 'Ingest',
+    mode: 'deterministic',
+    detail: 'Source APIs and research signal enter without LLM mutation.',
   },
   {
     step: '02',
-    label: 'Orchestration',
-    detail:
-      'Dagster materializes assets across ingestion, synthesis, validation, source health, embeddings, and compute lanes. Every materialized asset carries upstream lineage. Re-runs are reproducible from inputs.',
+    label: 'Normalize',
+    mode: 'schema-validated',
+    detail: 'Records, chunks, citations, entities, provenance, and lineage.',
   },
   {
     step: '03',
-    label: 'Storage',
-    detail:
-      'Hosted Postgres on Neon holds runtime state with branchable research databases. SQLite supports local development. Typed contracts are enforced with schema-validated boundaries.',
+    label: 'Materialize',
+    mode: 'Dagster assets',
+    detail: 'Ingestion, synthesis, validation, health, embeddings, and compute lanes.',
   },
   {
     step: '04',
-    label: 'Synthesis and critique',
-    detail:
-      'Specialist agents argue with the evidence: search, challenge, repair, synthesize. Agents surface citations, flag underpowered claims and confounders, request missing evidence, and preserve held-back leads as research notes rather than candidates.',
+    label: 'Store',
+    mode: 'Neon + SQLite',
+    detail: 'Hosted runtime state plus local reproducibility from the same inputs.',
   },
   {
     step: '05',
-    label: 'Public proof layer',
-    detail:
-      'Candidate snapshots are public-facing by design with versioned methods, content-hashed snapshots, and machine-readable JSON payloads. External readers can check out a snapshot, do outside work, and check in structured contribution packets through a gated intake endpoint.',
+    label: 'Argue',
+    mode: 'recommend-only LLMs',
+    detail: 'Agents critique citations, confounders, gaps, and weak claims.',
   },
   {
     step: '06',
-    label: 'Triage',
-    detail:
-      'Public contributions land in Neon-backed intake. A Dagster job lets operators preview and explicitly route packets into evidence review, validation planning, compute review, request-more-information, rejection, or archive. The default mode is preview; writes require dry_run=false.',
+    label: 'Publish',
+    mode: 'public records',
+    detail: 'Versioned methods, content hashes, JSON payloads, and decisions.',
   },
   {
     step: '07',
-    label: 'Compute',
-    detail:
-      'RunPod-backed Docker workers run computational tasks, including MD smoke tests, behind approval-first gating. Compute jobs are ledgered with artifact persistence. GPU work is not initiated by public contribution.',
+    label: 'Triage',
+    mode: 'operator gate',
+    detail: 'Preview routes first. Writes require approval and dry_run=false.',
   },
   {
     step: '08',
-    label: 'Service boundary',
-    detail:
-      'An MCP-compatible service surface is planned for future agent and tool consumption. TWOG is designed to be readable by other AI systems, not just human readers.',
+    label: 'Compute',
+    mode: 'approval-first',
+    detail: 'RunPod/Docker jobs are ledgered, artifact-backed, and gated.',
   },
+] as const;
+
+const sourceTags = [
+  'PubMed',
+  'Europe PMC',
+  'PMC OA',
+  'OpenAlex',
+  'Crossref',
+  'ClinicalTrials.gov',
+  'PubChem',
+  'ChEMBL',
+  'UniProt',
+  'RCSB PDB',
+  'OpenFDA animal events',
+  'research social signal',
 ] as const;
 
 const boundaries = [
@@ -74,6 +89,22 @@ const stack = [
   'MCP service boundary',
 ] as const;
 
+const serviceBoundary =
+  'MCP-compatible service boundary for future agents, tools, and external review systems.';
+
+function ArchitectureNode({ node }: { node: (typeof architectureNodes)[number] }) {
+  return (
+    <article className="architecture-node">
+      <code>{node.step}</code>
+      <div>
+        <h3>{node.label}</h3>
+        <span>{node.mode}</span>
+      </div>
+      <p>{node.detail}</p>
+    </article>
+  );
+}
+
 export const metadata = {
   title: 'Architecture — TWOG',
   description:
@@ -88,8 +119,8 @@ export default function ArchitecturePage() {
           <p className="section-kicker">System architecture</p>
           <h1>Architecture</h1>
           <p>
-            TWOG runs as a Dagster asset graph over typed research contracts, with
-            deterministic ingestion, versioned methods, and operator-gated writes.
+            TWOG is a research engine with typed lanes, versioned methods, public
+            records, and operator-gated writes.
           </p>
         </div>
         <aside className="method-status-card architecture-status-card">
@@ -98,25 +129,43 @@ export default function ArchitecturePage() {
         </aside>
       </section>
 
-      <section className="method-protocol architecture-protocol">
-        <article className="method-thesis">
+      <section className="architecture-map-section">
+        <div className="section-heading layered-heading" data-layer="SYSTEM MAP">
           <p className="section-kicker">System shape</p>
           <h2>Evidence enters through deterministic rails. Claims leave through public records.</h2>
-          <p>
-            The system separates source ingestion, agent synthesis, public publication,
-            operator triage, and compute dispatch. That separation is the point: each
-            lane has its own provenance, lineage, and gate.
-          </p>
-        </article>
+        </div>
 
-        <div className="method-flow-list architecture-flow-list" aria-label="TWOG architecture layers">
-          {architectureSections.map((item) => (
-            <article key={item.step}>
-              <span>{item.step}</span>
-              <h3>{item.label}</h3>
-              <p>{item.detail}</p>
-            </article>
+        <div className="architecture-map-shell" aria-label="TWOG architecture system map">
+          <div className="architecture-node-grid">
+            {architectureNodes.slice(0, 4).map((node) => (
+              <ArchitectureNode node={node} key={node.step} />
+            ))}
+          </div>
+
+          <div className="architecture-core" aria-label="TWOG architecture core">
+            <span>TWOG core loop</span>
+            <strong>Evidence</strong>
+            <em>Review</em>
+            <strong>Record</strong>
+            <p>Provenance and lineage stay attached.</p>
+          </div>
+
+          <div className="architecture-node-grid">
+            {architectureNodes.slice(4).map((node) => (
+              <ArchitectureNode node={node} key={node.step} />
+            ))}
+          </div>
+        </div>
+
+        <div className="architecture-source-band" aria-label="TWOG source rails">
+          {sourceTags.map((source) => (
+            <span key={source}>{source}</span>
           ))}
+        </div>
+
+        <div className="architecture-service-band">
+          <span>Service boundary</span>
+          <p>{serviceBoundary}</p>
         </div>
       </section>
 
