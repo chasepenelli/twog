@@ -12,6 +12,11 @@ from typing import Any
 from uuid import UUID
 
 from .backfill import backfill_deep_dives, backfill_papers_json
+from .candidate_contribution_intake import (
+    TRIAGE_ACTIONS,
+    build_candidate_contribution_intake_report,
+    triage_candidate_contributions,
+)
 from .claim_curator import curate_claims_for_repository
 from .claim_extractor import extract_claims_for_repository
 from .contracts import (
@@ -572,6 +577,48 @@ def main() -> None:
     run_research_brief_queue.add_argument("--source", default=None, help="Optional source key filter")
     run_research_brief_queue.add_argument("--topic-query", default=None, help="Case-insensitive topic/scope filter")
     run_research_brief_queue.add_argument("--limit", type=int, default=1, help="Candidate queue items to inspect")
+
+    candidate_contribution_intake = subparsers.add_parser(
+        "candidate-contribution-intake",
+        help="List public candidate contribution intake rows",
+    )
+    candidate_contribution_intake.add_argument(
+        "--status",
+        action="append",
+        default=[],
+        help="Intake status filter; repeatable. Defaults to pending statuses.",
+    )
+    candidate_contribution_intake.add_argument(
+        "--candidate-id",
+        action="append",
+        default=[],
+        help="Candidate ID filter; repeatable.",
+    )
+    candidate_contribution_intake.add_argument("--limit", type=int, default=50, help="Maximum rows to return")
+    candidate_contribution_intake.add_argument(
+        "--include-packet",
+        action="store_true",
+        help="Include submitted packet JSON in output.",
+    )
+
+    triage_candidate_contribution = subparsers.add_parser(
+        "triage-candidate-contribution",
+        help="Preview or apply an operator triage decision for public candidate contributions",
+    )
+    triage_candidate_contribution.add_argument(
+        "--id",
+        action="append",
+        required=True,
+        help="Contribution ID to triage; repeatable.",
+    )
+    triage_candidate_contribution.add_argument("--action", required=True, choices=TRIAGE_ACTIONS)
+    triage_candidate_contribution.add_argument("--operator", default="cli", help="Operator identity for audit notes")
+    triage_candidate_contribution.add_argument("--review-notes", default="", help="Operator review note")
+    triage_candidate_contribution.add_argument(
+        "--apply",
+        action="store_true",
+        help="Persist the triage decision. Without this flag the command is a dry run.",
+    )
 
     research_brief_playground = subparsers.add_parser(
         "research-brief-playground-pack",
@@ -2253,6 +2300,21 @@ def main() -> None:
                 limit=args.limit,
             )
         ).model_dump(mode="json")
+    elif args.command == "candidate-contribution-intake":
+        output = build_candidate_contribution_intake_report(
+            statuses=args.status or None,
+            candidate_ids=args.candidate_id,
+            limit=args.limit,
+            include_packet=args.include_packet,
+        )
+    elif args.command == "triage-candidate-contribution":
+        output = triage_candidate_contributions(
+            contribution_ids=args.id,
+            action=args.action,
+            operator=args.operator,
+            review_notes=args.review_notes,
+            dry_run=not args.apply,
+        )
     elif args.command == "research-brief-playground-pack":
         output = HSAResearchService(repo).build_research_brief_playground_pack(
             ResearchBriefRequest(

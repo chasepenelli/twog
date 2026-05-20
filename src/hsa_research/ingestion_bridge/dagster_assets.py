@@ -180,6 +180,16 @@ _CANDIDATE_CONTRIBUTION_INTAKE_TABLE_COLUMNS = (
     "created_at",
     "route_reason",
 )
+_CANDIDATE_CONTRIBUTION_TRIAGE_TABLE_COLUMNS = (
+    "contribution_id",
+    "display_id",
+    "old_status",
+    "new_status",
+    "action",
+    "operator",
+    "promoted_queue_id",
+    "would_update",
+)
 _AGENT_PERFORMANCE_TABLE_COLUMNS = (
     "group_type",
     "group_value",
@@ -915,6 +925,25 @@ if dg is not None:
             "intake_rows": _metadata_table(
                 report.get("rows", []),
                 _CANDIDATE_CONTRIBUTION_INTAKE_TABLE_COLUMNS,
+            ),
+        }
+
+    def _candidate_contribution_triage_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        summary = report.get("summary", {})
+        return {
+            "dry_run": bool(report.get("dry_run", True)),
+            "action": str(report.get("action") or ""),
+            "target_status": str(report.get("target_status") or ""),
+            "operator": str(report.get("operator") or ""),
+            "requested_count": dg.MetadataValue.int(int(summary.get("requested_count") or 0)),
+            "selected_count": dg.MetadataValue.int(int(summary.get("selected_count") or 0)),
+            "missing_count": dg.MetadataValue.int(int(summary.get("missing_count") or 0)),
+            "updated_count": dg.MetadataValue.int(int(summary.get("updated_count") or 0)),
+            "missing_contribution_ids": dg.MetadataValue.json(report.get("missing_contribution_ids", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "triage_rows": _metadata_table(
+                report.get("rows", []),
+                _CANDIDATE_CONTRIBUTION_TRIAGE_TABLE_COLUMNS,
             ),
         }
 
@@ -3286,6 +3315,42 @@ if dg is not None:
             include_packet=config["include_packet"],
         )
         return dg.MaterializeResult(value=report, metadata=_candidate_contribution_intake_report_metadata(report))
+
+    @dg.asset(
+        group_name="control_panel",
+        config_schema={
+            "contribution_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Public contribution IDs to triage. Required for a real update.",
+            ),
+            "action": dg.Field(
+                str,
+                default_value="start_triage",
+                description=(
+                    "One of start_triage, request_more_information, reject, accept_for_evidence_review, "
+                    "accept_for_validation_queue, accept_for_compute_review, archive."
+                ),
+            ),
+            "operator": dg.Field(str, default_value="dagster", description="Operator identity recorded in notes."),
+            "review_notes": dg.Field(str, default_value="", description="Operator note appended to the intake row."),
+            "dry_run": dg.Field(bool, default_value=True, description="Preview only unless explicitly set false."),
+        },
+    )
+    def candidate_contribution_triage_report(context) -> dg.MaterializeResult:
+        """Apply or preview an explicit operator triage decision for public contribution intake."""
+
+        from .candidate_contribution_intake import triage_candidate_contributions
+
+        config = context.op_config
+        report = triage_candidate_contributions(
+            contribution_ids=config["contribution_ids"],
+            action=config["action"],
+            operator=config["operator"],
+            review_notes=config["review_notes"],
+            dry_run=config["dry_run"],
+        )
+        return dg.MaterializeResult(value=report, metadata=_candidate_contribution_triage_report_metadata(report))
 
     @dg.asset(
         group_name="control_panel",
@@ -7418,6 +7483,7 @@ if dg is not None:
         structured_source_count_report,
         source_health_report,
         candidate_contribution_intake_report,
+        candidate_contribution_triage_report,
         command_center_report,
         research_hunt_queue_report,
         research_hunt_queue_maintenance_report,
@@ -7556,6 +7622,10 @@ if dg is not None:
     candidate_contribution_intake_report_job = dg.define_asset_job(
         "candidate_contribution_intake_report_job",
         selection=dg.AssetSelection.assets(candidate_contribution_intake_report),
+    )
+    candidate_contribution_triage_job = dg.define_asset_job(
+        "candidate_contribution_triage_job",
+        selection=dg.AssetSelection.assets(candidate_contribution_triage_report),
     )
     command_center_job = dg.define_asset_job(
         "command_center_job",
@@ -8002,6 +8072,7 @@ if dg is not None:
             structured_source_count_report_job,
             source_health_report_job,
             candidate_contribution_intake_report_job,
+            candidate_contribution_triage_job,
             command_center_job,
             research_hunt_queue_report_job,
             research_hunt_queue_maintenance_job,
@@ -8112,6 +8183,7 @@ else:
     structured_source_count_report_job = None
     source_health_report_job = None
     candidate_contribution_intake_report_job = None
+    candidate_contribution_triage_job = None
     command_center_job = None
     research_hunt_queue_report_job = None
     research_hunt_queue_maintenance_job = None

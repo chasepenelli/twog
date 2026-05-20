@@ -36,6 +36,29 @@ REQUESTED_SYSTEM_ACTIONS = (
     "docking_or_md_review",
     "no_action",
 )
+TRIAGE_ACTIONS = (
+    "start_triage",
+    "request_more_information",
+    "reject",
+    "accept_for_evidence_review",
+    "accept_for_validation_queue",
+    "accept_for_compute_review",
+    "archive",
+)
+TRIAGE_ACTION_STATUSES = {
+    "start_triage": "triage_in_progress",
+    "request_more_information": "needs_more_information",
+    "reject": "rejected",
+    "accept_for_evidence_review": "accepted_for_evidence_review",
+    "accept_for_validation_queue": "accepted_for_validation_queue",
+    "accept_for_compute_review": "accepted_for_compute_review",
+    "archive": "archived",
+}
+ACCEPTANCE_ACTIONS = {
+    "accept_for_evidence_review",
+    "accept_for_validation_queue",
+    "accept_for_compute_review",
+}
 
 
 def candidate_contribution_database_url(environ: Mapping[str, str] | None = None) -> str | None:
@@ -79,6 +102,45 @@ def _bounded_limit(limit: int | None) -> int:
     if limit is None:
         return 50
     return max(1, min(int(limit), 500))
+
+
+def _normalize_contribution_ids(contribution_ids: Sequence[str] | None) -> list[str]:
+    normalized = []
+    for contribution_id in contribution_ids or []:
+        value = str(contribution_id).strip()
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized[:50]
+
+
+def _normalize_triage_action(action: str) -> str:
+    value = str(action or "").strip()
+    if value not in TRIAGE_ACTIONS:
+        raise ValueError(f"action must be one of: {', '.join(TRIAGE_ACTIONS)}")
+    return value
+
+
+def _triage_promoted_queue_id(contribution_id: str, action: str) -> str | None:
+    if action not in ACCEPTANCE_ACTIONS:
+        return None
+    route = action.removeprefix("accept_for_")
+    return f"candidate_contribution:{contribution_id}:{route}"
+
+
+def _triage_review_note(
+    *,
+    existing_note: str | None,
+    operator: str,
+    action: str,
+    review_notes: str | None,
+    timestamp: datetime,
+    dry_run: bool,
+) -> str:
+    prefix = "DRY RUN" if dry_run else "TRIAGE"
+    note = str(review_notes or "").strip() or "No operator note supplied."
+    entry = f"[{timestamp.isoformat()}] {prefix} {operator}: {action} - {note}"
+    existing = str(existing_note or "").strip()
+    return f"{existing}\n{entry}" if existing else entry
 
 
 def _recommended_route(requested_action: str, status: str) -> tuple[str, str]:
@@ -138,6 +200,75 @@ def _compact_row(row: Mapping[str, Any], include_packet: bool) -> dict[str, Any]
     if include_packet:
         compact["packet"] = packet
     return _json_safe(compact)
+
+
+def build_candidate_contribution_triage_plan_from_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    contribution_ids: Sequence[str],
+    action: str,
+    operator: str,
+    review_notes: str | None = None,
+    dry_run: bool = True,
+    timestamp: datetime | None = None,
+    errors: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Build an operator triage plan/result from existing intake rows."""
+
+    normalized_ids = _normalize_contribution_ids(contribution_ids)
+    normalized_action = _normalize_triage_action(action)
+    target_status = TRIAGE_ACTION_STATUSES[normalized_action]
+    now = timestamp or datetime.utcnow()
+    selected = [row for row in rows if str(row.get("contribution_id") or "") in normalized_ids]
+    found_ids = {str(row.get("contribution_id") or "") for row in selected}
+    missing_ids = [contribution_id for contribution_id in normalized_ids if contribution_id not in found_ids]
+
+    planned_rows: list[dict[str, Any]] = []
+    for row in selected:
+        contribution_id = str(row.get("contribution_id") or "")
+        old_status = str(row.get("status") or "")
+        promoted_queue_id = row.get("promoted_queue_id") or _triage_promoted_queue_id(contribution_id, normalized_action)
+        planned_rows.append(
+            _json_safe(
+                {
+                    "contribution_id": contribution_id,
+                    "candidate_id": row.get("candidate_id"),
+                    "display_id": row.get("display_id"),
+                    "old_status": old_status,
+                    "new_status": target_status,
+                    "action": normalized_action,
+                    "operator": str(operator or "unknown"),
+                    "promoted_queue_id": promoted_queue_id,
+                    "would_update": old_status != target_status or row.get("promoted_queue_id") != promoted_queue_id,
+                    "review_notes": _triage_review_note(
+                        existing_note=row.get("review_notes"),
+                        operator=str(operator or "unknown"),
+                        action=normalized_action,
+                        review_notes=review_notes,
+                        timestamp=now,
+                        dry_run=dry_run,
+                    ),
+                    "reviewed_at": None if target_status == "triage_in_progress" else now,
+                    "updated_at": now,
+                }
+            )
+        )
+
+    return {
+        "dry_run": dry_run,
+        "action": normalized_action,
+        "target_status": target_status,
+        "operator": str(operator or "unknown"),
+        "summary": {
+            "requested_count": len(normalized_ids),
+            "selected_count": len(selected),
+            "missing_count": len(missing_ids),
+            "updated_count": 0 if dry_run else len(planned_rows),
+        },
+        "missing_contribution_ids": missing_ids,
+        "rows": planned_rows,
+        "errors": list(errors or []),
+    }
 
 
 def build_candidate_contribution_intake_report_from_rows(
@@ -278,3 +409,114 @@ def build_candidate_contribution_intake_report(
         limit=bounded_limit,
         include_packet=include_packet,
     )
+
+
+def triage_candidate_contributions(
+    *,
+    database_url: str | None = None,
+    contribution_ids: Sequence[str] | None = None,
+    action: str,
+    operator: str = "dagster",
+    review_notes: str | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Apply one explicit operator triage decision to public candidate contribution rows."""
+
+    connection_string = database_url or candidate_contribution_database_url()
+    normalized_ids = _normalize_contribution_ids(contribution_ids)
+    try:
+        normalized_action = _normalize_triage_action(action)
+    except ValueError as exc:
+        return build_candidate_contribution_triage_plan_from_rows(
+            [],
+            contribution_ids=normalized_ids,
+            action="start_triage",
+            operator=operator,
+            review_notes=review_notes,
+            dry_run=True,
+            errors=[str(exc)],
+        )
+
+    if not normalized_ids:
+        return build_candidate_contribution_triage_plan_from_rows(
+            [],
+            contribution_ids=[],
+            action=normalized_action,
+            operator=operator,
+            review_notes=review_notes,
+            dry_run=True,
+            errors=["At least one contribution_id is required."],
+        )
+    if not connection_string:
+        return build_candidate_contribution_triage_plan_from_rows(
+            [],
+            contribution_ids=normalized_ids,
+            action=normalized_action,
+            operator=operator,
+            review_notes=review_notes,
+            dry_run=True,
+            errors=["Set NEON_DATABASE_URL, DATABASE_URL, POSTGRES_URL, or HSA_DATABASE_URL."],
+        )
+
+    select_query = """
+        select
+            contribution_id::text,
+            candidate_id,
+            display_id,
+            status,
+            review_notes,
+            promoted_queue_id
+        from candidate_contribution_intake
+        where contribution_id::text = any(%s)
+        order by created_at desc
+    """
+    update_query = """
+        update candidate_contribution_intake
+        set
+            status = %s,
+            review_notes = %s,
+            promoted_queue_id = %s,
+            updated_at = %s,
+            reviewed_at = %s
+        where contribution_id::text = %s
+    """
+
+    try:
+        with psycopg2.connect(connection_string, cursor_factory=RealDictCursor) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(select_query, [normalized_ids])
+                rows = cursor.fetchall()
+                plan = build_candidate_contribution_triage_plan_from_rows(
+                    rows,
+                    contribution_ids=normalized_ids,
+                    action=normalized_action,
+                    operator=operator,
+                    review_notes=review_notes,
+                    dry_run=dry_run,
+                )
+                if dry_run or plan.get("errors"):
+                    return plan
+                for row in plan["rows"]:
+                    cursor.execute(
+                        update_query,
+                        [
+                            row["new_status"],
+                            row["review_notes"],
+                            row["promoted_queue_id"],
+                            row["updated_at"],
+                            row["reviewed_at"],
+                            row["contribution_id"],
+                        ],
+                    )
+                connection.commit()
+                return plan
+    except psycopg2.errors.UndefinedTable:
+        return build_candidate_contribution_triage_plan_from_rows(
+            [],
+            contribution_ids=normalized_ids,
+            action=normalized_action,
+            operator=operator,
+            review_notes=review_notes,
+            dry_run=True,
+            errors=["candidate_contribution_intake table does not exist."],
+        )
