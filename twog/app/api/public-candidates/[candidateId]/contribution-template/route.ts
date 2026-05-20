@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server';
-import { getCandidate, publicCandidatePayloadPath, shortHash } from '@/lib/public-candidates';
+import {
+  getCandidate,
+  publicCandidateEvidenceBundlePath,
+  publicCandidatePayloadPath,
+  shortHash,
+} from '@/lib/public-candidates';
 
 export async function GET(
   _request: Request,
@@ -32,6 +37,7 @@ export async function GET(
       candidate_id: record.candidate_id,
       display_id: record.display_id,
       candidate_payload_url: publicCandidatePayloadPath(record.candidate_id),
+      evidence_bundle_url: publicCandidateEvidenceBundlePath(record.candidate_id),
       contribution_submission_url: `/api/public-candidates/${record.candidate_id}/contributions`,
       snapshot_content_hash: contentHash,
       snapshot_short_hash: shortHash(contentHash),
@@ -73,6 +79,9 @@ export async function GET(
             url: '',
             content_hash: '',
             method_or_tool: '',
+            input_snapshot_content_hash: contentHash,
+            settings: {},
+            container_or_software_versions: {},
             notes: '',
           },
         ],

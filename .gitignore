@@ -17,6 +17,8 @@ eggs/
 .eggs/
 lib/
 lib64/
+!twog/lib/
+!twog/lib/**
 parts/
 sdist/
 var/

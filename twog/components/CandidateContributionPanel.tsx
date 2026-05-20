@@ -145,8 +145,9 @@ export function CandidateContributionPanel({
         <p className="section-kicker">Contribute to this record</p>
         <h2>Check out the public payload. Check in better evidence.</h2>
         <p>
-          Contributions do not edit the public record directly. They enter a TWOG intake queue for provenance review,
-          citation repair, and routing into evidence review, validation planning, or compute review.
+          Use the payload when you want the exact machine-readable snapshot behind this page. Use the form or template
+          when you have a critique, citation repair, replication note, artifact, or validation proposal to check back in.
+          Contributions enter a gated intake queue; they never edit the public record directly.
         </p>
         <div className="contribution-receipt">
           <span>{displayId}</span>
@@ -154,10 +155,10 @@ export function CandidateContributionPanel({
           <strong>{storageConfigured === null ? 'checking intake' : storageConfigured ? 'intake online' : 'email fallback'}</strong>
         </div>
         <div className="method-actions">
-          <a href={payloadPath} className="record-link">
+          <a href={payloadPath} className="record-link" target="_blank" rel="noreferrer">
             Open payload
           </a>
-          <a href={templateUrl} className="record-link">
+          <a href={templateUrl} className="record-link" target="_blank" rel="noreferrer">
             Open template
           </a>
         </div>

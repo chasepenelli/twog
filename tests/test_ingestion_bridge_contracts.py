@@ -5804,6 +5804,65 @@ def test_candidate_contribution_triage_rejects_invalid_action():
     assert report["errors"]
 
 
+def test_command_center_web_candidate_contribution_payloads(monkeypatch):
+    captured_report = {}
+
+    def fake_report(**kwargs):
+        captured_report.update(kwargs)
+        return {"summary": {"row_count": 1}, "rows": [{"contribution_id": "abc"}], "errors": []}
+
+    monkeypatch.setattr(candidate_contribution_intake, "build_candidate_contribution_intake_report", fake_report)
+
+    report = command_center_web.list_candidate_contributions_payload(
+        object(),
+        {
+            "status": ["queued_for_intake,triage_in_progress"],
+            "candidate_id": ["twog-candidate-1"],
+            "include_packet": ["true"],
+            "limit": ["7"],
+        },
+    )
+
+    assert report["summary"]["row_count"] == 1
+    assert captured_report == {
+        "statuses": ["queued_for_intake", "triage_in_progress"],
+        "candidate_ids": ["twog-candidate-1"],
+        "limit": 7,
+        "include_packet": True,
+    }
+
+    captured_triage = {}
+
+    def fake_triage(**kwargs):
+        captured_triage.update(kwargs)
+        return {"dry_run": kwargs["dry_run"], "action": kwargs["action"], "summary": {"updated_count": 1}}
+
+    monkeypatch.setattr(candidate_contribution_intake, "triage_candidate_contributions", fake_triage)
+
+    triage = command_center_web.triage_candidate_contribution_payload(
+        object(),
+        "abc",
+        {
+            "action": "accept_for_evidence_review",
+            "operator": "reviewer",
+            "review_notes": "Looks useful.",
+            "dry_run": "false",
+        },
+    )
+
+    assert triage["dry_run"] is False
+    assert captured_triage == {
+        "contribution_ids": ["abc"],
+        "action": "accept_for_evidence_review",
+        "operator": "reviewer",
+        "review_notes": "Looks useful.",
+        "dry_run": False,
+    }
+
+    with pytest.raises(ValueError, match="action is required"):
+        command_center_web.triage_candidate_contribution_payload(object(), "abc", {})
+
+
 def test_dagster_candidate_contribution_triage_report_lives_in_control_panel_group():
     assert dagster_asset_module.candidate_contribution_triage_report.group_names_by_key == {
         dagster_asset_module.dg.AssetKey(["candidate_contribution_triage_report"]): "control_panel"

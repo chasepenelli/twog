@@ -95,9 +95,9 @@ export default function Home() {
             </h1>
           </div>
           <p className="hero-subhead">
-            An AI-assisted system for turning scattered cancer research into public,
-            inspectable records: what was found, what was proposed, why it moved, and
-            what still needs to be proven.
+            An AI-assisted system for turning biomedical evidence into public candidate
+            records: what was found, why it moved, what supports it, and the next
+            experiment still worth running.
           </p>
           <div className="hero-actions">
             <Link href="/candidates" className="artifact-button primary">
@@ -119,9 +119,11 @@ export default function Home() {
             <p className="section-kicker">Why it exists</p>
             <h2>Modern AI should make hard problems more reachable.</h2>
             <p>
-              TWOG began because hemangiosarcoma leaves too many families with too few
-              options and too little organized evidence. The project is built for Graffiti,
-              Brady, and every dog after them.
+              TWOG began because canine hemangiosarcoma leaves too many families with too
+              few options and too little organized evidence. It is also a spontaneous
+              tumor model with translational signal to human angiosarcoma, which makes the
+              work part of a larger comparative oncology problem. The project is built
+              for Graffiti, Brady, and every dog after them.
             </p>
             <p>
               The positive case for AI is simple: it can help more people learn faster,
@@ -261,8 +263,9 @@ export default function Home() {
             <h3>Agents do not just summarize. They argue with the evidence.</h3>
             <p>
               The useful behavior is not one perfect answer. It is a loop where specialist
-              agents surface citations, expose weak assumptions, request missing evidence,
-              and narrow the next testable question.
+              agents surface citations, expose weak assumptions, flag underpowered claims
+              and confounders, request missing evidence, and narrow the next testable
+              hypothesis.
             </p>
             <div className="review-stack" aria-hidden="true">
               {REVIEW_STACK.map((label) => (
@@ -297,8 +300,9 @@ export default function Home() {
           <article>
             <span>What gets stopped</span>
             <p>
-              Weak citations, missing provenance, unclear species transfer, or unsupported
-              claims are routed back into follow-up research instead of being polished up.
+              Weak citations, missing provenance, unclear cross-species transfer, or
+              unsupported claims are held back as research notes rather than promoted into
+              candidate records.
             </p>
           </article>
           <article>

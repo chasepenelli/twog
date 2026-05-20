@@ -82,6 +82,60 @@
       <section class="panel">
         <div class="panel-header">
           <div>
+            <h2>Public Contributions</h2>
+            <p>Review candidate check-ins from twog.bio and route them into evidence, validation, compute, or archive lanes.</p>
+          </div>
+          <div class="filters contribution-filters">
+            <label>
+              <span>Status</span>
+              <select id="contributionStatus">
+                <option value="queued_for_intake,triage_in_progress,needs_more_information">Active</option>
+                <option value="queued_for_intake">Queued</option>
+                <option value="triage_in_progress">In triage</option>
+                <option value="needs_more_information">Needs info</option>
+                <option value="accepted_for_evidence_review">Evidence review</option>
+                <option value="accepted_for_validation_queue">Validation queue</option>
+                <option value="accepted_for_compute_review">Compute review</option>
+                <option value="rejected">Rejected</option>
+                <option value="archived">Archived</option>
+              </select>
+            </label>
+            <label>
+              <span>Candidate</span>
+              <input id="contributionCandidate" type="text" placeholder="twog-candidate...">
+            </label>
+            <label>
+              <span>Review note</span>
+              <input id="contributionReviewNote" type="text" placeholder="Reason for this triage action">
+            </label>
+            <label class="checkbox-field">
+              <input id="contributionDryRun" type="checkbox" checked>
+              <span>Preview only</span>
+            </label>
+          </div>
+        </div>
+        <div id="candidateContributionSummary" class="summary-line">Loading public contributions...</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Contribution</th>
+                <th>Contributor</th>
+                <th>Requested Route</th>
+                <th>Evidence</th>
+                <th>Notes</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="candidateContributionRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
             <h2>Validation Autopilot</h2>
             <p>Conservative hourly lane for approving and dispatching a few low-risk validation reviews when the queue has gone quiet.</p>
           </div>

@@ -410,20 +410,28 @@ td {
 .tag.approved,
 .tag.dispatched,
 .tag.completed,
-.tag.useful {
+.tag.useful,
+.tag.accepted_for_evidence_review,
+.tag.accepted_for_validation_queue,
+.tag.accepted_for_compute_review {
   border-color: rgba(20, 107, 99, 0.24);
   background: rgba(20, 107, 99, 0.08);
   color: var(--accent-strong);
 }
 
 .tag.needs_followup,
-.tag.unclear {
+.tag.unclear,
+.tag.queued_for_intake,
+.tag.triage_in_progress,
+.tag.needs_more_information {
   border-color: rgba(154, 97, 0, 0.25);
   background: rgba(154, 97, 0, 0.09);
   color: var(--amber);
 }
 
-.tag.bad {
+.tag.bad,
+.tag.rejected,
+.tag.archived {
   border-color: rgba(180, 35, 24, 0.24);
   background: rgba(180, 35, 24, 0.08);
   color: var(--red);
@@ -433,6 +441,32 @@ td {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.contribution-filters {
+  max-width: 760px;
+}
+
+.contribution-filters label:has(#contributionReviewNote) {
+  flex: 1 1 280px;
+}
+
+.contribution-actions {
+  min-width: 260px;
+}
+
+.contribution-actions button {
+  min-height: 32px;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
+.review-note-cell {
+  max-height: 120px;
+  overflow: auto;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: pre-wrap;
 }
 
 .stacked-list {

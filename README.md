@@ -16,6 +16,7 @@ If you are evaluating TWOG from the outside, start here:
 - [Candidate index](https://twog.bio/candidates): inspectable public records generated from the internal pipeline.
 - [Example candidate](https://twog.bio/candidates/twog-15f50d): a candidate page with rationale, evidence, risks, method references, decision history, and a machine-readable payload.
 - [Candidate record method](https://twog.bio/methods/candidate-record-v1): how public records, evidence refs, content hashes, and check-in submissions work.
+- [Public contribution workflow](docs/PUBLIC_CONTRIBUTION_WORKFLOW.md): how checkout payloads, check-in packets, Neon intake, and operator triage fit together.
 
 The important design choice is that TWOG does not treat a web page as marketing copy. A candidate page is intended to be a public research artifact: readable by a person, exportable as JSON, traceable back to pipeline records, and open to structured critique.
 
@@ -50,7 +51,8 @@ public evidence
 - Public candidate record layer under `twog/`.
 - Public JSON payloads for candidate checkout.
 - Neon-backed contribution intake API for candidate check-ins.
-- Dagster-readable candidate contribution intake report for operator triage.
+- Dagster-readable candidate contribution intake and triage jobs for operator review.
+- Command Center contribution triage panel for previewing and applying explicit intake decisions.
 - MCP-ready service boundary for future agent/human tool sharing.
 - RunPod/Docker worker foundation for expert-gated MD smoke tests.
 
@@ -116,15 +118,17 @@ Outside submissions do not directly mutate a candidate record. That gate is inte
 - Neon/Postgres-backed contribution intake endpoint.
 - Production storage readiness check on candidate contribution routes.
 - Manual Dagster report job for contribution intake visibility.
+- Production-tested operator triage job for starting review, requesting more information, accepting into evidence/validation/compute review, rejecting, or archiving.
+- Command Center surface for contribution review and explicit triage actions.
 - Internal records for research programs, therapy ideas, briefs, validation packets, omics readouts, agent runs, reviews, and compute jobs.
 
 ## What Comes Next
 
-- Operator triage actions for public contributions: accept, reject, request more information, route to evidence review, route to validation planning, or route to compute review.
 - More candidate records exported from the internal system.
 - Stronger public method pages for docking, MD smoke tests, omics readouts, and synthesis review.
 - Dedicated GPU compute path using TWOG-owned containers and persisted artifacts.
 - A cleaner public audit trail connecting candidate pages back to agent runs, evidence packets, and compute outputs.
+- Recommend-only LLM reviewer for contribution triage, with operator approval kept as the write gate.
 
 ## Repository Layout
 
@@ -209,6 +213,15 @@ npm run db:migrate
 ```
 
 The migration creates `candidate_contribution_intake`, with indexes by candidate, status, requested action, and created time.
+
+Operator review is handled from the Command Center and Dagster:
+
+```text
+candidate_contribution_intake_report_job
+candidate_contribution_triage_job
+```
+
+The triage job previews by default and only writes when `dry_run=false`. The first production write path was validated against a controlled test contribution on 2026-05-19 Mountain time / 2026-05-20 UTC.
 
 ## Safety Boundary
 
