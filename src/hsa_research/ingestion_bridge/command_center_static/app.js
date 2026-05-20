@@ -2,6 +2,7 @@ const state = {
   runtime: null,
   commandCenter: null,
   actionItems: null,
+  candidateContributions: null,
   validationQueue: null,
   validationAutopilot: null,
   researchLeads: null,
@@ -23,6 +24,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("validationStatus").addEventListener("change", refreshValidationQueue);
   $("validationSource").addEventListener("change", refreshValidationQueue);
   $("leadStatus").addEventListener("change", () => Promise.all([refreshActionItems(), refreshResearchLeads()]));
+  $("contributionStatus").addEventListener("change", refreshCandidateContributions);
+  $("contributionCandidate").addEventListener("input", debounce(refreshCandidateContributions, 250));
   $("briefQuality").addEventListener("change", refreshResearchBriefs);
   $("briefSource").addEventListener("change", refreshResearchBriefs);
   $("briefQuery").addEventListener("input", debounce(refreshResearchBriefs, 250));
@@ -42,6 +45,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("autopilotDryRunButton").addEventListener("click", () => runValidationAutopilot(true));
   $("autopilotRunButton").addEventListener("click", () => runValidationAutopilot(false));
   $("actionItemsList").addEventListener("click", handleQueueAction);
+  $("candidateContributionRows").addEventListener("click", handleCandidateContributionAction);
   $("validationRows").addEventListener("click", handleValidationAction);
   $("researchLeadRows").addEventListener("click", handleQueueAction);
   $("agentRunCards").addEventListener("click", handleAgentRunReview);
@@ -55,6 +59,7 @@ async function refreshAll() {
       refreshRuntime(),
       refreshCommandCenter(),
       refreshActionItems(),
+      refreshCandidateContributions(),
       refreshValidationQueue(),
       refreshValidationAutopilot(),
       refreshResearchLeads(),
@@ -92,6 +97,18 @@ async function refreshActionItems() {
   const payload = await getJson("/api/action-items?limit=50");
   state.actionItems = payload;
   renderActionItems(payload);
+}
+
+async function refreshCandidateContributions() {
+  const params = new URLSearchParams();
+  const status = $("contributionStatus").value.trim();
+  const candidate = $("contributionCandidate").value.trim();
+  if (status) params.append("status", status);
+  if (candidate) params.append("candidate_id", candidate);
+  params.append("limit", "50");
+  const payload = await getJson(`/api/candidate-contributions?${params.toString()}`);
+  state.candidateContributions = payload;
+  renderCandidateContributions(payload);
 }
 
 async function refreshValidationQueue() {
@@ -337,6 +354,99 @@ function renderActionItems(payload) {
     return;
   }
   $("actionItemsList").innerHTML = items.map(renderActionItem).join("");
+}
+
+function renderCandidateContributions(payload) {
+  const summary = payload.summary || {};
+  const counts = payload.status_counts || {};
+  const countText = Object.entries(counts)
+    .map(([status, count]) => `${status}: ${count}`)
+    .join(" | ");
+  const storage = payload.storage_configured ? "storage online" : "storage not configured";
+  const table = payload.table_available ? "table ready" : "table missing";
+  $("candidateContributionSummary").textContent =
+    `${value(summary.row_count)} visible | ${value(summary.actionable_count)} actionable | ` +
+    `${value(summary.candidate_count)} candidates | ${storage} | ${table}` +
+    (countText ? ` | ${countText}` : "");
+
+  const rows = payload.rows || [];
+  if (!rows.length) {
+    const errorText = (payload.errors || []).join(" ");
+    $("candidateContributionRows").innerHTML =
+      `<tr><td colspan="7" class="empty-state">${escapeHtml(errorText || "No public contributions match the current filters.")}</td></tr>`;
+    return;
+  }
+
+  $("candidateContributionRows").innerHTML = rows.map(renderCandidateContributionRow).join("");
+}
+
+function renderCandidateContributionRow(item) {
+  const contributor = item.contributor || {};
+  const requested = item.requested_system_action || "unknown";
+  const route = item.recommended_route || "needs_human_review";
+  const sourceLink = item.source_payload_url
+    ? `<a href="${escapeAttribute(item.source_payload_url)}" target="_blank" rel="noreferrer">Payload</a>`
+    : "";
+  return `
+    <tr>
+      <td>${tag(item.status, item.status)}</td>
+      <td>
+        <div class="title-cell">
+          <span class="work-lane">${escapeHtml(item.contribution_type || "contribution")}</span>
+          <strong>${escapeHtml(item.display_id || item.candidate_id || "Unknown candidate")}</strong>
+          <span class="subtext">${escapeHtml(shortId(item.contribution_id))} | ${escapeHtml(formatDateTime(item.created_at))}</span>
+          <span class="subtext">${escapeHtml(item.relation_to_current_record || "relation not recorded")}</span>
+          ${sourceLink}
+        </div>
+      </td>
+      <td>
+        <div class="title-cell">
+          <span>${escapeHtml(contributor.name || "Unnamed contributor")}</span>
+          <span class="subtext">${escapeHtml(contributor.affiliation || "No affiliation")}</span>
+          <span class="subtext">${escapeHtml(contributor.contact || "No contact")}</span>
+        </div>
+      </td>
+      <td>
+        <div class="title-cell">
+          <div class="tag-row">
+            ${tag(requested, "info")}
+            ${tag(route, route.startsWith("accepted") ? "approved" : "watch")}
+          </div>
+          <span class="subtext">${escapeHtml(item.route_reason || "No route reason recorded.")}</span>
+          ${item.promoted_queue_id ? `<span class="subtext">${escapeHtml(item.promoted_queue_id)}</span>` : ""}
+        </div>
+      </td>
+      <td>
+        <div class="tag-row">
+          ${tag(`${value(item.evidence_count)} evidence`, "info")}
+          ${tag(`${value(item.artifact_count)} artifacts`, "info")}
+        </div>
+        <span class="subtext">${escapeHtml(shortHashText(item.snapshot_content_hash))}</span>
+      </td>
+      <td>
+        <div class="review-note-cell">${escapeHtml(item.review_notes || "No review notes yet.")}</div>
+      </td>
+      <td>
+        ${renderCandidateContributionButtons(item)}
+      </td>
+    </tr>
+  `;
+}
+
+function renderCandidateContributionButtons(item) {
+  const pending = ["queued_for_intake", "triage_in_progress", "needs_more_information"].includes(item.status);
+  const started = item.status === "triage_in_progress";
+  return `
+    <div class="actions contribution-actions">
+      ${actionButton("contribution-triage", item.contribution_id, "Start", "start_triage", !pending || started)}
+      ${actionButton("contribution-triage", item.contribution_id, "Need info", "request_more_information", !pending)}
+      ${actionButton("contribution-triage", item.contribution_id, "Evidence", "accept_for_evidence_review", !pending)}
+      ${actionButton("contribution-triage", item.contribution_id, "Validation", "accept_for_validation_queue", !pending)}
+      ${actionButton("contribution-triage", item.contribution_id, "Compute", "accept_for_compute_review", !pending)}
+      ${actionButton("contribution-triage", item.contribution_id, "Reject", "reject", !pending)}
+      ${actionButton("contribution-triage", item.contribution_id, "Archive", "archive", !pending)}
+    </div>
+  `;
 }
 
 function renderActionItem(item) {
@@ -1107,6 +1217,37 @@ async function handleValidationAction(event) {
   }
 }
 
+async function handleCandidateContributionAction(event) {
+  const button = event.target.closest("button[data-action='contribution-triage']");
+  if (!button || button.disabled) return;
+  const contributionId = button.dataset.id;
+  const action = button.dataset.status;
+  const dryRun = $("contributionDryRun").checked;
+  const reviewNotes = $("contributionReviewNote").value.trim();
+  if (!dryRun && !window.confirm(`Apply ${action} to ${shortId(contributionId)}?`)) {
+    return;
+  }
+  button.disabled = true;
+  try {
+    const payload = await postJson(`/api/candidate-contributions/${encodeURIComponent(contributionId)}/triage`, {
+      action,
+      operator: $("operatorName").value.trim() || "command_center_operator",
+      review_notes: reviewNotes,
+      dry_run: dryRun,
+    });
+    const summary = payload.summary || {};
+    showToast(
+      `${dryRun ? "Previewed" : "Applied"} ${payload.action}: ` +
+        `${value(summary.selected_count)} selected, ${value(summary.updated_count)} updated.`
+    );
+    await refreshCandidateContributions();
+  } catch (error) {
+    showToast(error.message || String(error));
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function handleQueueAction(event) {
   const button = event.target.closest("button[data-action]");
   if (!button || button.disabled) return;
@@ -1366,6 +1507,12 @@ function percent(input) {
 function shortId(input) {
   const value = String(input || "");
   return value.length > 12 ? `${value.slice(0, 8)}...` : value;
+}
+
+function shortHashText(input) {
+  const value = String(input || "");
+  if (!value) return "no snapshot hash";
+  return value.length > 18 ? `hash ${value.slice(0, 12)}...` : `hash ${value}`;
 }
 
 function formatDateTime(input) {

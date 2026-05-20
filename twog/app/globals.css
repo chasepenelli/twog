@@ -1593,6 +1593,23 @@ section {
   padding: 1rem;
 }
 
+.triage-stage-grid {
+  margin-top: 0.8rem;
+}
+
+.triage-stage-grid article {
+  min-height: 14rem;
+  background:
+    linear-gradient(180deg, rgba(109, 40, 217, 0.09), transparent 52%),
+    rgba(251, 250, 244, 0.7);
+}
+
+.triage-stage-grid h3 {
+  font-size: clamp(1.18rem, 1.7vw, 1.55rem);
+  font-weight: 600;
+  line-height: 1.12;
+}
+
 .payload-endpoint-grid p,
 .payload-explainer p {
   margin: 0;

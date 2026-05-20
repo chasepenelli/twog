@@ -9,6 +9,7 @@ This is the public-facing Next.js app for TWOG. It presents the mission, public 
 - Exposes machine-readable candidate payloads under `/api/public-candidates`.
 - Documents candidate record methodology under `/methods/candidate-record-v1`.
 - Accepts structured public contribution packets into Neon/Postgres when storage is configured.
+- Keeps public submissions behind an operator-reviewed intake queue instead of mutating candidate pages directly.
 
 ## Core Routes
 
@@ -70,6 +71,18 @@ npm run db:migrate
 ```
 
 The API also lazily ensures the table exists on first write, but explicit migration is preferred for production and handoff.
+
+## Check-Out / Check-In Flow
+
+The intended public loop is:
+
+1. Open a candidate page.
+2. Open the JSON payload for the exact public snapshot.
+3. Do outside work against that snapshot: critique, citation repair, replication, artifact generation, validation design, or compute review.
+4. Submit a contribution packet through the page form or `POST /api/public-candidates/{candidate_id}/contributions`.
+5. TWOG reviews the packet in the Command Center and explicitly routes it to evidence review, validation planning, compute review, request-more-information, rejection, or archive.
+
+The public app writes intake records only. Operator triage lives in the Python/Dagster command layer.
 
 ## Local Development
 

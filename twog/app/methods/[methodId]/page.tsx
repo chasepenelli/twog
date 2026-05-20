@@ -80,22 +80,41 @@ const exchangeSteps = [
   {
     label: 'Check out',
     detail:
-      'A reader opens the JSON payload and gets the candidate record, snapshot hash, literature refs, decision history, risks, and reproducibility fields.',
+      'A reader opens the JSON payload and gets the exact candidate snapshot: rationale, evidence refs, decision history, risks, reproducibility fields, and content hash.',
   },
   {
     label: 'Do outside work',
     detail:
-      'They can replicate a claim, add missing evidence, run a method, challenge a citation, or propose a validation readout against the exact snapshot hash.',
+      'They can replicate a claim, add missing evidence, challenge a citation, attach an artifact, or propose a validation readout against that exact snapshot.',
   },
   {
     label: 'Check in',
     detail:
-      'They submit a contribution packet. That packet should enter an intake queue, not directly edit the candidate record.',
+      'They submit a structured contribution packet through the check-in endpoint or page form. The packet receives a durable intake ID.',
   },
   {
     label: 'Queue with gates',
     detail:
-      'TWOG agents review provenance, dedupe citations, classify the contribution, and only then promote it into evidence review, validation planning, or compute.',
+      'TWOG operators and agents triage the packet before anything changes: provenance review, citation dedupe, evidence review, validation planning, or compute review.',
+  },
+];
+
+const triageStages = [
+  {
+    label: 'Intake',
+    detail: 'The contribution lands in Neon as queued_for_intake with contributor, route request, evidence, artifacts, and the source snapshot hash.',
+  },
+  {
+    label: 'Operator triage',
+    detail: 'The Command Center previews or applies an explicit decision: request more information, reject, archive, or accept into a review lane.',
+  },
+  {
+    label: 'Specialist lane',
+    detail: 'Accepted contributions become evidence-review, validation-queue, or compute-review work. They still do not overwrite the public record.',
+  },
+  {
+    label: 'Record update',
+    detail: 'Only after review clears does TWOG create a new candidate decision entry, updated payload, and fresh content hash.',
   },
 ];
 
@@ -240,18 +259,24 @@ export default async function MethodDetailPage({ params }: { params: Promise<{ m
             </p>
             <code>/api/public-candidates/twog-candidate-447eb8089965</code>
             <div className="method-actions">
-              {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-              <a href="/api/public-candidates/twog-candidate-447eb8089965" className="record-link">
+              <a href="/api/public-candidates/twog-candidate-447eb8089965" className="record-link" target="_blank" rel="noreferrer">
                 Open example JSON
               </a>
-              {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
               <a
                 href="/api/public-candidates/twog-candidate-447eb8089965/contribution-template"
                 className="record-link"
+                target="_blank"
+                rel="noreferrer"
               >
                 Open check-in template
               </a>
-              <Link href="/api/public-candidates/twog-candidate-447eb8089965/contributions" className="record-link" prefetch={false}>
+              <Link
+                href="/api/public-candidates/twog-candidate-447eb8089965/contributions"
+                className="record-link"
+                prefetch={false}
+                target="_blank"
+                rel="noreferrer"
+              >
                 Inspect check-in API
               </Link>
             </div>
@@ -292,6 +317,16 @@ export default async function MethodDetailPage({ params }: { params: Promise<{ m
             lane if it clears review.
           </p>
         </article>
+
+        <div className="payload-endpoint-grid triage-stage-grid">
+          {triageStages.map((stage) => (
+            <article key={stage.label}>
+              <span>After check-in</span>
+              <h3>{stage.label}</h3>
+              <p>{stage.detail}</p>
+            </article>
+          ))}
+        </div>
       </section>
 
       <section className="method-interpretation">

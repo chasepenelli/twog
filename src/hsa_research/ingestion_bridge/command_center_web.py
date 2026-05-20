@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 
+from . import candidate_contribution_intake
 from .contracts import (
     AgentFindingEscalationRequest,
     AgentPerformanceEvaluationRequest,
@@ -80,6 +81,47 @@ def runtime_payload() -> dict[str, Any]:
             ),
         }
     }
+
+
+def list_candidate_contributions_payload(
+    service: HSAResearchService,  # noqa: ARG001 - reserved for future repository-backed joins
+    params: Mapping[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Return public candidate contribution intake rows for operator triage."""
+
+    params = params or {}
+    return candidate_contribution_intake.build_candidate_contribution_intake_report(
+        statuses=_list_param(params, "status"),
+        candidate_ids=_list_param(params, "candidate_id"),
+        limit=_int_param(params, "limit", 50),
+        include_packet=_bool_param(params, "include_packet", False),
+    )
+
+
+def triage_candidate_contribution_payload(
+    service: HSAResearchService,  # noqa: ARG001 - reserved for future repository-backed joins
+    contribution_id: str,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Apply or preview an explicit operator triage decision for one contribution."""
+
+    payload = payload or {}
+    action = str(payload.get("action") or "").strip()
+    if not action:
+        raise ValueError("action is required")
+    raw_dry_run = payload.get("dry_run", True)
+    dry_run = (
+        raw_dry_run.casefold() not in {"0", "false", "no", "off"}
+        if isinstance(raw_dry_run, str)
+        else bool(raw_dry_run)
+    )
+    return candidate_contribution_intake.triage_candidate_contributions(
+        contribution_ids=[contribution_id],
+        action=action,
+        operator=str(payload.get("operator") or "command_center_operator").strip(),
+        review_notes=str(payload.get("review_notes") or "").strip(),
+        dry_run=dry_run,
+    )
 
 
 def list_validation_queue_payload(
@@ -1191,6 +1233,9 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
             if parsed.path == "/api/action-items":
                 self._send_json(build_action_items_payload(service_factory(), parse_qs(parsed.query)))
                 return
+            if parsed.path == "/api/candidate-contributions":
+                self._send_json(list_candidate_contributions_payload(service_factory(), parse_qs(parsed.query)))
+                return
             if parsed.path == "/api/validation-requests":
                 self._send_json(list_validation_queue_payload(service_factory(), parse_qs(parsed.query)))
                 return
@@ -1261,6 +1306,13 @@ def _make_handler(service_factory: Callable[[], HSAResearchService]) -> type[Bas
                 try:
                     payload = self._read_json_body()
                     self._send_json(run_validation_autopilot_payload(service_factory(), payload))
+                except (json.JSONDecodeError, ValueError) as exc:
+                    self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "candidate-contributions"] and parts[3] == "triage":
+                try:
+                    payload = self._read_json_body()
+                    self._send_json(triage_candidate_contribution_payload(service_factory(), parts[2], payload))
                 except (json.JSONDecodeError, ValueError) as exc:
                     self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
                 return
