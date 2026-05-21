@@ -1354,6 +1354,62 @@ def test_public_candidate_snapshot_generation_links_therapy_decision_compute_and
     assert "Vimentin expression in canine hemangiosarcoma" in candidate_html
 
 
+def test_public_candidate_snapshot_generation_repairs_existing_snapshot_manifest(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "public-candidate-manifest-repair.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    missing_therapy_idea_id = uuid4()
+    snapshot_id = uuid4()
+    candidate = PublicCandidateRecord(
+        candidate_id="twog-candidate-existing",
+        display_id="TWOG-EXISTING",
+        title="Existing public candidate",
+        summary="Existing static candidate generated before run manifest receipts.",
+        public_status="investigating",
+        visibility="draft_public",
+        therapy_idea_id=missing_therapy_idea_id,
+        latest_snapshot_id=snapshot_id,
+        content_hash="hash-existing",
+    )
+    snapshot = PublicCandidateSnapshot(
+        snapshot_id=snapshot_id,
+        candidate_id=candidate.candidate_id,
+        snapshot_version=1,
+        content_hash="hash-existing",
+        title=candidate.title,
+        public_status="investigating",
+        payload={"identity": {"candidate_id": candidate.candidate_id}, "reproducibility": {}},
+    )
+    repo.upsert_public_candidate(candidate)
+    repo.upsert_public_candidate_snapshot(snapshot)
+
+    result = service.generate_public_candidate_snapshot(
+        PublicCandidateGenerateRequest(
+            candidate_id=candidate.candidate_id,
+            therapy_idea_id=missing_therapy_idea_id,
+            visibility="draft_public",
+            pipeline_version="manifest-repair-test",
+            commit_sha="repair123",
+            metadata={"dagster_run_id": "dagster-run-repair"},
+        )
+    )
+
+    assert result.errors == []
+    assert result.candidate is not None
+    assert result.snapshot is not None
+    assert result.snapshot.snapshot_id == snapshot_id
+    assert result.snapshot.metadata["manifest_repair"] is True
+    assert result.snapshot.metadata["run_manifest_id"]
+    assert result.snapshot.metadata["trace_id"]
+    assert result.snapshot.payload["reproducibility"]["run_manifest_id"] == result.snapshot.metadata["run_manifest_id"]
+    assert result.snapshot.payload["reproducibility"]["dagster_run_id"] == "dagster-run-repair"
+    manifest = repo.get_run_manifest(UUID(result.snapshot.metadata["run_manifest_id"]))
+    assert manifest is not None
+    assert manifest.manifest_type == "public_candidate_snapshot"
+    assert manifest.candidate_ids == [candidate.candidate_id]
+    assert manifest.therapy_idea_ids == [missing_therapy_idea_id]
+    assert result.decision_events[0].action == "annotated"
+
+
 def test_public_candidate_generation_blocks_low_grade_incremental_ideas(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "public-candidate-moonshot-gate.sqlite3", seed=False)
     service = HSAResearchService(repo)

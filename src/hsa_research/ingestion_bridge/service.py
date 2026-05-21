@@ -6123,6 +6123,156 @@ def _attach_public_candidate_snapshot_run_manifest(
     return repository.upsert_run_manifest(manifest)
 
 
+def _repair_existing_public_candidate_snapshot_run_manifest(
+    repository: ResearchRepository,
+    request: PublicCandidateGenerateRequest,
+) -> PublicCandidateSnapshotResult | None:
+    if not request.candidate_id:
+        return None
+    candidate = repository.get_public_candidate(request.candidate_id)
+    if candidate is None:
+        return None
+    snapshot: PublicCandidateSnapshot | None = None
+    if candidate.latest_snapshot_id:
+        snapshot = repository.get_public_candidate_snapshot(candidate.latest_snapshot_id)
+    if snapshot is None:
+        snapshots = repository.list_public_candidate_snapshots(candidate_id=candidate.candidate_id, limit=1)
+        snapshot = snapshots[0] if snapshots else None
+    if snapshot is None:
+        return None
+
+    manifest_id = _first_uuid(
+        [
+            snapshot.metadata.get("run_manifest_id") if isinstance(snapshot.metadata, dict) else None,
+            candidate.metadata.get("run_manifest_id") if isinstance(candidate.metadata, dict) else None,
+        ]
+    ) or _run_manifest_id("public_candidate_snapshot", snapshot.snapshot_id)
+    trace_id = _first_uuid(
+        [
+            request.metadata.get("trace_id") if isinstance(request.metadata, dict) else None,
+            snapshot.trace_id,
+            candidate.trace_id,
+            snapshot.metadata.get("trace_id") if isinstance(snapshot.metadata, dict) else None,
+            candidate.metadata.get("trace_id") if isinstance(candidate.metadata, dict) else None,
+        ]
+    ) or uuid4()
+    pipeline_version = request.pipeline_version or snapshot.pipeline_version
+    commit_sha = request.commit_sha or snapshot.commit_sha
+    dagster_run_id = str(request.metadata.get("dagster_run_id") or "") if isinstance(request.metadata, dict) else ""
+    dagster_run_id = dagster_run_id or None
+
+    payload = dict(snapshot.payload)
+    reproducibility = dict(payload.get("reproducibility") or {})
+    reproducibility.update(
+        {
+            "trace_id": str(trace_id),
+            "run_manifest_id": str(manifest_id),
+            "dagster_run_id": dagster_run_id,
+            "commit_sha": commit_sha,
+            "pipeline_version": pipeline_version,
+        }
+    )
+    payload["reproducibility"] = reproducibility
+
+    snapshot_metadata = {
+        **snapshot.metadata,
+        **request.metadata,
+        "source": snapshot.metadata.get("source") or "public_candidate_snapshot_generator",
+        "manifest_repair": True,
+        "manifest_repair_reason": "existing_public_candidate_snapshot_missing_source_therapy_idea",
+        "trace_id": str(trace_id),
+        "run_manifest_id": str(manifest_id),
+    }
+    candidate_metadata = {
+        **candidate.metadata,
+        **request.metadata,
+        "manifest_repair": True,
+        "manifest_repair_reason": "existing_public_candidate_snapshot_missing_source_therapy_idea",
+        "trace_id": str(trace_id),
+        "run_manifest_id": str(manifest_id),
+    }
+    snapshot = snapshot.model_copy(
+        update={
+            "trace_id": trace_id,
+            "payload": payload,
+            "pipeline_version": pipeline_version,
+            "commit_sha": commit_sha,
+            "metadata": snapshot_metadata,
+        }
+    )
+    candidate = candidate.model_copy(
+        update={
+            "trace_id": trace_id,
+            "content_hash": snapshot.content_hash,
+            "latest_snapshot_id": snapshot.snapshot_id,
+            "updated_at": datetime.now(UTC),
+            "metadata": candidate_metadata,
+        }
+    )
+
+    manifest = RunManifestRecord(
+        manifest_id=manifest_id,
+        trace_id=trace_id,
+        manifest_type="public_candidate_snapshot",
+        status="completed",
+        title=f"Public candidate snapshot receipt repair: {candidate.display_id or candidate.candidate_id}",
+        created_by="public_candidate_snapshot_manifest_repair",
+        dagster_run_id=dagster_run_id,
+        brief_ids=_dedupe_uuid_refs([candidate.source_brief_id]),
+        therapy_idea_ids=_dedupe_uuid_refs([candidate.therapy_idea_id, request.therapy_idea_id]),
+        validation_packet_ids=_dedupe_texts([candidate.validation_packet_id or ""]),
+        candidate_ids=[candidate.candidate_id],
+        compute_job_ids=snapshot.compute_job_ids,
+        artifact_ids=snapshot.artifact_ids,
+        method_refs=snapshot.method_refs,
+        content_hashes={"public_candidate_snapshot": snapshot.content_hash},
+        input_refs={
+            "candidate_id": candidate.candidate_id,
+            "therapy_idea_id": str(request.therapy_idea_id) if request.therapy_idea_id else None,
+            "latest_snapshot_id": str(snapshot.snapshot_id),
+            "repair_reason": "existing_public_candidate_snapshot_missing_source_therapy_idea",
+        },
+        output_refs={
+            "candidate_id": candidate.candidate_id,
+            "snapshot_id": str(snapshot.snapshot_id),
+            "snapshot_version": snapshot.snapshot_version,
+            "public_status": snapshot.public_status,
+            "visibility": candidate.visibility,
+        },
+        created_at=snapshot.created_at,
+        updated_at=datetime.now(UTC),
+        metadata={
+            "pipeline_version": pipeline_version,
+            "commit_sha": commit_sha,
+            "manifest_repair": True,
+        },
+    )
+    event = PublicCandidateDecisionEvent(
+        event_id=uuid5(
+            NAMESPACE_URL,
+            f"twog:public-candidate-event:{candidate.candidate_id}:{snapshot.snapshot_id}:manifest-repaired",
+        ),
+        trace_id=trace_id,
+        candidate_id=candidate.candidate_id,
+        action="annotated",
+        rationale_md=(
+            "Attached a run manifest and trace receipt to an existing public candidate snapshot "
+            "without regenerating scientific content."
+        ),
+        actor="public_candidate_snapshot_manifest_repair",
+        prior_status=candidate.public_status,
+        new_status=candidate.public_status,
+        related_snapshot_id=snapshot.snapshot_id,
+        metadata={"run_manifest_id": str(manifest_id), "repair": True},
+    )
+    if request.persist:
+        repository.upsert_public_candidate(candidate)
+        repository.upsert_public_candidate_snapshot(snapshot)
+        repository.upsert_run_manifest(manifest)
+        repository.append_public_candidate_decision_event(event)
+    return PublicCandidateSnapshotResult(candidate=candidate, snapshot=snapshot, decision_events=[event], errors=[])
+
+
 def _generate_public_candidate_snapshot(
     repository: ResearchRepository,
     request: PublicCandidateGenerateRequest,
@@ -6134,6 +6284,9 @@ def _generate_public_candidate_snapshot(
     if request.therapy_idea_id:
         therapy_idea = repository.get_therapy_idea(request.therapy_idea_id)
         if therapy_idea is None:
+            repaired = _repair_existing_public_candidate_snapshot_run_manifest(repository, request)
+            if repaired is not None:
+                return repaired
             return PublicCandidateSnapshotResult(errors=[f"therapy_idea_not_found:{request.therapy_idea_id}"])
 
     if request.candidate_id:
