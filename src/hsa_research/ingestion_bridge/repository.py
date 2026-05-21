@@ -45,6 +45,7 @@ from .contracts import (
     ResearchLeadRecord,
     ResearchObject,
     RewardEventRecord,
+    RunManifestRecord,
     ValidationDecisionRecord,
     ValidationPlanRecord,
     ValidationRequestQueueItem,
@@ -235,6 +236,22 @@ class ResearchRepository(Protocol):
 
     def get_artifact(self, artifact_id: UUID) -> ArtifactHandle | None:
         """Return artifact metadata."""
+
+    def upsert_run_manifest(self, record: RunManifestRecord) -> RunManifestRecord:
+        """Persist a traceable run manifest."""
+
+    def get_run_manifest(self, manifest_id: UUID) -> RunManifestRecord | None:
+        """Return a persisted run manifest."""
+
+    def list_run_manifests(
+        self,
+        *,
+        trace_id: UUID | None = None,
+        manifest_type: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[RunManifestRecord]:
+        """Return recent run manifests by durable filters."""
 
     def create_agent_run(self, record: AgentRunRecord) -> AgentRunRecord:
         """Persist a newly started agent run."""
@@ -716,6 +733,7 @@ class InMemoryResearchRepository:
         self.agent_runs: dict[UUID, AgentRunRecord] = {}
         self.agent_run_reviews: dict[UUID, AgentRunReviewRecord] = {}
         self.reward_events: dict[UUID, RewardEventRecord] = {}
+        self.run_manifests: dict[UUID, RunManifestRecord] = {}
 
     def get_research_object(self, object_id: UUID) -> ResearchObject | None:
         return self.research_objects.get(object_id)
@@ -1220,6 +1238,31 @@ class InMemoryResearchRepository:
 
     def get_artifact(self, artifact_id: UUID) -> ArtifactHandle | None:
         return self.artifacts.get(artifact_id)
+
+    def upsert_run_manifest(self, record: RunManifestRecord) -> RunManifestRecord:
+        self.run_manifests[record.manifest_id] = record
+        return record
+
+    def get_run_manifest(self, manifest_id: UUID) -> RunManifestRecord | None:
+        return self.run_manifests.get(manifest_id)
+
+    def list_run_manifests(
+        self,
+        *,
+        trace_id: UUID | None = None,
+        manifest_type: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[RunManifestRecord]:
+        records = list(self.run_manifests.values())
+        if trace_id:
+            records = [record for record in records if record.trace_id == trace_id]
+        if manifest_type:
+            records = [record for record in records if str(record.manifest_type) == manifest_type]
+        if status:
+            records = [record for record in records if str(record.status) == status]
+        records.sort(key=lambda record: record.created_at, reverse=True)
+        return records[:limit]
 
     def create_agent_run(self, record: AgentRunRecord) -> AgentRunRecord:
         self.agent_runs[record.agent_run_id] = record

@@ -48,6 +48,7 @@ from .contracts import (
     ResearchBriefRecord,
     ResearchLeadRecord,
     RewardEventRecord,
+    RunManifestRecord,
     ResolvedEntity,
     ResearchObject,
     ResearchSource,
@@ -1614,6 +1615,72 @@ class SQLiteResearchRepository(ResearchRepository):
         if row is None:
             return None
         return ArtifactHandle.model_validate(json.loads(row["payload"]))
+
+    def upsert_run_manifest(self, record: RunManifestRecord) -> RunManifestRecord:
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into run_manifests (
+              manifest_id, trace_id, manifest_type, status, title,
+              dagster_run_id, created_at, updated_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(manifest_id) do update set
+              trace_id = excluded.trace_id,
+              manifest_type = excluded.manifest_type,
+              status = excluded.status,
+              title = excluded.title,
+              dagster_run_id = excluded.dagster_run_id,
+              created_at = excluded.created_at,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(record.manifest_id),
+                str(record.trace_id),
+                str(record.manifest_type),
+                str(record.status),
+                record.title,
+                record.dagster_run_id,
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                json.dumps(payload),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_run_manifest(self, manifest_id: UUID) -> RunManifestRecord | None:
+        row = self.conn.execute("select payload from run_manifests where manifest_id = ?", (str(manifest_id),)).fetchone()
+        if row is None:
+            return None
+        return RunManifestRecord.model_validate(json.loads(row["payload"]))
+
+    def list_run_manifests(
+        self,
+        *,
+        trace_id: UUID | None = None,
+        manifest_type: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[RunManifestRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if trace_id:
+            clauses.append("trace_id = ?")
+            params.append(str(trace_id))
+        if manifest_type:
+            clauses.append("manifest_type = ?")
+            params.append(manifest_type)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        sql = "select payload from run_manifests"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by created_at desc limit ?"
+        params.append(limit)
+        return [RunManifestRecord.model_validate(json.loads(row["payload"])) for row in self.conn.execute(sql, params)]
 
     def create_agent_run(self, record: AgentRunRecord) -> AgentRunRecord:
         payload = record.model_dump(mode="json")
@@ -4153,6 +4220,25 @@ class SQLiteResearchRepository(ResearchRepository):
             );
 
             create index if not exists async_runs_status_idx on async_runs(status, updated_at desc);
+
+            create table if not exists run_manifests (
+              manifest_id text primary key,
+              trace_id text not null,
+              manifest_type text not null,
+              status text not null,
+              title text not null,
+              dagster_run_id text,
+              created_at text not null,
+              updated_at text not null,
+              payload text not null
+            );
+
+            create index if not exists run_manifests_trace_idx
+              on run_manifests(trace_id, created_at desc);
+            create index if not exists run_manifests_type_status_idx
+              on run_manifests(manifest_type, status, created_at desc);
+            create index if not exists run_manifests_dagster_idx
+              on run_manifests(dagster_run_id, created_at desc);
 
             create table if not exists agent_runs (
               agent_run_id text primary key,

@@ -537,10 +537,78 @@ ComputeJobStatus = Literal[
     "cancelled",
     "blocked",
 ]
+RunManifestKind = Literal[
+    "agent_run",
+    "dagster_run",
+    "cli_invocation",
+    "mcp_invocation",
+    "public_candidate_snapshot",
+    "compute_job",
+    "reward_sync",
+    "manual",
+]
+RunManifestStatus = Literal["running", "completed", "failed", "cancelled", "blocked", "unknown"]
+
+
+class RunManifestRecord(StrictBaseModel):
+    """Traceable execution envelope for audit, replay, and later routing policy."""
+
+    manifest_id: UUID = Field(default_factory=uuid4)
+    trace_id: UUID = Field(default_factory=uuid4)
+    manifest_type: RunManifestKind = "manual"
+    status: RunManifestStatus = "unknown"
+    title: str = Field(default="run manifest", min_length=1, max_length=500)
+    created_by: str = Field(default="system", max_length=200)
+    dagster_run_id: str | None = Field(default=None, max_length=300)
+    agent_run_ids: list[UUID] = Field(default_factory=list, max_length=200)
+    reward_event_ids: list[UUID] = Field(default_factory=list, max_length=500)
+    brief_ids: list[UUID] = Field(default_factory=list, max_length=200)
+    therapy_idea_ids: list[UUID] = Field(default_factory=list, max_length=200)
+    validation_packet_ids: list[str] = Field(default_factory=list, max_length=200)
+    candidate_ids: list[str] = Field(default_factory=list, max_length=200)
+    compute_job_ids: list[UUID] = Field(default_factory=list, max_length=200)
+    artifact_ids: list[UUID] = Field(default_factory=list, max_length=500)
+    source_versions: dict[str, str] = Field(default_factory=dict)
+    model_profiles: list[str] = Field(default_factory=list, max_length=100)
+    actual_models: list[str] = Field(default_factory=list, max_length=100)
+    prompt_keys: list[str] = Field(default_factory=list, max_length=100)
+    method_refs: list[str] = Field(default_factory=list, max_length=100)
+    content_hashes: dict[str, str] = Field(default_factory=dict)
+    input_refs: dict[str, Any] = Field(default_factory=dict)
+    output_refs: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_run_manifest(self) -> "RunManifestRecord":
+        self.title = self.title.strip() or "run manifest"
+        self.created_by = self.created_by.strip() or "system"
+        self.dagster_run_id = self.dagster_run_id.strip() if self.dagster_run_id else None
+        self.validation_packet_ids = _dedupe_strings(self.validation_packet_ids)
+        self.candidate_ids = _dedupe_strings(self.candidate_ids)
+        self.model_profiles = _dedupe_strings(self.model_profiles)
+        self.actual_models = _dedupe_strings(self.actual_models)
+        self.prompt_keys = _dedupe_strings(self.prompt_keys)
+        self.method_refs = _dedupe_strings(self.method_refs)
+        self.errors = _dedupe_strings(self.errors)
+        self.source_versions = {
+            str(key).strip(): str(value).strip()
+            for key, value in self.source_versions.items()
+            if str(key).strip() and str(value).strip()
+        }
+        self.content_hashes = {
+            str(key).strip(): str(value).strip()
+            for key, value in self.content_hashes.items()
+            if str(key).strip() and str(value).strip()
+        }
+        return self
 
 
 class AgentRunRecord(StrictBaseModel):
     agent_run_id: UUID = Field(default_factory=uuid4)
+    trace_id: UUID | None = None
     agent_name: str
     agent_version: str = "v1"
     model_profile: str = "deterministic"
@@ -699,6 +767,7 @@ class AgentPerformanceEvaluationResult(StrictBaseModel):
 
 class RewardEventRecord(StrictBaseModel):
     reward_event_id: UUID = Field(default_factory=uuid4)
+    trace_id: UUID | None = None
     identity_key: str | None = None
     event_source: RewardEventSource
     score: float = Field(ge=0.0, le=1.0)
@@ -3324,6 +3393,7 @@ class SourceVersionRecord(StrictBaseModel):
 
 class PrimitiveCallEvent(StrictBaseModel):
     event_id: UUID = Field(default_factory=uuid4)
+    trace_id: UUID | None = None
     primitive_name: PrimitiveName
     status: PrimitiveCallStatus = "completed"
     request_hash: str
@@ -3926,6 +3996,7 @@ class AsyncRunHandle(StrictBaseModel):
 
 class ComputeJobRecord(StrictBaseModel):
     compute_job_id: UUID = Field(default_factory=uuid4)
+    trace_id: UUID | None = None
     queue_item_id: UUID | None = None
     status: ComputeJobStatus = "needs_approval"
     runner_kind: ComputeRunnerKind = "runpod"
@@ -4608,6 +4679,7 @@ class ValidationDecisionReportResult(StrictBaseModel):
 
 class PublicCandidateRecord(StrictBaseModel):
     candidate_id: str = Field(min_length=3, max_length=260)
+    trace_id: UUID | None = None
     display_id: str | None = Field(default=None, max_length=120)
     candidate_kind: PublicCandidateKind = "target_strategy"
     title: str = Field(min_length=3, max_length=500)
@@ -4655,6 +4727,7 @@ class PublicCandidateRecord(StrictBaseModel):
 
 class PublicCandidateDecisionEvent(StrictBaseModel):
     event_id: UUID = Field(default_factory=uuid4)
+    trace_id: UUID | None = None
     candidate_id: str = Field(min_length=3, max_length=260)
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     action: PublicCandidateDecisionAction
@@ -4683,6 +4756,7 @@ class PublicCandidateDecisionEvent(StrictBaseModel):
 
 class PublicCandidateSnapshot(StrictBaseModel):
     snapshot_id: UUID = Field(default_factory=uuid4)
+    trace_id: UUID | None = None
     candidate_id: str = Field(min_length=3, max_length=260)
     snapshot_version: int = Field(default=1, ge=1)
     content_hash: str = Field(min_length=8, max_length=128)

@@ -19,7 +19,14 @@ Durable record classes include:
 - Source queries, research leads, research brief queue items, briefs, evaluations, and follow-up tasks.
 - Therapy ideas, committee outputs, promotion candidates, validation plans, validation queue items, and validation decisions.
 - Agent runs, agent reviews, model metadata, prompt/version metadata, cost/usage metadata, and output payloads.
+- Run manifests that bind traces across Dagster runs, CLI/MCP calls, agent runs, reward events, public snapshots, compute jobs, methods, source versions, and artifacts.
 - Artifacts such as processed omics matrices, computed readouts, reports, markdown handoffs, CSVs, and JSON outputs.
+
+## Trace And Manifest Rule
+
+Every durable workflow should eventually attach to a `trace_id` and a run manifest. The trace is the cross-system correlation key. The manifest is the replay/audit envelope: what ran, which source versions and model profiles were used, which method refs applied, what artifacts or content hashes were produced, and which downstream records were touched.
+
+External systems such as Evo and Graphiti are useful architecture references for experiment-tree routing and temporal provenance, but TWOG should keep this layer native to the existing typed contracts, Dagster assets, and repository adapters unless a concrete capability gap appears.
 
 ## Ephemeral Context
 

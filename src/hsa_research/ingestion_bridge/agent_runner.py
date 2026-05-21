@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any, TypeVar
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel
 
-from .contracts import AgentRunRecord, RunStatus
+from .contracts import AgentRunRecord, RunManifestRecord, RunStatus
 from .repository import ResearchRepository
 
 
@@ -32,9 +34,17 @@ class AgentRunner:
         partition_date: str | None = None,
         dagster_run_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        trace_id: UUID | str | None = None,
         summarize: Callable[[T], dict[str, Any]] | None = None,
     ) -> T:
+        normalized_metadata = metadata or {}
+        normalized_trace_id = _select_trace_id(
+            trace_id,
+            normalized_metadata.get("trace_id"),
+            input_payload.get("trace_id"),
+        )
         record = AgentRunRecord(
+            trace_id=normalized_trace_id,
             agent_name=agent_name,
             agent_version=agent_version,
             model_profile=model_profile,
@@ -43,9 +53,28 @@ class AgentRunner:
             partition_date=partition_date,
             dagster_run_id=dagster_run_id,
             input_payload=input_payload,
-            metadata=metadata or {},
+            metadata={**normalized_metadata, "trace_id": str(normalized_trace_id)},
         )
         self.repository.create_agent_run(record)
+        manifest = RunManifestRecord(
+            trace_id=normalized_trace_id,
+            manifest_type="agent_run",
+            status="running",
+            title=f"{agent_name} {agent_version}",
+            created_by="agent_runner",
+            dagster_run_id=dagster_run_id,
+            agent_run_ids=[record.agent_run_id],
+            model_profiles=[model_profile],
+            input_refs={
+                "source_key": source_key,
+                "partition_date": partition_date,
+            },
+            metadata={
+                "agent_name": agent_name,
+                "agent_version": agent_version,
+            },
+        )
+        self.repository.upsert_run_manifest(manifest)
         try:
             result = execute()
             result = _attach_agent_run_id(result, record.agent_run_id)
@@ -58,6 +87,15 @@ class AgentRunner:
                 summary=summary,
                 errors=[],
             )
+            self.repository.upsert_run_manifest(
+                manifest.model_copy(
+                    update={
+                        "status": "completed",
+                        "updated_at": datetime.now(UTC),
+                        "output_refs": _manifest_output_refs(output_payload, summary),
+                    }
+                )
+            )
             return result
         except Exception as exc:
             self.repository.finish_agent_run(
@@ -66,6 +104,16 @@ class AgentRunner:
                 output_payload={},
                 summary={"error_type": type(exc).__name__},
                 errors=[str(exc)],
+            )
+            self.repository.upsert_run_manifest(
+                manifest.model_copy(
+                    update={
+                        "status": "failed",
+                        "updated_at": datetime.now(UTC),
+                        "errors": [str(exc)],
+                        "output_refs": {"error_type": type(exc).__name__},
+                    }
+                )
             )
             raise
 
@@ -91,3 +139,35 @@ def _default_summary(value: Any) -> dict[str, Any]:
         for key in ("agent_name", "source_key", "action", "severity", "should_block_schedule")
         if key in payload
     }
+
+
+def _select_trace_id(*values: Any) -> UUID:
+    for value in values:
+        if isinstance(value, UUID):
+            return value
+        if isinstance(value, str) and value.strip():
+            try:
+                return UUID(value.strip())
+            except ValueError:
+                continue
+    return uuid4()
+
+
+def _manifest_output_refs(output_payload: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    refs: dict[str, Any] = {}
+    for key in (
+        "agent_run_id",
+        "brief_id",
+        "evaluation_id",
+        "therapy_idea_id",
+        "program_id",
+        "candidate_id",
+        "compute_job_id",
+        "created_count",
+        "errors",
+    ):
+        if key in output_payload:
+            refs[key] = output_payload[key]
+        elif key in summary:
+            refs[key] = summary[key]
+    return refs

@@ -145,6 +145,7 @@ from hsa_research.ingestion_bridge.contracts import (
     RewardEventSyncRequest,
     RewardReportRequest,
     RewardReportRow,
+    RunManifestRecord,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
@@ -288,6 +289,7 @@ from hsa_research.ingestion_bridge.local_ingest import LocalIngestionPipeline
 from hsa_research.ingestion_bridge import local_ingest as local_ingest_module
 from hsa_research.ingestion_bridge.local_store import SQLiteResearchRepository
 from hsa_research.ingestion_bridge import mcp_server
+from hsa_research.ingestion_bridge.agent_runner import AgentRunner
 from hsa_research.ingestion_bridge.query_policy import build_scholarly_source_queries, infer_comparative_scope
 from hsa_research.ingestion_bridge.repository import InMemoryResearchRepository
 from hsa_research.ingestion_bridge import scraper_bridge
@@ -345,7 +347,9 @@ def test_research_repository_resource_rejects_memory_backend():
 
 
 def test_agent_run_and_full_text_ops_contracts_validate():
+    trace_id = uuid4()
     record = AgentRunRecord(
+        trace_id=trace_id,
         agent_name="full_text_ops_agent",
         model_profile="reviewer",
         status=RunStatus.RUNNING,
@@ -361,15 +365,82 @@ def test_agent_run_and_full_text_ops_contracts_validate():
         partition_date="2026-04-27",
     )
     result = FullTextOpsResult(actions=[action], schedule_readiness="needs_partition_validation")
+    manifest = RunManifestRecord(
+        trace_id=trace_id,
+        manifest_type="agent_run",
+        status="running",
+        title="full text ops review",
+        agent_run_ids=[record.agent_run_id],
+        model_profiles=["reviewer"],
+        source_versions={"europe_pmc": "2026-05-21"},
+    )
 
     assert record.status == "running"
+    assert record.trace_id == trace_id
     assert result.actions[0].action == "run_source_date_partition"
+    assert manifest.trace_id == trace_id
+    assert manifest.source_versions["europe_pmc"] == "2026-05-21"
     with pytest.raises(ValueError):
         FullTextOpsAction(source_key="europe_pmc", action="bad", severity="watch", reason="bad")
     with pytest.raises(ValueError):
         FullTextOpsAction(source_key="europe_pmc", action="mark_clean", severity="bad", reason="bad")
     with pytest.raises(ValueError):
         AgentRunRecord(agent_name="x", status="bad")
+    with pytest.raises(ValidationError):
+        RunManifestRecord(manifest_type="bad", status="running", title="x")
+    with pytest.raises(ValidationError):
+        RunManifestRecord(manifest_type="agent_run", status="loop_forever", title="x")
+
+
+def test_run_manifest_repository_roundtrip_memory_and_sqlite(tmp_path):
+    trace_id = uuid4()
+    agent_run_id = uuid4()
+    manifest = RunManifestRecord(
+        trace_id=trace_id,
+        manifest_type="agent_run",
+        status="completed",
+        title="therapy committee run",
+        agent_run_ids=[agent_run_id],
+        model_profiles=["research_brief"],
+        method_refs=["candidate-record-v1"],
+        content_hashes={"payload": "abc123"},
+    )
+
+    for repo in (
+        InMemoryResearchRepository(),
+        SQLiteResearchRepository(tmp_path / "run-manifests.sqlite3", seed=False),
+    ):
+        repo.upsert_run_manifest(manifest)
+        fetched = repo.get_run_manifest(manifest.manifest_id)
+        listed = repo.list_run_manifests(trace_id=trace_id, manifest_type="agent_run", status="completed")
+
+        assert fetched is not None
+        assert fetched.trace_id == trace_id
+        assert fetched.agent_run_ids == [agent_run_id]
+        assert listed[0].manifest_id == manifest.manifest_id
+
+
+def test_agent_runner_creates_trace_and_run_manifest():
+    repo = InMemoryResearchRepository()
+    trace_id = uuid4()
+    runner = AgentRunner(repo)
+
+    result = runner.run(
+        agent_name="trace_smoke_agent",
+        model_profile="deterministic",
+        input_payload={"trace_id": str(trace_id), "topic": "vimentin"},
+        execute=lambda: {"candidate_id": "twog-test", "created_count": 1},
+        metadata={"trace_id": str(trace_id), "prompt_key": "trace-smoke-v1"},
+    )
+    run = repo.list_agent_runs(agent_name="trace_smoke_agent", limit=1)[0]
+    manifest = repo.list_run_manifests(trace_id=trace_id, manifest_type="agent_run", limit=1)[0]
+
+    assert result["candidate_id"] == "twog-test"
+    assert run.trace_id == trace_id
+    assert run.metadata["trace_id"] == str(trace_id)
+    assert manifest.status == "completed"
+    assert manifest.agent_run_ids == [run.agent_run_id]
+    assert manifest.output_refs["candidate_id"] == "twog-test"
 
 
 def test_validation_plan_contracts_validate():

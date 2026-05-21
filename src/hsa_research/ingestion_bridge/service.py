@@ -157,6 +157,7 @@ from .contracts import (
     RewardEventSyncResult,
     RewardReportRequest,
     RewardReportResult,
+    RunManifestRecord,
     RetrievalSmokeRequest,
     RetrievalSmokeResult,
     SourceScoutRequest,
@@ -5423,6 +5424,27 @@ class HSAResearchService:
         metadata: dict | None = None,
     ) -> ResearchLeadRecord | None:
         return self.repository.update_research_lead(lead_id, status=status, metadata=metadata)
+
+    def upsert_run_manifest(self, record: RunManifestRecord) -> RunManifestRecord:
+        return self.repository.upsert_run_manifest(record)
+
+    def get_run_manifest(self, manifest_id: UUID) -> RunManifestRecord | None:
+        return self.repository.get_run_manifest(manifest_id)
+
+    def list_run_manifests(
+        self,
+        *,
+        trace_id: UUID | None = None,
+        manifest_type: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[RunManifestRecord]:
+        return self.repository.list_run_manifests(
+            trace_id=trace_id,
+            manifest_type=manifest_type,
+            status=status,
+            limit=limit,
+        )
 
     def get_agent_run(self, agent_run_id: UUID) -> AgentRunRecord | None:
         return self.repository.get_agent_run(agent_run_id)

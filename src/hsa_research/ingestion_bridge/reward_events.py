@@ -122,6 +122,7 @@ def reward_event_from_review(
     outcome_bucket = _classify_review_outcome(review, dimension_scores)
     return RewardEventRecord(
         reward_event_id=uuid5(NAMESPACE_URL, identity_key),
+        trace_id=run.trace_id,
         identity_key=identity_key,
         event_source=event_source,  # type: ignore[arg-type]
         score=score,

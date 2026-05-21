@@ -1469,6 +1469,34 @@ def main() -> None:
     )
     reward_events_sync.add_argument("--created-by", default="reward_review_sync", help="Ledger creator identity")
 
+    run_manifests = subparsers.add_parser(
+        "run-manifests",
+        help="List trace/run manifests that bind ledgers, models, methods, artifacts, and outputs",
+    )
+    run_manifests.add_argument("--trace-id", default=None, help="Optional trace_id filter")
+    run_manifests.add_argument(
+        "--manifest-type",
+        default=None,
+        choices=[
+            "agent_run",
+            "dagster_run",
+            "cli_invocation",
+            "mcp_invocation",
+            "public_candidate_snapshot",
+            "compute_job",
+            "reward_sync",
+            "manual",
+        ],
+        help="Optional manifest type filter",
+    )
+    run_manifests.add_argument(
+        "--status",
+        default=None,
+        choices=["running", "completed", "failed", "cancelled", "blocked", "unknown"],
+        help="Optional manifest status filter",
+    )
+    run_manifests.add_argument("--limit", type=int, default=50, help="Recent run manifests to list")
+
     agent_findings_escalate = subparsers.add_parser(
         "escalate-agent-findings",
         help="Create research leads and source queries from bad/needs-followup evaluator findings",
@@ -3059,6 +3087,18 @@ def main() -> None:
                 created_by=args.created_by,
             )
         ).model_dump(mode="json")
+    elif args.command == "run-manifests":
+        output = {
+            "manifests": [
+                record.model_dump(mode="json")
+                for record in HSAResearchService(repo).list_run_manifests(
+                    trace_id=UUID(args.trace_id) if args.trace_id else None,
+                    manifest_type=args.manifest_type,
+                    status=args.status,
+                    limit=args.limit,
+                )
+            ]
+        }
     elif args.command == "escalate-agent-findings":
         output = HSAResearchService(repo).escalate_agent_findings(
             AgentFindingEscalationRequest(
