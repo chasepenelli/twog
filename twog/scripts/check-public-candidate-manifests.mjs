@@ -35,16 +35,19 @@ const records = candidates.map((entry) => {
     ])
   );
 
+  const runManifestId = firstString(
+    snapshotMetadata.run_manifest_id,
+    reproducibility.run_manifest_id,
+    candidateMetadata.run_manifest_id
+  );
+  const traceId = firstString(snapshotMetadata.trace_id, reproducibility.trace_id, candidateMetadata.trace_id);
+
   return {
     candidate_id: candidate.candidate_id ?? null,
     display_id: candidate.display_id ?? null,
     snapshot_id: snapshot.snapshot_id ?? null,
-    run_manifest_id: firstString(
-      snapshotMetadata.run_manifest_id,
-      reproducibility.run_manifest_id,
-      candidateMetadata.run_manifest_id
-    ),
-    trace_id: firstString(snapshotMetadata.trace_id, reproducibility.trace_id, candidateMetadata.trace_id),
+    run_manifest_id: runManifestId,
+    trace_id: traceId,
     dagster_run_id: firstString(
       snapshotMetadata.dagster_run_id,
       reproducibility.dagster_run_id,
@@ -52,10 +55,7 @@ const records = candidates.map((entry) => {
     ),
     commit_sha: firstString(snapshot.commit_sha, reproducibility.commit_sha),
     compute_job_count: computeJobIds.length,
-    has_manifest: Boolean(
-      firstString(snapshotMetadata.run_manifest_id, reproducibility.run_manifest_id, candidateMetadata.run_manifest_id) ||
-        firstString(snapshotMetadata.trace_id, reproducibility.trace_id, candidateMetadata.trace_id)
-    ),
+    has_manifest: Boolean(runManifestId && traceId),
   };
 });
 
@@ -75,7 +75,7 @@ if (process.env.TWOG_REQUIRE_PUBLIC_CANDIDATE_MANIFESTS === 'true') {
   const missing = records.filter((record) => !record.has_manifest);
   if (missing.length > 0) {
     console.error(
-      `Missing run manifest/trace metadata for ${missing.length} candidate(s): ${missing
+      `Missing run_manifest_id and trace_id metadata for ${missing.length} candidate(s): ${missing
         .map((record) => record.candidate_id)
         .join(', ')}`
     );

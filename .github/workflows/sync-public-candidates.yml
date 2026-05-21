@@ -13,6 +13,11 @@ on:
         required: true
         type: boolean
         default: true
+      require_manifests:
+        description: "Fail when exported candidates lack run manifest metadata"
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -29,6 +34,7 @@ jobs:
       HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
       TWOG_PUBLIC_CANDIDATE_VISIBILITY: ${{ inputs.visibility }}
       TWOG_PUBLIC_CANDIDATE_MERGE_EXISTING: ${{ inputs.merge_existing }}
+      TWOG_REQUIRE_PUBLIC_CANDIDATE_MANIFESTS: ${{ inputs.require_manifests }}
 
     steps:
       - name: Checkout
@@ -58,6 +64,10 @@ jobs:
       - name: Export public candidates from Neon
         working-directory: twog
         run: npm run export:candidates
+
+      - name: Validate candidate run manifests
+        working-directory: twog
+        run: npm run check:candidate-manifests
 
       - name: Validate website build
         working-directory: twog
