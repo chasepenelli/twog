@@ -1,7 +1,620 @@
 {
-  "generatedAt": "2026-05-19T16:12:34.370Z",
-  "source": "http://127.0.0.1:8792",
+  "generatedAt": "2026-05-21T03:51:34.950Z",
+  "source": "neon:public_candidates",
+  "sync": {
+    "visibility": [
+      "draft_public",
+      "public"
+    ],
+    "mergeExisting": true,
+    "exportedCount": 1,
+    "totalCount": 2
+  },
   "candidates": [
+    {
+      "candidate": {
+        "title": "Biomarker-Stratified mTOR Inhibition for PIK3CA/TP53-Mutant Canine HSA as Co-Clinical Signal for Human Angiosarcoma",
+        "summary": "Post-splenectomy canine HSA patients harboring PIK3CA or TP53 mutations will show improved OS when rapamycin is added to doxorubicin backbone, generating a prospectively validated biomarker-drug interaction signal transferable to human angiosarcoma trials.",
+        "targets": [
+          "mTORC1",
+          "PI3K/AKT pathway",
+          "PIK3CA",
+          "TP53"
+        ],
+        "metadata": {
+          "moonshot_gate": {
+            "gate": "moonshot_public_candidate_v1",
+            "passed": true,
+            "reasons": [
+              "priority_score>=0.80",
+              "research_program_lineage",
+              "moonshot_terms:axis,biomarker-stratified,cross-species,ecology,moonshot,research program",
+              "evidence_anchor_present",
+              "mechanism_targets_and_therapy_defined",
+              "validation_path_and_risk_notes_present"
+            ],
+            "blockers": [],
+            "matched_terms": [
+              "axis",
+              "biomarker-stratified",
+              "cross-species",
+              "ecology",
+              "moonshot",
+              "research program"
+            ],
+            "priority_score": 0.88,
+            "incremental_terms": [],
+            "evidence_ref_count": 4,
+            "min_priority_score": 0.8,
+            "has_program_lineage": true
+          },
+          "dagster_run_id": "a2c328a5-99a8-4116-a299-42b5bb77e6d7",
+          "snapshot_source": "therapy_idea",
+          "latest_snapshot_version": 1
+        },
+        "biomarkers": [
+          "PIK3CA hotspot mutation (pre-treatment NGS)",
+          "TP53 mutation status",
+          "pAKT IHC",
+          "pS6K1 as pharmacodynamic readout"
+        ],
+        "created_at": "2026-05-21T01:38:18.848637Z",
+        "display_id": "TWOG-B41B9F",
+        "risk_flags": [
+          "FidoCure signal is observational with residual confounding and no published multivariable HRs or subgroup Ns (C11 validation gap)",
+          "Single observational cohort; independent replication absent",
+          "Citation deduplication collapse reduces apparent independent support",
+          "Canine rapamycin immunosuppression may worsen infection risk post-splenectomy"
+        ],
+        "updated_at": "2026-05-21T01:38:18.848639Z",
+        "visibility": "draft_public",
+        "artifact_ids": [],
+        "candidate_id": "twog-candidate-e5e8a4f68611",
+        "content_hash": "e72f90a777f8d8a229dacee37ed5ca58a2c28c04fc8063101fd3c1c225e59952",
+        "rationale_md": "Real-world FidoCure data show directional survival advantage for rapamycin in PIK3CA/TP53-mutant canine HSA. mTOR is downstream of oncogenic PI3K/AKT, and AKT predicts rapamycin response in human tumors. Cross-species genomic concordance (PIK3CA, TP53 shared in canine HSA and human AS) supports translational validity. Unselected VEGFR inhibition failed; mutation-gated mTOR targeting is the logical pivot.",
+        "evidence_refs": [
+          "C11",
+          "C1",
+          "C15",
+          "C2"
+        ],
+        "public_status": "investigating",
+        "candidate_kind": "combination",
+        "priority_score": 0.88,
+        "source_brief_id": null,
+        "therapy_idea_id": "5785f029-079e-4b91-9329-765a1c75f18b",
+        "committee_run_id": "3f9d22d2-fb34-4fc7-8b7e-f34735dad302",
+        "source_program_id": "4460e95d-d402-56f7-88d8-0b342ed5df26",
+        "latest_snapshot_id": "32bdc119-a393-547b-8bc7-5856feae136d",
+        "candidate_therapies": [
+          "Rapamycin (sirolimus)",
+          "Doxorubicin (backbone)"
+        ],
+        "source_evaluation_id": null,
+        "validation_packet_id": null,
+        "primary_compute_job_id": "2d7ea17a-b7ff-4da6-85cb-9572368d092f",
+        "validation_decision_id": null
+      },
+      "latest_snapshot": {
+        "title": "Biomarker-Stratified mTOR Inhibition for PIK3CA/TP53-Mutant Canine HSA as Co-Clinical Signal for Human Angiosarcoma",
+        "payload": {
+          "biology": {
+            "targets": [
+              "mTORC1",
+              "PI3K/AKT pathway",
+              "PIK3CA",
+              "TP53"
+            ],
+            "biomarkers": [
+              "PIK3CA hotspot mutation (pre-treatment NGS)",
+              "TP53 mutation status",
+              "pAKT IHC",
+              "pS6K1 as pharmacodynamic readout"
+            ],
+            "candidate_therapies": [
+              "Rapamycin (sirolimus)",
+              "Doxorubicin (backbone)"
+            ],
+            "therapy_family_hints": []
+          },
+          "evidence": {
+            "risks": [
+              "FidoCure signal is observational with residual confounding and no published multivariable HRs or subgroup Ns (C11 validation gap)",
+              "Single observational cohort; independent replication absent",
+              "Citation deduplication collapse reduces apparent independent support",
+              "Canine rapamycin immunosuppression may worsen infection risk post-splenectomy"
+            ],
+            "evidence_refs": [
+              "C11",
+              "C1",
+              "C15",
+              "C2"
+            ],
+            "next_experiments": [
+              "Retrieve full-text FidoCure manuscript for multivariable HRs, 95% CIs, and per-subgroup Ns (PIK3CA-mTOR, TP53-mTOR)",
+              "Prospective biomarker-stratified canine RCT: PIK3CA/TP53-mutant arm rapamycin+doxorubicin vs doxorubicin alone, primary endpoint median OS vs 141-179 day benchmark",
+              "Serial pS6K1 and pAKT pharmacodynamic sampling to confirm target engagement",
+              "Parallel human AS genomic registry to identify PIK3CA/TP53-enriched patient subset for co-clinical enrollment"
+            ],
+            "evidence_strength": "medium",
+            "validation_decisions": []
+          },
+          "identity": {
+            "title": "Biomarker-Stratified mTOR Inhibition for PIK3CA/TP53-Mutant Canine HSA as Co-Clinical Signal for Human Angiosarcoma",
+            "display_id": "TWOG-B41B9F",
+            "candidate_id": "twog-candidate-e5e8a4f68611",
+            "disease_scope": "canine hemangiosarcoma and human angiosarcoma",
+            "public_status": "investigating",
+            "candidate_kind": "combination",
+            "priority_score": 0.88
+          },
+          "artifacts": [],
+          "rationale": {
+            "mechanism": "Rapamycin inhibits mTORC1, blocking translation of pro-survival and pro-angiogenic proteins hyperactivated by oncogenic PIK3CA and upstream TP53-loss signaling. Mutation pre-selection enriches for tumors dependent on this node, avoiding dilution by non-responders.",
+            "hypothesis": "Post-splenectomy canine HSA patients harboring PIK3CA or TP53 mutations will show improved OS when rapamycin is added to doxorubicin backbone, generating a prospectively validated biomarker-drug interaction signal transferable to human angiosarcoma trials.",
+            "rationale_md": "Real-world FidoCure data show directional survival advantage for rapamycin in PIK3CA/TP53-mutant canine HSA. mTOR is downstream of oncogenic PI3K/AKT, and AKT predicts rapamycin response in human tumors. Cross-species genomic concordance (PIK3CA, TP53 shared in canine HSA and human AS) supports translational validity. Unselected VEGFR inhibition failed; mutation-gated mTOR targeting is the logical pivot.",
+            "translational_path": "Canine direct evidence (C11): real-world PIK3CA/TP53-rapamycin survival signal in spontaneous HSA. Human analog evidence (C15): shared PIK3CA/TP53/RAS alterations in AS; mTOR pathway importance confirmed in mouse GEMMs. Translation path: prospective biomarker-stratified canine co-clinical trial generates HRs/CIs to power human AS basket trial."
+          },
+          "literature": [
+            {
+              "ref": "C11",
+              "title": "Unresolved citation C11",
+              "dedupe": {},
+              "resolved": false,
+              "supports": "Canine direct evidence (C11): real-world PIK3CA/TP53-rapamycin survival signal in spontaneous HSA. FidoCure signal is observational with residual confounding and no published multivariable HRs or subgroup Ns (C11 validation gap)",
+              "provenance": {
+                "chunk_ids": [],
+                "dedupe_keys": [],
+                "research_object_ids": []
+              },
+              "source_key": null,
+              "source_url": null,
+              "identifiers": {},
+              "published_at": null,
+              "evidence_kind": "supporting_context",
+              "section_labels": [],
+              "source_brief_id": null,
+              "publication_year": null
+            },
+            {
+              "ref": "C1",
+              "title": "Unresolved citation C1",
+              "dedupe": {},
+              "resolved": false,
+              "supports": "Supports candidate rationale evidence.",
+              "provenance": {
+                "chunk_ids": [],
+                "dedupe_keys": [],
+                "research_object_ids": []
+              },
+              "source_key": null,
+              "source_url": null,
+              "identifiers": {},
+              "published_at": null,
+              "evidence_kind": "supporting_context",
+              "section_labels": [],
+              "source_brief_id": null,
+              "publication_year": null
+            },
+            {
+              "ref": "C15",
+              "title": "Unresolved citation C15",
+              "dedupe": {},
+              "resolved": false,
+              "supports": "Human analog evidence (C15): shared PIK3CA/TP53/RAS alterations in AS; mTOR pathway importance confirmed in mouse GEMMs.",
+              "provenance": {
+                "chunk_ids": [],
+                "dedupe_keys": [],
+                "research_object_ids": []
+              },
+              "source_key": null,
+              "source_url": null,
+              "identifiers": {},
+              "published_at": null,
+              "evidence_kind": "supporting_context",
+              "section_labels": [],
+              "source_brief_id": null,
+              "publication_year": null
+            },
+            {
+              "ref": "C2",
+              "title": "Unresolved citation C2",
+              "dedupe": {},
+              "resolved": false,
+              "supports": "Supports candidate rationale evidence.",
+              "provenance": {
+                "chunk_ids": [],
+                "dedupe_keys": [],
+                "research_object_ids": []
+              },
+              "source_key": null,
+              "source_url": null,
+              "identifiers": {},
+              "published_at": null,
+              "evidence_kind": "supporting_context",
+              "section_labels": [],
+              "source_brief_id": null,
+              "publication_year": null
+            }
+          ],
+          "linked_records": {
+            "compute_job_ids": [
+              "2d7ea17a-b7ff-4da6-85cb-9572368d092f",
+              "bc5013e9-37ef-4dc7-a7a4-22e3aa0218ee",
+              "afcdf24f-1a0a-4bfb-a48e-b2133e5210f6",
+              "fb839c4e-f747-4718-a1bd-455e5e8e4cc7",
+              "f787811a-0df5-443d-a798-721cfd64aa4d",
+              "17314ab2-e8dc-4c30-a858-1fb0a0fe4049"
+            ],
+            "therapy_idea_id": "5785f029-079e-4b91-9329-765a1c75f18b",
+            "validation_decision_ids": []
+          },
+          "reproducibility": {
+            "commit_sha": "fbf5b51fd9f50ffefa8f4dfaf61683e783297887",
+            "agent_run_id": "1ea53dc9-47f6-4838-82b6-6f02c003899a",
+            "source_brief_id": null,
+            "committee_run_id": "3f9d22d2-fb34-4fc7-8b7e-f34735dad302",
+            "pipeline_version": "candidate-record-v1",
+            "source_program_id": "4460e95d-d402-56f7-88d8-0b342ed5df26",
+            "source_evaluation_id": null,
+            "public_candidate_gate": {
+              "gate": "moonshot_public_candidate_v1",
+              "passed": true,
+              "reasons": [
+                "priority_score>=0.80",
+                "research_program_lineage",
+                "moonshot_terms:axis,biomarker-stratified,cross-species,ecology,moonshot,research program",
+                "evidence_anchor_present",
+                "mechanism_targets_and_therapy_defined",
+                "validation_path_and_risk_notes_present"
+              ],
+              "blockers": [],
+              "matched_terms": [
+                "axis",
+                "biomarker-stratified",
+                "cross-species",
+                "ecology",
+                "moonshot",
+                "research program"
+              ],
+              "priority_score": 0.88,
+              "incremental_terms": [],
+              "evidence_ref_count": 4,
+              "min_priority_score": 0.8,
+              "has_program_lineage": true
+            }
+          },
+          "computational_evidence": [
+            {
+              "cost": {
+                "actual_usd": null,
+                "estimate_usd": null
+              },
+              "title": "MD smoke: pazopanib against VEGFR2/KDR",
+              "status": "submitted",
+              "summary": {
+                "status": "submitted",
+                "last_error": null,
+                "runpod_job_id": "02540a16-2a0d-4725-848d-8df125d3797c-u1",
+                "external_run_id": "02540a16-2a0d-4725-848d-8df125d3797c-u1"
+              },
+              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before RunPod submission.",
+              "runner_kind": "runpod",
+              "artifact_ids": [],
+              "compute_job_id": "2d7ea17a-b7ff-4da6-85cb-9572368d092f",
+              "compute_profile": "gpu",
+              "container_image": null,
+              "validation_type": "md"
+            },
+            {
+              "cost": {
+                "actual_usd": null,
+                "estimate_usd": null
+              },
+              "title": "MD smoke: pazopanib against VEGFR2/KDR",
+              "status": "completed",
+              "summary": {
+                "status": "completed",
+                "last_error": null,
+                "runpod_job_id": "3d553bc7-ad2b-495f-ae39-56a66216d02c-u2",
+                "external_run_id": "3d553bc7-ad2b-495f-ae39-56a66216d02c-u2"
+              },
+              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before RunPod submission.",
+              "runner_kind": "runpod",
+              "artifact_ids": [],
+              "compute_job_id": "bc5013e9-37ef-4dc7-a7a4-22e3aa0218ee",
+              "compute_profile": "gpu",
+              "container_image": null,
+              "validation_type": "md"
+            },
+            {
+              "cost": {
+                "actual_usd": null,
+                "estimate_usd": null
+              },
+              "title": "MD smoke: pazopanib against VEGFR2/KDR",
+              "status": "completed",
+              "summary": {
+                "status": "completed",
+                "last_error": null,
+                "runpod_job_id": "c92fcfcb-2275-41da-b802-5a0cdd42747e-u2",
+                "external_run_id": "c92fcfcb-2275-41da-b802-5a0cdd42747e-u2"
+              },
+              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before RunPod submission.",
+              "runner_kind": "runpod",
+              "artifact_ids": [],
+              "compute_job_id": "afcdf24f-1a0a-4bfb-a48e-b2133e5210f6",
+              "compute_profile": "gpu",
+              "container_image": null,
+              "validation_type": "md"
+            },
+            {
+              "cost": {
+                "actual_usd": null,
+                "estimate_usd": null
+              },
+              "title": "MD smoke: pazopanib against VEGFR2/KDR",
+              "status": "completed",
+              "summary": {
+                "status": "completed",
+                "last_error": null,
+                "runpod_job_id": "84dd45b4-1c26-43f3-8639-c5f72d806aa0-u2",
+                "external_run_id": "84dd45b4-1c26-43f3-8639-c5f72d806aa0-u2"
+              },
+              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before RunPod submission.",
+              "runner_kind": "runpod",
+              "artifact_ids": [],
+              "compute_job_id": "fb839c4e-f747-4718-a1bd-455e5e8e4cc7",
+              "compute_profile": "gpu",
+              "container_image": null,
+              "validation_type": "md"
+            },
+            {
+              "cost": {
+                "actual_usd": null,
+                "estimate_usd": null
+              },
+              "title": "MD smoke: pazopanib against VEGFR2/KDR",
+              "status": "completed",
+              "summary": {
+                "status": "completed",
+                "last_error": null,
+                "runpod_job_id": "f81c3f17-42f0-46ed-bd44-b2d0ba90b712-u2",
+                "external_run_id": "f81c3f17-42f0-46ed-bd44-b2d0ba90b712-u2"
+              },
+              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before RunPod submission.",
+              "runner_kind": "runpod",
+              "artifact_ids": [],
+              "compute_job_id": "f787811a-0df5-443d-a798-721cfd64aa4d",
+              "compute_profile": "gpu",
+              "container_image": null,
+              "validation_type": "md"
+            },
+            {
+              "cost": {
+                "actual_usd": null,
+                "estimate_usd": null
+              },
+              "title": "MD smoke: pazopanib against VEGFR2/KDR",
+              "status": "failed",
+              "summary": {
+                "status": "failed",
+                "last_error": "Command '['mk_prepare_ligand.py', '-i', '/tmp/tmp26pu5xm2/ligand.pdb', '-o', '/tmp/tmp26pu5xm2/ligand.pdbqt']' returned non-zero exit status 1.",
+                "runpod_job_id": "7f6d1d1e-1d45-42dc-a8df-e30fff31ae38-u1",
+                "external_run_id": "7f6d1d1e-1d45-42dc-a8df-e30fff31ae38-u1"
+              },
+              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before RunPod submission.",
+              "runner_kind": "runpod",
+              "artifact_ids": [],
+              "compute_job_id": "17314ab2-e8dc-4c30-a858-1fb0a0fe4049",
+              "compute_profile": "gpu",
+              "container_image": null,
+              "validation_type": "md"
+            }
+          ]
+        },
+        "metadata": {
+          "source": "public_candidate_snapshot_generator",
+          "moonshot_gate": {
+            "gate": "moonshot_public_candidate_v1",
+            "passed": true,
+            "reasons": [
+              "priority_score>=0.80",
+              "research_program_lineage",
+              "moonshot_terms:axis,biomarker-stratified,cross-species,ecology,moonshot,research program",
+              "evidence_anchor_present",
+              "mechanism_targets_and_therapy_defined",
+              "validation_path_and_risk_notes_present"
+            ],
+            "blockers": [],
+            "matched_terms": [
+              "axis",
+              "biomarker-stratified",
+              "cross-species",
+              "ecology",
+              "moonshot",
+              "research program"
+            ],
+            "priority_score": 0.88,
+            "incremental_terms": [],
+            "evidence_ref_count": 4,
+            "min_priority_score": 0.8,
+            "has_program_lineage": true
+          },
+          "dagster_run_id": "a2c328a5-99a8-4116-a299-42b5bb77e6d7"
+        },
+        "commit_sha": "fbf5b51fd9f50ffefa8f4dfaf61683e783297887",
+        "created_at": "2026-05-21T01:38:18.848555Z",
+        "method_refs": [],
+        "snapshot_id": "32bdc119-a393-547b-8bc7-5856feae136d",
+        "source_refs": [
+          "C11",
+          "C1",
+          "C15",
+          "C2",
+          "4460e95d-d402-56f7-88d8-0b342ed5df26"
+        ],
+        "artifact_ids": [],
+        "candidate_id": "twog-candidate-e5e8a4f68611",
+        "content_hash": "e72f90a777f8d8a229dacee37ed5ca58a2c28c04fc8063101fd3c1c225e59952",
+        "citation_refs": [
+          "C11",
+          "C1",
+          "C15",
+          "C2"
+        ],
+        "public_status": "investigating",
+        "candidate_kind": "combination",
+        "compute_job_ids": [
+          "2d7ea17a-b7ff-4da6-85cb-9572368d092f",
+          "bc5013e9-37ef-4dc7-a7a4-22e3aa0218ee",
+          "afcdf24f-1a0a-4bfb-a48e-b2133e5210f6",
+          "fb839c4e-f747-4718-a1bd-455e5e8e4cc7",
+          "f787811a-0df5-443d-a798-721cfd64aa4d",
+          "17314ab2-e8dc-4c30-a858-1fb0a0fe4049"
+        ],
+        "pipeline_version": "candidate-record-v1",
+        "snapshot_version": 1,
+        "decision_event_ids": [
+          "db0d7459-979b-5147-83fc-ebc6acb7612d",
+          "205f20e2-5282-5387-9864-e949f1379069",
+          "59d83e97-a7be-5c36-bc46-4c8765388240",
+          "11bd1af2-43c4-5736-ba8e-976b2e9e76a9",
+          "bb960eff-4d56-5c61-9691-73e70c97aae9",
+          "a3fc8bad-59a1-58aa-9b73-b2e060e8fc79",
+          "dcddefb3-9fd8-51ad-b3c5-e4435d33fb88"
+        ]
+      },
+      "decision_events": [
+        {
+          "actor": "twog_system",
+          "action": "snapshot_generated",
+          "event_id": "dcddefb3-9fd8-51ad-b3c5-e4435d33fb88",
+          "metadata": {},
+          "new_status": "investigating",
+          "occurred_at": "2026-05-21T01:38:18.848485Z",
+          "candidate_id": "twog-candidate-e5e8a4f68611",
+          "prior_status": null,
+          "rationale_md": "Generated candidate snapshot version 1.",
+          "related_study_id": null,
+          "related_snapshot_id": "32bdc119-a393-547b-8bc7-5856feae136d",
+          "related_agent_run_id": null,
+          "related_compute_job_id": null,
+          "related_validation_decision_id": null
+        },
+        {
+          "actor": "twog_system",
+          "action": "evidence_added",
+          "event_id": "a3fc8bad-59a1-58aa-9b73-b2e060e8fc79",
+          "metadata": {
+            "runner_kind": "runpod",
+            "validation_type": "md"
+          },
+          "new_status": "investigating",
+          "occurred_at": "2026-05-21T01:38:18.848471Z",
+          "candidate_id": "twog-candidate-e5e8a4f68611",
+          "prior_status": null,
+          "rationale_md": "Compute job MD smoke: pazopanib against VEGFR2/KDR reached failed.",
+          "related_study_id": null,
+          "related_snapshot_id": "32bdc119-a393-547b-8bc7-5856feae136d",
+          "related_agent_run_id": null,
+          "related_compute_job_id": "17314ab2-e8dc-4c30-a858-1fb0a0fe4049",
+          "related_validation_decision_id": null
+        },
+        {
+          "actor": "twog_system",
+          "action": "evidence_added",
+          "event_id": "bb960eff-4d56-5c61-9691-73e70c97aae9",
+          "metadata": {
+            "runner_kind": "runpod",
+            "validation_type": "md"
+          },
+          "new_status": "investigating",
+          "occurred_at": "2026-05-21T01:38:18.848452Z",
+          "candidate_id": "twog-candidate-e5e8a4f68611",
+          "prior_status": null,
+          "rationale_md": "Compute job MD smoke: pazopanib against VEGFR2/KDR reached completed.",
+          "related_study_id": null,
+          "related_snapshot_id": "32bdc119-a393-547b-8bc7-5856feae136d",
+          "related_agent_run_id": null,
+          "related_compute_job_id": "f787811a-0df5-443d-a798-721cfd64aa4d",
+          "related_validation_decision_id": null
+        },
+        {
+          "actor": "twog_system",
+          "action": "evidence_added",
+          "event_id": "11bd1af2-43c4-5736-ba8e-976b2e9e76a9",
+          "metadata": {
+            "runner_kind": "runpod",
+            "validation_type": "md"
+          },
+          "new_status": "investigating",
+          "occurred_at": "2026-05-21T01:38:18.848436Z",
+          "candidate_id": "twog-candidate-e5e8a4f68611",
+          "prior_status": null,
+          "rationale_md": "Compute job MD smoke: pazopanib against VEGFR2/KDR reached completed.",
+          "related_study_id": null,
+          "related_snapshot_id": "32bdc119-a393-547b-8bc7-5856feae136d",
+          "related_agent_run_id": null,
+          "related_compute_job_id": "fb839c4e-f747-4718-a1bd-455e5e8e4cc7",
+          "related_validation_decision_id": null
+        },
+        {
+          "actor": "twog_system",
+          "action": "evidence_added",
+          "event_id": "59d83e97-a7be-5c36-bc46-4c8765388240",
+          "metadata": {
+            "runner_kind": "runpod",
+            "validation_type": "md"
+          },
+          "new_status": "investigating",
+          "occurred_at": "2026-05-21T01:38:18.848418Z",
+          "candidate_id": "twog-candidate-e5e8a4f68611",
+          "prior_status": null,
+          "rationale_md": "Compute job MD smoke: pazopanib against VEGFR2/KDR reached completed.",
+          "related_study_id": null,
+          "related_snapshot_id": "32bdc119-a393-547b-8bc7-5856feae136d",
+          "related_agent_run_id": null,
+          "related_compute_job_id": "afcdf24f-1a0a-4bfb-a48e-b2133e5210f6",
+          "related_validation_decision_id": null
+        },
+        {
+          "actor": "twog_system",
+          "action": "evidence_added",
+          "event_id": "205f20e2-5282-5387-9864-e949f1379069",
+          "metadata": {
+            "runner_kind": "runpod",
+            "validation_type": "md"
+          },
+          "new_status": "investigating",
+          "occurred_at": "2026-05-21T01:38:18.848395Z",
+          "candidate_id": "twog-candidate-e5e8a4f68611",
+          "prior_status": null,
+          "rationale_md": "Compute job MD smoke: pazopanib against VEGFR2/KDR reached completed.",
+          "related_study_id": null,
+          "related_snapshot_id": "32bdc119-a393-547b-8bc7-5856feae136d",
+          "related_agent_run_id": null,
+          "related_compute_job_id": "bc5013e9-37ef-4dc7-a7a4-22e3aa0218ee",
+          "related_validation_decision_id": null
+        },
+        {
+          "actor": "twog_system",
+          "action": "proposed",
+          "event_id": "db0d7459-979b-5147-83fc-ebc6acb7612d",
+          "metadata": {},
+          "new_status": "investigating",
+          "occurred_at": "2026-05-21T01:38:18.848314Z",
+          "candidate_id": "twog-candidate-e5e8a4f68611",
+          "prior_status": null,
+          "rationale_md": "Public candidate record generated from a persisted TWOG therapy idea.",
+          "related_study_id": null,
+          "related_snapshot_id": "32bdc119-a393-547b-8bc7-5856feae136d",
+          "related_agent_run_id": null,
+          "related_compute_job_id": null,
+          "related_validation_decision_id": null
+        }
+      ]
+    },
     {
       "candidate": {
         "artifact_ids": [],
