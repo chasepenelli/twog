@@ -83,6 +83,7 @@ on:
           - "structured_source_pipeline_job"
           - "candidate_contribution_intake_report_job"
           - "candidate_contribution_triage_job"
+          - "public_candidate_snapshot_job"
       config_json:
         description: "Optional Dagster run config JSON"
         type: string
