@@ -2634,8 +2634,20 @@ class HSAResearchService:
             status = "blocked"
         existing_jobs = self.repository.list_compute_jobs(queue_item_id=queue_item_id, limit=1)
         existing = None if force_new else (existing_jobs[0] if existing_jobs else None)
+        trace_id = _first_uuid(
+            [
+                (metadata or {}).get("trace_id"),
+                existing.trace_id if existing else None,
+                item.metadata.get("trace_id") if isinstance(item.metadata, dict) else None,
+                request.metadata.get("trace_id") if isinstance(request.metadata, dict) else None,
+                _agent_trace_id(self.repository, item.last_run_id),
+            ]
+        ) or uuid4()
+        compute_job_id = existing.compute_job_id if existing else uuid4()
+        manifest_id = _run_manifest_id("compute_job", compute_job_id)
         record = ComputeJobRecord(
-            compute_job_id=existing.compute_job_id if existing else uuid4(),
+            compute_job_id=compute_job_id,
+            trace_id=trace_id,
             queue_item_id=queue_item_id,
             status=existing.status if existing and existing.status not in {"needs_approval", "approved"} else status,
             runner_kind=runner_kind,  # type: ignore[arg-type]
@@ -2679,9 +2691,12 @@ class HSAResearchService:
                 "supersedes_compute_job_id": str(existing_jobs[0].compute_job_id)
                 if force_new and existing_jobs
                 else None,
+                "trace_id": str(trace_id),
+                "run_manifest_id": str(manifest_id),
             },
         )
-        return self.repository.upsert_compute_job(record)
+        stored = self.repository.upsert_compute_job(record)
+        return _attach_compute_job_run_manifest(self.repository, stored)
 
     def create_md_expert_review_packet(
         self,
@@ -2861,15 +2876,16 @@ class HSAResearchService:
             }
         )
         if record.status not in {"approved", "queued", "submitted"} and not retryable_md_gate_block:
-            return self.repository.update_compute_job(
+            updated = self.repository.update_compute_job(
                 compute_job_id,
                 status="blocked",
                 dagster_run_id=dagster_run_id,
                 last_error=f"Compute job must be approved before submission; current status is {record.status}.",
                 metadata={"submission_blocked_at": datetime.now(UTC).isoformat()},
             )
+            return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         if dry_run:
-            return self.repository.update_compute_job(
+            updated = self.repository.update_compute_job(
                 compute_job_id,
                 status="submitted",
                 external_run_id=f"dry-run:{compute_job_id}",
@@ -2879,8 +2895,9 @@ class HSAResearchService:
                     "submitted_at": datetime.now(UTC).isoformat(),
                 },
             )
+            return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         if record.runner_kind != "runpod":
-            return self.repository.update_compute_job(
+            updated = self.repository.update_compute_job(
                 compute_job_id,
                 status="blocked",
                 dagster_run_id=dagster_run_id,
@@ -2890,11 +2907,12 @@ class HSAResearchService:
                     "blocked_reason": f"{record.runner_kind}_runner_not_configured",
                 },
             )
+            return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         gate_metadata: dict[str, Any] = {}
         if record.validation_type == "md":
             gate_error, gate_metadata = self._md_live_submit_gate(record)
             if gate_error:
-                return self.repository.update_compute_job(
+                updated = self.repository.update_compute_job(
                     compute_job_id,
                     status="blocked",
                     dagster_run_id=dagster_run_id,
@@ -2905,10 +2923,11 @@ class HSAResearchService:
                         **gate_metadata,
                     },
                 )
+                return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         try:
             submission = RunPodComputeRunner.from_env().submit(record)
         except (ComputeRunnerConfigError, ComputeRunnerRequestError) as exc:
-            return self.repository.update_compute_job(
+            updated = self.repository.update_compute_job(
                 compute_job_id,
                 status="blocked",
                 dagster_run_id=dagster_run_id,
@@ -2918,7 +2937,8 @@ class HSAResearchService:
                     "blocked_reason": type(exc).__name__,
                 },
             )
-        return self.repository.update_compute_job(
+            return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
+        updated = self.repository.update_compute_job(
             compute_job_id,
             status=submission["status"],
             output_payload=submission["output_payload"],
@@ -2927,6 +2947,7 @@ class HSAResearchService:
             dagster_run_id=dagster_run_id,
             metadata=submission["metadata"] | gate_metadata | {"submission_mode": "live"},
         )
+        return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
 
     def _md_live_submit_gate(self, record: ComputeJobRecord) -> tuple[str | None, dict[str, Any]]:
         try:
@@ -2970,17 +2991,18 @@ class HSAResearchService:
         if record is None:
             return None
         if record.runner_kind != "runpod":
-            return self.repository.update_compute_job(
+            updated = self.repository.update_compute_job(
                 compute_job_id,
                 status="blocked",
                 dagster_run_id=dagster_run_id,
                 last_error=f"{record.runner_kind}_runner_not_configured",
                 metadata={"poll_blocked_at": datetime.now(UTC).isoformat()},
             )
+            return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         try:
             status = RunPodComputeRunner.from_env().poll(record)
         except (ComputeRunnerConfigError, ComputeRunnerRequestError) as exc:
-            return self.repository.update_compute_job(
+            updated = self.repository.update_compute_job(
                 compute_job_id,
                 status="blocked",
                 dagster_run_id=dagster_run_id,
@@ -2990,7 +3012,8 @@ class HSAResearchService:
                     "blocked_reason": type(exc).__name__,
                 },
             )
-        return self.repository.update_compute_job(
+            return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
+        updated = self.repository.update_compute_job(
             compute_job_id,
             status=status["status"],
             output_payload=status["output_payload"],
@@ -2998,6 +3021,7 @@ class HSAResearchService:
             last_error=status["last_error"],
             metadata=status["metadata"],
         )
+        return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
 
     def cancel_compute_job(
         self,
@@ -3009,17 +3033,18 @@ class HSAResearchService:
         if record is None:
             return None
         if record.runner_kind != "runpod":
-            return self.repository.update_compute_job(
+            updated = self.repository.update_compute_job(
                 compute_job_id,
                 status="blocked",
                 dagster_run_id=dagster_run_id,
                 last_error=f"{record.runner_kind}_runner_not_configured",
                 metadata={"cancel_blocked_at": datetime.now(UTC).isoformat()},
             )
+            return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         try:
             cancellation = RunPodComputeRunner.from_env().cancel(record)
         except (ComputeRunnerConfigError, ComputeRunnerRequestError) as exc:
-            return self.repository.update_compute_job(
+            updated = self.repository.update_compute_job(
                 compute_job_id,
                 status="blocked",
                 dagster_run_id=dagster_run_id,
@@ -3029,13 +3054,15 @@ class HSAResearchService:
                     "blocked_reason": type(exc).__name__,
                 },
             )
-        return self.repository.update_compute_job(
+            return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
+        updated = self.repository.update_compute_job(
             compute_job_id,
             status=cancellation["status"],
             output_payload=cancellation["output_payload"],
             dagster_run_id=dagster_run_id,
             metadata=cancellation["metadata"],
         )
+        return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
 
     def build_compute_job_report(self, request: ComputeJobReportRequest) -> ComputeJobReportResult:
         errors: list[str] = []
@@ -3076,7 +3103,7 @@ class HSAResearchService:
                 },
             )
             if recovered is not None:
-                created_job = recovered
+                created_job = _attach_compute_job_run_manifest(self.repository, recovered)
         if created_job is not None and request.submit:
             submitted = self.submit_compute_job(
                 created_job.compute_job_id,
@@ -5845,6 +5872,257 @@ def _research_brief_record_from_result(
     )
 
 
+def _uuid_from_any(value: Any) -> UUID | None:
+    if isinstance(value, UUID):
+        return value
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        try:
+            return UUID(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
+def _first_uuid(values: list[Any]) -> UUID | None:
+    for value in values:
+        parsed = _uuid_from_any(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _dedupe_uuid_refs(values: list[Any]) -> list[UUID]:
+    refs: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in values:
+        parsed = _uuid_from_any(value)
+        if parsed is None or parsed in seen:
+            continue
+        refs.append(parsed)
+        seen.add(parsed)
+    return refs
+
+
+def _run_manifest_id(manifest_type: str, stable_id: UUID | str) -> UUID:
+    return uuid5(NAMESPACE_URL, f"twog:run-manifest:{manifest_type}:{stable_id}")
+
+
+def _agent_trace_id(repository: ResearchRepository, agent_run_id: UUID | None) -> UUID | None:
+    if agent_run_id is None:
+        return None
+    run = repository.get_agent_run(agent_run_id)
+    return run.trace_id if run else None
+
+
+def _agent_run_manifest_refs(repository: ResearchRepository, agent_run_ids: list[UUID]) -> dict[str, Any]:
+    trace_ids: list[UUID] = []
+    model_profiles: list[str] = []
+    actual_models: list[str] = []
+    prompt_keys: list[str] = []
+    for agent_run_id in _dedupe_uuid_refs(agent_run_ids):
+        run = repository.get_agent_run(agent_run_id)
+        if run is None:
+            continue
+        if run.trace_id:
+            trace_ids.append(run.trace_id)
+        if run.model_profile:
+            model_profiles.append(run.model_profile)
+        for source in (run.metadata, run.input_payload, run.output_payload, run.summary):
+            if not isinstance(source, dict):
+                continue
+            for key in ("model", "model_name", "review_model", "openrouter_model", "actual_model"):
+                value = source.get(key)
+                if value:
+                    actual_models.append(str(value))
+            for key in ("prompt_key", "prompt_version", "rubric_version"):
+                value = source.get(key)
+                if value:
+                    prompt_keys.append(str(value))
+    return {
+        "trace_ids": _dedupe_uuid_refs(trace_ids),
+        "model_profiles": _dedupe_texts(model_profiles),
+        "actual_models": _dedupe_texts(actual_models),
+        "prompt_keys": _dedupe_texts(prompt_keys),
+    }
+
+
+def _manifest_status_from_compute_status(status: str) -> str:
+    if status in {"completed", "failed", "cancelled", "blocked"}:
+        return status
+    if status in {"needs_approval", "approved", "queued", "submitted", "running"}:
+        return "running"
+    return "unknown"
+
+
+def _compute_job_method_refs(record: ComputeJobRecord, item: ValidationRequestQueueItem | None) -> list[str]:
+    refs: list[str] = []
+    for source in (record.metadata, record.input_payload, record.output_payload):
+        if isinstance(source, dict):
+            for key in ("method_ref", "methods_ref", "methods_version", "protocol_version"):
+                value = source.get(key)
+                if value:
+                    refs.append(str(value))
+    if record.container_image:
+        refs.append(record.container_image)
+    if item is not None:
+        for source in (item.metadata, item.validation_request.metadata):
+            if isinstance(source, dict):
+                for key in ("tool_hint", "method_ref", "methods_ref", "protocol_version"):
+                    value = source.get(key)
+                    if value:
+                        refs.append(str(value))
+    return _dedupe_texts(refs)
+
+
+def _compute_job_validation_packet_ids(record: ComputeJobRecord, item: ValidationRequestQueueItem | None) -> list[str]:
+    refs: list[str] = []
+    for source in (record.metadata, item.metadata if item else {}, item.validation_request.metadata if item else {}):
+        if not isinstance(source, dict):
+            continue
+        for key in ("validation_packet_id", "packet_id", "source_packet_id"):
+            value = source.get(key)
+            if value:
+                refs.append(str(value))
+    return _dedupe_texts(refs)
+
+
+def _attach_compute_job_run_manifest(
+    repository: ResearchRepository,
+    record: ComputeJobRecord,
+) -> ComputeJobRecord:
+    item = repository.get_validation_request_queue_item(record.queue_item_id) if record.queue_item_id else None
+    trace_id = _first_uuid(
+        [
+            record.trace_id,
+            record.metadata.get("trace_id") if isinstance(record.metadata, dict) else None,
+            item.metadata.get("trace_id") if item and isinstance(item.metadata, dict) else None,
+            item.validation_request.metadata.get("trace_id")
+            if item and isinstance(item.validation_request.metadata, dict)
+            else None,
+            _agent_trace_id(repository, item.last_run_id if item else None),
+        ]
+    ) or uuid4()
+    manifest_id = _first_uuid([record.metadata.get("run_manifest_id") if isinstance(record.metadata, dict) else None])
+    manifest_id = manifest_id or _run_manifest_id("compute_job", record.compute_job_id)
+    metadata = {
+        **record.metadata,
+        "trace_id": str(trace_id),
+        "run_manifest_id": str(manifest_id),
+    }
+    if record.trace_id != trace_id or record.metadata != metadata:
+        record = repository.upsert_compute_job(record.model_copy(update={"trace_id": trace_id, "metadata": metadata}))
+
+    agent_run_ids = _dedupe_uuid_refs([item.last_run_id if item else None])
+    agent_refs = _agent_run_manifest_refs(repository, agent_run_ids)
+    manifest = RunManifestRecord(
+        manifest_id=manifest_id,
+        trace_id=trace_id,
+        manifest_type="compute_job",
+        status=_manifest_status_from_compute_status(record.status),  # type: ignore[arg-type]
+        title=f"Compute job: {record.title}",
+        created_by=record.approved_by or "twog_compute",
+        dagster_run_id=record.dagster_run_id,
+        agent_run_ids=agent_run_ids,
+        validation_packet_ids=_compute_job_validation_packet_ids(record, item),
+        compute_job_ids=[record.compute_job_id],
+        artifact_ids=record.artifact_ids,
+        model_profiles=agent_refs["model_profiles"],
+        actual_models=agent_refs["actual_models"],
+        prompt_keys=agent_refs["prompt_keys"],
+        method_refs=_compute_job_method_refs(record, item),
+        input_refs={
+            "queue_item_id": str(record.queue_item_id) if record.queue_item_id else None,
+            "validation_type": record.validation_type,
+            "runner_kind": record.runner_kind,
+            "compute_profile": record.compute_profile,
+            "target_name": item.validation_request.target_name if item else None,
+            "candidate_name": item.validation_request.candidate_name if item else None,
+        },
+        output_refs={
+            "status": record.status,
+            "external_run_id": record.external_run_id,
+            "runpod_job_id": record.runpod_job_id,
+            "output_keys": sorted(record.output_payload.keys()),
+        },
+        errors=[record.last_error] if record.last_error else [],
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        metadata={
+            "cost_estimate_usd": record.cost_estimate_usd,
+            "cost_actual_usd": record.cost_actual_usd,
+            "recommend_only": record.metadata.get("recommend_only"),
+        },
+    )
+    repository.upsert_run_manifest(manifest)
+    return record
+
+
+def _attach_public_candidate_snapshot_run_manifest(
+    repository: ResearchRepository,
+    *,
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+    therapy_idea: TherapyIdeaRecord,
+    validation_decisions: list[ValidationDecisionRecord],
+    compute_jobs: list[ComputeJobRecord],
+) -> RunManifestRecord:
+    manifest_id = _first_uuid(
+        [
+            snapshot.metadata.get("run_manifest_id") if isinstance(snapshot.metadata, dict) else None,
+            candidate.metadata.get("run_manifest_id") if isinstance(candidate.metadata, dict) else None,
+        ]
+    ) or _run_manifest_id("public_candidate_snapshot", snapshot.snapshot_id)
+    trace_id = snapshot.trace_id or candidate.trace_id or uuid4()
+    agent_run_ids = _dedupe_uuid_refs([therapy_idea.agent_run_id, therapy_idea.committee_run_id])
+    agent_refs = _agent_run_manifest_refs(repository, agent_run_ids)
+    manifest = RunManifestRecord(
+        manifest_id=manifest_id,
+        trace_id=trace_id,
+        manifest_type="public_candidate_snapshot",
+        status="completed",
+        title=f"Public candidate snapshot: {candidate.display_id or candidate.candidate_id}",
+        created_by="public_candidate_snapshot_generator",
+        dagster_run_id=str(snapshot.metadata.get("dagster_run_id") or "") or None,
+        agent_run_ids=agent_run_ids,
+        brief_ids=_dedupe_uuid_refs([therapy_idea.source_brief_id]),
+        therapy_idea_ids=[therapy_idea.therapy_idea_id],
+        validation_packet_ids=_dedupe_texts([decision.packet_id for decision in validation_decisions]),
+        candidate_ids=[candidate.candidate_id],
+        compute_job_ids=[job.compute_job_id for job in compute_jobs],
+        artifact_ids=snapshot.artifact_ids,
+        model_profiles=agent_refs["model_profiles"],
+        actual_models=agent_refs["actual_models"],
+        prompt_keys=agent_refs["prompt_keys"],
+        method_refs=snapshot.method_refs,
+        content_hashes={"public_candidate_snapshot": snapshot.content_hash},
+        input_refs={
+            "therapy_idea_id": str(therapy_idea.therapy_idea_id),
+            "source_program_id": str(therapy_idea.source_program_id) if therapy_idea.source_program_id else None,
+            "source_evaluation_id": str(therapy_idea.source_evaluation_id)
+            if therapy_idea.source_evaluation_id
+            else None,
+        },
+        output_refs={
+            "candidate_id": candidate.candidate_id,
+            "snapshot_id": str(snapshot.snapshot_id),
+            "snapshot_version": snapshot.snapshot_version,
+            "public_status": snapshot.public_status,
+            "visibility": candidate.visibility,
+        },
+        created_at=snapshot.created_at,
+        updated_at=datetime.now(UTC),
+        metadata={
+            "pipeline_version": snapshot.pipeline_version,
+            "commit_sha": snapshot.commit_sha,
+            "moonshot_gate": snapshot.metadata.get("moonshot_gate"),
+        },
+    )
+    return repository.upsert_run_manifest(manifest)
+
+
 def _generate_public_candidate_snapshot(
     repository: ResearchRepository,
     request: PublicCandidateGenerateRequest,
@@ -5925,6 +6203,17 @@ def _generate_public_candidate_snapshot(
         ]
     )
     literature = _public_candidate_literature(repository, therapy_idea, citation_refs, validation_decisions)
+    agent_run_ids = _dedupe_uuid_refs([therapy_idea.agent_run_id, therapy_idea.committee_run_id])
+    agent_refs = _agent_run_manifest_refs(repository, agent_run_ids)
+    trace_id = _first_uuid(
+        [
+            request.metadata.get("trace_id") if isinstance(request.metadata, dict) else None,
+            candidate.trace_id if candidate else None,
+            therapy_idea.metadata.get("trace_id") if isinstance(therapy_idea.metadata, dict) else None,
+            *[job.trace_id for job in compute_jobs],
+            *agent_refs["trace_ids"],
+        ]
+    ) or uuid4()
     payload = _public_candidate_payload(
         candidate_id=candidate_id,
         display_id=display_id,
@@ -5943,8 +6232,10 @@ def _generate_public_candidate_snapshot(
     snapshots = repository.list_public_candidate_snapshots(candidate_id=candidate_id, limit=1)
     snapshot_version = (snapshots[0].snapshot_version + 1) if snapshots else 1
     snapshot_id = uuid5(NAMESPACE_URL, f"twog:public-candidate-snapshot:{candidate_id}:{snapshot_version}:{content_hash}")
+    manifest_id = _run_manifest_id("public_candidate_snapshot", snapshot_id)
     decision_events = _public_candidate_decision_events(
         candidate_id=candidate_id,
+        trace_id=trace_id,
         snapshot_id=snapshot_id,
         snapshot_version=snapshot_version,
         public_status=public_status,
@@ -5962,6 +6253,7 @@ def _generate_public_candidate_snapshot(
     method_refs = _public_candidate_method_refs(compute_jobs, validation_decisions)
     snapshot = PublicCandidateSnapshot(
         snapshot_id=snapshot_id,
+        trace_id=trace_id,
         candidate_id=candidate_id,
         snapshot_version=snapshot_version,
         content_hash=content_hash,
@@ -5981,10 +6273,13 @@ def _generate_public_candidate_snapshot(
             **request.metadata,
             "source": "public_candidate_snapshot_generator",
             "moonshot_gate": moonshot_gate,
+            "trace_id": str(trace_id),
+            "run_manifest_id": str(manifest_id),
         },
     )
     candidate_record = PublicCandidateRecord(
         candidate_id=candidate_id,
+        trace_id=trace_id,
         display_id=display_id,
         candidate_kind=candidate_kind,
         title=therapy_idea.idea.title,
@@ -6015,6 +6310,8 @@ def _generate_public_candidate_snapshot(
             "latest_snapshot_version": snapshot.snapshot_version,
             "moonshot_gate": moonshot_gate,
             "snapshot_source": "therapy_idea",
+            "trace_id": str(trace_id),
+            "run_manifest_id": str(manifest_id),
         },
     )
     if request.persist:
@@ -6022,6 +6319,14 @@ def _generate_public_candidate_snapshot(
         repository.upsert_public_candidate_snapshot(snapshot)
         for event in decision_events:
             repository.append_public_candidate_decision_event(event)
+        _attach_public_candidate_snapshot_run_manifest(
+            repository,
+            candidate=candidate_record,
+            snapshot=snapshot,
+            therapy_idea=therapy_idea,
+            validation_decisions=validation_decisions,
+            compute_jobs=compute_jobs,
+        )
     return PublicCandidateSnapshotResult(
         candidate=candidate_record,
         snapshot=snapshot,
@@ -6434,6 +6739,7 @@ def _first(value: Any) -> Any:
 def _public_candidate_decision_events(
     *,
     candidate_id: str,
+    trace_id: UUID,
     snapshot_id: UUID,
     snapshot_version: int,
     public_status: str,
@@ -6446,6 +6752,7 @@ def _public_candidate_decision_events(
         events.append(
             PublicCandidateDecisionEvent(
                 event_id=uuid5(NAMESPACE_URL, f"twog:public-candidate-event:{candidate_id}:proposed"),
+                trace_id=trace_id,
                 candidate_id=candidate_id,
                 action="proposed",
                 rationale_md="Public candidate record generated from a persisted TWOG therapy idea.",
@@ -6460,6 +6767,7 @@ def _public_candidate_decision_events(
                     NAMESPACE_URL,
                     f"twog:public-candidate-event:{candidate_id}:{snapshot_version}:status:{public_status}",
                 ),
+                trace_id=trace_id,
                 candidate_id=candidate_id,
                 action="status_changed",
                 rationale_md=f"Candidate status changed from {previous_status} to {public_status}.",
@@ -6475,6 +6783,7 @@ def _public_candidate_decision_events(
                     NAMESPACE_URL,
                     f"twog:public-candidate-event:{candidate_id}:{snapshot_version}:decision:{decision.decision_id}",
                 ),
+                trace_id=trace_id,
                 candidate_id=candidate_id,
                 action="evidence_added",
                 rationale_md=decision.decision.rationale or f"Validation decision {decision.decision_id} attached.",
@@ -6497,6 +6806,7 @@ def _public_candidate_decision_events(
                         NAMESPACE_URL,
                         f"twog:public-candidate-event:{candidate_id}:{snapshot_version}:compute:{job.compute_job_id}",
                     ),
+                    trace_id=trace_id,
                     candidate_id=candidate_id,
                     action="evidence_added",
                     rationale_md=f"Compute job {job.title} reached {job.status}.",
@@ -6512,6 +6822,7 @@ def _public_candidate_decision_events(
                 NAMESPACE_URL,
                 f"twog:public-candidate-event:{candidate_id}:{snapshot_version}:snapshot",
             ),
+            trace_id=trace_id,
             candidate_id=candidate_id,
             action="snapshot_generated",
             rationale_md=f"Generated candidate snapshot version {snapshot_version}.",

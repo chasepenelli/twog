@@ -1319,6 +1319,8 @@ def test_public_candidate_snapshot_generation_links_therapy_decision_compute_and
     assert result.candidate.candidate_kind == "peptide"
     assert result.candidate.latest_snapshot_id == result.snapshot.snapshot_id
     assert result.candidate.content_hash == result.snapshot.content_hash
+    assert result.candidate.trace_id is not None
+    assert result.snapshot.trace_id == result.candidate.trace_id
     assert result.snapshot.pipeline_version == "test-v1"
     assert str(artifact_id) in [str(value) for value in result.snapshot.artifact_ids]
     assert result.snapshot.payload["computational_evidence"][0]["summary"]["stage"] == "md_smoke"
@@ -1327,6 +1329,17 @@ def test_public_candidate_snapshot_generation_links_therapy_decision_compute_and
     assert result.snapshot.payload["literature"][0]["identifiers"]["doi"] == "10.1000/vim"
     assert result.snapshot.payload["literature"][0]["supports"].startswith("C1 indicates")
     assert {event.action for event in result.decision_events} >= {"proposed", "evidence_added", "snapshot_generated"}
+    assert {event.trace_id for event in result.decision_events} == {result.snapshot.trace_id}
+    manifest_id = UUID(result.snapshot.metadata["run_manifest_id"])
+    manifest = repo.get_run_manifest(manifest_id)
+    assert manifest is not None
+    assert manifest.manifest_type == "public_candidate_snapshot"
+    assert manifest.status == "completed"
+    assert manifest.trace_id == result.snapshot.trace_id
+    assert manifest.candidate_ids == [result.candidate.candidate_id]
+    assert manifest.content_hashes["public_candidate_snapshot"] == result.snapshot.content_hash
+    assert manifest.compute_job_ids == result.snapshot.compute_job_ids
+    assert manifest.artifact_ids == result.snapshot.artifact_ids
     listed = service.list_public_candidates(PublicCandidateLibraryRequest(query="vimentin", limit=10))
     assert listed.candidate_count == 1
     assert listed.candidates[0].therapy_idea_id == idea.idea_id
@@ -12522,13 +12535,26 @@ def test_compute_job_report_creates_dry_run_and_blocks_live_submit(tmp_path):
     assert isinstance(report, ComputeJobReportResult)
     assert report.created_job is not None
     assert report.created_job.status == "submitted"
+    assert report.created_job.trace_id is not None
+    assert "run_manifest_id" in report.created_job.metadata
     assert report.created_job.external_run_id.startswith("dry-run:")
     assert report.submitted_count == 1
+    manifest = repo.get_run_manifest(UUID(report.created_job.metadata["run_manifest_id"]))
+    assert manifest is not None
+    assert manifest.manifest_type == "compute_job"
+    assert manifest.status == "running"
+    assert manifest.trace_id == report.created_job.trace_id
+    assert manifest.compute_job_ids == [report.created_job.compute_job_id]
+    assert manifest.output_refs["external_run_id"].startswith("dry-run:")
 
     live_attempt = service.submit_compute_job(report.created_job.compute_job_id, dry_run=False)
     assert live_attempt is not None
     assert live_attempt.status == "blocked"
     assert "RUNPOD_API_KEY" in live_attempt.last_error
+    blocked_manifest = repo.get_run_manifest(UUID(live_attempt.metadata["run_manifest_id"]))
+    assert blocked_manifest is not None
+    assert blocked_manifest.status == "blocked"
+    assert any("RUNPOD_API_KEY" in error for error in blocked_manifest.errors)
 
 
 def test_runpod_compute_job_live_submit_and_poll_are_persisted(tmp_path, monkeypatch):

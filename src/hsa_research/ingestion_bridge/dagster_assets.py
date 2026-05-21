@@ -1379,6 +1379,10 @@ if dg is not None:
         ]
         return {
             "candidate_id": dg.MetadataValue.text(str(candidate.get("candidate_id") or "")),
+            "trace_id": dg.MetadataValue.text(str(snapshot.get("trace_id") or candidate.get("trace_id") or "")),
+            "run_manifest_id": dg.MetadataValue.text(
+                str((snapshot.get("metadata") or {}).get("run_manifest_id") or "")
+            ),
             "display_id": dg.MetadataValue.text(str(candidate.get("display_id") or "")),
             "public_status": dg.MetadataValue.text(str(candidate.get("public_status") or "")),
             "visibility": dg.MetadataValue.text(str(candidate.get("visibility") or "")),
@@ -1949,6 +1953,8 @@ if dg is not None:
             "submitted_count": dg.MetadataValue.int(int(report.get("submitted_count", 0))),
             "blocked_count": dg.MetadataValue.int(int(report.get("blocked_count", 0))),
             "created_compute_job_id": created_job.get("compute_job_id"),
+            "created_trace_id": created_job.get("trace_id"),
+            "created_run_manifest_id": (created_job.get("metadata") or {}).get("run_manifest_id"),
             "created_compute_job_status": created_job.get("status"),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "jobs": _metadata_table(rows, _COMPUTE_JOB_TABLE_COLUMNS),
