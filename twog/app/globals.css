@@ -1640,6 +1640,69 @@ section {
   margin: 0 auto;
 }
 
+.method-catalog-intro {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
+  max-width: 1180px;
+  margin: 0 auto 0.8rem;
+}
+
+.method-catalog-intro article {
+  display: grid;
+  min-height: 9rem;
+  align-content: space-between;
+  padding: 1rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background:
+    linear-gradient(180deg, rgba(109, 40, 217, 0.08), transparent 58%),
+    rgba(251, 250, 244, 0.78);
+}
+
+.method-catalog-intro span {
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: clamp(1.7rem, 3vw, 2.6rem);
+  font-weight: 500;
+  line-height: 1;
+}
+
+.method-catalog-intro p {
+  max-width: 16rem;
+  margin: 0;
+  color: var(--muted-ink);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  line-height: 1.45;
+  text-transform: uppercase;
+}
+
+.method-catalog-list {
+  margin-top: 0.8rem;
+}
+
+.method-row-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 1rem;
+}
+
+.method-row-tags span {
+  width: fit-content;
+  padding: 0.32rem 0.48rem;
+  border: 1px solid var(--line);
+  color: var(--violet);
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
 .flow-step,
 .record-panel {
   padding: 1rem;
@@ -4133,6 +4196,7 @@ section {
   .candidate-layout,
   .candidate-hero,
   .candidate-row,
+  .method-catalog-intro,
   .method-hero,
   .method-protocol,
   .payload-exchange-board,
@@ -4266,6 +4330,7 @@ section {
   .flow-map,
   .method-body,
   .review-stack,
+  .method-catalog-intro,
   .learning-column-layout,
   .learning-rule-line,
   .lesson-strip,
@@ -7003,5 +7068,373 @@ select {
   .home-shell .public-cta-copy h2 {
     font-size: clamp(1.45rem, 6.1vw, 2rem) !important;
     max-width: 100% !important;
+  }
+}
+
+/* Public-site UI/UX pass: tighter rhythm, cleaner records, fewer awkward wraps. */
+
+.site-shell p,
+.site-shell li,
+.site-shell dd {
+  text-align: left !important;
+  overflow-wrap: normal;
+  hyphens: none;
+}
+
+.site-shell a,
+.site-shell button,
+.site-shell .artifact-button,
+.site-shell .record-link,
+.site-shell .signup-button {
+  text-wrap: balance;
+}
+
+.method-catalog-intro {
+  gap: 0 !important;
+  margin-bottom: 1.1rem !important;
+}
+
+.method-catalog-intro article {
+  background: rgba(251, 250, 244, 0.78) !important;
+  box-shadow: none !important;
+  min-height: 7.25rem !important;
+  padding: 0.9rem !important;
+}
+
+.method-catalog-intro article + article {
+  border-left: 0 !important;
+}
+
+.method-catalog-intro span {
+  font-size: clamp(1.25rem, 1.8vw, 1.85rem) !important;
+}
+
+.method-catalog-intro p {
+  font-size: 0.61rem !important;
+  line-height: 1.5 !important;
+  max-width: 22ch !important;
+}
+
+.method-catalog-list {
+  gap: 0 !important;
+}
+
+.method-catalog-list .candidate-row {
+  align-items: start !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  gap: clamp(1rem, 2.4vw, 2rem) !important;
+  grid-template-columns: minmax(0, 1fr) minmax(170px, 260px) !important;
+  padding: clamp(1rem, 1.6vw, 1.35rem) !important;
+}
+
+.method-catalog-list .candidate-row + .candidate-row {
+  border-top: 0 !important;
+}
+
+.method-catalog-list .candidate-row p:not(.row-kicker) {
+  max-width: 68ch !important;
+}
+
+.method-row-tags {
+  margin-top: 0.8rem !important;
+}
+
+.method-row-tags span,
+.method-catalog-list .row-meta span {
+  background: transparent !important;
+  color: var(--soft-ink) !important;
+  font-size: 0.6rem !important;
+  line-height: 1.15 !important;
+  padding: 0.26rem 0.42rem !important;
+}
+
+.method-catalog-list .row-meta {
+  align-content: start !important;
+  justify-items: end !important;
+  margin-top: 0 !important;
+}
+
+.method-hero {
+  align-items: center !important;
+  gap: clamp(1.25rem, 4vw, 3rem) !important;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px) !important;
+}
+
+.method-hero h1 {
+  font-size: clamp(2.8rem, 5.1vw, 5.4rem) !important;
+  line-height: 1 !important;
+  max-width: 13ch !important;
+}
+
+.method-actions {
+  margin-top: 1.25rem !important;
+}
+
+.method-status-card {
+  background: rgba(251, 250, 244, 0.82) !important;
+  box-shadow: none !important;
+  gap: 0.85rem !important;
+  padding: 0.95rem !important;
+}
+
+.method-status-card strong {
+  border: 1px solid var(--line-strong) !important;
+  color: var(--purple) !important;
+  display: inline-flex !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.68rem !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.07em !important;
+  line-height: 1 !important;
+  max-width: none !important;
+  padding: 0.5rem 0.58rem !important;
+  text-transform: uppercase !important;
+  width: fit-content !important;
+}
+
+.method-status-card dl {
+  gap: 0 !important;
+}
+
+.method-status-card div {
+  gap: 0.2rem !important;
+  grid-template-columns: 1fr !important;
+  padding-block: 0.62rem !important;
+}
+
+.method-status-card div:last-child {
+  padding-bottom: 0 !important;
+}
+
+.method-status-card dt,
+.method-status-card dd {
+  font-size: 0.62rem !important;
+  line-height: 1.45 !important;
+}
+
+.method-status-card dd {
+  overflow-wrap: anywhere;
+}
+
+.method-protocol {
+  gap: clamp(0.9rem, 2.2vw, 1.55rem) !important;
+  grid-template-columns: minmax(280px, 0.58fr) minmax(0, 1fr) !important;
+}
+
+.method-thesis,
+.method-flow-list article,
+.method-audit-grid article,
+.payload-exchange-primary,
+.payload-exchange-steps article,
+.payload-endpoint-grid article,
+.payload-explainer,
+.method-interpretation,
+.method-limits,
+.method-notes .record-panel {
+  box-shadow: none !important;
+}
+
+.method-thesis {
+  gap: 0.75rem !important;
+  padding: clamp(1rem, 2vw, 1.45rem) !important;
+  top: 5.75rem !important;
+}
+
+.method-thesis h2,
+.method-interpretation h2,
+.method-limits h2,
+.method-audit-section h2,
+.method-payload-section .section-heading h2 {
+  font-size: clamp(1.45rem, 2.25vw, 2.45rem) !important;
+  line-height: 1.08 !important;
+  max-width: 24ch !important;
+}
+
+.method-thesis p:not(.section-kicker),
+.method-flow-list p,
+.method-audit-grid p,
+.method-interpretation li,
+.method-limits p,
+.method-notes .record-panel p:not(.section-kicker) {
+  font-size: clamp(0.88rem, 0.15vw + 0.85rem, 0.96rem) !important;
+  line-height: 1.62 !important;
+}
+
+.operator-gate-line {
+  margin-top: 0.2rem !important;
+  padding: 0.72rem 0.85rem !important;
+}
+
+.method-flow-list {
+  gap: 0 !important;
+}
+
+.method-flow-list article {
+  grid-template-columns: 2.8rem minmax(0, 1fr) !important;
+  padding: 0.9rem !important;
+}
+
+.method-flow-list article + article {
+  border-top: 0 !important;
+}
+
+.method-flow-list article span {
+  font-size: 0.66rem !important;
+}
+
+.method-flow-list h3,
+.method-audit-grid h3,
+.method-notes .record-panel h2 {
+  font-size: clamp(0.98rem, 0.32vw + 0.92rem, 1.16rem) !important;
+}
+
+.method-notes {
+  gap: 0 !important;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)) !important;
+  margin-top: clamp(1.6rem, 4vw, 3.2rem) !important;
+}
+
+.method-notes .record-panel {
+  border-radius: 0 !important;
+  min-height: auto !important;
+}
+
+.method-notes .record-panel + .record-panel {
+  border-left: 0 !important;
+}
+
+.method-audit-section,
+.method-payload-section {
+  margin-top: clamp(2.8rem, 5.8vw, 5rem) !important;
+  padding-block: clamp(3.2rem, 5.2vw, 5.4rem) !important;
+}
+
+.method-audit-section .section-heading,
+.method-payload-section .section-heading {
+  margin-bottom: 1.35rem !important;
+}
+
+.method-audit-grid {
+  gap: 0 !important;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)) !important;
+}
+
+.method-audit-grid article {
+  min-height: 11rem !important;
+  padding: 0.95rem !important;
+}
+
+.method-audit-grid article + article {
+  border-left: 0 !important;
+}
+
+.payload-endpoint-grid article {
+  min-height: 13rem !important;
+}
+
+.method-interpretation,
+.method-limits {
+  padding: clamp(1rem, 2vw, 1.45rem) !important;
+}
+
+.home-shell .home-section-grid,
+.home-shell .public-cta-grid {
+  gap: clamp(1.6rem, 3.8vw, 3.8rem) !important;
+}
+
+.home-shell .home-section-header h2,
+.home-shell .public-cta-copy h2 {
+  max-width: 21ch !important;
+}
+
+.home-shell .home-section-header.narrow {
+  text-align: left !important;
+}
+
+.home-shell .home-section-header.narrow h2,
+.home-shell .home-section-header.narrow p:not(.section-kicker) {
+  margin-inline: 0 !important;
+}
+
+.home-shell .home-section-copy p,
+.home-shell .home-section-header p:not(.section-kicker),
+.home-shell .public-cta-copy p {
+  max-width: 70ch !important;
+}
+
+.home-shell .home-principle,
+.home-shell .proof-point,
+.home-shell .validation-path-step,
+.home-shell .home-process-step,
+.home-shell .editorial-record-card {
+  border-color: var(--line) !important;
+}
+
+.home-shell .portal-wordmark span {
+  animation: none !important;
+  background: none !important;
+  color: var(--ink) !important;
+  filter: none !important;
+  text-shadow: none !important;
+  -webkit-background-clip: initial !important;
+  background-clip: initial !important;
+}
+
+@media (max-width: 900px) {
+  .method-catalog-intro article + article,
+  .method-notes .record-panel + .record-panel,
+  .method-audit-grid article + article {
+    border-left: 1px solid var(--line-strong) !important;
+    border-top: 0 !important;
+  }
+
+  .method-catalog-list .candidate-row {
+    grid-template-columns: 1fr !important;
+  }
+
+  .method-catalog-list .row-meta {
+    align-items: start !important;
+    display: flex !important;
+    flex-wrap: wrap !important;
+    justify-items: start !important;
+  }
+
+  .method-hero,
+  .method-protocol {
+    grid-template-columns: 1fr !important;
+  }
+
+  .method-status-card {
+    max-width: none !important;
+  }
+
+  .method-thesis {
+    position: static !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .method-catalog-intro,
+  .method-notes,
+  .method-audit-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .method-hero h1 {
+    font-size: clamp(2.35rem, 11vw, 3.25rem) !important;
+  }
+
+  .method-flow-list article {
+    gap: 0.4rem !important;
+    grid-template-columns: 1fr !important;
+  }
+
+  .method-flow-list article span {
+    grid-row: auto !important;
+  }
+
+  .method-audit-grid article {
+    min-height: auto !important;
   }
 }
