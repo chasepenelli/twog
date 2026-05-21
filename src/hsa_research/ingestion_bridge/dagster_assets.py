@@ -33,6 +33,7 @@ from .contracts import (
     OmicsReadoutRequest,
     PubMedIdentifierRepairRequest,
     PublicCandidateGenerateRequest,
+    PublicCandidateIntegrityReportRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
     ResearchBriefQualityReportRequest,
@@ -898,6 +899,30 @@ if dg is not None:
     def _uuid_or_none(value: str | None) -> UUID | None:
         return UUID(value) if value else None
 
+    def _csv_values(value: Any) -> list[str]:
+        return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+    def _uuid_csv_values(value: Any) -> list[UUID]:
+        parsed: list[UUID] = []
+        for item in _csv_values(value):
+            try:
+                parsed.append(UUID(item))
+            except ValueError:
+                continue
+        return parsed
+
+    def _expected_public_candidate_pairs(value: Any) -> dict[str, UUID]:
+        pairs: dict[str, UUID] = {}
+        for item in _csv_values(value):
+            candidate_id, separator, therapy_idea_id = item.partition("=")
+            if not separator:
+                continue
+            try:
+                pairs[candidate_id.strip()] = UUID(therapy_idea_id.strip())
+            except ValueError:
+                continue
+        return pairs
+
     def _base_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
         return {
             "source_count": len(report.get("sources", [])),
@@ -1391,6 +1416,40 @@ if dg is not None:
             "moonshot_gate_passed": dg.MetadataValue.bool(bool(gate.get("passed"))),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "moonshot_gate": _metadata_table(gate_rows, _PUBLIC_CANDIDATE_GATE_TABLE_COLUMNS),
+        }
+
+    def _public_candidate_integrity_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        checks = report.get("checks") if isinstance(report.get("checks"), Sequence) else []
+        rows = []
+        for check in checks:
+            if not isinstance(check, Mapping):
+                continue
+            rows.append(
+                {
+                    "candidate_id": check.get("candidate_id"),
+                    "candidate_found": check.get("candidate_found"),
+                    "therapy_idea_found": check.get("therapy_idea_found"),
+                    "latest_snapshot_found": check.get("latest_snapshot_found"),
+                    "trace_id": check.get("trace_id"),
+                    "run_manifest_id": check.get("run_manifest_id"),
+                    "run_manifest_found": check.get("run_manifest_found"),
+                    "strict_export_ready": check.get("strict_export_ready"),
+                    "problems": ", ".join(check.get("problems") or []),
+                }
+            )
+        return {
+            "repository_type": dg.MetadataValue.text(str(report.get("repository_type") or "")),
+            "strict_export_ready": dg.MetadataValue.bool(bool(report.get("strict_export_ready"))),
+            "candidate_sample_count": dg.MetadataValue.int(int(report.get("candidate_sample_count") or 0)),
+            "snapshot_sample_count": dg.MetadataValue.int(int(report.get("snapshot_sample_count") or 0)),
+            "therapy_idea_sample_count": dg.MetadataValue.int(int(report.get("therapy_idea_sample_count") or 0)),
+            "run_manifest_sample_count": dg.MetadataValue.int(int(report.get("run_manifest_sample_count") or 0)),
+            "missing_candidate_ids": dg.MetadataValue.json(report.get("missing_candidate_ids", [])),
+            "missing_therapy_idea_ids": dg.MetadataValue.json(report.get("missing_therapy_idea_ids", [])),
+            "candidates_missing_manifest_receipt": dg.MetadataValue.json(
+                report.get("candidates_missing_manifest_receipt", [])
+            ),
+            "checks": dg.MetadataValue.table(records=rows),
         }
 
     def _hypothesis_promotion_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -4248,6 +4307,49 @@ if dg is not None:
                 metadata=metadata,
             )
         return dg.MaterializeResult(value=report, metadata=metadata)
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "candidate_ids": dg.Field(
+                str,
+                default_value="",
+                description="Comma-separated public candidate IDs to check.",
+            ),
+            "therapy_idea_ids": dg.Field(
+                str,
+                default_value="",
+                description="Comma-separated therapy idea IDs that should exist.",
+            ),
+            "expected_pairs": dg.Field(
+                str,
+                default_value="",
+                description="Comma-separated candidate_id=therapy_idea_uuid expectations.",
+            ),
+            "visibility": dg.Field(str, is_required=False),
+            "limit": dg.Field(int, default_value=100),
+        },
+    )
+    def public_candidate_integrity_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Read-only integrity report for public candidate export readiness."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_public_candidate_integrity_report(
+            PublicCandidateIntegrityReportRequest(
+                candidate_ids=_csv_values(config.get("candidate_ids")),
+                therapy_idea_ids=_uuid_csv_values(config.get("therapy_idea_ids")),
+                expected_candidate_therapy_ids=_expected_public_candidate_pairs(config.get("expected_pairs")),
+                visibility=config.get("visibility"),
+                limit=config.get("limit", 100),
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_public_candidate_integrity_metadata(report))
 
     @dg.asset(
         group_name="ai_research",
@@ -7819,6 +7921,7 @@ if dg is not None:
         validation_tool_match_report,
         therapy_idea_library_report,
         public_candidate_snapshot_report,
+        public_candidate_integrity_report,
         hypothesis_promotion_report,
         validation_packet_report,
         validation_decision_report,
@@ -8021,6 +8124,10 @@ if dg is not None:
     public_candidate_snapshot_job = dg.define_asset_job(
         "public_candidate_snapshot_job",
         selection=dg.AssetSelection.assets(public_candidate_snapshot_report),
+    )
+    public_candidate_integrity_job = dg.define_asset_job(
+        "public_candidate_integrity_job",
+        selection=dg.AssetSelection.assets(public_candidate_integrity_report),
     )
     hypothesis_promotion_job = dg.define_asset_job(
         "hypothesis_promotion_job",
@@ -8438,6 +8545,7 @@ if dg is not None:
             validation_tool_match_job,
             therapy_idea_library_job,
             public_candidate_snapshot_job,
+            public_candidate_integrity_job,
             hypothesis_promotion_job,
             validation_packet_job,
             validation_decision_job,
@@ -8555,6 +8663,7 @@ else:
     validation_tool_match_job = None
     therapy_idea_library_job = None
     public_candidate_snapshot_job = None
+    public_candidate_integrity_job = None
     hypothesis_promotion_job = None
     validation_packet_job = None
     validation_decision_job = None

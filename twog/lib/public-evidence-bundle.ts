@@ -92,8 +92,10 @@ export function buildPublicEvidenceBundle(candidate: PublicCandidateDetail) {
       commit_sha: auditTrail.commit_sha ?? null,
       compute_job_ids: computeJobIds,
       decision_count: auditTrail.decision_count,
+      run_manifest_found: auditTrail.run_manifest_found,
+      record: candidate.run_manifest ?? null,
       note:
-        'This is the pipeline receipt for the public candidate snapshot. If trace_id or run_manifest_id is null, the static export was generated before manifest attachment and should be refreshed from Neon.',
+        'This is the pipeline receipt for the public candidate snapshot. If trace_id, run_manifest_id, or record is null, the static export is not audit-ready and should be refreshed from Neon.',
     },
     checkout: {
       candidate_payload_url: publicCandidatePayloadPath(record.candidate_id),

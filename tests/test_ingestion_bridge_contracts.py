@@ -83,6 +83,7 @@ from hsa_research.ingestion_bridge.contracts import (
     PrimitiveCallEvent,
     PublicCandidateDecisionEvent,
     PublicCandidateGenerateRequest,
+    PublicCandidateIntegrityReportRequest,
     PublicCandidateLibraryRequest,
     PublicCandidateRecord,
     PublicCandidateSnapshot,
@@ -1408,6 +1409,82 @@ def test_public_candidate_snapshot_generation_repairs_existing_snapshot_manifest
     assert manifest.candidate_ids == [candidate.candidate_id]
     assert manifest.therapy_idea_ids == [missing_therapy_idea_id]
     assert result.decision_events[0].action == "annotated"
+
+
+def test_public_candidate_integrity_report_flags_missing_source_and_manifest():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    candidate_id = "twog-candidate-integrity"
+    therapy_idea_id = uuid4()
+    snapshot_id = uuid4()
+    trace_id = uuid4()
+    manifest_id = uuid4()
+
+    candidate = PublicCandidateRecord(
+        candidate_id=candidate_id,
+        trace_id=trace_id,
+        title="Integrity candidate",
+        visibility="draft_public",
+        therapy_idea_id=therapy_idea_id,
+        latest_snapshot_id=snapshot_id,
+    )
+    snapshot = PublicCandidateSnapshot(
+        snapshot_id=snapshot_id,
+        trace_id=trace_id,
+        candidate_id=candidate_id,
+        snapshot_version=1,
+        content_hash="hash-integrity",
+        title="Integrity candidate",
+        metadata={"run_manifest_id": str(manifest_id), "trace_id": str(trace_id)},
+        payload={"reproducibility": {"run_manifest_id": str(manifest_id), "trace_id": str(trace_id)}},
+    )
+    repo.upsert_public_candidate(candidate)
+    repo.upsert_public_candidate_snapshot(snapshot)
+
+    missing = service.build_public_candidate_integrity_report(
+        PublicCandidateIntegrityReportRequest(
+            candidate_ids=[candidate_id],
+            expected_candidate_therapy_ids={candidate_id: therapy_idea_id},
+        )
+    )
+    assert missing.strict_export_ready is False
+    assert missing.checks[0].candidate_found is True
+    assert missing.checks[0].latest_snapshot_found is True
+    assert missing.checks[0].run_manifest_found is False
+    assert missing.checks[0].therapy_idea_found is False
+    assert f"therapy_idea_missing:{therapy_idea_id}" in missing.checks[0].problems
+    assert f"run_manifest_missing:{manifest_id}" in missing.checks[0].problems
+
+    idea = TherapyIdea(
+        title="Integrity therapy idea",
+        hypothesis="A public candidate needs source therapy provenance.",
+        rationale="Used to test public candidate export readiness.",
+        candidate_therapies=["test therapy"],
+        targets=["KDR"],
+        evidence_refs=["C1"],
+        priority_score=0.9,
+    ).model_copy(update={"idea_id": therapy_idea_id})
+    repo.upsert_therapy_idea(TherapyIdeaRecord(idea=idea, status="ready_for_promotion", score=0.9))
+    repo.upsert_run_manifest(
+        RunManifestRecord(
+            manifest_id=manifest_id,
+            trace_id=trace_id,
+            manifest_type="public_candidate_snapshot",
+            status="completed",
+            candidate_ids=[candidate_id],
+            therapy_idea_ids=[therapy_idea_id],
+        )
+    )
+
+    ready = service.build_public_candidate_integrity_report(
+        PublicCandidateIntegrityReportRequest(
+            candidate_ids=[candidate_id],
+            expected_candidate_therapy_ids={candidate_id: therapy_idea_id},
+        )
+    )
+    assert ready.strict_export_ready is True
+    assert ready.checks[0].strict_export_ready is True
+    assert ready.candidates_ready_for_strict_export == [candidate_id]
 
 
 def test_public_candidate_generation_blocks_low_grade_incremental_ideas(tmp_path):

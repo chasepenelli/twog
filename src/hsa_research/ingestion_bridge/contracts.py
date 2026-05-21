@@ -4857,6 +4857,60 @@ class PublicCandidateSnapshotResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class PublicCandidateIntegrityCheck(StrictBaseModel):
+    candidate_id: str = Field(min_length=3, max_length=260)
+    expected_therapy_idea_id: UUID | None = None
+    candidate_found: bool = False
+    therapy_idea_found: bool | None = None
+    latest_snapshot_found: bool = False
+    latest_snapshot_id: UUID | None = None
+    trace_id: UUID | None = None
+    run_manifest_id: UUID | None = None
+    run_manifest_found: bool = False
+    strict_export_ready: bool = False
+    problems: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_integrity_check(self) -> "PublicCandidateIntegrityCheck":
+        self.candidate_id = self.candidate_id.strip()
+        self.problems = _dedupe_strings(self.problems)
+        return self
+
+
+class PublicCandidateIntegrityReportRequest(StrictBaseModel):
+    candidate_ids: list[str] = Field(default_factory=list, max_length=50)
+    therapy_idea_ids: list[UUID] = Field(default_factory=list, max_length=50)
+    expected_candidate_therapy_ids: dict[str, UUID] = Field(default_factory=dict)
+    visibility: PublicCandidateVisibility | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_integrity_report_request(self) -> "PublicCandidateIntegrityReportRequest":
+        self.candidate_ids = _dedupe_strings(self.candidate_ids)
+        self.therapy_idea_ids = list(dict.fromkeys(self.therapy_idea_ids))
+        self.expected_candidate_therapy_ids = {
+            str(key).strip(): value for key, value in self.expected_candidate_therapy_ids.items() if str(key).strip()
+        }
+        return self
+
+
+class PublicCandidateIntegrityReportResult(StrictBaseModel):
+    repository_type: str
+    candidate_sample_count: int = 0
+    snapshot_sample_count: int = 0
+    therapy_idea_sample_count: int = 0
+    run_manifest_sample_count: int = 0
+    checked_candidate_count: int = 0
+    missing_candidate_ids: list[str] = Field(default_factory=list)
+    missing_therapy_idea_ids: list[UUID] = Field(default_factory=list)
+    candidates_missing_manifest_receipt: list[str] = Field(default_factory=list)
+    candidates_ready_for_strict_export: list[str] = Field(default_factory=list)
+    strict_export_ready: bool = False
+    checks: list[PublicCandidateIntegrityCheck] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 EvidenceRefRepairStatus = Literal[
     "resolved",
     "stale",

@@ -40,6 +40,7 @@ from .contracts import (
     OmicsReadoutRequest,
     PubMedIdentifierRepairRequest,
     PublicCandidateGenerateRequest,
+    PublicCandidateIntegrityReportRequest,
     PublicCandidateLibraryRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
@@ -799,6 +800,26 @@ def main() -> None:
     public_candidates.add_argument("--kind", default=None, help="Candidate kind filter")
     public_candidates.add_argument("--query", default=None, help="Title/rationale/target search")
     public_candidates.add_argument("--limit", type=int, default=50, help="Maximum candidates to return")
+
+    public_candidate_integrity = subparsers.add_parser(
+        "public-candidate-integrity",
+        help="Check public candidate snapshot, manifest, and source therapy integrity",
+    )
+    public_candidate_integrity.add_argument("--candidate-id", action="append", default=[], help="Candidate ID to check")
+    public_candidate_integrity.add_argument(
+        "--therapy-idea-id",
+        action="append",
+        default=[],
+        help="Therapy idea ID that should exist; repeatable",
+    )
+    public_candidate_integrity.add_argument(
+        "--expected-pair",
+        action="append",
+        default=[],
+        help="Expected candidate-to-therapy pair as candidate_id=therapy_idea_uuid",
+    )
+    public_candidate_integrity.add_argument("--visibility", default=None, help="Optional visibility sample filter")
+    public_candidate_integrity.add_argument("--limit", type=int, default=100, help="Maximum sampled records")
 
     hypothesis_promotion = subparsers.add_parser(
         "hypothesis-promotion-report",
@@ -2560,6 +2581,22 @@ def main() -> None:
                 visibility=args.visibility,
                 candidate_kind=args.kind,
                 query=args.query,
+                limit=args.limit,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "public-candidate-integrity":
+        expected_pairs = {}
+        for pair in args.expected_pair:
+            candidate_id, separator, therapy_idea_id = str(pair).partition("=")
+            if not separator:
+                raise SystemExit(f"Invalid --expected-pair {pair!r}; expected candidate_id=therapy_idea_uuid")
+            expected_pairs[candidate_id.strip()] = UUID(therapy_idea_id.strip())
+        output = HSAResearchService(repo).build_public_candidate_integrity_report(
+            PublicCandidateIntegrityReportRequest(
+                candidate_ids=args.candidate_id,
+                therapy_idea_ids=[UUID(value) for value in args.therapy_idea_id],
+                expected_candidate_therapy_ids=expected_pairs,
+                visibility=args.visibility,
                 limit=args.limit,
             )
         ).model_dump(mode="json")

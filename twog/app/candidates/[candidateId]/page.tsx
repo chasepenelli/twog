@@ -239,8 +239,9 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
           </div>
           {!auditTrail.has_manifest ? (
             <p className="audit-note">
-              This static export predates manifest attachment. The hosted generator now writes
-              manifest IDs; the next Neon export will populate this receipt automatically.
+              This static export is missing a complete manifest receipt. The hosted generator
+              now writes trace IDs and run manifests; the next strict Neon export must include
+              both before this candidate can ship as audit-ready.
             </p>
           ) : null}
         </article>

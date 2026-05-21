@@ -75,6 +75,9 @@ from .contracts import (
     PubMedIdentifierRepairResult,
     PublicCandidateDecisionEvent,
     PublicCandidateGenerateRequest,
+    PublicCandidateIntegrityCheck,
+    PublicCandidateIntegrityReportRequest,
+    PublicCandidateIntegrityReportResult,
     PublicCandidateLibraryRequest,
     PublicCandidateLibraryResult,
     PublicCandidateRecord,
@@ -1333,6 +1336,15 @@ class HSAResearchService:
             status_counts=dict(sorted(Counter(record.public_status for record in records).items())),
             visibility_counts=dict(sorted(Counter(record.visibility for record in records).items())),
             candidates=records,
+        )
+
+    def build_public_candidate_integrity_report(
+        self,
+        request: PublicCandidateIntegrityReportRequest | None = None,
+    ) -> PublicCandidateIntegrityReportResult:
+        return _build_public_candidate_integrity_report(
+            self.repository,
+            request or PublicCandidateIntegrityReportRequest(),
         )
 
     def build_evidence_ref_repair_report(
@@ -5908,6 +5920,156 @@ def _dedupe_uuid_refs(values: list[Any]) -> list[UUID]:
 
 def _run_manifest_id(manifest_type: str, stable_id: UUID | str) -> UUID:
     return uuid5(NAMESPACE_URL, f"twog:run-manifest:{manifest_type}:{stable_id}")
+
+
+def _public_candidate_integrity_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _public_candidate_integrity_manifest_id(
+    candidate: PublicCandidateRecord | None,
+    snapshot: PublicCandidateSnapshot | None,
+) -> UUID | None:
+    snapshot_metadata = _public_candidate_integrity_dict(snapshot.metadata if snapshot else None)
+    candidate_metadata = _public_candidate_integrity_dict(candidate.metadata if candidate else None)
+    reproducibility = _public_candidate_integrity_dict((snapshot.payload if snapshot else {}).get("reproducibility"))
+    return _first_uuid(
+        [
+            snapshot_metadata.get("run_manifest_id"),
+            reproducibility.get("run_manifest_id"),
+            candidate_metadata.get("run_manifest_id"),
+        ]
+    )
+
+
+def _public_candidate_integrity_trace_id(
+    candidate: PublicCandidateRecord | None,
+    snapshot: PublicCandidateSnapshot | None,
+) -> UUID | None:
+    snapshot_metadata = _public_candidate_integrity_dict(snapshot.metadata if snapshot else None)
+    candidate_metadata = _public_candidate_integrity_dict(candidate.metadata if candidate else None)
+    reproducibility = _public_candidate_integrity_dict((snapshot.payload if snapshot else {}).get("reproducibility"))
+    return _first_uuid(
+        [
+            snapshot.trace_id if snapshot else None,
+            candidate.trace_id if candidate else None,
+            snapshot_metadata.get("trace_id"),
+            reproducibility.get("trace_id"),
+            candidate_metadata.get("trace_id"),
+        ]
+    )
+
+
+def _build_public_candidate_integrity_report(
+    repository: ResearchRepository,
+    request: PublicCandidateIntegrityReportRequest,
+) -> PublicCandidateIntegrityReportResult:
+    candidates = repository.list_public_candidates(
+        PublicCandidateLibraryRequest(visibility=request.visibility, limit=request.limit)
+    )
+    snapshots = repository.list_public_candidate_snapshots(limit=request.limit)
+    therapy_ideas = repository.list_therapy_ideas(limit=request.limit)
+    manifests = repository.list_run_manifests(manifest_type="public_candidate_snapshot", limit=request.limit)
+    candidate_ids = list(request.candidate_ids)
+    if not candidate_ids:
+        candidate_ids = [record.candidate_id for record in candidates]
+    for candidate_id in request.expected_candidate_therapy_ids:
+        if candidate_id not in candidate_ids:
+            candidate_ids.append(candidate_id)
+
+    checks: list[PublicCandidateIntegrityCheck] = []
+    missing_candidate_ids: list[str] = []
+    missing_therapy_idea_ids: list[UUID] = []
+    candidates_missing_manifest_receipt: list[str] = []
+    candidates_ready_for_strict_export: list[str] = []
+    seen_missing_therapy: set[UUID] = set()
+
+    for therapy_idea_id in request.therapy_idea_ids:
+        if repository.get_therapy_idea(therapy_idea_id) is None and therapy_idea_id not in seen_missing_therapy:
+            missing_therapy_idea_ids.append(therapy_idea_id)
+            seen_missing_therapy.add(therapy_idea_id)
+
+    for candidate_id in candidate_ids:
+        problems: list[str] = []
+        candidate = repository.get_public_candidate(candidate_id)
+        if candidate is None:
+            missing_candidate_ids.append(candidate_id)
+            problems.append("public_candidate_missing")
+
+        expected_therapy_idea_id = request.expected_candidate_therapy_ids.get(candidate_id)
+        if expected_therapy_idea_id is None and candidate is not None:
+            expected_therapy_idea_id = candidate.therapy_idea_id
+        therapy_idea_found: bool | None = None
+        if expected_therapy_idea_id is not None:
+            therapy_idea_found = repository.get_therapy_idea(expected_therapy_idea_id) is not None
+            if not therapy_idea_found:
+                problems.append(f"therapy_idea_missing:{expected_therapy_idea_id}")
+                if expected_therapy_idea_id not in seen_missing_therapy:
+                    missing_therapy_idea_ids.append(expected_therapy_idea_id)
+                    seen_missing_therapy.add(expected_therapy_idea_id)
+
+        snapshot: PublicCandidateSnapshot | None = None
+        if candidate and candidate.latest_snapshot_id:
+            snapshot = repository.get_public_candidate_snapshot(candidate.latest_snapshot_id)
+        if snapshot is None:
+            candidate_snapshots = repository.list_public_candidate_snapshots(candidate_id=candidate_id, limit=1)
+            snapshot = candidate_snapshots[0] if candidate_snapshots else None
+        if snapshot is None:
+            problems.append("latest_snapshot_missing")
+
+        trace_id = _public_candidate_integrity_trace_id(candidate, snapshot)
+        run_manifest_id = _public_candidate_integrity_manifest_id(candidate, snapshot)
+        run_manifest_found = bool(run_manifest_id and repository.get_run_manifest(run_manifest_id))
+        if trace_id is None:
+            problems.append("trace_id_missing")
+        if run_manifest_id is None:
+            problems.append("run_manifest_id_missing")
+        elif not run_manifest_found:
+            problems.append(f"run_manifest_missing:{run_manifest_id}")
+
+        strict_export_ready = bool(
+            candidate
+            and snapshot
+            and trace_id
+            and run_manifest_id
+            and run_manifest_found
+            and therapy_idea_found is not False
+        )
+        if strict_export_ready:
+            candidates_ready_for_strict_export.append(candidate_id)
+        else:
+            candidates_missing_manifest_receipt.append(candidate_id)
+
+        checks.append(
+            PublicCandidateIntegrityCheck(
+                candidate_id=candidate_id,
+                expected_therapy_idea_id=expected_therapy_idea_id,
+                candidate_found=candidate is not None,
+                therapy_idea_found=therapy_idea_found,
+                latest_snapshot_found=snapshot is not None,
+                latest_snapshot_id=snapshot.snapshot_id if snapshot else None,
+                trace_id=trace_id,
+                run_manifest_id=run_manifest_id,
+                run_manifest_found=run_manifest_found,
+                strict_export_ready=strict_export_ready,
+                problems=problems,
+            )
+        )
+
+    return PublicCandidateIntegrityReportResult(
+        repository_type=type(repository).__name__,
+        candidate_sample_count=len(candidates),
+        snapshot_sample_count=len(snapshots),
+        therapy_idea_sample_count=len(therapy_ideas),
+        run_manifest_sample_count=len(manifests),
+        checked_candidate_count=len(checks),
+        missing_candidate_ids=missing_candidate_ids,
+        missing_therapy_idea_ids=missing_therapy_idea_ids,
+        candidates_missing_manifest_receipt=list(dict.fromkeys(candidates_missing_manifest_receipt)),
+        candidates_ready_for_strict_export=list(dict.fromkeys(candidates_ready_for_strict_export)),
+        strict_export_ready=bool(checks) and all(check.strict_export_ready for check in checks),
+        checks=checks,
+    )
 
 
 def _agent_trace_id(repository: ResearchRepository, agent_run_id: UUID | None) -> UUID | None:

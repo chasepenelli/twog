@@ -26,6 +26,7 @@ const records = candidates.map((entry) => {
   const snapshotMetadata = snapshot.metadata ?? {};
   const reproducibility = payload.reproducibility ?? {};
   const linkedRecords = payload.linked_records ?? {};
+  const runManifest = entry?.run_manifest ?? {};
   const computeJobIds = Array.from(
     new Set([
       ...stringArray(snapshot.compute_job_ids),
@@ -55,7 +56,8 @@ const records = candidates.map((entry) => {
     ),
     commit_sha: firstString(snapshot.commit_sha, reproducibility.commit_sha),
     compute_job_count: computeJobIds.length,
-    has_manifest: Boolean(runManifestId && traceId),
+    run_manifest_found: Boolean(runManifest?.manifest_id && runManifest.manifest_id === runManifestId),
+    has_manifest: Boolean(runManifestId && traceId && runManifest?.manifest_id && runManifest.manifest_id === runManifestId),
   };
 });
 
@@ -75,7 +77,7 @@ if (process.env.TWOG_REQUIRE_PUBLIC_CANDIDATE_MANIFESTS === 'true') {
   const missing = records.filter((record) => !record.has_manifest);
   if (missing.length > 0) {
     console.error(
-      `Missing run_manifest_id and trace_id metadata for ${missing.length} candidate(s): ${missing
+      `Missing run_manifest_id, trace_id, or run_manifest payload for ${missing.length} candidate(s): ${missing
         .map((record) => record.candidate_id)
         .join(', ')}`
     );

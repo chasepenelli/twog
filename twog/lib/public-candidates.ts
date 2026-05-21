@@ -122,6 +122,7 @@ export interface PublicCandidateDetail {
   candidate: PublicCandidateRecord;
   latest_snapshot?: PublicCandidateSnapshot | null;
   decision_events?: CandidateDecisionEvent[];
+  run_manifest?: PublicJsonMap | null;
 }
 
 export interface PublicCandidateAuditTrail {
@@ -135,6 +136,7 @@ export interface PublicCandidateAuditTrail {
   content_hash?: string;
   compute_job_ids: string[];
   decision_count: number;
+  run_manifest_found: boolean;
   has_manifest: boolean;
 }
 
@@ -213,6 +215,11 @@ export function publicCandidateAuditTrail(detail: PublicCandidateDetail): Public
   );
   const runManifestId = stringValueFromMaps('run_manifest_id', snapshotMetadata, reproducibilityMap, candidateMetadata);
   const traceId = stringValueFromMaps('trace_id', snapshotMetadata, reproducibilityMap, candidateMetadata);
+  const exportedRunManifestId =
+    isJsonMap(detail.run_manifest) && typeof detail.run_manifest.manifest_id === 'string'
+      ? detail.run_manifest.manifest_id
+      : undefined;
+  const runManifestFound = Boolean(runManifestId && exportedRunManifestId === runManifestId);
 
   return {
     trace_id: traceId,
@@ -225,7 +232,8 @@ export function publicCandidateAuditTrail(detail: PublicCandidateDetail): Public
     content_hash: detail.candidate.content_hash ?? snapshot?.content_hash,
     compute_job_ids: computeJobIds,
     decision_count: detail.decision_events?.length ?? 0,
-    has_manifest: Boolean(runManifestId || traceId),
+    run_manifest_found: runManifestFound,
+    has_manifest: Boolean(runManifestId && traceId && runManifestFound),
   };
 }
 

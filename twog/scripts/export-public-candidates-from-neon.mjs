@@ -29,6 +29,13 @@ function normalizePayload(value) {
   return value;
 }
 
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return null;
+}
+
 async function readExistingDataset(path) {
   try {
     const raw = await readFile(path, 'utf8');
@@ -93,6 +100,20 @@ try {
       snapshotRow = latest.rows[0] ?? null;
     }
 
+    const latestSnapshot = normalizePayload(snapshotRow?.payload);
+    const runManifestId = firstString(
+      latestSnapshot?.metadata?.run_manifest_id,
+      latestSnapshot?.payload?.reproducibility?.run_manifest_id,
+      candidate?.metadata?.run_manifest_id
+    );
+    let runManifest = null;
+    if (runManifestId) {
+      const manifest = await pool.query('select payload from run_manifests where manifest_id = $1 limit 1', [
+        runManifestId,
+      ]);
+      runManifest = normalizePayload(manifest.rows[0]?.payload);
+    }
+
     const events = await pool.query(
       `
         select payload
@@ -106,8 +127,9 @@ try {
 
     candidates.push({
       candidate,
-      latest_snapshot: normalizePayload(snapshotRow?.payload),
+      latest_snapshot: latestSnapshot,
       decision_events: events.rows.map((eventRow) => normalizePayload(eventRow.payload)).filter(Boolean),
+      run_manifest: runManifest,
     });
   }
 
