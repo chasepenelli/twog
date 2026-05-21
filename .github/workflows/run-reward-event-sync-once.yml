@@ -1,0 +1,183 @@
+name: Run Reward Event Sync Once
+
+on:
+  push:
+    branches:
+      - "main"
+    paths:
+      - ".github/workflows/run-reward-event-sync-once.yml"
+  workflow_dispatch:
+
+jobs:
+  run_reward_event_sync_once:
+    name: Run hosted reward event sync once
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      DAGSTER_CLOUD_ORGANIZATION: "twogbio"
+      DAGSTER_CLOUD_URL: "https://twogbio.dagster.cloud"
+      DAGSTER_CLOUD_DEPLOYMENT: "prod"
+      DAGSTER_CLOUD_LOCATION: "twog"
+      DAGSTER_CLOUD_JOB: "reward_event_sync_job"
+      DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
+      HSA_STORAGE_BACKEND: "postgres"
+      HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: python -m pip install uv
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          if [ -z "$DAGSTER_PLUS_ENV_API_TOKEN" ]; then
+            echo "::error::DAGSTER_PLUS_ENV_API_TOKEN is not configured."
+            exit 1
+          fi
+          if [ -z "$HSA_DATABASE_URL" ]; then
+            echo "::error::HSA_DATABASE_URL is not configured."
+            exit 1
+          fi
+        shell: bash
+
+      - name: Install project dependencies
+        run: uv sync
+
+      - name: Wait for reward job registration
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            set +e
+            jobs_json="$(
+              uv run dg api job list \
+                --organization "$DAGSTER_CLOUD_ORGANIZATION" \
+                --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
+                --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+                --json 2>&1
+            )"
+            exit_code=$?
+            set -e
+            if [ "$exit_code" -eq 0 ]; then
+              printf '%s' "$jobs_json" > /tmp/dagster_jobs.json
+              if python - <<'PY'
+          import json
+          with open("/tmp/dagster_jobs.json", "r", encoding="utf-8") as handle:
+              jobs = json.load(handle)
+          names = {str(item.get("name") or "") for item in jobs.get("items", [])}
+          raise SystemExit(0 if "reward_event_sync_job" in names else 1)
+          PY
+              then
+                echo "reward_event_sync_job is registered in Dagster+."
+                exit 0
+              fi
+            else
+              printf '%s\n' "$jobs_json"
+            fi
+            echo "Waiting for reward_event_sync_job registration, attempt $attempt/60."
+            sleep 30
+          done
+          echo "::error::reward_event_sync_job was not registered after waiting for Dagster+ deploy."
+          exit 1
+        shell: bash
+
+      - name: Launch hosted reward sync
+        id: launch
+        run: |
+          set -euo pipefail
+          launch_tags='{"github_workflow":"run-reward-event-sync-once","github_run_id":"'"$GITHUB_RUN_ID"'","dagster_job":"'"$DAGSTER_CLOUD_JOB"'"}'
+          launch_output="$(
+            timeout 5m uv run dagster-cloud job launch \
+              --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+              --organization "$DAGSTER_CLOUD_ORGANIZATION" \
+              --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
+              --location "$DAGSTER_CLOUD_LOCATION" \
+              --job "$DAGSTER_CLOUD_JOB" \
+              --tags "$launch_tags" 2>&1
+          )"
+          printf '%s\n' "$launch_output"
+          run_id="$(printf '%s\n' "$launch_output" | grep -Eo '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' | tail -n 1 || true)"
+          if [ -z "$run_id" ]; then
+            echo "::error::Unable to parse Dagster run id from launch output."
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "DAGSTER_CLOUD_RUN_ID=$run_id" >> "$GITHUB_ENV"
+          echo "Dagster run URL: $DAGSTER_CLOUD_URL/$DAGSTER_CLOUD_DEPLOYMENT/runs/$run_id"
+        shell: bash
+
+      - name: Wait for hosted reward sync
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 1800))
+          status="UNKNOWN"
+          while true; do
+            set +e
+            status_output="$(
+              timeout 60s uv run dagster-cloud run status "$DAGSTER_CLOUD_RUN_ID" \
+                --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+                --organization "$DAGSTER_CLOUD_ORGANIZATION" \
+                --deployment "$DAGSTER_CLOUD_DEPLOYMENT" 2>&1
+            )"
+            status_exit=$?
+            set -e
+            if [ "$status_exit" -eq 0 ]; then
+              status="$(printf '%s\n' "$status_output" | tr -d '\r' | awk 'NF {last=$0} END {print last}' | tr -d '[:space:]')"
+            else
+              status="UNKNOWN"
+              printf '%s\n' "$status_output"
+            fi
+            echo "Dagster run $DAGSTER_CLOUD_RUN_ID status: $status"
+            case "$status" in
+              SUCCESS)
+                exit 0
+                ;;
+              FAILURE|CANCELED)
+                echo "::error::Dagster run finished with terminal status $status."
+                exit 1
+                ;;
+            esac
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for reward sync. Last status: $status."
+              exit 124
+            fi
+            sleep 15
+          done
+        shell: bash
+
+      - name: Print hosted reward report
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          echo "## Hosted reward ledger summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Sync idempotency check" >> "$GITHUB_STEP_SUMMARY"
+          uv run python -m hsa_research.ingestion_bridge.cli reward-events-sync \
+            --limit 500 | tee /tmp/reward-sync.json
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/reward-sync.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### By agent" >> "$GITHUB_STEP_SUMMARY"
+          uv run python -m hsa_research.ingestion_bridge.cli reward-events \
+            --group-by agent_name \
+            --limit 500 | tee /tmp/reward-events-agent.json
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/reward-events-agent.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### By model profile" >> "$GITHUB_STEP_SUMMARY"
+          uv run python -m hsa_research.ingestion_bridge.cli reward-events \
+            --group-by model_profile \
+            --limit 500 | tee /tmp/reward-events-model.json
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/reward-events-model.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
