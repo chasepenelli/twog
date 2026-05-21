@@ -61,6 +61,8 @@ from .contracts import (
     ResearchProgramBoardRequest,
     ResearchProgramEvidenceLoopRequest,
     ResearchProgramReviewRequest,
+    RewardEventSyncRequest,
+    RewardReportRequest,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
@@ -1425,6 +1427,47 @@ def main() -> None:
         default=[],
         help="OpenRouter evaluator model id; repeat to override the default",
     )
+
+    reward_events = subparsers.add_parser(
+        "reward-events",
+        help="Aggregate durable reward events for the agent learning loop",
+    )
+    reward_events.add_argument("--agent-name", default=None, help="Optional agent name filter")
+    reward_events.add_argument("--source", default=None, help="Optional source key filter")
+    reward_events.add_argument(
+        "--event-source",
+        default=None,
+        choices=["operator_review", "llm_evaluator_review", "system_review", "downstream_progress", "manual"],
+        help="Optional reward event source filter",
+    )
+    reward_events.add_argument(
+        "--group-by",
+        default="agent_name",
+        choices=["agent_name", "model_profile", "task_type", "source_key", "event_source"],
+        help="Report grouping dimension",
+    )
+    reward_events.add_argument("--limit", type=int, default=500, help="Recent reward events to scan")
+    reward_events.add_argument("--min-sample-size", type=int, default=3, help="Events required before sample is reliable")
+
+    reward_events_sync = subparsers.add_parser(
+        "reward-events-sync",
+        help="Convert operator/evaluator agent run reviews into reward events",
+    )
+    reward_events_sync.add_argument("--agent-name", default=None, help="Optional agent name filter")
+    reward_events_sync.add_argument("--source", default=None, help="Optional source key filter")
+    reward_events_sync.add_argument(
+        "--reviewer-type",
+        default=None,
+        choices=["operator", "llm_evaluator", "system"],
+        help="Optional reviewer type filter",
+    )
+    reward_events_sync.add_argument("--limit", type=int, default=500, help="Recent reviews to scan")
+    reward_events_sync.add_argument(
+        "--include-existing",
+        action="store_true",
+        help="Regenerate reward events that already exist for a review",
+    )
+    reward_events_sync.add_argument("--created-by", default="reward_review_sync", help="Ledger creator identity")
 
     agent_findings_escalate = subparsers.add_parser(
         "escalate-agent-findings",
@@ -2992,6 +3035,28 @@ def main() -> None:
                 reviewed_only=not args.include_unreviewed,
                 model_profile=args.model_profile,
                 review_models=args.review_model,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "reward-events":
+        output = HSAResearchService(repo).build_reward_report(
+            RewardReportRequest(
+                agent_name=args.agent_name,
+                source_key=args.source,
+                event_source=args.event_source,
+                group_by=args.group_by,
+                limit=args.limit,
+                min_sample_size=args.min_sample_size,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "reward-events-sync":
+        output = HSAResearchService(repo).sync_reward_events_from_reviews(
+            RewardEventSyncRequest(
+                agent_name=args.agent_name,
+                source_key=args.source,
+                reviewer_type=args.reviewer_type,
+                limit=args.limit,
+                include_existing=args.include_existing,
+                created_by=args.created_by,
             )
         ).model_dump(mode="json")
     elif args.command == "escalate-agent-findings":

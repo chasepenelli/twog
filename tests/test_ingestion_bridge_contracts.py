@@ -141,6 +141,10 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchProgramRecord,
     ResearchProgramReviewRequest,
     ResearchProgramReviewResult,
+    RewardEventRecord,
+    RewardEventSyncRequest,
+    RewardReportRequest,
+    RewardReportRow,
     RetrievalSmokeRequest,
     ScrapeFetchRequest,
     ScrapeIngestRequest,
@@ -3830,6 +3834,127 @@ def test_agent_run_review_repository_roundtrip_sqlite_and_memory(tmp_path):
         AgentRunReviewRecord(agent_run_id=uuid4(), verdict="wrong")
     with pytest.raises(ValidationError):
         AgentRunReviewRecord(agent_run_id=uuid4(), reviewer_type="robot", verdict="useful")
+
+
+def test_reward_event_contracts_validate_allowed_values():
+    event = RewardEventRecord(
+        event_source="operator_review",
+        score=0.55,
+        dimension_scores={"overall": 0.55, "operator_usefulness": 0.55},
+        agent_run_id=uuid4(),
+        verdict="needs_followup",
+        agent_name="therapy_committee_chair_agent",
+    )
+    row = RewardReportRow(group_type="agent_name", group_value="therapy_committee_chair_agent", event_count=1)
+
+    assert event.identity_key.startswith("reward:operator_review:agent_run:")
+    assert row.low_sample is False
+    assert RewardEventSyncRequest().created_by == "reward_review_sync"
+    assert RewardReportRequest().group_by == "agent_name"
+    with pytest.raises(ValidationError):
+        RewardEventRecord(event_source="bad_source", score=0.5)
+    with pytest.raises(ValidationError):
+        RewardEventRecord(event_source="operator_review", score=1.5)
+    with pytest.raises(ValidationError):
+        RewardEventRecord(event_source="operator_review", score=0.5, dimension_scores={"bad_dimension": 0.2})
+
+
+def test_reward_event_repository_roundtrip_sqlite_and_memory(tmp_path):
+    sqlite_repo = SQLiteResearchRepository(tmp_path / "reward-events.sqlite3", seed=False)
+    memory_repo = InMemoryResearchRepository()
+
+    for repo in (sqlite_repo, memory_repo):
+        run = repo.create_agent_run(
+            AgentRunRecord(
+                agent_name="research_brief_agent",
+                model_profile="openrouter_required",
+                source_key="pubmed",
+            )
+        )
+        event = repo.create_reward_event(
+            RewardEventRecord(
+                event_source="operator_review",
+                score=1.0,
+                dimension_scores={"overall": 1.0, "operator_usefulness": 1.0},
+                agent_run_id=run.agent_run_id,
+                agent_name=run.agent_name,
+                model_profile=run.model_profile,
+                source_key=run.source_key,
+                verdict="useful",
+            )
+        )
+
+        assert repo.get_reward_event(event.reward_event_id).score == 1.0
+        assert repo.list_reward_events(agent_run_id=run.agent_run_id)[0].reward_event_id == event.reward_event_id
+        assert repo.list_reward_events(agent_name="research_brief_agent")
+        assert repo.list_reward_events(source_key="pubmed")
+        assert repo.list_reward_events(event_source="operator_review")
+        assert repo.list_reward_events(agent_name="full_text_ops_agent") == []
+
+
+def test_reward_events_sync_reviews_and_report_are_idempotent(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "reward-events-sync.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    now = datetime.now(UTC)
+    run_one = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="therapy_committee_chair_agent",
+            model_profile="openrouter_required",
+            status=RunStatus.COMPLETED,
+            source_key="pubmed",
+            started_at=now - timedelta(minutes=2),
+            metadata={"task_type": "therapy_committee"},
+        )
+    )
+    run_two = repo.create_agent_run(
+        AgentRunRecord(
+            agent_name="omics_validation_agent",
+            model_profile="openrouter_required",
+            status=RunStatus.COMPLETED,
+            source_key="geo",
+            started_at=now - timedelta(minutes=1),
+        )
+    )
+    review_one = repo.create_agent_run_review(
+        AgentRunReviewRecord(
+            agent_run_id=run_one.agent_run_id,
+            reviewer="operator",
+            reviewer_type="operator",
+            verdict="useful",
+            feedback="Strong cited committee output.",
+            created_at=now,
+        )
+    )
+    repo.create_agent_run_review(
+        AgentRunReviewRecord(
+            agent_run_id=run_two.agent_run_id,
+            reviewer="validation_openrouter_evaluator",
+            reviewer_type="llm_evaluator",
+            verdict="needs_followup",
+            created_at=now,
+            metadata={
+                "agent_performance_evaluation": {
+                    "rubric_scores": {"citation_quality": 4, "provenance_quality": 3, "actionability": 0.5}
+                }
+            },
+        )
+    )
+
+    first_sync = service.sync_reward_events_from_reviews(RewardEventSyncRequest(limit=10))
+    second_sync = service.sync_reward_events_from_reviews(RewardEventSyncRequest(limit=10))
+    report = service.build_reward_report(RewardReportRequest(limit=10, group_by="agent_name", min_sample_size=1))
+    event = repo.list_reward_events(source_review_id=review_one.review_id, limit=1)[0]
+    therapy_row = next(row for row in report.rows if row.group_value == "therapy_committee_chair_agent")
+
+    assert first_sync.created_count == 2
+    assert second_sync.created_count == 0
+    assert second_sync.skipped_existing_count == 2
+    assert event.score == 1.0
+    assert event.dimension_scores["operator_usefulness"] == 1.0
+    assert report.event_count == 2
+    assert report.reward_score == 78
+    assert therapy_row.reward_score == 100
+    assert therapy_row.low_sample is False
 
 
 def test_agent_finding_escalation_contracts_validate_allowed_values():

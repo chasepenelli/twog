@@ -30,6 +30,8 @@ on:
           - "full_text_ops_agent_job"
           - "agent_performance_report_job"
           - "agent_performance_evaluation_job"
+          - "reward_event_report_job"
+          - "reward_event_sync_job"
           - "research_program_board_job"
           - "research_program_library_job"
           - "research_program_evidence_loop_job"
@@ -538,6 +540,30 @@ jobs:
             --run-id "$DAGSTER_CLOUD_RUN_ID" \
             --limit 500 \
             --tail 40
+        shell: bash
+
+      - name: Print hosted reward ledger summary
+        if: ${{ always() && (inputs.job == 'reward_event_sync_job' || inputs.job == 'reward_event_report_job') }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "## Hosted reward ledger summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### By agent" >> "$GITHUB_STEP_SUMMARY"
+          uv run python -m hsa_research.ingestion_bridge.cli reward-events \
+            --group-by agent_name \
+            --limit 500 | tee /tmp/reward-events-agent.json
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/reward-events-agent.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### By model profile" >> "$GITHUB_STEP_SUMMARY"
+          uv run python -m hsa_research.ingestion_bridge.cli reward-events \
+            --group-by model_profile \
+            --limit 500 | tee /tmp/reward-events-model.json
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/reward-events-model.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
         shell: bash
 
       - name: Print hosted MD compute summary

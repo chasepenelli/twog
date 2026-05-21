@@ -43,6 +43,7 @@ from .contracts import (
     ResearchBriefQueueItem,
     ResearchBriefRecord,
     ResearchLeadRecord,
+    RewardEventRecord,
     ResolvedEntity,
     ResearchObject,
     ResearchSource,
@@ -1667,6 +1668,84 @@ class PostgresResearchRepository(ResearchRepository):
         sql += " order by created_at desc limit %s"
         params.append(limit)
         return [AgentRunReviewRecord.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
+
+    def create_reward_event(self, record: RewardEventRecord) -> RewardEventRecord:
+        payload = record.model_dump(mode="json")
+        self._execute(
+            """
+            insert into reward_events (
+              reward_event_id, identity_key, event_source, score, agent_run_id,
+              source_review_id, agent_name, model_profile, source_key, created_at, payload
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict(reward_event_id) do update set
+              identity_key = excluded.identity_key,
+              event_source = excluded.event_source,
+              score = excluded.score,
+              agent_run_id = excluded.agent_run_id,
+              source_review_id = excluded.source_review_id,
+              agent_name = excluded.agent_name,
+              model_profile = excluded.model_profile,
+              source_key = excluded.source_key,
+              created_at = excluded.created_at,
+              payload = excluded.payload,
+              updated_at = now()
+            """,
+            (
+                str(record.reward_event_id),
+                record.identity_key,
+                record.event_source,
+                record.score,
+                str(record.agent_run_id) if record.agent_run_id else None,
+                str(record.source_review_id) if record.source_review_id else None,
+                record.agent_name,
+                record.model_profile,
+                record.source_key,
+                record.created_at,
+                self._json(payload),
+            ),
+        )
+        return record
+
+    def get_reward_event(self, reward_event_id: UUID) -> RewardEventRecord | None:
+        row = self._fetchone("select payload from reward_events where reward_event_id = %s", (str(reward_event_id),))
+        if row is None:
+            return None
+        return RewardEventRecord.model_validate(_payload(row))
+
+    def list_reward_events(
+        self,
+        *,
+        agent_run_id: UUID | None = None,
+        source_review_id: UUID | None = None,
+        agent_name: str | None = None,
+        source_key: str | None = None,
+        event_source: str | None = None,
+        limit: int = 50,
+    ) -> list[RewardEventRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if agent_run_id:
+            clauses.append("agent_run_id = %s")
+            params.append(str(agent_run_id))
+        if source_review_id:
+            clauses.append("source_review_id = %s")
+            params.append(str(source_review_id))
+        if agent_name:
+            clauses.append("agent_name = %s")
+            params.append(agent_name)
+        if source_key:
+            clauses.append("source_key = %s")
+            params.append(source_key)
+        if event_source:
+            clauses.append("event_source = %s")
+            params.append(event_source)
+        sql = "select payload from reward_events"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by created_at desc limit %s"
+        params.append(limit)
+        return [RewardEventRecord.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
 
     def upsert_research_brief(self, record: ResearchBriefRecord) -> ResearchBriefRecord:
         payload = record.model_dump(mode="json")
@@ -3896,6 +3975,28 @@ class PostgresResearchRepository(ResearchRepository):
               on agent_run_reviews(agent_run_id, created_at desc);
             create index if not exists agent_run_reviews_verdict_idx
               on agent_run_reviews(verdict, created_at desc);
+
+            create table if not exists reward_events (
+              reward_event_id text primary key,
+              identity_key text not null unique,
+              event_source text not null,
+              score double precision not null,
+              agent_run_id text,
+              source_review_id text,
+              agent_name text,
+              model_profile text,
+              source_key text,
+              created_at timestamptz not null,
+              payload jsonb not null,
+              updated_at timestamptz not null default now()
+            );
+
+            create index if not exists reward_events_agent_idx
+              on reward_events(agent_name, created_at desc);
+            create index if not exists reward_events_run_idx
+              on reward_events(agent_run_id, created_at desc);
+            create index if not exists reward_events_source_idx
+              on reward_events(source_key, created_at desc);
 
             create table if not exists research_briefs (
               brief_id text primary key,

@@ -44,6 +44,7 @@ from .contracts import (
     ResearchBriefRecord,
     ResearchLeadRecord,
     ResearchObject,
+    RewardEventRecord,
     ValidationDecisionRecord,
     ValidationPlanRecord,
     ValidationRequestQueueItem,
@@ -277,6 +278,24 @@ class ResearchRepository(Protocol):
         limit: int = 50,
     ) -> list[AgentRunReviewRecord]:
         """Return recent operator reviews for agent runs."""
+
+    def create_reward_event(self, record: RewardEventRecord) -> RewardEventRecord:
+        """Persist a reward signal for agent/output learning."""
+
+    def get_reward_event(self, reward_event_id: UUID) -> RewardEventRecord | None:
+        """Return a persisted reward signal."""
+
+    def list_reward_events(
+        self,
+        *,
+        agent_run_id: UUID | None = None,
+        source_review_id: UUID | None = None,
+        agent_name: str | None = None,
+        source_key: str | None = None,
+        event_source: str | None = None,
+        limit: int = 50,
+    ) -> list[RewardEventRecord]:
+        """Return recent reward signals by durable filters."""
 
     def upsert_research_brief(self, record: ResearchBriefRecord) -> ResearchBriefRecord:
         """Persist a generated research brief and its full typed payload."""
@@ -696,6 +715,7 @@ class InMemoryResearchRepository:
         self.hypotheses: dict[UUID, HypothesisDraft] = {}
         self.agent_runs: dict[UUID, AgentRunRecord] = {}
         self.agent_run_reviews: dict[UUID, AgentRunReviewRecord] = {}
+        self.reward_events: dict[UUID, RewardEventRecord] = {}
 
     def get_research_object(self, object_id: UUID) -> ResearchObject | None:
         return self.research_objects.get(object_id)
@@ -1274,6 +1294,37 @@ class InMemoryResearchRepository:
             reviews = [review for review in reviews if review.reviewer == reviewer]
         reviews.sort(key=lambda review: review.created_at, reverse=True)
         return reviews[:limit]
+
+    def create_reward_event(self, record: RewardEventRecord) -> RewardEventRecord:
+        self.reward_events[record.reward_event_id] = record
+        return record
+
+    def get_reward_event(self, reward_event_id: UUID) -> RewardEventRecord | None:
+        return self.reward_events.get(reward_event_id)
+
+    def list_reward_events(
+        self,
+        *,
+        agent_run_id: UUID | None = None,
+        source_review_id: UUID | None = None,
+        agent_name: str | None = None,
+        source_key: str | None = None,
+        event_source: str | None = None,
+        limit: int = 50,
+    ) -> list[RewardEventRecord]:
+        events = list(self.reward_events.values())
+        if agent_run_id:
+            events = [event for event in events if event.agent_run_id == agent_run_id]
+        if source_review_id:
+            events = [event for event in events if event.source_review_id == source_review_id]
+        if agent_name:
+            events = [event for event in events if event.agent_name == agent_name]
+        if source_key:
+            events = [event for event in events if event.source_key == source_key]
+        if event_source:
+            events = [event for event in events if event.event_source == event_source]
+        events.sort(key=lambda event: event.created_at, reverse=True)
+        return events[:limit]
 
     def upsert_research_brief(self, record: ResearchBriefRecord) -> ResearchBriefRecord:
         self.research_briefs[record.brief_id] = record

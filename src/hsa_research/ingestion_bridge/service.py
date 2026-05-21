@@ -152,6 +152,11 @@ from .contracts import (
     ResearchProgramRecord,
     ResearchProgramReviewRequest,
     ResearchProgramReviewResult,
+    RewardEventRecord,
+    RewardEventSyncRequest,
+    RewardEventSyncResult,
+    RewardReportRequest,
+    RewardReportResult,
     RetrievalSmokeRequest,
     RetrievalSmokeResult,
     SourceScoutRequest,
@@ -250,6 +255,7 @@ from .omics_evidence_packets import build_omics_evidence_packets
 from .omics_followups import build_omics_followups
 from .omics_locus_signals import build_omics_locus_signals
 from .omics_readouts import build_omics_readouts
+from .reward_events import build_reward_report, sync_reward_events_from_reviews
 from .research_brief_agent import (
     PERSPECTIVE_ORDER,
     RESEARCH_BRIEF_AGENT_VERSION,
@@ -5462,6 +5468,37 @@ class HSAResearchService:
         request: AgentPerformanceReportRequest,
     ) -> AgentPerformanceReportResult:
         return build_agent_performance_report(self.repository, request)
+
+    def create_reward_event(self, record: RewardEventRecord) -> RewardEventRecord:
+        return self.repository.create_reward_event(record)
+
+    def get_reward_event(self, reward_event_id: UUID) -> RewardEventRecord | None:
+        return self.repository.get_reward_event(reward_event_id)
+
+    def list_reward_events(
+        self,
+        *,
+        agent_run_id: UUID | None = None,
+        source_review_id: UUID | None = None,
+        agent_name: str | None = None,
+        source_key: str | None = None,
+        event_source: str | None = None,
+        limit: int = 50,
+    ) -> list[RewardEventRecord]:
+        return self.repository.list_reward_events(
+            agent_run_id=agent_run_id,
+            source_review_id=source_review_id,
+            agent_name=agent_name,
+            source_key=source_key,
+            event_source=event_source,
+            limit=limit,
+        )
+
+    def sync_reward_events_from_reviews(self, request: RewardEventSyncRequest) -> RewardEventSyncResult:
+        return sync_reward_events_from_reviews(self.repository, request)
+
+    def build_reward_report(self, request: RewardReportRequest) -> RewardReportResult:
+        return build_reward_report(self.repository, request)
 
     def run_agent_performance_evaluation(
         self,

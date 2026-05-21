@@ -50,6 +50,8 @@ from .contracts import (
     ResearchProgramBoardRequest,
     ResearchProgramEvidenceLoopRequest,
     ResearchProgramReviewRequest,
+    RewardEventSyncRequest,
+    RewardReportRequest,
     ResearchObject,
     SourceFollowupIngestRequest,
     SourceFollowupQueueRequest,
@@ -218,6 +220,14 @@ _AGENT_PERFORMANCE_EVALUATION_TABLE_COLUMNS = (
     "confidence",
     "review_id",
     "rationale",
+)
+_REWARD_REPORT_TABLE_COLUMNS = (
+    "group_type",
+    "group_value",
+    "event_count",
+    "reward_score",
+    "average_score",
+    "low_sample",
 )
 _PUBMED_IDENTIFIER_REPAIR_TABLE_COLUMNS = (
     "pmid",
@@ -1067,6 +1077,27 @@ if dg is not None:
                 report.get("evaluations", []),
                 _AGENT_PERFORMANCE_EVALUATION_TABLE_COLUMNS,
             ),
+        }
+
+    def _reward_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "event_count": dg.MetadataValue.int(int(report.get("event_count") or 0)),
+            "reward_score": dg.MetadataValue.int(int(report.get("reward_score") or 0)),
+            "average_score": float(report.get("average_score") or 0.0),
+            "event_source_counts": dg.MetadataValue.json(report.get("event_source_counts", {})),
+            "verdict_counts": dg.MetadataValue.json(report.get("verdict_counts", {})),
+            "top_rows": _metadata_table(report.get("top_rows", []), _REWARD_REPORT_TABLE_COLUMNS),
+            "bottom_rows": _metadata_table(report.get("bottom_rows", []), _REWARD_REPORT_TABLE_COLUMNS),
+        }
+
+    def _reward_sync_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "scanned_review_count": dg.MetadataValue.int(int(report.get("scanned_review_count") or 0)),
+            "eligible_review_count": dg.MetadataValue.int(int(report.get("eligible_review_count") or 0)),
+            "created_count": dg.MetadataValue.int(int(report.get("created_count") or 0)),
+            "skipped_existing_count": dg.MetadataValue.int(int(report.get("skipped_existing_count") or 0)),
+            "missing_run_count": dg.MetadataValue.int(int(report.get("missing_run_count") or 0)),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
         }
 
     def _entity_resolution_source_rows(report: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -3835,6 +3866,77 @@ if dg is not None:
         )
         report = result.model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_agent_performance_evaluation_metadata(report))
+
+    @dg.asset(
+        group_name="agent_ops",
+        config_schema={
+            "agent_name": dg.Field(str, is_required=False, description="Optional agent name filter."),
+            "source_key": dg.Field(str, is_required=False, description="Optional source key filter."),
+            "event_source": dg.Field(str, is_required=False, description="Optional reward event source filter."),
+            "group_by": dg.Field(
+                str,
+                default_value="agent_name",
+                description="Reward report group: agent_name, model_profile, task_type, source_key, or event_source.",
+            ),
+            "limit": dg.Field(int, default_value=500, description="Recent reward events to scan."),
+            "min_sample_size": dg.Field(int, default_value=3, description="Events required before sample is reliable."),
+        },
+    )
+    def reward_event_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Learning-loop reward report over persisted reward events."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_reward_report(
+            RewardReportRequest(
+                agent_name=config.get("agent_name"),
+                source_key=config.get("source_key"),
+                event_source=config.get("event_source"),
+                group_by=config["group_by"],
+                limit=config["limit"],
+                min_sample_size=config["min_sample_size"],
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_reward_report_metadata(report))
+
+    @dg.asset(
+        group_name="agent_ops",
+        config_schema={
+            "agent_name": dg.Field(str, is_required=False, description="Optional agent name filter."),
+            "source_key": dg.Field(str, is_required=False, description="Optional source key filter."),
+            "reviewer_type": dg.Field(str, is_required=False, description="operator, llm_evaluator, or system."),
+            "limit": dg.Field(int, default_value=500, description="Recent reviews to scan."),
+            "include_existing": dg.Field(bool, default_value=False, description="Regenerate existing review reward events."),
+            "created_by": dg.Field(str, default_value="dagster_reward_review_sync", description="Ledger creator identity."),
+        },
+    )
+    def reward_event_sync_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Derive reward events from operator and evaluator agent-run reviews."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        result = HSAResearchService(repository).sync_reward_events_from_reviews(
+            RewardEventSyncRequest(
+                agent_name=config.get("agent_name"),
+                source_key=config.get("source_key"),
+                reviewer_type=config.get("reviewer_type"),
+                limit=config["limit"],
+                include_existing=config["include_existing"],
+                created_by=config["created_by"],
+            )
+        )
+        report = result.model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_reward_sync_metadata(report))
 
     @dg.asset(
         group_name="ai_research",
@@ -7672,6 +7774,8 @@ if dg is not None:
         full_text_ops_agent_report,
         agent_performance_report,
         agent_performance_evaluation_report,
+        reward_event_report,
+        reward_event_sync_report,
         research_brief_agent_report,
         therapy_committee_report,
         validation_tool_catalog_report,
@@ -7848,6 +7952,14 @@ if dg is not None:
     agent_performance_evaluation_job = dg.define_asset_job(
         "agent_performance_evaluation_job",
         selection=dg.AssetSelection.assets(agent_performance_evaluation_report),
+    )
+    reward_event_report_job = dg.define_asset_job(
+        "reward_event_report_job",
+        selection=dg.AssetSelection.assets(reward_event_report),
+    )
+    reward_event_sync_job = dg.define_asset_job(
+        "reward_event_sync_job",
+        selection=dg.AssetSelection.assets(reward_event_sync_report),
     )
     research_brief_agent_job = dg.define_asset_job(
         "research_brief_agent_job",
@@ -8281,6 +8393,8 @@ if dg is not None:
             full_text_ops_agent_job,
             agent_performance_report_job,
             agent_performance_evaluation_job,
+            reward_event_report_job,
+            reward_event_sync_job,
             research_brief_agent_job,
             therapy_committee_job,
             validation_tool_catalog_job,
@@ -8396,6 +8510,8 @@ else:
     full_text_ops_agent_job = None
     agent_performance_report_job = None
     agent_performance_evaluation_job = None
+    reward_event_report_job = None
+    reward_event_sync_job = None
     research_brief_agent_job = None
     therapy_committee_job = None
     validation_tool_catalog_job = None

@@ -560,6 +560,25 @@ class AgentRunRecord(StrictBaseModel):
 AgentRunReviewVerdict = Literal["useful", "needs_followup", "bad", "unclear"]
 AgentRunReviewerType = Literal["operator", "llm_evaluator", "system"]
 AgentPerformanceGroupType = Literal["agent_name", "model_profile", "model_key", "prompt_key"]
+RewardEventSource = Literal[
+    "operator_review",
+    "llm_evaluator_review",
+    "system_review",
+    "downstream_progress",
+    "manual",
+]
+RewardDimension = Literal[
+    "overall",
+    "citation_quality",
+    "provenance_quality",
+    "actionability",
+    "novelty",
+    "specificity",
+    "scientific_risk",
+    "operator_usefulness",
+    "downstream_progress",
+]
+RewardReportGroupType = Literal["agent_name", "model_profile", "task_type", "source_key", "event_source"]
 
 
 class AgentRunReviewRecord(StrictBaseModel):
@@ -661,6 +680,130 @@ class AgentPerformanceEvaluationResult(StrictBaseModel):
     review_ids: list[UUID] = Field(default_factory=list)
     evaluations: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class RewardEventRecord(StrictBaseModel):
+    reward_event_id: UUID = Field(default_factory=uuid4)
+    identity_key: str | None = None
+    event_source: RewardEventSource
+    score: float = Field(ge=0.0, le=1.0)
+    dimension_scores: dict[RewardDimension, float] = Field(default_factory=dict)
+    verdict: AgentRunReviewVerdict | None = None
+    agent_run_id: UUID | None = None
+    source_review_id: UUID | None = None
+    brief_id: UUID | None = None
+    therapy_idea_id: UUID | None = None
+    validation_packet_id: UUID | None = None
+    candidate_id: str | None = None
+    agent_name: str | None = None
+    model_profile: str | None = None
+    prompt_key: str | None = None
+    task_type: str | None = None
+    source_key: str | None = None
+    rationale: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    created_by: str = "system"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_reward_event(self) -> RewardEventRecord:
+        for key, value in self.dimension_scores.items():
+            if value < 0.0 or value > 1.0:
+                raise ValueError(f"reward dimension {key} must be between 0 and 1")
+        self.identity_key = (self.identity_key or self._default_identity_key()).strip()
+        self.agent_name = self.agent_name.strip() if self.agent_name else None
+        self.model_profile = self.model_profile.strip() if self.model_profile else None
+        self.prompt_key = self.prompt_key.strip() if self.prompt_key else None
+        self.task_type = self.task_type.strip() if self.task_type else None
+        self.source_key = self.source_key.strip() if self.source_key else None
+        self.candidate_id = self.candidate_id.strip() if self.candidate_id else None
+        self.rationale = self.rationale.strip() if self.rationale and self.rationale.strip() else None
+        self.tags = _dedupe_lower_tokens(self.tags)
+        self.created_by = self.created_by.strip() or "system"
+        return self
+
+    def _default_identity_key(self) -> str:
+        if self.source_review_id:
+            return f"reward:{self.event_source}:review:{self.source_review_id}"
+        if self.agent_run_id:
+            return f"reward:{self.event_source}:agent_run:{self.agent_run_id}"
+        if self.brief_id:
+            return f"reward:{self.event_source}:brief:{self.brief_id}"
+        if self.therapy_idea_id:
+            return f"reward:{self.event_source}:therapy_idea:{self.therapy_idea_id}"
+        if self.validation_packet_id:
+            return f"reward:{self.event_source}:validation_packet:{self.validation_packet_id}"
+        if self.candidate_id:
+            return f"reward:{self.event_source}:candidate:{self.candidate_id}"
+        return f"reward:{self.event_source}:event:{self.reward_event_id}"
+
+
+class RewardEventSyncRequest(StrictBaseModel):
+    limit: int = Field(default=500, ge=1, le=10000)
+    agent_name: str | None = None
+    source_key: str | None = None
+    reviewer_type: AgentRunReviewerType | None = None
+    include_existing: bool = False
+    created_by: str = "reward_review_sync"
+
+    @model_validator(mode="after")
+    def normalize_reward_sync(self) -> RewardEventSyncRequest:
+        self.agent_name = self.agent_name.strip() if self.agent_name else None
+        self.source_key = self.source_key.strip() if self.source_key else None
+        self.created_by = self.created_by.strip() or "reward_review_sync"
+        return self
+
+
+class RewardEventSyncResult(StrictBaseModel):
+    scanned_review_count: int = Field(default=0, ge=0)
+    eligible_review_count: int = Field(default=0, ge=0)
+    created_count: int = Field(default=0, ge=0)
+    skipped_existing_count: int = Field(default=0, ge=0)
+    missing_run_count: int = Field(default=0, ge=0)
+    reward_event_ids: list[UUID] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class RewardReportRequest(StrictBaseModel):
+    agent_name: str | None = None
+    source_key: str | None = None
+    event_source: RewardEventSource | None = None
+    group_by: RewardReportGroupType = "agent_name"
+    limit: int = Field(default=500, ge=1, le=10000)
+    min_sample_size: int = Field(default=3, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def normalize_reward_report_request(self) -> RewardReportRequest:
+        self.agent_name = self.agent_name.strip() if self.agent_name else None
+        self.source_key = self.source_key.strip() if self.source_key else None
+        return self
+
+
+class RewardReportRow(StrictBaseModel):
+    group_type: RewardReportGroupType
+    group_value: str
+    event_count: int = Field(default=0, ge=0)
+    average_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    reward_score: int | None = Field(default=None, ge=0, le=100)
+    low_sample: bool = False
+    event_source_counts: dict[str, int] = Field(default_factory=dict)
+    verdict_counts: dict[str, int] = Field(default_factory=dict)
+    dimension_averages: dict[str, float] = Field(default_factory=dict)
+    latest_event_at: datetime | None = None
+
+
+class RewardReportResult(StrictBaseModel):
+    event_count: int = Field(default=0, ge=0)
+    average_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    reward_score: int | None = Field(default=None, ge=0, le=100)
+    event_source_counts: dict[str, int] = Field(default_factory=dict)
+    verdict_counts: dict[str, int] = Field(default_factory=dict)
+    rows: list[RewardReportRow] = Field(default_factory=list)
+    top_rows: list[RewardReportRow] = Field(default_factory=list)
+    bottom_rows: list[RewardReportRow] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
