@@ -1,0 +1,79 @@
+name: Sync Public Candidates
+
+on:
+  workflow_dispatch:
+    inputs:
+      visibility:
+        description: "Comma-separated candidate visibility values to export"
+        required: true
+        type: string
+        default: "draft_public,public"
+      merge_existing:
+        description: "Preserve existing static candidates not present in Neon export"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-public-candidates
+  cancel-in-progress: false
+
+jobs:
+  sync_public_candidates:
+    name: Sync public candidate snapshots
+    runs-on: ubuntu-22.04
+    env:
+      HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
+      TWOG_PUBLIC_CANDIDATE_VISIBILITY: ${{ inputs.visibility }}
+      TWOG_PUBLIC_CANDIDATE_MERGE_EXISTING: ${{ inputs.merge_existing }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: twog/package-lock.json
+
+      - name: Validate required secrets
+        run: |
+          if [ -z "$HSA_DATABASE_URL" ]; then
+            echo "::error::HSA_DATABASE_URL is not configured."
+            exit 1
+          fi
+        shell: bash
+
+      - name: Install website dependencies
+        working-directory: twog
+        run: npm ci
+
+      - name: Export public candidates from Neon
+        working-directory: twog
+        run: npm run export:candidates
+
+      - name: Validate website build
+        working-directory: twog
+        run: npm run build
+
+      - name: Commit candidate export
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- twog/data/public-candidates.json; then
+            echo "No public candidate export changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add twog/data/public-candidates.json
+          git commit -m "Sync public candidate snapshots"
+          git push origin HEAD:main
+        shell: bash

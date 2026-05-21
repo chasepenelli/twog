@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "sync:candidates": "node scripts/sync-public-candidates.mjs",
+    "export:candidates": "node scripts/export-public-candidates-from-neon.mjs",
     "db:migrate": "node scripts/apply-neon-migrations.mjs"
   },
   "dependencies": {
