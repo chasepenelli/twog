@@ -4225,7 +4225,13 @@ if dg is not None:
                 metadata={"dagster_run_id": context.run_id},
             )
         ).model_dump(mode="json")
-        return dg.MaterializeResult(value=report, metadata=_public_candidate_snapshot_metadata(report))
+        metadata = _public_candidate_snapshot_metadata(report)
+        if report.get("errors") or not report.get("candidate") or not report.get("snapshot"):
+            raise dg.Failure(
+                description="Public candidate snapshot generation returned no persisted snapshot.",
+                metadata=metadata,
+            )
+        return dg.MaterializeResult(value=report, metadata=metadata)
 
     @dg.asset(
         group_name="ai_research",
