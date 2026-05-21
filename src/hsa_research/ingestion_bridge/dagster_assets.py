@@ -32,6 +32,7 @@ from .contracts import (
     OmicsLocusSignalRequest,
     OmicsReadoutRequest,
     PubMedIdentifierRepairRequest,
+    PublicCandidateGenerateRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
     ResearchBriefQualityReportRequest,
@@ -303,6 +304,15 @@ _THERAPY_IDEA_LIBRARY_TABLE_COLUMNS = (
     "candidate_therapies",
     "targets",
     "evidence_refs",
+)
+_PUBLIC_CANDIDATE_GATE_TABLE_COLUMNS = (
+    "passed",
+    "priority_score",
+    "min_priority_score",
+    "has_program_lineage",
+    "evidence_ref_count",
+    "reasons",
+    "blockers",
 )
 _HYPOTHESIS_PROMOTION_TABLE_COLUMNS = (
     "candidate_id",
@@ -1310,6 +1320,33 @@ if dg is not None:
             "idea_count": dg.MetadataValue.int(int(report.get("idea_count", 0))),
             "status_counts": dg.MetadataValue.json(report.get("status_counts", {})),
             "ideas": _metadata_table(rows, _THERAPY_IDEA_LIBRARY_TABLE_COLUMNS),
+        }
+
+    def _public_candidate_snapshot_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        candidate = report.get("candidate") if isinstance(report.get("candidate"), Mapping) else {}
+        snapshot = report.get("snapshot") if isinstance(report.get("snapshot"), Mapping) else {}
+        gate = report.get("moonshot_gate") if isinstance(report.get("moonshot_gate"), Mapping) else {}
+        gate_rows = [
+            {
+                "passed": gate.get("passed"),
+                "priority_score": gate.get("priority_score"),
+                "min_priority_score": gate.get("min_priority_score"),
+                "has_program_lineage": gate.get("has_program_lineage"),
+                "evidence_ref_count": gate.get("evidence_ref_count"),
+                "reasons": ", ".join(gate.get("reasons") or []),
+                "blockers": ", ".join(gate.get("blockers") or []),
+            }
+        ]
+        return {
+            "candidate_id": dg.MetadataValue.text(str(candidate.get("candidate_id") or "")),
+            "display_id": dg.MetadataValue.text(str(candidate.get("display_id") or "")),
+            "public_status": dg.MetadataValue.text(str(candidate.get("public_status") or "")),
+            "visibility": dg.MetadataValue.text(str(candidate.get("visibility") or "")),
+            "content_hash": dg.MetadataValue.text(str(snapshot.get("content_hash") or "")),
+            "snapshot_version": dg.MetadataValue.int(int(snapshot.get("snapshot_version") or 0)),
+            "moonshot_gate_passed": dg.MetadataValue.bool(bool(gate.get("passed"))),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "moonshot_gate": _metadata_table(gate_rows, _PUBLIC_CANDIDATE_GATE_TABLE_COLUMNS),
         }
 
     def _hypothesis_promotion_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -4022,6 +4059,56 @@ if dg is not None:
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_therapy_idea_library_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "therapy_idea_id": dg.Field(str, description="Therapy idea ID to project into a public candidate."),
+            "candidate_id": dg.Field(str, is_required=False),
+            "display_id": dg.Field(str, is_required=False),
+            "candidate_kind": dg.Field(str, is_required=False),
+            "visibility": dg.Field(str, default_value="private"),
+            "public_status": dg.Field(str, is_required=False),
+            "pipeline_version": dg.Field(str, is_required=False),
+            "commit_sha": dg.Field(str, is_required=False),
+            "include_compute_jobs": dg.Field(bool, default_value=True),
+            "include_decisions": dg.Field(bool, default_value=True),
+            "include_artifacts": dg.Field(bool, default_value=True),
+            "require_moonshot_grade": dg.Field(bool, default_value=True),
+            "min_moonshot_score": dg.Field(float, default_value=0.8),
+            "persist": dg.Field(bool, default_value=True),
+        },
+    )
+    def public_candidate_snapshot_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual public-proof snapshot generator for moonshot-grade therapy ideas."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).generate_public_candidate_snapshot(
+            PublicCandidateGenerateRequest(
+                candidate_id=config.get("candidate_id"),
+                therapy_idea_id=_uuid_or_none(config.get("therapy_idea_id")),
+                display_id=config.get("display_id"),
+                candidate_kind=config.get("candidate_kind"),
+                visibility=config.get("visibility", "private"),
+                public_status=config.get("public_status"),
+                pipeline_version=config.get("pipeline_version"),
+                commit_sha=config.get("commit_sha"),
+                include_compute_jobs=config.get("include_compute_jobs", True),
+                include_decisions=config.get("include_decisions", True),
+                include_artifacts=config.get("include_artifacts", True),
+                require_moonshot_grade=config.get("require_moonshot_grade", True),
+                min_moonshot_score=config.get("min_moonshot_score", 0.8),
+                persist=config.get("persist", True),
+                metadata={"dagster_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_public_candidate_snapshot_metadata(report))
 
     @dg.asset(
         group_name="ai_research",
@@ -7590,6 +7677,7 @@ if dg is not None:
         validation_tool_catalog_report,
         validation_tool_match_report,
         therapy_idea_library_report,
+        public_candidate_snapshot_report,
         hypothesis_promotion_report,
         validation_packet_report,
         validation_decision_report,
@@ -7780,6 +7868,10 @@ if dg is not None:
     therapy_idea_library_job = dg.define_asset_job(
         "therapy_idea_library_job",
         selection=dg.AssetSelection.assets(therapy_idea_library_report),
+    )
+    public_candidate_snapshot_job = dg.define_asset_job(
+        "public_candidate_snapshot_job",
+        selection=dg.AssetSelection.assets(public_candidate_snapshot_report),
     )
     hypothesis_promotion_job = dg.define_asset_job(
         "hypothesis_promotion_job",
@@ -8194,6 +8286,7 @@ if dg is not None:
             validation_tool_catalog_job,
             validation_tool_match_job,
             therapy_idea_library_job,
+            public_candidate_snapshot_job,
             hypothesis_promotion_job,
             validation_packet_job,
             validation_decision_job,
@@ -8308,6 +8401,7 @@ else:
     validation_tool_catalog_job = None
     validation_tool_match_job = None
     therapy_idea_library_job = None
+    public_candidate_snapshot_job = None
     hypothesis_promotion_job = None
     validation_packet_job = None
     validation_decision_job = None

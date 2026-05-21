@@ -5807,6 +5807,19 @@ def _generate_public_candidate_snapshot(
     if therapy_idea is None:
         return PublicCandidateSnapshotResult(errors=["public_candidate_generation_requires_therapy_idea"])
 
+    moonshot_gate = _public_candidate_moonshot_gate(
+        therapy_idea,
+        min_score=request.min_moonshot_score,
+    )
+    if request.require_moonshot_grade and not moonshot_gate["passed"]:
+        return PublicCandidateSnapshotResult(
+            moonshot_gate=moonshot_gate,
+            errors=[
+                "public_candidate_requires_moonshot_grade",
+                *[f"moonshot_gate:{blocker}" for blocker in moonshot_gate["blockers"]],
+            ],
+        )
+
     existing_candidates = repository.list_public_candidates(
         PublicCandidateLibraryRequest(therapy_idea_id=therapy_idea.therapy_idea_id, limit=1)
     )
@@ -5863,6 +5876,7 @@ def _generate_public_candidate_snapshot(
         compute_jobs=compute_jobs,
         artifacts=artifacts,
         literature=literature,
+        moonshot_gate=moonshot_gate,
         pipeline_version=request.pipeline_version,
         commit_sha=request.commit_sha,
     )
@@ -5904,7 +5918,11 @@ def _generate_public_candidate_snapshot(
         compute_job_ids=[job.compute_job_id for job in compute_jobs],
         pipeline_version=request.pipeline_version,
         commit_sha=request.commit_sha,
-        metadata={**request.metadata, "source": "public_candidate_snapshot_generator"},
+        metadata={
+            **request.metadata,
+            "source": "public_candidate_snapshot_generator",
+            "moonshot_gate": moonshot_gate,
+        },
     )
     candidate_record = PublicCandidateRecord(
         candidate_id=candidate_id,
@@ -5936,6 +5954,7 @@ def _generate_public_candidate_snapshot(
             **(candidate.metadata if candidate else {}),
             **request.metadata,
             "latest_snapshot_version": snapshot.snapshot_version,
+            "moonshot_gate": moonshot_gate,
             "snapshot_source": "therapy_idea",
         },
     )
@@ -5948,8 +5967,132 @@ def _generate_public_candidate_snapshot(
         candidate=candidate_record,
         snapshot=snapshot,
         decision_events=decision_events,
+        moonshot_gate=moonshot_gate,
         errors=errors,
     )
+
+
+_PUBLIC_CANDIDATE_MOONSHOT_TERMS = (
+    "moonshot",
+    "big idea",
+    "research program",
+    "program-level",
+    "program level",
+    "strategy",
+    "platform",
+    "ecology",
+    "axis",
+    "modality",
+    "engineered",
+    "synthetic",
+    "peptide",
+    "cross-species",
+    "translational model",
+    "biomarker-stratified",
+    "precision",
+    "combination",
+    "reprogram",
+    "disease-modifying",
+)
+
+_PUBLIC_CANDIDATE_INCREMENTAL_TERMS = (
+    "dose monitoring",
+    "monitoring follow-up",
+    "safety monitoring",
+    "pk/pd follow-up",
+    "protocol monitoring",
+    "adverse event follow-up",
+    "historical control",
+    "monotherapy data",
+)
+
+
+def _public_candidate_moonshot_gate(
+    record: TherapyIdeaRecord,
+    *,
+    min_score: float,
+) -> dict[str, Any]:
+    """Assess whether a therapy idea is big enough for the public candidate layer."""
+
+    reasons: list[str] = []
+    blockers: list[str] = []
+    text = _public_candidate_gate_text(record)
+    score = float(record.score if record.score is not None else record.idea.priority_score)
+    evidence_count = len(record.evidence_refs)
+    has_program_lineage = record.source_program_id is not None
+    moonshot_terms = sorted({term for term in _PUBLIC_CANDIDATE_MOONSHOT_TERMS if term in text})
+    incremental_terms = sorted({term for term in _PUBLIC_CANDIDATE_INCREMENTAL_TERMS if term in text})
+    has_mechanistic_shape = bool(
+        (record.targets or record.biomarkers)
+        and record.candidate_therapies
+        and (record.idea.mechanism or record.idea.translational_path or record.idea.rationale)
+    )
+    has_validation_shape = len(record.next_experiments) >= 1 and bool(record.risks)
+
+    if score >= min_score:
+        reasons.append(f"priority_score>={min_score:.2f}")
+    else:
+        blockers.append(f"priority_score_below_{min_score:.2f}")
+
+    if has_program_lineage:
+        reasons.append("research_program_lineage")
+    if moonshot_terms:
+        reasons.append(f"moonshot_terms:{','.join(moonshot_terms[:6])}")
+    if not has_program_lineage and not moonshot_terms:
+        blockers.append("missing_program_or_moonshot_thesis")
+
+    if evidence_count >= 2 or record.idea.evidence_strength in {"medium", "high"}:
+        reasons.append("evidence_anchor_present")
+    else:
+        blockers.append("insufficient_evidence_anchors")
+
+    if has_mechanistic_shape:
+        reasons.append("mechanism_targets_and_therapy_defined")
+    else:
+        blockers.append("missing_mechanistic_therapy_shape")
+
+    if has_validation_shape:
+        reasons.append("validation_path_and_risk_notes_present")
+    else:
+        blockers.append("missing_validation_path_or_risk_notes")
+
+    if incremental_terms and not (has_program_lineage or moonshot_terms):
+        blockers.append(f"incremental_followup_only:{','.join(incremental_terms[:4])}")
+
+    return {
+        "gate": "moonshot_public_candidate_v1",
+        "passed": not blockers,
+        "min_priority_score": min_score,
+        "priority_score": score,
+        "evidence_ref_count": evidence_count,
+        "has_program_lineage": has_program_lineage,
+        "matched_terms": moonshot_terms,
+        "incremental_terms": incremental_terms,
+        "reasons": reasons,
+        "blockers": blockers,
+    }
+
+
+def _public_candidate_gate_text(record: TherapyIdeaRecord) -> str:
+    values = [
+        record.idea.title,
+        record.idea.hypothesis,
+        record.idea.rationale,
+        record.idea.mechanism or "",
+        record.idea.translational_path or "",
+        record.status,
+        record.promotion_state or "",
+        record.topic,
+        record.disease_scope,
+        *record.targets,
+        *record.biomarkers,
+        *record.candidate_therapies,
+        *record.risks,
+        *record.next_experiments,
+        json.dumps(record.promotion_metadata, sort_keys=True, default=str),
+        json.dumps(record.metadata, sort_keys=True, default=str),
+    ]
+    return " ".join(str(value).lower() for value in values if value)
 
 
 def _public_candidate_id(record: TherapyIdeaRecord) -> str:
@@ -6002,6 +6145,7 @@ def _public_candidate_payload(
     compute_jobs: list[ComputeJobRecord],
     artifacts: list[ArtifactHandle],
     literature: list[dict[str, Any]],
+    moonshot_gate: dict[str, Any],
     pipeline_version: str | None,
     commit_sha: str | None,
 ) -> dict[str, Any]:
@@ -6083,6 +6227,7 @@ def _public_candidate_payload(
         "reproducibility": {
             "pipeline_version": pipeline_version,
             "commit_sha": commit_sha,
+            "public_candidate_gate": moonshot_gate,
             "committee_run_id": str(therapy_idea.committee_run_id) if therapy_idea.committee_run_id else None,
             "agent_run_id": str(therapy_idea.agent_run_id) if therapy_idea.agent_run_id else None,
             "source_program_id": str(therapy_idea.source_program_id) if therapy_idea.source_program_id else None,

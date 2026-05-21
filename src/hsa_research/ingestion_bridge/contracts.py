@@ -4553,6 +4553,8 @@ class PublicCandidateGenerateRequest(StrictBaseModel):
     include_compute_jobs: bool = True
     include_decisions: bool = True
     include_artifacts: bool = True
+    require_moonshot_grade: bool = True
+    min_moonshot_score: float = Field(default=0.8, ge=0.0, le=1.0)
     persist: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -4602,6 +4604,7 @@ class PublicCandidateSnapshotResult(StrictBaseModel):
     candidate: PublicCandidateRecord | None = None
     snapshot: PublicCandidateSnapshot | None = None
     decision_events: list[PublicCandidateDecisionEvent] = Field(default_factory=list)
+    moonshot_gate: dict[str, Any] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

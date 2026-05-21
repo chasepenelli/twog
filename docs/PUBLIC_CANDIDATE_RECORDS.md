@@ -26,6 +26,20 @@ The layer has three records:
 
 The current source is a persisted `TherapyIdeaRecord`. The snapshot generator also pulls linked validation decisions, matching compute jobs, and compute artifacts when available.
 
+## Moonshot Gate
+
+Public candidate generation now defaults to a moonshot-grade gate. The public layer should surface only high-conviction, program-level bets: ideas with a strong score, a high-level thesis signal, evidence anchors, defined mechanism/therapy shape, and a validation path. Incremental follow-ups, dose-monitoring notes, safety-only checks, and "kinda sorta maybe" ideas should stay in internal research queues.
+
+The default gate requires:
+
+- `priority_score >= 0.80`
+- a research-program lineage or explicit high-level thesis terms such as `strategy`, `platform`, `ecology`, `peptide`, `cross-species`, `biomarker-stratified`, or `disease-modifying`
+- at least two evidence anchors, or medium/high evidence strength
+- candidate therapy plus target/biomarker/mechanistic shape
+- at least one next experiment and one risk note
+
+Failed ideas return `public_candidate_requires_moonshot_grade` and a structured `moonshot_gate` payload. Operators can bypass the gate only for admin previews with `--allow-non-moonshot`; that override should not be used for normal public surfacing.
+
 ## Current Flow
 
 ```mermaid
@@ -56,6 +70,15 @@ PYTHONPATH=src .venv/bin/python -m hsa_research.ingestion_bridge.cli public-cand
   --therapy-idea-id <therapy-idea-uuid> \
   --visibility draft_public \
   --pipeline-version v2-local
+```
+
+Use a stricter score if needed:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m hsa_research.ingestion_bridge.cli public-candidate-generate \
+  --therapy-idea-id <therapy-idea-uuid> \
+  --visibility draft_public \
+  --min-moonshot-score 0.9
 ```
 
 Preview without writing:

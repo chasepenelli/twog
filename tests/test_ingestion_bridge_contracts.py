@@ -1266,6 +1266,54 @@ def test_public_candidate_snapshot_generation_links_therapy_decision_compute_and
     assert "Vimentin expression in canine hemangiosarcoma" in candidate_html
 
 
+def test_public_candidate_generation_blocks_low_grade_incremental_ideas(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "public-candidate-moonshot-gate.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    idea = TherapyIdea(
+        title="Pazopanib dose monitoring follow-up",
+        hypothesis="Dose monitoring might make pazopanib safer in canine HSA.",
+        rationale="This is a useful operational note, but it is not a big public candidate thesis.",
+        candidate_therapies=["pazopanib"],
+        targets=["KDR"],
+        evidence_refs=["C1"],
+        evidence_strength="low",
+        next_experiments=[],
+        risks=[],
+        priority_score=0.61,
+    )
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            topic="incremental pazopanib follow-up",
+            status="proposed",
+            score=0.61,
+        )
+    )
+
+    blocked = service.generate_public_candidate_snapshot(
+        PublicCandidateGenerateRequest(therapy_idea_id=idea.idea_id, visibility="draft_public")
+    )
+
+    assert blocked.candidate is None
+    assert blocked.snapshot is None
+    assert "public_candidate_requires_moonshot_grade" in blocked.errors
+    assert blocked.moonshot_gate["passed"] is False
+    assert "priority_score_below_0.80" in blocked.moonshot_gate["blockers"]
+
+    preview = service.generate_public_candidate_snapshot(
+        PublicCandidateGenerateRequest(
+            therapy_idea_id=idea.idea_id,
+            visibility="draft_public",
+            require_moonshot_grade=False,
+            persist=False,
+        )
+    )
+
+    assert preview.errors == []
+    assert preview.candidate is not None
+    assert preview.moonshot_gate["passed"] is False
+
+
 def test_validation_decision_report_promotes_broader_program_for_weak_specific_claim(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "validation-decision.sqlite3", seed=False)
     service = HSAResearchService(repo)

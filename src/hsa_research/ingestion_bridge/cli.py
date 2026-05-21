@@ -773,6 +773,17 @@ def main() -> None:
     public_candidate.add_argument("--no-compute-jobs", action="store_true", help="Do not attach matching compute jobs")
     public_candidate.add_argument("--no-decisions", action="store_true", help="Do not attach validation decisions")
     public_candidate.add_argument("--no-artifacts", action="store_true", help="Do not resolve compute artifacts")
+    public_candidate.add_argument(
+        "--allow-non-moonshot",
+        action="store_true",
+        help="Bypass the default moonshot-grade public candidate gate for admin previews",
+    )
+    public_candidate.add_argument(
+        "--min-moonshot-score",
+        type=float,
+        default=0.8,
+        help="Minimum therapy idea score required by the moonshot-grade public candidate gate",
+    )
     public_candidate.add_argument("--no-persist", action="store_true", help="Preview without writing records")
 
     public_candidates = subparsers.add_parser(
@@ -2464,6 +2475,8 @@ def main() -> None:
                 include_compute_jobs=not args.no_compute_jobs,
                 include_decisions=not args.no_decisions,
                 include_artifacts=not args.no_artifacts,
+                require_moonshot_grade=not args.allow_non_moonshot,
+                min_moonshot_score=args.min_moonshot_score,
                 persist=not args.no_persist,
             )
         ).model_dump(mode="json")
