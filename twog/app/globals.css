@@ -1934,6 +1934,49 @@ section {
   line-height: 1.58;
 }
 
+.audit-receipt-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.65rem;
+  margin-top: 1.1rem;
+}
+
+.audit-receipt-grid div {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.56);
+  padding: 0.78rem;
+}
+
+.audit-receipt-grid span {
+  display: block;
+  color: var(--muted-ink);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.35rem;
+  text-transform: uppercase;
+}
+
+.audit-receipt-grid code {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.audit-note {
+  border-left: 2px solid var(--purple);
+  color: var(--muted-ink);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  margin-top: 1rem;
+  max-width: 760px;
+  padding-left: 0.8rem;
+}
+
 .method-notes {
   grid-template-columns: repeat(5, minmax(0, 1fr));
   margin-top: clamp(2rem, 5vw, 4rem);

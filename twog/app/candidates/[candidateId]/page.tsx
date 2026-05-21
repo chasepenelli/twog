@@ -6,6 +6,7 @@ import {
   getCandidate,
   LiteratureRecord,
   publicCandidates,
+  publicCandidateAuditTrail,
   publicCandidateEvidenceBundlePath,
   publicCandidatePayloadPath,
   readableKind,
@@ -67,6 +68,7 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
   const referenceGroups = uniqueGroups(literature);
   const payloadPath = publicCandidatePayloadPath(candidate.candidate_id);
   const evidenceBundlePath = publicCandidateEvidenceBundlePath(candidate.candidate_id);
+  const auditTrail = publicCandidateAuditTrail(detail);
 
   return (
     <div className="site-shell page-shell">
@@ -197,6 +199,50 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
               <li key={experiment}>{experiment}</li>
             ))}
           </ul>
+        </article>
+
+        <article className="record-panel wide">
+          <p className="section-kicker">Pipeline receipt</p>
+          <h2>Run manifest and audit trail</h2>
+          <p>
+            This receipt links the public snapshot back to the pipeline run that produced it.
+            It is meant for audit and reproduction: the record keeps the candidate hash,
+            method version, source run, and attached compute records together.
+          </p>
+          <div className="audit-receipt-grid">
+            <div>
+              <span>Run manifest</span>
+              <code>{auditTrail.run_manifest_id ?? 'pending hosted export'}</code>
+            </div>
+            <div>
+              <span>Trace</span>
+              <code>{auditTrail.trace_id ?? 'pending hosted export'}</code>
+            </div>
+            <div>
+              <span>Dagster run</span>
+              <code>{auditTrail.dagster_run_id ?? 'not recorded'}</code>
+            </div>
+            <div>
+              <span>Commit</span>
+              <code>{shortHash(auditTrail.commit_sha)}</code>
+            </div>
+            <div>
+              <span>Snapshot</span>
+              <code>
+                v{auditTrail.snapshot_version ?? 'pending'} / {shortHash(auditTrail.content_hash)}
+              </code>
+            </div>
+            <div>
+              <span>Compute records</span>
+              <code>{auditTrail.compute_job_ids.length}</code>
+            </div>
+          </div>
+          {!auditTrail.has_manifest ? (
+            <p className="audit-note">
+              This static export predates manifest attachment. The hosted generator now writes
+              manifest IDs; the next Neon export will populate this receipt automatically.
+            </p>
+          ) : null}
         </article>
 
         <article className="record-panel wide">

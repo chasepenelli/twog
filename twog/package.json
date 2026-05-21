@@ -9,6 +9,7 @@
     "lint": "eslint",
     "sync:candidates": "node scripts/sync-public-candidates.mjs",
     "export:candidates": "node scripts/export-public-candidates-from-neon.mjs",
+    "check:candidate-manifests": "node scripts/check-public-candidate-manifests.mjs",
     "db:migrate": "node scripts/apply-neon-migrations.mjs"
   },
   "dependencies": {

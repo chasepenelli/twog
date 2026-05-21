@@ -1,4 +1,5 @@
 import {
+  publicCandidateAuditTrail,
   publicCandidateEvidenceBundlePath,
   publicCandidatePayloadPath,
   type LiteratureRecord,
@@ -62,8 +63,13 @@ export function buildPublicEvidenceBundle(candidate: PublicCandidateDetail) {
   const snapshot = candidate.latest_snapshot;
   const payload = snapshot?.payload;
   const literature = payload?.literature ?? [];
+  const auditTrail = publicCandidateAuditTrail(candidate);
   const computeJobIds = Array.from(
-    new Set([...(payload?.linked_records?.compute_job_ids ?? []), ...topLevelComputeJobIds(candidate)])
+    new Set([
+      ...(payload?.linked_records?.compute_job_ids ?? []),
+      ...topLevelComputeJobIds(candidate),
+      ...auditTrail.compute_job_ids,
+    ])
   );
 
   return {
@@ -78,6 +84,16 @@ export function buildPublicEvidenceBundle(candidate: PublicCandidateDetail) {
       snapshot_version: snapshot?.snapshot_version ?? null,
       pipeline_version: payload?.reproducibility?.pipeline_version ?? snapshot?.pipeline_version ?? null,
       generated_at: payload?.reproducibility?.generated_at ?? snapshot?.created_at ?? null,
+    },
+    run_manifest: {
+      trace_id: auditTrail.trace_id ?? null,
+      run_manifest_id: auditTrail.run_manifest_id ?? null,
+      dagster_run_id: auditTrail.dagster_run_id ?? null,
+      commit_sha: auditTrail.commit_sha ?? null,
+      compute_job_ids: computeJobIds,
+      decision_count: auditTrail.decision_count,
+      note:
+        'This is the pipeline receipt for the public candidate snapshot. If trace_id or run_manifest_id is null, the static export was generated before manifest attachment and should be refreshed from Neon.',
     },
     checkout: {
       candidate_payload_url: publicCandidatePayloadPath(record.candidate_id),

@@ -1,6 +1,7 @@
 import dataset from '@/data/public-candidates.json';
 
 export type StringMap = Record<string, string | number | boolean | null | undefined>;
+export type PublicJsonMap = Record<string, unknown>;
 
 export interface PublicCandidateRecord {
   candidate_id: string;
@@ -18,6 +19,7 @@ export interface PublicCandidateRecord {
   content_hash?: string;
   updated_at?: string;
   rationale_md?: string;
+  metadata?: PublicJsonMap;
 }
 
 export interface PublicCandidateSnapshot {
@@ -26,6 +28,9 @@ export interface PublicCandidateSnapshot {
   snapshot_version?: number;
   pipeline_version?: string;
   created_at?: string;
+  commit_sha?: string;
+  compute_job_ids?: string[];
+  metadata?: PublicJsonMap;
   payload?: {
     rationale?: {
       hypothesis?: string;
@@ -58,6 +63,9 @@ export interface PublicCandidateSnapshot {
       commit_sha?: string;
       content_hash?: string;
       generated_at?: string;
+      trace_id?: string;
+      run_manifest_id?: string;
+      dagster_run_id?: string;
     };
   };
 }
@@ -94,6 +102,7 @@ export interface CandidateDecisionEvent {
   rationale_md?: string;
   prior_status?: string | null;
   new_status?: string | null;
+  metadata?: PublicJsonMap;
 }
 
 export interface CandidateValidationDecision {
@@ -113,6 +122,20 @@ export interface PublicCandidateDetail {
   candidate: PublicCandidateRecord;
   latest_snapshot?: PublicCandidateSnapshot | null;
   decision_events?: CandidateDecisionEvent[];
+}
+
+export interface PublicCandidateAuditTrail {
+  trace_id?: string;
+  run_manifest_id?: string;
+  dagster_run_id?: string;
+  commit_sha?: string;
+  pipeline_version?: string;
+  snapshot_id?: string;
+  snapshot_version?: number;
+  content_hash?: string;
+  compute_job_ids: string[];
+  decision_count: number;
+  has_manifest: boolean;
 }
 
 interface PublicCandidateDataset {
@@ -144,6 +167,66 @@ export function publicCandidatePayloadPath(candidateId: string): string {
 
 export function publicCandidateEvidenceBundlePath(candidateId: string): string {
   return `/api/public-candidates/${encodeURIComponent(candidateId)}/evidence-bundle`;
+}
+
+function isJsonMap(value: unknown): value is PublicJsonMap {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function valueFromMaps(key: string, ...maps: Array<PublicJsonMap | undefined>): unknown {
+  for (const map of maps) {
+    if (!map || !(key in map)) continue;
+    const value = map[key];
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return undefined;
+}
+
+function stringValueFromMaps(key: string, ...maps: Array<PublicJsonMap | undefined>): string | undefined {
+  const value = valueFromMaps(key, ...maps);
+  if (typeof value === 'string' && value.trim()) return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return undefined;
+}
+
+function stringArrayFromMaps(key: string, ...maps: Array<PublicJsonMap | undefined>): string[] {
+  const value = valueFromMaps(key, ...maps);
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
+}
+
+export function publicCandidateAuditTrail(detail: PublicCandidateDetail): PublicCandidateAuditTrail {
+  const snapshot = detail.latest_snapshot ?? undefined;
+  const payload = snapshot?.payload;
+  const candidateMetadata = detail.candidate.metadata;
+  const snapshotMetadata = snapshot?.metadata;
+  const reproducibility = payload?.reproducibility;
+  const linkedRecords = payload?.linked_records;
+  const linkedRecordsMap = isJsonMap(linkedRecords) ? linkedRecords : undefined;
+  const reproducibilityMap = isJsonMap(reproducibility) ? reproducibility : undefined;
+
+  const computeJobIds = Array.from(
+    new Set([
+      ...(snapshot?.compute_job_ids ?? []),
+      ...stringArrayFromMaps('compute_job_ids', linkedRecordsMap, snapshotMetadata, candidateMetadata),
+    ])
+  );
+  const runManifestId = stringValueFromMaps('run_manifest_id', snapshotMetadata, reproducibilityMap, candidateMetadata);
+  const traceId = stringValueFromMaps('trace_id', snapshotMetadata, reproducibilityMap, candidateMetadata);
+
+  return {
+    trace_id: traceId,
+    run_manifest_id: runManifestId,
+    dagster_run_id: stringValueFromMaps('dagster_run_id', snapshotMetadata, reproducibilityMap, candidateMetadata),
+    commit_sha: snapshot?.commit_sha ?? reproducibility?.commit_sha,
+    pipeline_version: reproducibility?.pipeline_version ?? snapshot?.pipeline_version,
+    snapshot_id: snapshot?.snapshot_id,
+    snapshot_version: snapshot?.snapshot_version,
+    content_hash: detail.candidate.content_hash ?? snapshot?.content_hash,
+    compute_job_ids: computeJobIds,
+    decision_count: detail.decision_events?.length ?? 0,
+    has_manifest: Boolean(runManifestId || traceId),
+  };
 }
 
 export function shortHash(value?: string | null): string {
