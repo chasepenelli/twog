@@ -56,8 +56,8 @@ POST /api/public-candidates/{candidate_id}/contributions
 
 Set one database URL:
 
-```bash
-NEON_DATABASE_URL=postgresql://...
+```text
+NEON_DATABASE_URL=<postgres connection string>
 ```
 
 Supported aliases:

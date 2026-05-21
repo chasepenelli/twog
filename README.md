@@ -2,145 +2,227 @@
 
 **TWOG is a living research engine for canine hemangiosarcoma and related vascular cancers.**
 
-This repository contains the active v2 system: Dagster-backed research orchestration, structured biomedical ingestion, agent synthesis and validation lanes, RunPod/Docker compute work, and the first public-proof website layer.
+It is built to move from messy biomedical evidence to inspectable candidate records: source documents, citations, agent critiques, method versions, decision logs, compute artifacts, and public contribution intake.
 
-The practical aim is to make serious scientific work easier to inspect. TWOG does not just publish conclusions. It preserves the chain of reasoning: source evidence, agent critiques, method versions, candidate records, decision logs, compute artifacts, and public contribution intake.
+The goal is not to claim that AI can replace scientific review. The goal is to make research work easier to trace, challenge, reproduce, and improve.
 
 Live site: [twog.bio](https://twog.bio)
 
-## For Reviewers
+## The Short Version
 
-If you are evaluating TWOG from the outside, start here:
+TWOG is an AI-assisted research operating system for comparative oncology.
 
-- [Public site](https://twog.bio): mission, methods, and candidate records.
-- [Candidate index](https://twog.bio/candidates): inspectable public records generated from the internal pipeline.
-- [Example candidate](https://twog.bio/candidates/twog-15f50d): a candidate page with rationale, evidence, risks, method references, decision history, and a machine-readable payload.
-- [Candidate record method](https://twog.bio/methods/candidate-record-v1): how public records, evidence refs, content hashes, and check-in submissions work.
-- [Public contribution workflow](docs/PUBLIC_CONTRIBUTION_WORKFLOW.md): how checkout payloads, check-in packets, Neon intake, and operator triage fit together.
+It focuses first on canine hemangiosarcoma, an aggressive and under-served cancer with translational relevance to human angiosarcoma. The system ingests open biomedical evidence, turns it into typed research records, lets specialist agents synthesize and critique the evidence, and promotes only reviewed outputs into durable candidate records and validation queues.
 
-The important design choice is that TWOG does not treat a web page as marketing copy. A candidate page is intended to be a public research artifact: readable by a person, exportable as JSON, traceable back to pipeline records, and open to structured critique.
+The core rule is simple:
 
-## Why This Exists
+> LLMs argue and synthesize. Operator approval is the write gate.
 
-Canine hemangiosarcoma is aggressive, common in dogs, and underserved by conventional drug discovery economics. It also overlaps with human vascular cancers such as angiosarcoma, making it a meaningful comparative oncology problem.
+TWOG is not a treatment recommendation system, not a clinical decision tool, and not a black-box "AI finds a cure" demo. It is infrastructure for making AI-assisted research legible.
 
-TWOG is built around that gap: use modern AI and automation to read broadly, organize evidence carefully, surface big therapeutic ideas, critique them with specialist agents, and move only the strongest signals toward validation.
+## Why It Matters
 
-This is research infrastructure. It is not a treatment recommendation system.
+Most early AI-for-science demos stop at the exciting output: a hypothesis, a molecule, a model score, a generated summary. TWOG is focused on the harder layer underneath: preserving the chain of reasoning so a person can inspect what happened.
+
+Every serious claim should answer:
+
+- What source evidence supports it?
+- What citations and records were used?
+- Which agent or model produced the synthesis?
+- Which assumptions were challenged?
+- What method version or compute configuration produced the result?
+- Who approved the next step?
+- What would change confidence?
+
+That audit trail is the product.
+
+## What Is Live
+
+- Public website at [twog.bio](https://twog.bio).
+- Public candidate pages with machine-readable JSON payloads.
+- Candidate checkout/check-in flow for structured outside critique.
+- Neon/Postgres-backed contribution intake.
+- Dagster-readable intake and triage jobs.
+- Local SQLite and hosted Postgres storage adapters.
+- Agent run ledger, review ledger, research briefs, therapy ideas, validation packets, omics readouts, and compute ledgers.
+- Deterministic ingestion lanes for literature, structured biomedical sources, source health, candidate records, and public contribution intake.
+- OpenRouter-backed agent lanes for synthesis, critique, evaluation, and research-program reasoning.
+- TWOG-owned RunPod/Docker worker foundation for approval-first MD smoke tests.
+
+## What To Inspect First
+
+If you are reviewing this from the outside, start here:
+
+1. [twog.bio](https://twog.bio)
+   The public-facing explanation of the mission, methods, architecture, and candidate records.
+
+2. [Example candidate record](https://twog.bio/candidates/twog-15f50d)
+   A public proof artifact with rationale, evidence, risk notes, method refs, decision history, and JSON payload access.
+
+3. [Candidate record method](https://twog.bio/methods/candidate-record-v1)
+   How evidence refs, content hashes, checkout payloads, and check-in packets work.
+
+4. [Citation dedupe method](https://twog.bio/methods/citation-dedupe-v1)
+   How the system treats duplicate citations and source provenance.
+
+5. [Public contribution workflow](docs/PUBLIC_CONTRIBUTION_WORKFLOW.md)
+   How outside work enters intake without directly mutating candidate state.
+
+6. [System guide](docs/TWOG_V2_SYSTEM_GUIDE.md) and [module flowcharts](docs/TWOG_V2_MODULE_FLOWCHARTS.md)
+   Longer internal explanations of how the research system fits together.
 
 ## System Shape
 
 ```text
-public evidence
-  -> structured ingestion
-  -> normalized research records
+open biomedical evidence
+  -> deterministic ingestion
+  -> typed research records
+  -> search and evidence memory
   -> agent synthesis and critique
   -> research programs
   -> therapy ideas
+  -> validation packets
   -> public candidate records
   -> contribution intake
-  -> validation and compute queues
+  -> compute / lab-facing validation queues
 ```
-
-## Current System
-
-- Typed research contracts for literature, source records, agent runs, briefs, therapy ideas, validation packets, omics readouts, and compute jobs.
-- Local SQLite development storage and hosted Postgres/Neon runtime support.
-- Dagster asset graph for observable ingestion, synthesis, validation, source health, embeddings, and compute lanes.
-- Structured source harvesters for PubChem, ChEMBL, UniProt, RCSB PDB, OpenFDA animal adverse events, PubMed, Europe PMC, PMC OA, OpenAlex, Crossref, ClinicalTrials.gov, and monitored X/Twitter topics.
-- Public candidate record layer under `twog/`.
-- Public JSON payloads for candidate checkout.
-- Neon-backed contribution intake API for candidate check-ins.
-- Dagster-readable candidate contribution intake and triage jobs for operator review.
-- Command Center contribution triage panel for previewing and applying explicit intake decisions.
-- MCP-ready service boundary for future agent/human tool sharing.
-- RunPod/Docker worker foundation for expert-gated MD smoke tests.
-
-## Architecture At A Glance
 
 ```mermaid
 flowchart LR
-    A["Public scientific sources"] --> B["Structured ingestion"]
-    B --> C["Research object store"]
+    A["Open scientific sources"] --> B["Deterministic ingestion"]
+    B --> C["Typed research records"]
     C --> D["Agent synthesis and critique"]
     D --> E["Research programs"]
     E --> F["Therapy ideas"]
-    F --> G["Candidate records"]
-    G --> H["Public payloads"]
-    H --> I["Contributor check-in"]
-    I --> J["Neon intake table"]
-    J --> K["Dagster intake report"]
-    K --> L["Evidence review / validation queues"]
-    L --> M["Compute and artifact records"]
+    F --> G["Validation packets"]
+    G --> H["Public candidate records"]
+    H --> I["Checkout payloads"]
+    I --> J["Contributor check-in"]
+    J --> K["Operator triage"]
+    K --> L["Evidence / validation / compute queues"]
 ```
 
-There are three deliberate boundaries:
+## Architecture Principles
 
-- **Evidence boundary:** ingestion and chunking are deterministic where possible, with LLMs used for synthesis and critique rather than silent data mutation.
-- **Public boundary:** candidate pages expose payloads and accept check-ins, but public submissions do not directly alter candidate state.
-- **Compute boundary:** GPU jobs are approval-first and ledgered; smoke workers prove artifact flow before any heavier scientific claim is made.
+### Deterministic ingestion first
 
-## Public Proof Layer
+Source collection, normalization, chunking, and record creation are deterministic where possible. LLMs are used for synthesis and critique, not silent mutation of the evidence layer.
 
-The public website lives in `twog/`.
+### Typed contracts at every boundary
+
+Research objects, chunks, briefs, agent runs, therapy ideas, validation packets, omics readouts, candidate records, contribution packets, and compute jobs are schema-validated. The system should fail loudly when a record does not match the contract.
+
+### Durable ledgers over loose outputs
+
+TWOG stores the run, the inputs, the model profile, the output payload, the errors, the review, and the operator decision. A good-looking answer without lineage is not enough.
+
+### Operator approval as write gate
+
+Agents can recommend, critique, summarize, and queue work. They do not silently promote public candidate state, run GPU jobs, or mutate research records without an explicit gated path.
+
+### Public proof, not public mutation
+
+Candidate pages expose readable records and machine-readable payloads. Public check-ins enter intake. They do not directly alter candidate state.
+
+### Compute is ledgered and approval-first
+
+GPU-backed work is treated as a scientific artifact lane: container image, inputs, method version, cost/capacity bounds, run status, logs, outputs, and failure diagnostics are persisted.
+
+## Source And Evidence Lanes
+
+Current ingestion and source-monitoring work spans:
+
+- PubMed
+- Europe PMC
+- PMC Open Access
+- OpenAlex
+- Crossref
+- ClinicalTrials.gov
+- PubChem
+- ChEMBL
+- UniProt
+- RCSB PDB
+- OpenFDA animal adverse events
+- monitored X/Twitter research signals
+- processed omics matrix discovery and readouts
+
+The source lanes are intentionally separate. A trial registry record, a PubMed abstract, a compound annotation, an omics matrix, an adverse event report, and a social signal should not carry the same epistemic weight.
+
+## Public Candidate Records
+
+The public site lives in [`twog/`](twog/).
 
 Key routes:
 
 ```text
 /                                           Mission homepage
-/candidates                                 Candidate index
-/candidates/twog-15f50d                     Example public candidate record
-/methods/candidate-record-v1                Candidate record method
-/api/public-candidates                      Public candidate payload index
-/api/public-candidates/{candidate_id}        One public candidate payload
-/api/public-candidates/{candidate_id}/contribution-template
-/api/public-candidates/{candidate_id}/contributions
+/architecture                              Technical architecture overview
+/candidates                                Candidate index
+/candidates/twog-15f50d                    Example candidate record
+/methods                                   Method index
+/methods/candidate-record-v1               Candidate record method
+/methods/citation-dedupe-v1                Citation dedupe method
+/api/public-candidates                     Public candidate payload index
+/api/public-candidates/{candidate_id}      One public candidate payload
 ```
 
-The page is the readable record. The payload is the machine-readable record. The contribution endpoint is the public check-in path.
+The readable page is for humans. The JSON payload is for researchers, reviewers, and other tools.
 
-## Check Out / Check In
+## Checkout / Check-In Loop
 
-TWOG's public collaboration loop is designed as a gated evidence exchange:
+TWOG's public collaboration loop is deliberately gated:
 
-1. **Check out** a candidate payload.
-2. Inspect the evidence, rationale, risks, citations, method refs, and content hash.
-3. Do outside work: replication, critique, citation repair, artifact generation, validation design, or compute review.
-4. **Check in** a structured contribution packet.
-5. TWOG queues the packet for intake, provenance review, citation dedupe, and routing into evidence review, validation planning, or compute review.
+1. Check out a candidate payload.
+2. Inspect evidence, citations, risks, methods, decision history, and content hash.
+3. Do outside work: critique, citation repair, replication, artifact generation, validation design, or compute review.
+4. Check in a structured contribution packet.
+5. TWOG routes the packet through intake, provenance review, citation dedupe, evidence review, validation planning, or compute review.
 
-Outside submissions do not directly mutate a candidate record. That gate is intentional.
+Outside submissions do not directly mutate a candidate record. That is the point.
 
-## What Is Live Now
+## Research Program Layer
 
-- Mission-first public website on `twog.bio`.
-- Static public candidate records with JSON payloads.
-- Neon/Postgres-backed contribution intake endpoint.
-- Production storage readiness check on candidate contribution routes.
-- Manual Dagster report job for contribution intake visibility.
-- Production-tested operator triage job for starting review, requesting more information, accepting into evidence/validation/compute review, rejecting, or archiving.
-- Command Center surface for contribution review and explicit triage actions.
-- Internal records for research programs, therapy ideas, briefs, validation packets, omics readouts, agent runs, reviews, and compute jobs.
+TWOG separates big scientific programs from individual therapy ideas.
 
-## What Comes Next
+A research program defines a thesis, disease model, decisive questions, evidence tasks, confidence criteria, stop criteria, and downstream opportunity families. Therapy ideas are children of that program. Validation packets are children of those ideas.
 
-- More candidate records exported from the internal system.
-- Stronger public method pages for docking, MD smoke tests, omics readouts, and synthesis review.
-- Dedicated GPU compute path using TWOG-owned containers and persisted artifacts.
-- A cleaner public audit trail connecting candidate pages back to agent runs, evidence packets, and compute outputs.
-- Recommend-only LLM reviewer for contribution triage, with operator approval kept as the write gate.
+That structure keeps the system from endlessly iterating on small tactical ideas. The board asks: what big bet is worth pursuing, what evidence would change confidence, and when do we stop?
+
+## Agent Layer
+
+Agents are used as specialist reviewers and synthesis workers. They can:
+
+- write citation-first research briefs;
+- evaluate brief quality;
+- critique candidate evidence;
+- review full-text ingestion health;
+- reason about therapy programs;
+- generate therapy committee outputs;
+- plan validation tasks;
+- review omics readouts;
+- evaluate other agents' performance.
+
+Every meaningful agent run is ledgered. The system stores model metadata, prompt/version metadata, input payloads, output payloads, summaries, errors, and reviews.
+
+## Compute Layer
+
+TWOG has an approval-first compute lane for GPU-backed scientific jobs.
+
+The first owned worker path is an MD smoke worker under [`runpod_workers/md_smoke/`](runpod_workers/md_smoke/). The goal of this lane is not to make efficacy claims from short simulations. The goal is to prove the worker contract, artifact flow, structured diagnostics, and reproducible compute ledger before any heavier scientific workflow is trusted.
+
+Future compute lanes can include docking, longer MD, free-energy estimation, raw omics processing, or other containerized methods, but each needs a method version, artifact policy, and approval gate.
 
 ## Repository Layout
 
 ```text
 .
 ├── src/hsa_research/ingestion_bridge/   Core research contracts, services, agents, stores
-├── src/hsa_dagster/                     Dagster definitions
-├── tests/                               Contract and worker tests
+├── src/hsa_dagster/                     Dagster definitions and jobs
+├── tests/                               Contract, service, API, and worker tests
 ├── docs/                                SOPs, architecture, setup, public explanations
-├── db/migrations/                       Backend research-store migrations
+├── db/migrations/                       Research-store migrations
 ├── runpod_workers/md_smoke/             TWOG-owned MD smoke worker
-├── twog/                                Public Next.js site and public candidate layer
+├── twog/                                Public Next.js site and candidate layer
 │   ├── app/                             Pages and API routes
 │   ├── data/                            Static public candidate snapshots
 │   ├── db/migrations/                   Public contribution-intake migration
@@ -149,7 +231,7 @@ Outside submissions do not directly mutate a candidate record. That gate is inte
 └── .github/workflows/                   Dagster, validation, and worker automation
 ```
 
-## Dagster
+## Local Research System
 
 Install and validate:
 
@@ -159,13 +241,13 @@ uv run pytest tests/test_ingestion_bridge_contracts.py
 uv run dg check defs
 ```
 
-Run locally:
+Run Dagster locally:
 
 ```bash
 uv run dg dev
 ```
 
-Production deploys are handled by Dagster+ GitHub Actions on pushes to `main`.
+Local development defaults to SQLite under `var/`. Hosted runs use Postgres/Neon through `HSA_STORAGE_BACKEND=postgres` and `HSA_DATABASE_URL`.
 
 ## Public Site
 
@@ -178,25 +260,24 @@ npm run build
 npm start -- --port 3000
 ```
 
-Refresh candidate snapshots from the local Command Center:
+Refresh static candidate snapshots:
 
 ```bash
 cd twog
 npm run sync:candidates
 ```
 
-## Neon Contribution Intake
-
-The public checkout routes are read-only. The check-in route writes to Neon/Postgres:
-
-```text
-POST /api/public-candidates/{candidate_id}/contributions
-```
-
-Set one database URL:
+Apply the public contribution-intake migration:
 
 ```bash
-NEON_DATABASE_URL=postgresql://...
+cd twog
+npm run db:migrate
+```
+
+Configure one database URL for contribution intake:
+
+```text
+NEON_DATABASE_URL=<postgres connection string>
 ```
 
 Supported aliases:
@@ -205,23 +286,27 @@ Supported aliases:
 - `POSTGRES_URL`
 - `HSA_DATABASE_URL`
 
-Apply the public-site migration:
+## Project Maturity
 
-```bash
-cd twog
-npm run db:migrate
-```
+This is active research infrastructure. Some lanes are production-backed, some are local-first, and some are deliberately manual until they prove useful.
 
-The migration creates `candidate_contribution_intake`, with indexes by candidate, status, requested action, and created time.
+Reliable today:
 
-Operator review is handled from the Command Center and Dagster:
+- public site and candidate payload rendering;
+- static candidate export;
+- public contribution intake contract;
+- Dagster definitions and manual jobs;
+- typed contracts and repository adapters;
+- agent run/review ledgers;
+- research briefs, therapy ideas, validation packets, and candidate records.
 
-```text
-candidate_contribution_intake_report_job
-candidate_contribution_triage_job
-```
+Still maturing:
 
-The triage job previews by default and only writes when `dry_run=false`. The first production write path was validated against a controlled test contribution on 2026-05-19 Mountain time / 2026-05-20 UTC.
+- broader candidate export volume;
+- method pages for every compute lane;
+- external contribution review experience;
+- owned GPU compute worker hardening;
+- deeper primitive layers for entity resolution, compound similarity, ortholog mapping, and bioactivity indexing.
 
 ## Safety Boundary
 
@@ -229,8 +314,8 @@ TWOG candidate records do not certify efficacy, safety, dosing, clinical readine
 
 Any medical or veterinary decision belongs with qualified professionals.
 
-## Why It Matters
+## The Bet
 
 TWOG is built for Graffiti, Brady, and every dog whose disease deserves more scientific attention than the market has given it.
 
-It is also a bet that AI can be used for something practical and humane: helping more people ask better questions, learn faster, and contribute to research that would otherwise stay out of reach.
+It is also a bet that modern AI can be used responsibly: not to replace science, but to help more people read broadly, ask better questions, preserve the reasoning trail, and move promising ideas toward real validation.
