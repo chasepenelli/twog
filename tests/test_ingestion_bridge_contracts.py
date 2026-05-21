@@ -3844,10 +3844,14 @@ def test_reward_event_contracts_validate_allowed_values():
         agent_run_id=uuid4(),
         verdict="needs_followup",
         agent_name="therapy_committee_chair_agent",
+        outcome_bucket="actionable_followup",
+        routing_recommendation="queue_targeted_followup",
+        churn_risk_score=0.25,
     )
     row = RewardReportRow(group_type="agent_name", group_value="therapy_committee_chair_agent", event_count=1)
 
     assert event.identity_key.startswith("reward:operator_review:agent_run:")
+    assert event.outcome_bucket == "actionable_followup"
     assert row.low_sample is False
     assert RewardEventSyncRequest().created_by == "reward_review_sync"
     assert RewardReportRequest().group_by == "agent_name"
@@ -3857,6 +3861,10 @@ def test_reward_event_contracts_validate_allowed_values():
         RewardEventRecord(event_source="operator_review", score=1.5)
     with pytest.raises(ValidationError):
         RewardEventRecord(event_source="operator_review", score=0.5, dimension_scores={"bad_dimension": 0.2})
+    with pytest.raises(ValidationError):
+        RewardEventRecord(event_source="operator_review", score=0.5, outcome_bucket="maybe")
+    with pytest.raises(ValidationError):
+        RewardEventRecord(event_source="operator_review", score=0.5, routing_recommendation="auto_mutate")
 
 
 def test_reward_event_repository_roundtrip_sqlite_and_memory(tmp_path):
@@ -3925,12 +3933,13 @@ def test_reward_events_sync_reviews_and_report_are_idempotent(tmp_path):
             created_at=now,
         )
     )
-    repo.create_agent_run_review(
+    review_two = repo.create_agent_run_review(
         AgentRunReviewRecord(
             agent_run_id=run_two.agent_run_id,
             reviewer="validation_openrouter_evaluator",
             reviewer_type="llm_evaluator",
             verdict="needs_followup",
+            followup_actions=["queue_targeted_followup_for_geo_matrix_labels"],
             created_at=now,
             metadata={
                 "agent_performance_evaluation": {
@@ -3939,22 +3948,49 @@ def test_reward_events_sync_reviews_and_report_are_idempotent(tmp_path):
             },
         )
     )
+    review_three = repo.create_agent_run_review(
+        AgentRunReviewRecord(
+            agent_run_id=run_two.agent_run_id,
+            reviewer="validation_openrouter_evaluator",
+            reviewer_type="llm_evaluator",
+            verdict="bad",
+            feedback="No evidence path and no concrete next action; operational dead end.",
+            created_at=now + timedelta(seconds=1),
+            metadata={"agent_performance_evaluation": {"rubric_scores": {"actionability": 0.1}}},
+        )
+    )
 
     first_sync = service.sync_reward_events_from_reviews(RewardEventSyncRequest(limit=10))
     second_sync = service.sync_reward_events_from_reviews(RewardEventSyncRequest(limit=10))
     report = service.build_reward_report(RewardReportRequest(limit=10, group_by="agent_name", min_sample_size=1))
     event = repo.list_reward_events(source_review_id=review_one.review_id, limit=1)[0]
+    followup_event = repo.list_reward_events(source_review_id=review_two.review_id, limit=1)[0]
+    churn_event = repo.list_reward_events(source_review_id=review_three.review_id, limit=1)[0]
     therapy_row = next(row for row in report.rows if row.group_value == "therapy_committee_chair_agent")
+    omics_row = next(row for row in report.rows if row.group_value == "omics_validation_agent")
 
-    assert first_sync.created_count == 2
+    assert first_sync.created_count == 3
     assert second_sync.created_count == 0
-    assert second_sync.skipped_existing_count == 2
+    assert second_sync.skipped_existing_count == 3
     assert event.score == 1.0
+    assert event.outcome_bucket == "positive_signal"
     assert event.dimension_scores["operator_usefulness"] == 1.0
-    assert report.event_count == 2
-    assert report.reward_score == 78
+    assert followup_event.outcome_bucket == "actionable_followup"
+    assert followup_event.routing_recommendation == "queue_targeted_followup"
+    assert churn_event.outcome_bucket == "negative_signal"
+    assert churn_event.routing_recommendation == "suppress_or_archive"
+    assert report.event_count == 3
+    assert report.reward_score == 52
+    assert report.outcome_counts == {
+        "actionable_followup": 1,
+        "negative_signal": 1,
+        "positive_signal": 1,
+    }
     assert therapy_row.reward_score == 100
     assert therapy_row.low_sample is False
+    assert omics_row.actionable_followup_count == 1
+    assert omics_row.negative_signal_count == 1
+    assert omics_row.actionable_followup_rate == 0.5
 
 
 def test_agent_finding_escalation_contracts_validate_allowed_values():

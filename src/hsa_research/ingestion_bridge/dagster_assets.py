@@ -227,6 +227,12 @@ _REWARD_REPORT_TABLE_COLUMNS = (
     "event_count",
     "reward_score",
     "average_score",
+    "positive_signal_count",
+    "actionable_followup_count",
+    "low_value_churn_count",
+    "negative_signal_count",
+    "actionable_followup_rate",
+    "low_value_churn_rate",
     "low_sample",
 )
 _PUBMED_IDENTIFIER_REPAIR_TABLE_COLUMNS = (
@@ -1086,6 +1092,9 @@ if dg is not None:
             "average_score": float(report.get("average_score") or 0.0),
             "event_source_counts": dg.MetadataValue.json(report.get("event_source_counts", {})),
             "verdict_counts": dg.MetadataValue.json(report.get("verdict_counts", {})),
+            "outcome_counts": dg.MetadataValue.json(report.get("outcome_counts", {})),
+            "actionable_followup_count": dg.MetadataValue.int(int(report.get("actionable_followup_count") or 0)),
+            "low_value_churn_count": dg.MetadataValue.int(int(report.get("low_value_churn_count") or 0)),
             "top_rows": _metadata_table(report.get("top_rows", []), _REWARD_REPORT_TABLE_COLUMNS),
             "bottom_rows": _metadata_table(report.get("bottom_rows", []), _REWARD_REPORT_TABLE_COLUMNS),
         }

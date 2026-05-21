@@ -14,6 +14,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from .contracts import (
     AgentRunRecord,
     AgentRunReviewRecord,
+    RewardOutcomeBucket,
     RewardEventRecord,
     RewardEventSyncRequest,
     RewardEventSyncResult,
@@ -30,6 +31,44 @@ VERDICT_REWARD_SCORES: dict[str, float] = {
     "unclear": 0.35,
     "bad": 0.0,
 }
+
+_CHURN_TERMS = (
+    "entirely off-topic",
+    "off-topic",
+    "irrelevant",
+    "no evidence path",
+    "operational dead end",
+    "no concrete next",
+    "no concrete follow",
+    "unsupported",
+    "unhandled errors",
+    "vague idea",
+    "unclear output",
+    "failed automated searches",
+)
+
+_ACTIONABLE_TERMS = (
+    "rerun",
+    "re-run",
+    "retry",
+    "queue",
+    "ingest",
+    "inspect",
+    "resolve",
+    "verify",
+    "search",
+    "add",
+    "flag",
+    "attempt",
+    "full-text",
+    "pubmed",
+    "crossref",
+    "europe_pmc",
+    "pmc_oa",
+    "doi",
+    "pmid",
+    "query",
+)
 
 
 def sync_reward_events_from_reviews(
@@ -79,12 +118,14 @@ def reward_event_from_review(
     }.get(review.reviewer_type, "manual")
     score = VERDICT_REWARD_SCORES[review.verdict]
     identity_key = f"reward:{event_source}:review:{review.review_id}"
+    dimension_scores = _dimension_scores(review, score)
+    outcome_bucket = _classify_review_outcome(review, dimension_scores)
     return RewardEventRecord(
         reward_event_id=uuid5(NAMESPACE_URL, identity_key),
         identity_key=identity_key,
         event_source=event_source,  # type: ignore[arg-type]
         score=score,
-        dimension_scores=_dimension_scores(review, score),
+        dimension_scores=dimension_scores,
         verdict=review.verdict,
         agent_run_id=run.agent_run_id,
         source_review_id=review.review_id,
@@ -93,6 +134,9 @@ def reward_event_from_review(
         prompt_key=_prompt_key(run),
         task_type=_task_type(run),
         source_key=run.source_key,
+        outcome_bucket=outcome_bucket,
+        routing_recommendation=_routing_recommendation_for_outcome(outcome_bucket),
+        churn_risk_score=_churn_risk_score(outcome_bucket, dimension_scores),
         rationale=review.feedback,
         tags=[review.reviewer_type, *review.tags],
         created_by=created_by,
@@ -122,6 +166,7 @@ def build_reward_report(
     )
     event_source_counts: Counter[str] = Counter(str(event.event_source) for event in events)
     verdict_counts: Counter[str] = Counter(str(event.verdict) for event in events if event.verdict)
+    outcome_counts: Counter[str] = Counter(_event_outcome_bucket(event) for event in events)
 
     buckets: dict[str, _RewardBucket] = {}
     for event in events:
@@ -149,6 +194,12 @@ def build_reward_report(
         reward_score=None if average is None else round(average * 100),
         event_source_counts=dict(sorted(event_source_counts.items())),
         verdict_counts=dict(sorted(verdict_counts.items())),
+        outcome_counts=dict(sorted(outcome_counts.items())),
+        positive_signal_count=outcome_counts["positive_signal"],
+        actionable_followup_count=outcome_counts["actionable_followup"],
+        low_value_churn_count=outcome_counts["low_value_churn"],
+        negative_signal_count=outcome_counts["negative_signal"],
+        unclear_signal_count=outcome_counts["unclear_signal"],
         rows=rows,
         top_rows=top_rows,
         bottom_rows=bottom_rows,
@@ -185,6 +236,7 @@ class _RewardBucket:
         average = _average([event.score for event in self.events])
         event_source_counts: Counter[str] = Counter(str(event.event_source) for event in self.events)
         verdict_counts: Counter[str] = Counter(str(event.verdict) for event in self.events if event.verdict)
+        outcome_counts: Counter[str] = Counter(_event_outcome_bucket(event) for event in self.events)
         dimension_values: dict[str, list[float]] = defaultdict(list)
         for event in self.events:
             for dimension, score in event.dimension_scores.items():
@@ -199,6 +251,14 @@ class _RewardBucket:
             low_sample=len(self.events) < min_sample_size,
             event_source_counts=dict(sorted(event_source_counts.items())),
             verdict_counts=dict(sorted(verdict_counts.items())),
+            outcome_counts=dict(sorted(outcome_counts.items())),
+            positive_signal_count=outcome_counts["positive_signal"],
+            actionable_followup_count=outcome_counts["actionable_followup"],
+            low_value_churn_count=outcome_counts["low_value_churn"],
+            negative_signal_count=outcome_counts["negative_signal"],
+            unclear_signal_count=outcome_counts["unclear_signal"],
+            actionable_followup_rate=round(outcome_counts["actionable_followup"] / len(self.events), 3),
+            low_value_churn_rate=round(outcome_counts["low_value_churn"] / len(self.events), 3),
             dimension_averages={
                 dimension: round(sum(values) / len(values), 3)
                 for dimension, values in sorted(dimension_values.items())
@@ -219,6 +279,102 @@ def _dimension_scores(review: AgentRunReviewRecord, score: float) -> dict[str, f
     else:
         scores["downstream_progress"] = score
     return scores
+
+
+def _classify_review_outcome(
+    review: AgentRunReviewRecord,
+    dimension_scores: dict[str, float],
+) -> RewardOutcomeBucket:
+    """Separate useful follow-up work from low-value churn.
+
+    This is deliberately deterministic and auditable. It should inform routing
+    policy, not silently rewrite prompts or agent behavior.
+    """
+
+    if review.verdict == "useful":
+        return "positive_signal"
+    if review.verdict == "bad":
+        return "negative_signal"
+    if review.verdict == "unclear":
+        return "unclear_signal"
+
+    actionability = dimension_scores.get("actionability", review.metadata.get("actionability"))
+    actionability_value = actionability if isinstance(actionability, int | float) else None
+    text = _review_text_for_classification(review)
+    has_concrete_action = any(term in text for term in _ACTIONABLE_TERMS)
+    has_churn_marker = any(term in text for term in _CHURN_TERMS)
+    if actionability_value is not None and float(actionability_value) < 0.35:
+        return "low_value_churn"
+    if has_churn_marker and not has_concrete_action:
+        return "low_value_churn"
+    if has_concrete_action:
+        return "actionable_followup"
+    if has_churn_marker:
+        return "low_value_churn"
+    return "actionable_followup" if actionability_value is None or float(actionability_value) >= 0.45 else "low_value_churn"
+
+
+def _event_outcome_bucket(event: RewardEventRecord) -> str:
+    if event.outcome_bucket:
+        return str(event.outcome_bucket)
+    if event.verdict == "useful":
+        return "positive_signal"
+    if event.verdict == "bad":
+        return "negative_signal"
+    if event.verdict == "unclear":
+        return "unclear_signal"
+    actionability = event.dimension_scores.get("actionability", event.score)
+    metadata = event.metadata or {}
+    text_bits: list[str] = []
+    for value in (event.rationale, metadata.get("review_followup_actions"), metadata.get("review_metadata")):
+        text_bits.append(str(value or ""))
+    text = " ".join(text_bits).casefold()
+    if actionability < 0.35:
+        return "low_value_churn"
+    if any(term in text for term in _ACTIONABLE_TERMS):
+        return "actionable_followup"
+    if any(term in text for term in _CHURN_TERMS):
+        return "low_value_churn"
+    return "actionable_followup" if event.verdict == "needs_followup" else "unclear_signal"
+
+
+def _routing_recommendation_for_outcome(outcome_bucket: str) -> str:
+    if outcome_bucket == "positive_signal":
+        return "prefer_lane"
+    if outcome_bucket == "actionable_followup":
+        return "queue_targeted_followup"
+    if outcome_bucket == "low_value_churn":
+        return "demote_or_rewrite"
+    if outcome_bucket == "negative_signal":
+        return "suppress_or_archive"
+    return "inspect_manually"
+
+
+def _churn_risk_score(outcome_bucket: str, dimension_scores: dict[str, float]) -> float:
+    if outcome_bucket == "negative_signal":
+        return 1.0
+    if outcome_bucket == "low_value_churn":
+        actionability = dimension_scores.get("actionability", 0.0)
+        return round(max(0.65, 1.0 - actionability), 3)
+    if outcome_bucket == "unclear_signal":
+        return 0.6
+    if outcome_bucket == "actionable_followup":
+        return 0.25
+    return 0.0
+
+
+def _review_text_for_classification(review: AgentRunReviewRecord) -> str:
+    parts: list[str] = [
+        review.feedback or "",
+        " ".join(review.followup_actions),
+        " ".join(review.tags),
+    ]
+    metadata = review.metadata.get("agent_performance_evaluation")
+    if isinstance(metadata, dict):
+        parts.append(" ".join(str(item) for item in metadata.get("failure_modes", []) if item))
+        parts.append(" ".join(str(item) for item in metadata.get("strengths", []) if item))
+        parts.append(" ".join(str(item) for item in metadata.get("recommended_followup_actions", []) if item))
+    return " ".join(parts).casefold()
 
 
 def _rubric_dimension_scores(review: AgentRunReviewRecord) -> dict[str, float]:

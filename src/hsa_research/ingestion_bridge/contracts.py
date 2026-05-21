@@ -579,6 +579,20 @@ RewardDimension = Literal[
     "downstream_progress",
 ]
 RewardReportGroupType = Literal["agent_name", "model_profile", "task_type", "source_key", "event_source"]
+RewardOutcomeBucket = Literal[
+    "positive_signal",
+    "actionable_followup",
+    "low_value_churn",
+    "negative_signal",
+    "unclear_signal",
+]
+RewardRoutingRecommendation = Literal[
+    "prefer_lane",
+    "queue_targeted_followup",
+    "demote_or_rewrite",
+    "suppress_or_archive",
+    "inspect_manually",
+]
 
 
 class AgentRunReviewRecord(StrictBaseModel):
@@ -701,6 +715,9 @@ class RewardEventRecord(StrictBaseModel):
     prompt_key: str | None = None
     task_type: str | None = None
     source_key: str | None = None
+    outcome_bucket: RewardOutcomeBucket | None = None
+    routing_recommendation: RewardRoutingRecommendation | None = None
+    churn_risk_score: float = Field(default=0.0, ge=0.0, le=1.0)
     rationale: str | None = None
     tags: list[str] = Field(default_factory=list)
     created_by: str = "system"
@@ -791,6 +808,14 @@ class RewardReportRow(StrictBaseModel):
     low_sample: bool = False
     event_source_counts: dict[str, int] = Field(default_factory=dict)
     verdict_counts: dict[str, int] = Field(default_factory=dict)
+    outcome_counts: dict[str, int] = Field(default_factory=dict)
+    positive_signal_count: int = Field(default=0, ge=0)
+    actionable_followup_count: int = Field(default=0, ge=0)
+    low_value_churn_count: int = Field(default=0, ge=0)
+    negative_signal_count: int = Field(default=0, ge=0)
+    unclear_signal_count: int = Field(default=0, ge=0)
+    actionable_followup_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    low_value_churn_rate: float = Field(default=0.0, ge=0.0, le=1.0)
     dimension_averages: dict[str, float] = Field(default_factory=dict)
     latest_event_at: datetime | None = None
 
@@ -801,6 +826,12 @@ class RewardReportResult(StrictBaseModel):
     reward_score: int | None = Field(default=None, ge=0, le=100)
     event_source_counts: dict[str, int] = Field(default_factory=dict)
     verdict_counts: dict[str, int] = Field(default_factory=dict)
+    outcome_counts: dict[str, int] = Field(default_factory=dict)
+    positive_signal_count: int = Field(default=0, ge=0)
+    actionable_followup_count: int = Field(default=0, ge=0)
+    low_value_churn_count: int = Field(default=0, ge=0)
+    negative_signal_count: int = Field(default=0, ge=0)
+    unclear_signal_count: int = Field(default=0, ge=0)
     rows: list[RewardReportRow] = Field(default_factory=list)
     top_rows: list[RewardReportRow] = Field(default_factory=list)
     bottom_rows: list[RewardReportRow] = Field(default_factory=list)
