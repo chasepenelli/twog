@@ -35,6 +35,10 @@ from .contracts import (
     MDExpertApprovalRecord,
     MDExpertReviewPacketRecord,
     PrimitiveCallEvent,
+    PublicCandidateDecisionEvent,
+    PublicCandidateLibraryRequest,
+    PublicCandidateRecord,
+    PublicCandidateSnapshot,
     RawSourceRecord,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
@@ -2239,6 +2243,210 @@ class SQLiteResearchRepository(ResearchRepository):
             for row in self.conn.execute(sql, params).fetchall()
         ]
 
+    def upsert_public_candidate(self, record: PublicCandidateRecord) -> PublicCandidateRecord:
+        existing = self.get_public_candidate(record.candidate_id)
+        if existing:
+            record = record.model_copy(
+                update={
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **record.metadata},
+                }
+            )
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into public_candidates (
+              candidate_id, display_id, candidate_kind, public_status, visibility,
+              therapy_idea_id, latest_snapshot_id, content_hash, priority_score,
+              title, created_at, updated_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(candidate_id) do update set
+              display_id = excluded.display_id,
+              candidate_kind = excluded.candidate_kind,
+              public_status = excluded.public_status,
+              visibility = excluded.visibility,
+              therapy_idea_id = excluded.therapy_idea_id,
+              latest_snapshot_id = excluded.latest_snapshot_id,
+              content_hash = excluded.content_hash,
+              priority_score = excluded.priority_score,
+              title = excluded.title,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                record.candidate_id,
+                record.display_id,
+                record.candidate_kind,
+                record.public_status,
+                record.visibility,
+                str(record.therapy_idea_id) if record.therapy_idea_id else None,
+                str(record.latest_snapshot_id) if record.latest_snapshot_id else None,
+                record.content_hash,
+                record.priority_score,
+                record.title,
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_public_candidate(self, candidate_id: str) -> PublicCandidateRecord | None:
+        row = self.conn.execute(
+            "select payload from public_candidates where candidate_id = ?",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return PublicCandidateRecord.model_validate(json.loads(row["payload"]))
+
+    def list_public_candidates(self, request: PublicCandidateLibraryRequest | None = None) -> list[PublicCandidateRecord]:
+        request = request or PublicCandidateLibraryRequest(limit=50)
+        clauses: list[str] = []
+        params: list[object] = []
+        if request.candidate_id:
+            clauses.append("candidate_id = ?")
+            params.append(request.candidate_id)
+        if request.therapy_idea_id:
+            clauses.append("therapy_idea_id = ?")
+            params.append(str(request.therapy_idea_id))
+        if request.public_status:
+            clauses.append("public_status = ?")
+            params.append(request.public_status)
+        if request.visibility:
+            clauses.append("visibility = ?")
+            params.append(request.visibility)
+        if request.candidate_kind:
+            clauses.append("candidate_kind = ?")
+            params.append(request.candidate_kind)
+        if request.query:
+            clauses.append("(lower(title) like ? or lower(payload) like ?)")
+            query = f"%{request.query.lower()}%"
+            params.extend([query, query])
+        sql = "select payload from public_candidates"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by priority_score desc, updated_at desc"
+        sql += " limit ?"
+        params.append(request.limit)
+        return [
+            PublicCandidateRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
+    def upsert_public_candidate_snapshot(self, record: PublicCandidateSnapshot) -> PublicCandidateSnapshot:
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into public_candidate_snapshots (
+              snapshot_id, candidate_id, snapshot_version, content_hash, created_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?)
+            on conflict(snapshot_id) do update set
+              candidate_id = excluded.candidate_id,
+              snapshot_version = excluded.snapshot_version,
+              content_hash = excluded.content_hash,
+              payload = excluded.payload
+            """,
+            (
+                str(record.snapshot_id),
+                record.candidate_id,
+                record.snapshot_version,
+                record.content_hash,
+                record.created_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_public_candidate_snapshot(self, snapshot_id: UUID) -> PublicCandidateSnapshot | None:
+        row = self.conn.execute(
+            "select payload from public_candidate_snapshots where snapshot_id = ?",
+            (str(snapshot_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return PublicCandidateSnapshot.model_validate(json.loads(row["payload"]))
+
+    def list_public_candidate_snapshots(
+        self,
+        *,
+        candidate_id: str | None = None,
+        limit: int | None = 50,
+    ) -> list[PublicCandidateSnapshot]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if candidate_id:
+            clauses.append("candidate_id = ?")
+            params.append(candidate_id)
+        sql = "select payload from public_candidate_snapshots"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by snapshot_version desc, created_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            PublicCandidateSnapshot.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
+    def append_public_candidate_decision_event(
+        self,
+        record: PublicCandidateDecisionEvent,
+    ) -> PublicCandidateDecisionEvent:
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into public_candidate_decision_events (
+              event_id, candidate_id, occurred_at, action, actor, new_status,
+              related_snapshot_id, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(event_id) do update set
+              payload = excluded.payload
+            """,
+            (
+                str(record.event_id),
+                record.candidate_id,
+                record.occurred_at.isoformat(),
+                record.action,
+                record.actor,
+                record.new_status,
+                str(record.related_snapshot_id) if record.related_snapshot_id else None,
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def list_public_candidate_decision_events(
+        self,
+        *,
+        candidate_id: str | None = None,
+        limit: int | None = 100,
+    ) -> list[PublicCandidateDecisionEvent]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if candidate_id:
+            clauses.append("candidate_id = ?")
+            params.append(candidate_id)
+        sql = "select payload from public_candidate_decision_events"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by occurred_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            PublicCandidateDecisionEvent.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
     def upsert_validation_plan(self, record: ValidationPlanRecord) -> ValidationPlanRecord:
         payload = record.model_dump(mode="json")
         self.conn.execute(
@@ -4021,6 +4229,65 @@ class SQLiteResearchRepository(ResearchRepository):
               on validation_decisions(candidate_id, updated_at desc);
             create index if not exists validation_decisions_packet_idx
               on validation_decisions(packet_id, updated_at desc);
+
+            create table if not exists public_candidates (
+              candidate_id text primary key,
+              display_id text,
+              candidate_kind text not null,
+              public_status text not null,
+              visibility text not null,
+              therapy_idea_id text,
+              latest_snapshot_id text,
+              content_hash text,
+              priority_score real not null default 0.5,
+              title text not null,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp
+            );
+
+            create index if not exists public_candidates_status_idx
+              on public_candidates(public_status, priority_score desc, updated_at desc);
+            create index if not exists public_candidates_visibility_idx
+              on public_candidates(visibility, updated_at desc);
+            create index if not exists public_candidates_kind_idx
+              on public_candidates(candidate_kind, updated_at desc);
+            create index if not exists public_candidates_therapy_idx
+              on public_candidates(therapy_idea_id, updated_at desc);
+            create index if not exists public_candidates_display_idx
+              on public_candidates(display_id);
+
+            create table if not exists public_candidate_snapshots (
+              snapshot_id text primary key,
+              candidate_id text not null,
+              snapshot_version integer not null,
+              content_hash text not null,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              unique(candidate_id, snapshot_version)
+            );
+
+            create index if not exists public_candidate_snapshots_candidate_idx
+              on public_candidate_snapshots(candidate_id, snapshot_version desc);
+            create index if not exists public_candidate_snapshots_hash_idx
+              on public_candidate_snapshots(content_hash);
+
+            create table if not exists public_candidate_decision_events (
+              event_id text primary key,
+              candidate_id text not null,
+              occurred_at text not null,
+              action text not null,
+              actor text not null,
+              new_status text,
+              related_snapshot_id text,
+              payload text not null,
+              created_at text not null default current_timestamp
+            );
+
+            create index if not exists public_candidate_decision_events_candidate_idx
+              on public_candidate_decision_events(candidate_id, occurred_at desc);
+            create index if not exists public_candidate_decision_events_action_idx
+              on public_candidate_decision_events(action, occurred_at desc);
 
             create table if not exists validation_plans (
               plan_id text primary key,

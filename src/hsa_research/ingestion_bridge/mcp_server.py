@@ -32,6 +32,7 @@ from .contracts import (
     HypothesisProposalRequest,
     MDExpertAgentReviewRequest,
     ModelProfile,
+    PublicCandidateGenerateRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefQueueBatchRequest,
     ResearchBriefQueueMaintenanceRequest,
@@ -311,6 +312,44 @@ def therapy_idea_library_tool(
             committee_run_id=UUID(committee_run_id) if committee_run_id else None,
             topic_query=topic_query,
             limit=limit,
+        )
+    ).model_dump(mode="json")
+
+
+def generate_public_candidate_tool(
+    therapy_idea_id: str,
+    candidate_id: str | None = None,
+    display_id: str | None = None,
+    candidate_kind: str | None = None,
+    visibility: str = "private",
+    public_status: str | None = None,
+    pipeline_version: str | None = None,
+    commit_sha: str | None = None,
+    include_compute_jobs: bool = True,
+    include_decisions: bool = True,
+    include_artifacts: bool = True,
+    require_moonshot_grade: bool = True,
+    min_moonshot_score: float = 0.8,
+    persist: bool = True,
+) -> dict:
+    """Generate a public-proof candidate snapshot from a moonshot-grade therapy idea."""
+
+    return get_service().generate_public_candidate_snapshot(
+        PublicCandidateGenerateRequest(
+            candidate_id=candidate_id,
+            therapy_idea_id=UUID(therapy_idea_id),
+            display_id=display_id,
+            candidate_kind=candidate_kind,  # type: ignore[arg-type]
+            visibility=visibility,  # type: ignore[arg-type]
+            public_status=public_status,  # type: ignore[arg-type]
+            pipeline_version=pipeline_version,
+            commit_sha=commit_sha,
+            include_compute_jobs=include_compute_jobs,
+            include_decisions=include_decisions,
+            include_artifacts=include_artifacts,
+            require_moonshot_grade=require_moonshot_grade,
+            min_moonshot_score=min_moonshot_score,
+            persist=persist,
         )
     ).model_dump(mode="json")
 
@@ -1712,6 +1751,42 @@ if mcp is not None:
             committee_run_id=committee_run_id,
             topic_query=topic_query,
             limit=limit,
+        )
+
+    @mcp.tool()
+    def generate_public_candidate(
+        therapy_idea_id: str,
+        candidate_id: str | None = None,
+        display_id: str | None = None,
+        candidate_kind: str | None = None,
+        visibility: str = "private",
+        public_status: str | None = None,
+        pipeline_version: str | None = None,
+        commit_sha: str | None = None,
+        include_compute_jobs: bool = True,
+        include_decisions: bool = True,
+        include_artifacts: bool = True,
+        require_moonshot_grade: bool = True,
+        min_moonshot_score: float = 0.8,
+        persist: bool = True,
+    ) -> dict:
+        """Generate a public-proof candidate snapshot from a moonshot-grade therapy idea."""
+
+        return generate_public_candidate_tool(
+            therapy_idea_id=therapy_idea_id,
+            candidate_id=candidate_id,
+            display_id=display_id,
+            candidate_kind=candidate_kind,
+            visibility=visibility,
+            public_status=public_status,
+            pipeline_version=pipeline_version,
+            commit_sha=commit_sha,
+            include_compute_jobs=include_compute_jobs,
+            include_decisions=include_decisions,
+            include_artifacts=include_artifacts,
+            require_moonshot_grade=require_moonshot_grade,
+            min_moonshot_score=min_moonshot_score,
+            persist=persist,
         )
 
     @mcp.tool()
