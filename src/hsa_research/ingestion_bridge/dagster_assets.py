@@ -4227,8 +4227,24 @@ if dg is not None:
         ).model_dump(mode="json")
         metadata = _public_candidate_snapshot_metadata(report)
         if report.get("errors") or not report.get("candidate") or not report.get("snapshot"):
+            candidate = report.get("candidate") if isinstance(report.get("candidate"), Mapping) else {}
+            gate = report.get("moonshot_gate") if isinstance(report.get("moonshot_gate"), Mapping) else {}
+            errors = report.get("errors") if isinstance(report.get("errors"), Sequence) else []
+            blockers = gate.get("blockers") if isinstance(gate.get("blockers"), Sequence) else []
+            reason = {
+                "candidate_id": candidate.get("candidate_id") or config.get("candidate_id") or "",
+                "therapy_idea_id": config.get("therapy_idea_id") or "",
+                "has_candidate": bool(report.get("candidate")),
+                "has_snapshot": bool(report.get("snapshot")),
+                "errors": list(errors),
+                "moonshot_gate_passed": gate.get("passed"),
+                "moonshot_gate_blockers": list(blockers),
+            }
             raise dg.Failure(
-                description="Public candidate snapshot generation returned no persisted snapshot.",
+                description=(
+                    "Public candidate snapshot generation returned no persisted snapshot: "
+                    f"{json.dumps(reason, sort_keys=True, default=str)}"
+                ),
                 metadata=metadata,
             )
         return dg.MaterializeResult(value=report, metadata=metadata)
