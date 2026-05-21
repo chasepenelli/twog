@@ -331,6 +331,17 @@ _PUBLIC_CANDIDATE_GATE_TABLE_COLUMNS = (
     "reasons",
     "blockers",
 )
+_PUBLIC_CANDIDATE_INTEGRITY_TABLE_COLUMNS = (
+    "candidate_id",
+    "candidate_found",
+    "therapy_idea_found",
+    "latest_snapshot_found",
+    "trace_id",
+    "run_manifest_id",
+    "run_manifest_found",
+    "strict_export_ready",
+    "problems",
+)
 _HYPOTHESIS_PROMOTION_TABLE_COLUMNS = (
     "candidate_id",
     "source_type",
@@ -1449,7 +1460,7 @@ if dg is not None:
             "candidates_missing_manifest_receipt": dg.MetadataValue.json(
                 report.get("candidates_missing_manifest_receipt", [])
             ),
-            "checks": dg.MetadataValue.table(records=rows),
+            "checks": _metadata_table(rows, _PUBLIC_CANDIDATE_INTEGRITY_TABLE_COLUMNS),
         }
 
     def _hypothesis_promotion_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
