@@ -86,6 +86,7 @@ on:
           - "candidate_contribution_intake_report_job"
           - "candidate_contribution_triage_job"
           - "public_candidate_snapshot_job"
+          - "public_candidate_integrity_job"
       config_json:
         description: "Optional Dagster run config JSON"
         type: string
