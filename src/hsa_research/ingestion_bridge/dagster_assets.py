@@ -4339,6 +4339,11 @@ if dg is not None:
             ),
             "visibility": dg.Field(str, is_required=False),
             "limit": dg.Field(int, default_value=100),
+            "fail_on_not_ready": dg.Field(
+                bool,
+                default_value=False,
+                description="Fail the Dagster run when checked candidates are not strict-export ready.",
+            ),
         },
     )
     def public_candidate_integrity_report(
@@ -4360,7 +4365,20 @@ if dg is not None:
                 limit=config.get("limit", 100),
             )
         ).model_dump(mode="json")
-        return dg.MaterializeResult(value=report, metadata=_public_candidate_integrity_metadata(report))
+        metadata = _public_candidate_integrity_metadata(report)
+        if config.get("fail_on_not_ready", False) and not report.get("strict_export_ready"):
+            reason = {
+                "strict_export_ready": report.get("strict_export_ready"),
+                "missing_candidate_ids": report.get("missing_candidate_ids", []),
+                "missing_therapy_idea_ids": report.get("missing_therapy_idea_ids", []),
+                "candidates_missing_manifest_receipt": report.get("candidates_missing_manifest_receipt", []),
+                "checks": report.get("checks", []),
+            }
+            raise dg.Failure(
+                description=f"Public candidate integrity check failed: {json.dumps(reason, sort_keys=True, default=str)}",
+                metadata=metadata,
+            )
+        return dg.MaterializeResult(value=report, metadata=metadata)
 
     @dg.asset(
         group_name="ai_research",
