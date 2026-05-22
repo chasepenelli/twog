@@ -5811,6 +5811,7 @@ OmicsFollowupTaskType = Literal[
     "sample_metadata_review",
     "negative_control_locus",
     "gene_set_context",
+    "frontier_modality_context",
     "raw_reprocess_candidate",
 ]
 

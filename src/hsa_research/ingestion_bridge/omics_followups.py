@@ -15,6 +15,7 @@ from .contracts import (
     ResearchLeadRecord,
     SourceQuery,
 )
+from .frontier_research_policy import frontier_policy_note, frontier_search_or_group
 from .omics_locus_signals import build_omics_locus_signals
 from .repository import ResearchRepository
 
@@ -81,6 +82,7 @@ def build_omics_followups(
             "genes": context["genes"],
             "support_levels": context["support_levels"],
             "limitations": context["limitations"],
+            "frontier_policy_note": frontier_policy_note(),
         },
     )
 
@@ -272,6 +274,21 @@ def _candidate_tasks(context: dict[str, Any]) -> list[OmicsFollowupTask]:
     )
     tasks.append(
         _task(
+            "frontier_modality_context",
+            f"Find frontier modality evidence for {'/'.join(genes)}",
+            "Search for vaccine, cellular therapy, ADC, stapled peptide, PROTAC, and targeted degradation evidence relevant to this gene axis.",
+            "Moonshot prioritization should look for frontier modality fit, not only conventional drug-response precedent.",
+            f"{disease_text} {gene_text} {frontier_search_or_group(max_terms=12)}",
+            ["pubmed", "europe_pmc", "chembl", "pubchem"],
+            genes,
+            accessions,
+            context["evidence_refs"],
+            50,
+            {"gap": "frontier_modality_context", "frontier_policy_note": frontier_policy_note()},
+        )
+    )
+    tasks.append(
+        _task(
             "negative_control_locus",
             "Add negative-control locus extraction for bigWig background",
             "Run a control-locus or housekeeping-locus comparison to estimate background and track behavior.",
@@ -362,6 +379,7 @@ def _source_queries_from_task(task: OmicsFollowupTask) -> list[SourceQuery]:
                     "accessions": task.accessions,
                     "priority": task.priority,
                     "evidence_refs": task.evidence_refs,
+                    "metadata": task.metadata,
                 },
                 track=OMICS_FOLLOWUP_TRACK,
                 active=True,

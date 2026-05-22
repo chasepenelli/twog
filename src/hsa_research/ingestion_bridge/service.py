@@ -247,6 +247,11 @@ from .evidence_gap_resolver import (
 )
 from .full_text_ops import FULL_TEXT_OPS_AGENT_NAME, FULL_TEXT_OPS_AGENT_VERSION, FullTextOpsAgent
 from .full_text_triage import FullTextTriageAgent
+from .frontier_research_policy import (
+    frontier_modality_profile,
+    frontier_policy_note,
+    frontier_search_or_group,
+)
 from .model_policy import BIG_IDEA_OPENROUTER_MODEL, DEFAULT_OPENROUTER_MODEL
 from .md_expert_agent import (
     MD_EXPERT_REVIEW_AGENT_NAME,
@@ -6672,6 +6677,17 @@ _PUBLIC_CANDIDATE_MOONSHOT_TERMS = (
     "combination",
     "reprogram",
     "disease-modifying",
+    "mrna",
+    "neoantigen",
+    "cellular therapy",
+    "car-t",
+    "antibody-drug conjugate",
+    "stapled peptide",
+    "protac",
+    "targeted protein degradation",
+    "synthetic lethality",
+    "allosteric inhibitor",
+    "mutation-selective",
 )
 
 _PUBLIC_CANDIDATE_INCREMENTAL_TERMS = (
@@ -6697,6 +6713,8 @@ def _public_candidate_moonshot_gate(
     blockers: list[str] = []
     text = _public_candidate_gate_text(record)
     score = float(record.score if record.score is not None else record.idea.priority_score)
+    frontier_profile = frontier_modality_profile(text, conventional_score=score)
+    weighted_score = float(frontier_profile["weighted_score"])
     evidence_count = len(record.evidence_refs)
     has_program_lineage = record.source_program_id is not None
     moonshot_terms = sorted({term for term in _PUBLIC_CANDIDATE_MOONSHOT_TERMS if term in text})
@@ -6708,16 +6726,21 @@ def _public_candidate_moonshot_gate(
     )
     has_validation_shape = len(record.next_experiments) >= 1 and bool(record.risks)
 
-    if score >= min_score:
-        reasons.append(f"priority_score>={min_score:.2f}")
+    if weighted_score >= min_score:
+        reasons.append(f"frontier_weighted_score>={min_score:.2f}")
     else:
-        blockers.append(f"priority_score_below_{min_score:.2f}")
+        blockers.append(f"frontier_weighted_score_below_{min_score:.2f}")
+
+    if frontier_profile["matched_modalities"]:
+        reasons.append(f"frontier_modalities:{','.join(frontier_profile['matched_modalities'][:4])}")
+    else:
+        blockers.append("missing_frontier_modality")
 
     if has_program_lineage:
         reasons.append("research_program_lineage")
     if moonshot_terms:
         reasons.append(f"moonshot_terms:{','.join(moonshot_terms[:6])}")
-    if not has_program_lineage and not moonshot_terms:
+    if not has_program_lineage and not (moonshot_terms or frontier_profile["matched_modalities"]):
         blockers.append("missing_program_or_moonshot_thesis")
 
     if evidence_count >= 2 or record.idea.evidence_strength in {"medium", "high"}:
@@ -6743,6 +6766,8 @@ def _public_candidate_moonshot_gate(
         "passed": not blockers,
         "min_priority_score": min_score,
         "priority_score": score,
+        "frontier_policy": frontier_profile,
+        "weighted_score": weighted_score,
         "evidence_ref_count": evidence_count,
         "has_program_lineage": has_program_lineage,
         "matched_terms": moonshot_terms,
@@ -10921,6 +10946,8 @@ def _research_program_loop_metadata(
             "gate_decision": program.gate_decision,
             "selected_source_keys": selected_sources,
             "dagster_run_id": request.dagster_run_id,
+            "frontier_policy_note": frontier_policy_note(),
+            "frontier_query_expansion": frontier_search_or_group(max_terms=12),
         },
     }
 
@@ -10958,6 +10985,7 @@ def _research_program_loop_brief_topic(
         parts.append(f"Confidence increase criteria: {', '.join(task.pass_values[:5])}.")
     if task.fail_values:
         parts.append(f"Confidence decrease criteria: {', '.join(task.fail_values[:5])}.")
+    parts.append(frontier_policy_note())
     parts.append("Produce citation-first conclusions and state whether this changes program confidence.")
     return _truncate(" ".join(parts), 1000)
 
@@ -10987,6 +11015,8 @@ def _research_program_loop_source_query(
             "pass_values": task.pass_values,
             "fail_values": task.fail_values,
             "tool_hints": task.tool_hints,
+            "frontier_policy_note": frontier_policy_note(),
+            "frontier_query_expansion": frontier_search_or_group(max_terms=12),
             "metadata": metadata.get("research_program_evidence_loop", {}),
         },
         track="research_program_evidence",
@@ -11004,6 +11034,7 @@ def _research_program_loop_query_text(
         program.title,
         program.disease_model,
         "canine hemangiosarcoma human angiosarcoma",
+        frontier_search_or_group(max_terms=12),
     ]
     if task.metrics:
         terms.append(" ".join(task.metrics[:8]))

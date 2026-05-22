@@ -21,6 +21,11 @@ from .contracts import (
     ValidationGapSourceQuery,
     ValidationRequestQueueItem,
 )
+from .frontier_research_policy import (
+    frontier_modality_matches,
+    frontier_policy_note,
+    frontier_search_or_group,
+)
 from .repository import ResearchRepository
 
 
@@ -284,6 +289,9 @@ def _queries_for_context(
         )
         if not query_text:
             continue
+        frontier_expansion = _frontier_query_expansion(context)
+        if frontier_expansion:
+            query_text = f"({query_text}) AND {frontier_expansion}"
         query_name = _query_name(context, source_key, lane, query_text)
         query_params = _query_params_for_source(source_key, lane, required_terms, context, request)
         queries.append(
@@ -314,12 +322,38 @@ def _queries_for_context(
                         "validation_type": context.validation_type,
                         "candidate_name": context.candidate_name,
                         "target_name": context.target_name,
+                        "frontier_policy_note": frontier_policy_note(),
+                        "frontier_query_expansion": frontier_expansion,
+                        "matched_frontier_modalities": sorted(_frontier_matches_for_context(context)),
                         "dagster_run_id": request.dagster_run_id,
                     },
                 },
             )
         )
     return queries
+
+
+def _frontier_matches_for_context(context: _GapContext) -> dict[str, list[str]]:
+    text = " ".join(
+        str(value)
+        for value in (
+            context.gap_text,
+            context.title,
+            context.topic,
+            context.candidate_name,
+            context.target_name,
+            context.task_type,
+            context.validation_type,
+        )
+        if value
+    )
+    return frontier_modality_matches(text)
+
+
+def _frontier_query_expansion(context: _GapContext) -> str | None:
+    if not _frontier_matches_for_context(context):
+        return None
+    return frontier_search_or_group(max_terms=12)
 
 
 def _query_text_for_source(
@@ -435,6 +469,9 @@ def _query_params_for_source(
         "lane": lane,
         "comparative_policy": "disabled",
         "required_terms": required_terms,
+        "frontier_policy_note": frontier_policy_note(),
+        "frontier_query_expansion": _frontier_query_expansion(context),
+        "matched_frontier_modalities": sorted(_frontier_matches_for_context(context)),
         "lead_id": str(context.lead_id) if context.lead_id else None,
         "queue_item_id": str(context.queue_item_id) if context.queue_item_id else None,
     }

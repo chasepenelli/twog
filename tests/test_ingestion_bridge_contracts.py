@@ -1519,7 +1519,8 @@ def test_public_candidate_generation_blocks_low_grade_incremental_ideas(tmp_path
     assert blocked.snapshot is None
     assert "public_candidate_requires_moonshot_grade" in blocked.errors
     assert blocked.moonshot_gate["passed"] is False
-    assert "priority_score_below_0.80" in blocked.moonshot_gate["blockers"]
+    assert "frontier_weighted_score_below_0.80" in blocked.moonshot_gate["blockers"]
+    assert "missing_frontier_modality" in blocked.moonshot_gate["blockers"]
 
     preview = service.generate_public_candidate_snapshot(
         PublicCandidateGenerateRequest(
@@ -1533,6 +1534,52 @@ def test_public_candidate_generation_blocks_low_grade_incremental_ideas(tmp_path
     assert preview.errors == []
     assert preview.candidate is not None
     assert preview.moonshot_gate["passed"] is False
+
+
+def test_public_candidate_generation_weights_frontier_modalities_over_conventional_score(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "public-candidate-frontier-moonshot.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    idea = TherapyIdea(
+        title="Personalized mRNA neoantigen vaccine for endothelial HSA antigens",
+        hypothesis=(
+            "A personalized mRNA neoantigen vaccine could train immune recognition around "
+            "endothelial tumor antigens in canine HSA."
+        ),
+        rationale=(
+            "This is a frontier modality thesis: use tumor sequencing and antigen selection "
+            "to create a testable personalized vaccine strategy, not a conventional monotherapy tweak."
+        ),
+        candidate_therapies=["personalized mRNA neoantigen vaccine"],
+        targets=["VIM", "KDR"],
+        biomarkers=["neoantigen load", "endothelial antigen expression"],
+        mechanism="mRNA vaccine expression of selected tumor antigens to prime anti-tumor immunity.",
+        evidence_refs=["C1", "C2"],
+        evidence_strength="medium",
+        next_experiments=["Define antigen-selection metrics and cross-species comparator data."],
+        risks=["Neoantigen prediction may not translate across canine HSA tumors."],
+        priority_score=0.45,
+    )
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            topic="frontier personalized vaccine program",
+            status="ready_for_promotion",
+            score=0.45,
+            source_program_id=uuid4(),
+        )
+    )
+
+    result = service.generate_public_candidate_snapshot(
+        PublicCandidateGenerateRequest(therapy_idea_id=idea.idea_id, visibility="draft_public", persist=False)
+    )
+
+    assert result.errors == []
+    assert result.candidate is not None
+    assert result.moonshot_gate["passed"] is True
+    frontier = result.moonshot_gate["frontier_policy"]
+    assert frontier["frontier_modality_weight"] == 0.9
+    assert "mrna_personalized_vaccine" in frontier["matched_modalities"]
+    assert result.moonshot_gate["weighted_score"] >= 0.8
 
 
 def test_validation_decision_report_promotes_broader_program_for_weak_specific_claim(tmp_path):
@@ -2117,11 +2164,17 @@ def test_research_program_evidence_loop_queues_bounded_work():
     assert stored.metadata["latest_evidence_loop"]["source_query_count"] == 2
     assert repo.list_research_brief_queue_items(topic_query="Coagulation evidence acquisition", limit=10)
     assert repo.list_research_leads(statuses=["followup"], limit=10)
-    assert {
-        query.source_key
+    research_queries = [
+        query
         for query in repo.list_source_queries(active_only=True)
         if query.track == "research_program_evidence"
+    ]
+    assert {
+        query.source_key
+        for query in research_queries
     } == {"pubmed", "europe_pmc"}
+    assert all("frontier_query_expansion" in query.query_params for query in research_queries)
+    assert any('"mRNA vaccine"' in query.query_text for query in research_queries)
 
 
 def test_research_program_evidence_loop_dry_run_and_max_loop_block():
@@ -13555,6 +13608,40 @@ def test_validation_gap_source_pack_compacts_long_candidate_and_target_terms(tmp
     assert "toceranib" not in query_text
     assert "vegfr-2" not in query_text
     assert all(len(term) <= 80 for term in required_terms)
+
+
+def test_validation_gap_source_pack_expands_frontier_modality_queries(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "validation-gap-source-pack-frontier.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    lead = repo.upsert_research_lead(
+        ResearchLeadRecord(
+            title="ADC evidence gap for endothelial HSA antigen targeting",
+            lead_type="unknown",
+            status="followup",
+            priority=25,
+            reason="Find antibody-drug conjugate and ADC evidence for endothelial antigen targeting in canine HSA.",
+            suggested_sources=["pubmed"],
+            metadata={
+                "evidence_gap_resolver": {
+                    "origin": "frontier_moonshot_gap",
+                    "lane": "chemistry",
+                    "gap_text": "Antibody-drug conjugate ADC targeting CD31 or vascular antigens in canine HSA.",
+                    "task_type": "frontier_modality_review",
+                    "validation_type": "expert_review",
+                }
+            },
+        )
+    )
+
+    result = service.build_validation_gap_source_pack(
+        ValidationGapSourcePackRequest(lead_ids=[lead.lead_id], source_keys=["pubmed"], max_queries_per_lane=5)
+    )
+
+    assert result.query_count == 1
+    query = result.queries[0]
+    assert '"antibody-drug conjugate"' in query.query_text
+    assert query.query_params["frontier_query_expansion"]
+    assert "antibody_drug_conjugate" in query.query_params["matched_frontier_modalities"]
 
 
 def test_validation_gap_ingest_runs_only_validation_gap_queries(monkeypatch):

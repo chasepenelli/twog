@@ -26,6 +26,7 @@ from .contracts import (
     TherapyCommitteeResult,
     TherapyIdea,
 )
+from .frontier_research_policy import frontier_policy_note
 from .model_policy import default_openrouter_model
 from .research_brief_agent import ResearchBriefAgent
 from .repository import ResearchRepository
@@ -96,7 +97,8 @@ Every idea must include at least one supplied citation ID in evidence_refs.
 Return strict JSON only with: summary, ideas, evidence_limitations, errors.
 Each idea requires: title, hypothesis, rationale, candidate_therapies, targets, biomarkers, mechanism, evidence_refs, evidence_strength, translational_path, risks, next_experiments, priority_score.
 Keep the JSON compact: summary under 120 words, each idea field under 80 words, and no markdown.
-Keep ideas recommend-only. Do not claim a cure is proven. Distinguish direct evidence from translational analog evidence."""
+Keep ideas recommend-only. Do not claim a cure is proven. Distinguish direct evidence from translational analog evidence.
+For moonshot ideation, bias toward frontier modalities: mRNA/personalized vaccines, cellular therapies, antibody-drug conjugates, stapled peptides, peptide PROTACs, targeted protein degradation, synthetic lethality, and mutation-selective targeted therapies. Do not over-rank conventional monotherapy tweaks just because they have more prior literature."""
 
 
 def run_therapy_committee(
@@ -842,6 +844,7 @@ def _perspective_payload(
         ),
         "brief_evaluation": evidence.get("brief_evaluation"),
         "brief_limitations": evidence.get("brief_limitations", []),
+        "frontier_policy": frontier_policy_note(),
         "max_ideas": request.max_ideas_per_perspective,
     }
 
@@ -878,6 +881,8 @@ def _openrouter_review_model(model_name: str, review_payload: dict[str, Any]) ->
                             "Return JSON only.",
                         "Use only supplied citation IDs.",
                         "Make therapy ideas specific enough to become validation plans later.",
+                        frontier_policy_note(),
+                        "Prefer frontier modality strategies when evidence can support a testable hypothesis: mRNA/personalized vaccines, cellular therapies, ADCs, stapled peptides, peptide PROTACs/degraders, synthetic lethality, or mutation-selective targeted therapies.",
                         "When research_program is present, produce high-level therapeutic strategies, not dosing or protocol tweaks.",
                         "When research_program is present, avoid single weak drug tweaks unless they are part of a larger mechanism strategy.",
                         "When research_program is present, include mechanism, therapy family, target/biomarker logic, risk annotations, and validation readouts for each idea.",
