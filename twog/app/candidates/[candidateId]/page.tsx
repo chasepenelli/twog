@@ -322,6 +322,7 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
         candidateId={candidate.candidate_id}
         displayId={displayId}
         payloadPath={payloadPath}
+        evidenceBundlePath={evidenceBundlePath}
         snapshotHash={shortHash(candidate.content_hash ?? snapshot?.content_hash)}
       />
 

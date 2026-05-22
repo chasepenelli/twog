@@ -6352,12 +6352,13 @@ def test_candidate_contribution_intake_report_summarizes_rows():
                 "candidate_id": "twog-candidate-447eb8089965",
                 "display_id": "TWOG-15F50D",
                 "snapshot_content_hash": "abc123",
+                "contribution_content_hash": "sha256:aaa",
                 "source_payload_url": "/api/public-candidates/twog-candidate-447eb8089965",
                 "status": "queued_for_intake",
-                "contribution_type": "evidence",
+                "contribution_type": "evidence_addition",
                 "relation_to_current_record": "extends",
                 "requested_system_action": "evidence_review",
-                "contributor": {"contact": "reviewer@example.com"},
+                "contributor": {"handle": "@reviewer", "contact": "reviewer@example.com"},
                 "evidence": [{"url": "https://example.com/paper"}],
                 "artifacts": [],
                 "created_at": datetime(2026, 5, 19, tzinfo=UTC),
@@ -6367,7 +6368,7 @@ def test_candidate_contribution_intake_report_summarizes_rows():
                 "candidate_id": "twog-candidate-447eb8089965",
                 "display_id": "TWOG-15F50D",
                 "status": "queued_for_intake",
-                "contribution_type": "critique",
+                "contribution_type": "claim_critique",
                 "relation_to_current_record": "extends",
                 "requested_system_action": "no_action",
                 "contributor": {"contact": "smoke@example.com"},
@@ -6385,6 +6386,9 @@ def test_candidate_contribution_intake_report_summarizes_rows():
     assert report["requested_action_counts"] == {"evidence_review": 1, "no_action": 1}
     assert report["recommended_route_counts"]["accepted_for_evidence_review"] == 1
     assert report["rows"][0]["created_at"] == "2026-05-19T00:00:00+00:00"
+    assert report["rows"][0]["contribution_content_hash"] == "sha256:aaa"
+    assert report["rows"][0]["status_url"] == "/api/contributions/11111111-1111-1111-1111-111111111111/status"
+    assert report["rows"][0]["contributor"]["handle"] == "@reviewer"
 
 
 def test_dagster_candidate_contribution_intake_report_lives_in_control_panel_group():
@@ -6417,7 +6421,9 @@ def test_dagster_candidate_contribution_intake_report_uses_report_builder(monkey
                     "contribution_id": "11111111-1111-1111-1111-111111111111",
                     "display_id": "TWOG-15F50D",
                     "status": "queued_for_intake",
-                    "contribution_type": "evidence",
+                    "contribution_type": "evidence_addition",
+                    "contribution_content_hash": "sha256:aaa",
+                    "status_url": "/api/contributions/11111111-1111-1111-1111-111111111111/status",
                     "requested_system_action": "evidence_review",
                     "recommended_route": "accepted_for_evidence_review",
                     "evidence_count": 1,
@@ -6462,6 +6468,7 @@ def test_candidate_contribution_triage_plan_routes_accepted_rows():
                 "contribution_id": contribution_id,
                 "candidate_id": "twog-candidate-447eb8089965",
                 "display_id": "TWOG-15F50D",
+                "contribution_content_hash": "sha256:aaa",
                 "status": "queued_for_intake",
                 "review_notes": None,
                 "promoted_queue_id": None,
@@ -6488,6 +6495,8 @@ def test_candidate_contribution_triage_plan_routes_accepted_rows():
     assert report["rows"][0]["promoted_queue_id"] == (
         f"candidate_contribution:{contribution_id}:evidence_review"
     )
+    assert report["rows"][0]["contribution_content_hash"] == "sha256:aaa"
+    assert report["rows"][0]["status_url"] == f"/api/contributions/{contribution_id}/status"
     assert "Good citation repair lead." in report["rows"][0]["review_notes"]
 
 

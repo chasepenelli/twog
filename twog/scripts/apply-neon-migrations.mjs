@@ -22,7 +22,10 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-const migrationFiles = ['001_candidate_contribution_intake.sql'];
+const migrationFiles = [
+  '001_candidate_contribution_intake.sql',
+  '002_candidate_contribution_proof_network.sql',
+];
 
 try {
   for (const file of migrationFiles) {
