@@ -17,6 +17,17 @@ from .candidate_contribution_intake import (
     build_candidate_contribution_intake_report,
     triage_candidate_contributions,
 )
+from .work_packets import (
+    curated_work_packets_for_candidate,
+    list_work_packets,
+    seed_work_packets,
+)
+from .proof_capsules import (
+    archive_stale_proof_capsules,
+    list_proof_capsules,
+    sync_reward_events_from_proof_capsule_reviews,
+)
+from .contributor_profiles import get_contributor_profile_by_handle
 from .claim_curator import curate_claims_for_repository
 from .claim_extractor import extract_claims_for_repository
 from .contracts import (
@@ -623,6 +634,111 @@ def main() -> None:
         "--apply",
         action="store_true",
         help="Persist the triage decision. Without this flag the command is a dry run.",
+    )
+
+    # --- Proof Network commands ---------------------------------------
+
+    seed_work_packets_cmd = subparsers.add_parser(
+        "seed-work-packets",
+        help="Seed the curated starter work packets for a public candidate",
+    )
+    seed_work_packets_cmd.add_argument(
+        "--candidate-id",
+        required=True,
+        action="append",
+        help="Public candidate ID to seed packets for; repeatable.",
+    )
+    seed_work_packets_cmd.add_argument(
+        "--apply",
+        action="store_true",
+        help="Persist the seed. Without this flag the command is a dry run.",
+    )
+
+    list_work_packets_cmd = subparsers.add_parser(
+        "work-packets",
+        help="List Proof Network work packets",
+    )
+    list_work_packets_cmd.add_argument(
+        "--status",
+        action="append",
+        default=[],
+        help="Status filter; repeatable. Defaults to open + in_progress.",
+    )
+    list_work_packets_cmd.add_argument(
+        "--candidate-id",
+        action="append",
+        default=[],
+        help="Candidate ID filter; repeatable.",
+    )
+    list_work_packets_cmd.add_argument("--limit", type=int, default=25)
+
+    list_proof_capsules_cmd = subparsers.add_parser(
+        "proof-capsules",
+        help="List Proof Network proof capsules (public-safe shape)",
+    )
+    list_proof_capsules_cmd.add_argument(
+        "--status",
+        action="append",
+        default=[],
+        help="Status filter; repeatable. Defaults to all pending + accepted statuses.",
+    )
+    list_proof_capsules_cmd.add_argument(
+        "--candidate-id",
+        action="append",
+        default=[],
+        help="Candidate ID filter; repeatable.",
+    )
+    list_proof_capsules_cmd.add_argument("--limit", type=int, default=25)
+
+    sync_proof_capsule_rewards_cmd = subparsers.add_parser(
+        "sync-proof-capsule-rewards",
+        help="Convert proof_capsule_reviews into reward events (idempotent on review_id)",
+    )
+    sync_proof_capsule_rewards_cmd.add_argument(
+        "--reviewer-type",
+        default=None,
+        help="Optional reviewer_type filter (operator | llm_evaluator | system | external_expert).",
+    )
+    sync_proof_capsule_rewards_cmd.add_argument("--limit", type=int, default=500)
+    sync_proof_capsule_rewards_cmd.add_argument(
+        "--include-existing",
+        action="store_true",
+        help="Re-emit reward events for reviews that already have one.",
+    )
+    sync_proof_capsule_rewards_cmd.add_argument(
+        "--created-by",
+        default="cli_proof_capsule_review_sync",
+        help="Identity recorded on the created reward events.",
+    )
+
+    contributor_profile_cmd = subparsers.add_parser(
+        "contributor-profile",
+        help="Render a Proof Network contributor profile (handle-keyed, public-safe).",
+    )
+    contributor_profile_cmd.add_argument("--handle", required=True, help="Contributor handle, e.g. @reviewer")
+    contributor_profile_cmd.add_argument("--capsule-limit", type=int, default=100)
+    contributor_profile_cmd.add_argument("--reward-limit", type=int, default=500)
+
+    archive_stale_capsules_cmd = subparsers.add_parser(
+        "archive-stale-proof-capsules",
+        help="Archive proof capsules sitting in submitted/in_review past the freshness SLA.",
+    )
+    archive_stale_capsules_cmd.add_argument(
+        "--max-age-hours",
+        type=float,
+        default=72.0,
+        help="Capsules older than this are archived (default 72h).",
+    )
+    archive_stale_capsules_cmd.add_argument("--limit", type=int, default=200)
+    archive_stale_capsules_cmd.add_argument(
+        "--apply",
+        action="store_true",
+        help="Persist the archive decisions. Without this flag the command is a dry run.",
+    )
+    archive_stale_capsules_cmd.add_argument(
+        "--reviewer-id",
+        default="twog_freshness_sla",
+        help="Identity recorded on the synthetic review rows.",
     )
 
     research_brief_playground = subparsers.add_parser(
@@ -2479,6 +2595,44 @@ def main() -> None:
             operator=args.operator,
             review_notes=args.review_notes,
             dry_run=not args.apply,
+        )
+    elif args.command == "seed-work-packets":
+        records = []
+        for candidate_id in args.candidate_id:
+            records.extend(curated_work_packets_for_candidate(candidate_id))
+        output = seed_work_packets(records, dry_run=not args.apply)
+    elif args.command == "work-packets":
+        output = list_work_packets(
+            statuses=args.status or None,
+            candidate_ids=args.candidate_id or None,
+            limit=args.limit,
+        )
+    elif args.command == "proof-capsules":
+        output = list_proof_capsules(
+            statuses=args.status or None,
+            candidate_ids=args.candidate_id or None,
+            limit=args.limit,
+        )
+    elif args.command == "sync-proof-capsule-rewards":
+        output = sync_reward_events_from_proof_capsule_reviews(
+            repo,
+            limit=args.limit,
+            reviewer_type=args.reviewer_type,
+            include_existing=args.include_existing,
+            created_by=args.created_by,
+        )
+    elif args.command == "contributor-profile":
+        output = get_contributor_profile_by_handle(
+            args.handle,
+            capsule_limit=args.capsule_limit,
+            reward_limit=args.reward_limit,
+        )
+    elif args.command == "archive-stale-proof-capsules":
+        output = archive_stale_proof_capsules(
+            max_age_hours=args.max_age_hours,
+            limit=args.limit,
+            dry_run=not args.apply,
+            reviewer_id=args.reviewer_id,
         )
     elif args.command == "research-brief-playground-pack":
         output = HSAResearchService(repo).build_research_brief_playground_pack(

@@ -1,7 +1,16 @@
 import Link from 'next/link';
 import { ContactForm } from '@/components/ContactForm';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from '@/lib/constants';
-import { getFeaturedCandidate, shortHash } from '@/lib/public-candidates';
+import {
+  getFeaturedCandidate,
+  publicCandidates,
+  shortHash,
+} from '@/lib/public-candidates';
+import { getProofFlowSnapshot, type ProofFlowSnapshot } from '@/lib/proof-flow';
+import bandStyles from './home-proof-network-band.module.css';
+
+export const dynamic = 'force-dynamic';
+export const revalidate = 60;
 
 const OPERATING_LOOP = [
   {
@@ -39,11 +48,29 @@ const VALIDATION_PATH = [
   ['Lab handoff', 'A clearer experimental question for collaborators, reviewers, and wet-lab confirmation.'],
 ] as const;
 
-export default function Home() {
+async function loadProofFlowSafe(): Promise<ProofFlowSnapshot | null> {
+  try {
+    return await getProofFlowSnapshot();
+  } catch (error) {
+    console.error('home page failed to load proof flow snapshot', error);
+    return null;
+  }
+}
+
+export default async function Home() {
   const featured = getFeaturedCandidate();
   const candidate = featured?.candidate;
   const snapshot = featured?.latest_snapshot;
   const hash = shortHash(candidate?.content_hash ?? snapshot?.content_hash);
+  const flow = await loadProofFlowSafe();
+  const openPackets = flow?.work_packets_open ?? 0;
+  const inReview =
+    (flow?.capsules_submitted ?? 0) + (flow?.capsules_in_review ?? 0);
+  const accepted =
+    (flow?.capsules_accepted ?? 0) +
+    (flow?.capsules_routed_to_validation ?? 0) +
+    (flow?.capsules_routed_to_compute_review ?? 0);
+  const candidatesTouched = publicCandidates.length;
 
   return (
     <div className="site-shell home-shell">
@@ -72,6 +99,62 @@ export default function Home() {
               </Link>
             </div>
           </div>
+        </div>
+      </section>
+
+      <section
+        className={bandStyles.band}
+        aria-label="TWOG Proof Network call to action"
+        data-marker="PROOF NETWORK / OPEN WORK"
+      >
+        <div className={bandStyles.inner}>
+          <div className={bandStyles.copy}>
+            <p className={`section-kicker ${bandStyles.kicker}`}>
+              TWOG / Proof Network
+            </p>
+            <h2 className={bandStyles.heading}>
+              Or pick up a piece of the work.
+            </h2>
+            <p className={bandStyles.lede}>
+              TWOG publishes bounded research tasks on every candidate record.
+              Humans and agents check one out, do the work, submit a proof
+              capsule, and earn reputation when reviewers accept it.
+            </p>
+            <div className={bandStyles.actions}>
+              <Link href="/connect" className="network-cta primary">
+                Install your agent
+              </Link>
+              <Link href="/network" className="network-cta">
+                See open packets
+              </Link>
+              <Link href="/leaderboard" className="network-cta">
+                Leaderboard
+              </Link>
+            </div>
+          </div>
+          <aside
+            className={bandStyles.stats}
+            aria-label="Proof network live counters"
+          >
+            <div className={bandStyles.stat}>
+              <span className={bandStyles.statLabel}>Open packets</span>
+              <strong className={bandStyles.statValue}>{openPackets}</strong>
+            </div>
+            <div className={bandStyles.stat}>
+              <span className={bandStyles.statLabel}>Capsules in review</span>
+              <strong className={bandStyles.statValue}>{inReview}</strong>
+            </div>
+            <div className={bandStyles.stat}>
+              <span className={bandStyles.statLabel}>Accepted capsules</span>
+              <strong className={bandStyles.statValue}>{accepted}</strong>
+            </div>
+            <div className={bandStyles.stat}>
+              <span className={bandStyles.statLabel}>Candidates touched</span>
+              <strong className={bandStyles.statValue}>
+                {candidatesTouched}
+              </strong>
+            </div>
+          </aside>
         </div>
       </section>
 

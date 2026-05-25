@@ -13,6 +13,9 @@ from hsa_research.ingestion_bridge import dagster_assets as dagster_asset_module
 from hsa_research.ingestion_bridge import cli as cli_module
 from hsa_research.ingestion_bridge import command_center_web
 from hsa_research.ingestion_bridge import candidate_contribution_intake
+from hsa_research.ingestion_bridge import work_packets as work_packets_module
+from hsa_research.ingestion_bridge import proof_capsules as proof_capsules_module
+from hsa_research.ingestion_bridge import contributor_profiles as contributor_profiles_module
 from hsa_research.ingestion_bridge import entity_resolution
 from hsa_research.ingestion_bridge import evidence_fit
 from hsa_research.ingestion_bridge import source_query_params
@@ -200,8 +203,13 @@ from hsa_research.ingestion_bridge.contracts import (
     ValidationToolMatchRequest,
     ClaimCurationRequest,
     SourceScoutRequest,
+    ProofCapsuleArtifact,
+    ProofCapsuleContributor,
+    ProofCapsuleRecord,
+    ProofCapsuleReviewRecord,
     PubMedIdentifierRepairRequest,
     RunStatus,
+    WorkPacketRecord,
     XLinkedArticleReviewAction,
     XLinkedArticleReviewRequest,
     XLinkedArticleReviewResult,
@@ -22434,3 +22442,1311 @@ def test_scrape_bridge_skips_urls_outside_profile_allowlist(tmp_path, monkeypatc
     assert result.fetched_pages == 0
     assert result.skipped_pages == 1
     assert "outside allowed patterns" in result.errors[0]
+
+
+def test_work_packet_record_normalizes_lists_and_strings():
+    record = WorkPacketRecord(
+        candidate_id="  twog-candidate-447eb8089965  ",
+        packet_type="citation_repair",
+        title="  Repair load-bearing citation  ",
+        question="Verify the cited paper supports the strongest claim in the rationale.",
+        why_it_matters="  Weak citations compound downstream.  ",
+        target_claim_ids=[" C1 ", "C1", "C2"],
+        required_inputs=["Rationale_md", "rationale_md "],
+        suggested_methods=["read paper", "Read Paper "],
+        expected_outputs=["new citation", "justification"],
+        acceptance_criteria=["primary source", "verifiable"],
+        reward_hint="  citation_repair_credit  ",
+    )
+
+    assert record.candidate_id == "twog-candidate-447eb8089965"
+    assert record.title == "Repair load-bearing citation"
+    assert record.why_it_matters == "Weak citations compound downstream."
+    assert record.reward_hint == "citation_repair_credit"
+    assert record.target_claim_ids == ["C1", "C2"]
+    assert record.required_inputs == ["Rationale_md"]
+    assert record.suggested_methods == ["read paper"]
+    assert record.expected_outputs == ["new citation", "justification"]
+    assert record.acceptance_criteria == ["primary source", "verifiable"]
+    assert record.status == "open"
+    assert record.difficulty == "moderate"
+    assert record.notebook_recommended is False
+    assert record.created_by == "twog_system"
+
+
+def test_work_packet_record_rejects_invalid_enum_values():
+    with pytest.raises(ValidationError):
+        WorkPacketRecord(
+            candidate_id="twog-candidate-x",
+            packet_type="not_a_real_type",
+            title="A title",
+            question="A long enough question to satisfy the contract.",
+        )
+    with pytest.raises(ValidationError):
+        WorkPacketRecord(
+            candidate_id="twog-candidate-x",
+            packet_type="citation_repair",
+            title="A title",
+            question="A long enough question to satisfy the contract.",
+            difficulty="impossible",
+        )
+    with pytest.raises(ValidationError):
+        WorkPacketRecord(
+            candidate_id="twog-candidate-x",
+            packet_type="citation_repair",
+            title="A title",
+            question="A long enough question to satisfy the contract.",
+            status="vibes",
+        )
+
+
+def test_work_packet_curated_set_is_deterministic_per_candidate():
+    """Re-running the curated bootstrap must produce the same work_packet_ids.
+
+    Otherwise the ON CONFLICT DO NOTHING insert never fires and a second
+    seed run duplicates every starter packet (this was observed live in
+    staging the first time we seeded).
+    """
+
+    first = work_packets_module.curated_work_packets_for_candidate("twog-candidate-447eb8089965")
+    second = work_packets_module.curated_work_packets_for_candidate("twog-candidate-447eb8089965")
+    ids_first = [packet.work_packet_id for packet in first]
+    ids_second = [packet.work_packet_id for packet in second]
+    assert ids_first == ids_second
+    # Different candidates → different ids.
+    other = work_packets_module.curated_work_packets_for_candidate("twog-candidate-e5e8a4f68611")
+    other_ids = {packet.work_packet_id for packet in other}
+    assert other_ids.isdisjoint(set(ids_first))
+
+
+def test_work_packet_curated_set_meets_acceptance_bar():
+    """delta §11: at least three open work packets per candidate."""
+
+    packets = work_packets_module.curated_work_packets_for_candidate("twog-candidate-447eb8089965")
+    assert len(packets) >= 3
+    packet_types = {packet.packet_type for packet in packets}
+    # Lightweight contributor on-ramps must all be present so the public
+    # surface has obvious "good first packet" options.
+    assert {"citation_repair", "claim_critique", "evidence_addition"}.issubset(packet_types)
+    for packet in packets:
+        assert packet.candidate_id == "twog-candidate-447eb8089965"
+        assert packet.status == "open"
+        assert packet.title.strip()
+        assert len(packet.question) >= 12
+        assert packet.acceptance_criteria, "acceptance_criteria must not be empty"
+
+
+def test_work_packet_public_row_omits_operator_fields():
+    """Public boundary: created_by and retired_reason must never leak."""
+
+    row = {
+        "work_packet_id": "11111111-1111-1111-1111-111111111111",
+        "candidate_id": "twog-candidate-447eb8089965",
+        "packet_type": "citation_repair",
+        "title": "Repair the strongest citation",
+        "question": "Read the rationale and verify the cited source supports the strongest claim.",
+        "why_it_matters": "Weak citations compound.",
+        "target_claim_ids": ["C4"],
+        "target_section": "rationale_md",
+        "required_inputs": ["rationale_md"],
+        "suggested_methods": ["open paper"],
+        "expected_outputs": ["replacement citation"],
+        "acceptance_criteria": ["primary source"],
+        "reward_hint": "citation_repair_credit",
+        "difficulty": "light",
+        "status": "open",
+        "notebook_recommended": False,
+        "created_by": "operator:chase",  # must not leak
+        "retired_reason": "obsolete after citation rewrite",  # must not leak
+        "created_at": datetime(2026, 5, 19, tzinfo=UTC),
+        "updated_at": datetime(2026, 5, 22, tzinfo=UTC),
+    }
+
+    public = work_packets_module._public_row(row)
+    assert "created_by" not in public
+    assert "retired_reason" not in public
+    assert "metadata" not in public
+    assert public["url"] == "/api/work-packets/11111111-1111-1111-1111-111111111111"
+    assert public["checkout_url"] == "/api/work-packets/11111111-1111-1111-1111-111111111111/checkout"
+    assert public["created_at"] == "2026-05-19T00:00:00+00:00"
+    assert public["target_claim_ids"] == ["C4"]
+
+
+def test_work_packet_report_summarizes_rows():
+    rows = [
+        {
+            "work_packet_id": "11111111-1111-1111-1111-111111111111",
+            "candidate_id": "twog-candidate-447eb8089965",
+            "packet_type": "citation_repair",
+            "title": "Repair citation",
+            "question": "Verify the cited paper supports the claim.",
+            "why_it_matters": "",
+            "target_claim_ids": [],
+            "target_section": None,
+            "required_inputs": [],
+            "suggested_methods": [],
+            "expected_outputs": [],
+            "acceptance_criteria": [],
+            "reward_hint": "",
+            "difficulty": "light",
+            "status": "open",
+            "notebook_recommended": False,
+            "created_at": datetime(2026, 5, 19, tzinfo=UTC),
+            "updated_at": datetime(2026, 5, 19, tzinfo=UTC),
+        },
+        {
+            "work_packet_id": "22222222-2222-2222-2222-222222222222",
+            "candidate_id": "twog-candidate-447eb8089965",
+            "packet_type": "claim_critique",
+            "title": "Critique key claim",
+            "question": "Steelman the counterargument and cite evidence.",
+            "why_it_matters": "",
+            "target_claim_ids": [],
+            "target_section": None,
+            "required_inputs": [],
+            "suggested_methods": [],
+            "expected_outputs": [],
+            "acceptance_criteria": [],
+            "reward_hint": "",
+            "difficulty": "moderate",
+            "status": "in_progress",
+            "notebook_recommended": False,
+            "created_at": datetime(2026, 5, 20, tzinfo=UTC),
+            "updated_at": datetime(2026, 5, 21, tzinfo=UTC),
+        },
+    ]
+
+    report = work_packets_module.build_work_packet_report_from_rows(
+        rows,
+        candidate_ids=["twog-candidate-447eb8089965"],
+        statuses=["open", "in_progress"],
+        limit=10,
+    )
+
+    assert report["summary"]["row_count"] == 2
+    assert report["summary"]["open_count"] == 1
+    assert report["summary"]["in_progress_count"] == 1
+    assert report["summary"]["candidate_count"] == 1
+    assert report["status_counts"] == {"open": 1, "in_progress": 1}
+    assert report["packet_type_counts"] == {"citation_repair": 1, "claim_critique": 1}
+    assert report["difficulty_counts"] == {"light": 1, "moderate": 1}
+    assert report["filters"]["statuses"] == ["open", "in_progress"]
+    assert report["filters"]["candidate_ids"] == ["twog-candidate-447eb8089965"]
+    assert report["rows"][0]["url"].startswith("/api/work-packets/")
+
+
+def test_work_packet_seed_dry_run_returns_plan_without_writes():
+    """Dry-run seed must never attempt a connection or claim writes."""
+
+    packets = work_packets_module.curated_work_packets_for_candidate("twog-candidate-447eb8089965")
+    result = work_packets_module.seed_work_packets(packets, database_url=None, dry_run=True)
+    # No database url -> storage_configured False, but planned rows are still rendered.
+    assert result["dry_run"] is True
+    assert result["storage_configured"] is False
+    assert result["planned_count"] == len(packets)
+    assert result["inserted_count"] == 0
+    assert all("work_packet_id" in row for row in result["rows"])
+
+
+# --- ProofCapsule contracts and service ---------------------------------
+
+
+def _make_proof_capsule_record(**overrides) -> ProofCapsuleRecord:
+    base = {
+        "candidate_id": "twog-candidate-447eb8089965",
+        "capsule_type": "citation_repair",
+        "title": "Repair citation C4 with primary source",
+        "contributor": ProofCapsuleContributor(
+            kind="human",
+            name="Test Reviewer",
+            handle="@reviewer",
+            contact="reviewer@example.com",
+        ),
+        "analysis_summary": (
+            "Verified the cited paper supports the strongest claim in the rationale "
+            "and proposed a stronger replacement citation."
+        ),
+        "method_refs": ["pubmed_search", "doi_resolution"],
+        "candidate_snapshot_hash": "sha256:candidate-snap",
+        "evidence_bundle_hash": "sha256:evidence-bundle",
+        "artifact_manifest": [
+            ProofCapsuleArtifact(
+                label="replacement_citation_doc",
+                content_hash="sha256:artifact-1",
+                url="https://example.com/paper",
+                mime_type="application/pdf",
+            )
+        ],
+    }
+    base.update(overrides)
+    return ProofCapsuleRecord(**base)
+
+
+def test_proof_capsule_record_normalizes_and_autofills_content_hash():
+    record = _make_proof_capsule_record(title="  Repair citation C4 with primary source  ")
+    assert record.title == "Repair citation C4 with primary source"
+    assert record.status == "submitted"
+    assert record.content_hash is not None
+    assert record.content_hash.startswith("sha256:")
+    # Hash is deterministic across re-validation
+    second = _make_proof_capsule_record(proof_capsule_id=record.proof_capsule_id)
+    assert second.content_hash == record.content_hash
+
+
+def test_proof_capsule_record_rejects_invalid_enums():
+    with pytest.raises(ValidationError):
+        _make_proof_capsule_record(capsule_type="not_a_real_type")
+    with pytest.raises(ValidationError):
+        _make_proof_capsule_record(status="vibes_check_pending")
+
+
+def test_proof_capsule_contributor_public_view_omits_contact_and_agent_id():
+    contributor = ProofCapsuleContributor(
+        kind="agent",
+        name="Reviewer Bot",
+        handle="@reviewer-bot",
+        affiliation="lab",
+        contact="bot@example.com",
+        agent_id="agent_42",
+        website="https://example.com",
+    )
+    public = contributor.public_view()
+    assert public == {
+        "kind": "agent",
+        "name": "Reviewer Bot",
+        "handle": "@reviewer-bot",
+        "affiliation": "lab",
+    }
+    assert "contact" not in public
+    assert "agent_id" not in public
+    assert "website" not in public
+
+
+def test_proof_capsule_artifact_requires_content_hash():
+    with pytest.raises(ValidationError):
+        ProofCapsuleArtifact(label="missing hash", url="https://example.com/x.pdf")
+
+
+def test_proof_capsule_artifact_requires_namespaced_content_hash():
+    """Hashes without an algorithm prefix are rejected so values stay self-describing."""
+
+    with pytest.raises(ValidationError):
+        ProofCapsuleArtifact(label="bare hash", content_hash="abcdef0123456789")
+    # Valid prefixes pass.
+    for hash_value in ("sha256:deadbeef0123", "blake3:abcdef01", "legacy-md5:0123"):
+        artifact = ProofCapsuleArtifact(label="ok", content_hash=hash_value)
+        assert artifact.content_hash == hash_value
+
+
+def test_proof_capsule_artifact_manifest_rejects_duplicate_hashes():
+    """A capsule cannot double-count the same artifact under two labels."""
+
+    duplicate_hash = "sha256:abc123def4567890"
+    with pytest.raises(ValidationError):
+        _make_proof_capsule_record(
+            artifact_manifest=[
+                ProofCapsuleArtifact(label="primary", content_hash=duplicate_hash),
+                ProofCapsuleArtifact(label="copy", content_hash=duplicate_hash),
+            ]
+        )
+
+
+def test_proof_capsule_artifact_manifest_allows_distinct_hashes():
+    record = _make_proof_capsule_record(
+        artifact_manifest=[
+            ProofCapsuleArtifact(label="one", content_hash="sha256:11111111"),
+            ProofCapsuleArtifact(label="two", content_hash="sha256:22222222"),
+        ]
+    )
+    assert len(record.artifact_manifest) == 2
+    # Each artifact participates in the capsule content_hash; swapping one
+    # invalidates the capsule even if the URL is unchanged.
+    swapped = _make_proof_capsule_record(
+        artifact_manifest=[
+            ProofCapsuleArtifact(label="one", content_hash="sha256:11111111"),
+            ProofCapsuleArtifact(label="two", content_hash="sha256:33333333"),
+        ]
+    )
+    assert record.content_hash != swapped.content_hash
+
+
+def test_dagster_work_packet_seed_job_is_registered():
+    """launch-dagster-smoke.yml dispatches by job name — registration is the contract."""
+
+    job = dagster_asset_module.work_packet_seed_job
+    assert job is not None, "work_packet_seed_job must be defined when dagster is installed"
+    assert job.name == "work_packet_seed_job"
+
+
+def test_dagster_proof_capsule_reward_sync_job_is_registered():
+    job = dagster_asset_module.proof_capsule_reward_sync_job
+    assert job is not None
+    assert job.name == "proof_capsule_reward_sync_job"
+
+
+def test_dagster_work_packet_seed_report_lives_in_control_panel_group():
+    assert dagster_asset_module.work_packet_seed_report.group_names_by_key == {
+        dagster_asset_module.dg.AssetKey(["work_packet_seed_report"]): "control_panel"
+    }
+
+
+def test_dagster_proof_capsule_reward_sync_report_lives_in_agent_ops_group():
+    assert dagster_asset_module.proof_capsule_reward_sync_report.group_names_by_key == {
+        dagster_asset_module.dg.AssetKey(["proof_capsule_reward_sync_report"]): "agent_ops"
+    }
+
+
+def test_proof_capsule_notebook_ref_is_optional_string():
+    """Notebook refs are first-class but optional. They round-trip into the content hash."""
+
+    base = _make_proof_capsule_record()
+    with_notebook = _make_proof_capsule_record(notebook_ref="https://example.com/notebook.ipynb")
+    assert base.notebook_ref is None
+    assert with_notebook.notebook_ref == "https://example.com/notebook.ipynb"
+    # Notebook ref participates in the content hash → different capsule identity.
+    assert base.content_hash != with_notebook.content_hash
+
+
+def test_proof_capsule_public_view_omits_sensitive_contributor_fields():
+    """Public boundary: status payload must never expose contact, agent_id, website."""
+
+    row = {
+        "proof_capsule_id": "11111111-1111-1111-1111-111111111111",
+        "work_packet_id": "22222222-2222-2222-2222-222222222222",
+        "candidate_id": "twog-candidate-447eb8089965",
+        "capsule_type": "citation_repair",
+        "title": "Repair citation",
+        "contributor": {
+            "kind": "human",
+            "name": "Reviewer",
+            "handle": "@r",
+            "affiliation": "lab",
+            "contact": "reviewer@example.com",  # MUST NOT leak
+            "agent_id": "agent_42",  # MUST NOT leak
+            "website": "https://example.com",  # MUST NOT leak
+        },
+        "candidate_snapshot_hash": "sha256:snap",
+        "evidence_bundle_hash": "sha256:bundle",
+        "method_refs": ["pubmed_search"],
+        "notebook_ref": None,
+        "analysis_summary": "Did the work.",
+        "findings": "",
+        "output_refs": [],
+        "artifact_manifest": [],
+        "limitations": "",
+        "requested_review_route": None,
+        "content_hash": "sha256:cap",
+        "status": "submitted",
+        "submitted_at": datetime(2026, 5, 22, tzinfo=UTC),
+        "updated_at": datetime(2026, 5, 22, tzinfo=UTC),
+        "reviewed_at": None,
+    }
+    public = proof_capsules_module.build_proof_capsule_public_view(row)
+    assert public["contributor"] == {
+        "kind": "human",
+        "name": "Reviewer",
+        "handle": "@r",
+        "affiliation": "lab",
+    }
+    assert "contact" not in public["contributor"]
+    assert "agent_id" not in public["contributor"]
+    assert "website" not in public["contributor"]
+    assert "task_manifest" not in public
+    assert "payload" not in public
+    assert public["status_url"] == "/api/proof-capsules/11111111-1111-1111-1111-111111111111"
+
+
+def test_proof_capsule_list_report_summarizes_status_buckets():
+    rows = [
+        {
+            "proof_capsule_id": "11111111-1111-1111-1111-111111111111",
+            "candidate_id": "twog-candidate-447eb8089965",
+            "capsule_type": "citation_repair",
+            "title": "Pending capsule",
+            "contributor": {"kind": "human", "name": "A", "contact": "a@example.com"},
+            "method_refs": [],
+            "analysis_summary": "...",
+            "findings": "",
+            "output_refs": [],
+            "artifact_manifest": [],
+            "limitations": "",
+            "requested_review_route": None,
+            "content_hash": "sha256:1",
+            "status": "submitted",
+            "submitted_at": datetime(2026, 5, 22, tzinfo=UTC),
+            "updated_at": datetime(2026, 5, 22, tzinfo=UTC),
+        },
+        {
+            "proof_capsule_id": "22222222-2222-2222-2222-222222222222",
+            "candidate_id": "twog-candidate-447eb8089965",
+            "capsule_type": "claim_critique",
+            "title": "Accepted capsule",
+            "contributor": {"kind": "human", "name": "B", "contact": "b@example.com"},
+            "method_refs": [],
+            "analysis_summary": "...",
+            "findings": "",
+            "output_refs": [],
+            "artifact_manifest": [],
+            "limitations": "",
+            "requested_review_route": None,
+            "content_hash": "sha256:2",
+            "status": "accepted",
+            "submitted_at": datetime(2026, 5, 21, tzinfo=UTC),
+            "updated_at": datetime(2026, 5, 22, tzinfo=UTC),
+        },
+    ]
+    report = proof_capsules_module.build_proof_capsule_list_report_from_rows(
+        rows,
+        statuses=["submitted", "accepted"],
+        candidate_ids=["twog-candidate-447eb8089965"],
+        limit=10,
+    )
+    assert report["summary"]["row_count"] == 2
+    assert report["summary"]["pending_count"] == 1
+    assert report["summary"]["accepted_count"] == 1
+    assert report["summary"]["candidate_count"] == 1
+    assert report["status_counts"] == {"submitted": 1, "accepted": 1}
+    assert report["capsule_type_counts"] == {"citation_repair": 1, "claim_critique": 1}
+    # Public-boundary: each row's contributor must already be scrubbed.
+    for row in report["rows"]:
+        assert "contact" not in row["contributor"]
+
+
+def test_proof_capsule_review_record_normalizes_strings_and_clamps_scores():
+    review = ProofCapsuleReviewRecord(
+        proof_capsule_id=uuid4(),
+        reviewer_type="operator",
+        reviewer_id="  chase  ",
+        verdict="accepted",
+        confidence=0.8,
+        scientific_usefulness=0.9,
+        provenance_strength=0.7,
+        reproducibility=0.6,
+        actionability=0.85,
+        novelty=0.4,
+        clarity=0.95,
+        downstream_impact=0.7,
+        rationale="  Strong primary source, clear write-up.  ",
+        required_changes="",
+    )
+    assert review.reviewer_id == "chase"
+    assert review.rationale == "Strong primary source, clear write-up."
+    # Score bounds enforced.
+    with pytest.raises(ValidationError):
+        ProofCapsuleReviewRecord(
+            proof_capsule_id=uuid4(),
+            reviewer_type="operator",
+            reviewer_id="chase",
+            verdict="accepted",
+            confidence=1.5,
+            rationale="too confident",
+        )
+
+
+def test_proof_capsule_verdict_target_status_covers_every_verdict():
+    """Every verdict must have a target status so the review wiring cannot drop a case."""
+
+    from hsa_research.ingestion_bridge.proof_capsules import (
+        PROOF_CAPSULE_VERDICTS,
+        VERDICT_TARGET_STATUS,
+    )
+
+    assert set(VERDICT_TARGET_STATUS.keys()) == set(PROOF_CAPSULE_VERDICTS)
+    # Every target value is itself a valid capsule status.
+    valid_statuses = set(proof_capsules_module.PROOF_CAPSULE_STATUSES)
+    for verdict, target in VERDICT_TARGET_STATUS.items():
+        assert target in valid_statuses, f"verdict {verdict} -> invalid status {target}"
+
+
+def test_proof_capsule_submit_without_database_returns_unconfigured():
+    """Submit must degrade gracefully when storage is unconfigured."""
+
+    record = _make_proof_capsule_record()
+    result = proof_capsules_module.submit_proof_capsule(record, database_url=None)
+    assert result["stored"] is False
+    assert result["storage_configured"] is False
+    assert result["errors"], "should report at least one error explaining missing env"
+    assert result["proof_capsule"]["proof_capsule_id"] == str(record.proof_capsule_id)
+    # Public boundary holds even on the unconfigured path.
+    assert "contact" not in result["proof_capsule"]["contributor"]
+
+
+def test_proof_capsule_accepted_status_constants_are_disjoint_from_pending():
+    """Workbench listing must never show the same status as both pending and accepted."""
+
+    from hsa_research.ingestion_bridge.contracts import (
+        PROOF_CAPSULE_ACCEPTED_STATUSES,
+        PROOF_CAPSULE_PENDING_STATUSES,
+    )
+
+    overlap = set(PROOF_CAPSULE_ACCEPTED_STATUSES) & set(PROOF_CAPSULE_PENDING_STATUSES)
+    assert overlap == set(), f"pending and accepted statuses overlap: {overlap}"
+    # And every status in either bucket is a valid capsule status.
+    union = set(PROOF_CAPSULE_ACCEPTED_STATUSES) | set(PROOF_CAPSULE_PENDING_STATUSES)
+    assert union.issubset(set(proof_capsules_module.PROOF_CAPSULE_STATUSES))
+
+
+def test_quality_flag_thin_analysis_fires_for_short_summary():
+    flags = proof_capsules_module.compute_quality_flags(
+        capsule_type="claim_critique",
+        analysis_summary="Too short. Not enough body to inspect.",
+        findings="No real source either.",
+        method_refs=[],
+        artifact_manifest=[],
+        title="Title is fine",
+    )
+    assert proof_capsules_module.QUALITY_FLAG_THIN_ANALYSIS in flags
+
+
+def test_quality_flag_no_source_token_when_nothing_to_cite():
+    flags = proof_capsules_module.compute_quality_flags(
+        capsule_type="citation_repair",
+        analysis_summary=(
+            "Long enough analysis summary to satisfy the thin check requirement here but "
+            "without any source token to point at concrete evidence anywhere."
+        ),
+        findings="No findings either. No url here.",
+        method_refs=["read paper"],
+        artifact_manifest=[],
+        title="Repair citation",
+    )
+    assert proof_capsules_module.QUALITY_FLAG_NO_SOURCE_TOKEN in flags
+
+
+def test_quality_flag_clears_when_doi_or_artifact_present():
+    flags = proof_capsules_module.compute_quality_flags(
+        capsule_type="citation_repair",
+        analysis_summary=(
+            "Verified the claim against the cited paper DOI:10.1038/s41586-024-12345-6 and "
+            "found the citation supports it. Proposed replacement primary source is stronger."
+        ),
+        findings="Replacement DOI proposed; original citation kept as secondary.",
+        method_refs=["pubmed_search"],
+        artifact_manifest=[],
+        title="Repair citation",
+    )
+    assert proof_capsules_module.QUALITY_FLAG_NO_SOURCE_TOKEN not in flags
+
+
+def test_quality_flag_repetitive_text_fires_on_boilerplate():
+    flags = proof_capsules_module.compute_quality_flags(
+        capsule_type="claim_critique",
+        analysis_summary=(
+            "boilerplate boilerplate boilerplate boilerplate filler filler filler filler "
+            "padding padding padding padding text text text text text"
+        ),
+        findings="boilerplate boilerplate boilerplate boilerplate",
+        method_refs=[],
+        artifact_manifest=[],
+        title="Critique",
+    )
+    assert proof_capsules_module.QUALITY_FLAG_REPETITIVE_TEXT in flags
+
+
+def test_quality_flag_missing_findings_only_for_substantive_types():
+    base = dict(
+        analysis_summary=(
+            "Long enough analysis summary to satisfy the thin check requirement here "
+            "with concrete content and arguments."
+        ),
+        findings="",
+        method_refs=["pubmed"],
+        artifact_manifest=[{"label": "ok", "content_hash": "sha256:abc12345"}],
+        title="Title",
+    )
+    critique_flags = proof_capsules_module.compute_quality_flags(
+        capsule_type="claim_critique", **base
+    )
+    assert proof_capsules_module.QUALITY_FLAG_MISSING_FINDINGS in critique_flags
+    # Lightweight types do not require findings.
+    repair_flags = proof_capsules_module.compute_quality_flags(
+        capsule_type="evidence_addition", **base
+    )
+    assert proof_capsules_module.QUALITY_FLAG_MISSING_FINDINGS not in repair_flags
+
+
+def test_quality_flag_no_artifact_for_replication_types():
+    flags = proof_capsules_module.compute_quality_flags(
+        capsule_type="docking_replication",
+        analysis_summary=(
+            "Long enough analysis summary describing the docking replication attempt "
+            "with concrete content covering software versions, parameters, and pose."
+        ),
+        findings="Re-ran the docking; got comparable scores.",
+        method_refs=["autodock"],
+        artifact_manifest=[],
+        title="Replication",
+    )
+    assert proof_capsules_module.QUALITY_FLAG_NO_ARTIFACT_FOR_REPLICATION in flags
+
+
+def test_quality_flag_no_artifact_clean_when_replication_provided():
+    """Replication types with an artifact should not flag missing-artifact."""
+
+    flags = proof_capsules_module.compute_quality_flags(
+        capsule_type="docking_replication",
+        analysis_summary=(
+            "Reproduced the docking job with the published protein PDB and the "
+            "candidate ligand. Compared poses; scores within 10 percent."
+        ),
+        findings="Replication is consistent with the original result.",
+        method_refs=["autodock_vina"],
+        artifact_manifest=[
+            {"label": "rerun_pose", "content_hash": "sha256:redock-abc"}
+        ],
+        title="Replication smoke",
+    )
+    assert proof_capsules_module.QUALITY_FLAG_NO_ARTIFACT_FOR_REPLICATION not in flags
+
+
+def test_archive_stale_proof_capsules_dry_run_without_storage():
+    """Without HSA_DATABASE_URL the command degrades gracefully (no exception)."""
+
+    result = proof_capsules_module.archive_stale_proof_capsules(
+        database_url=None,
+        max_age_hours=72,
+        dry_run=True,
+    )
+    assert result["dry_run"] is True
+    assert result["storage_configured"] is False
+    assert result["archived_count"] == 0
+    assert result["max_age_hours"] == 72
+
+
+def test_quality_flag_public_view_includes_quality_flags_array():
+    row = {
+        "proof_capsule_id": "11111111-1111-1111-1111-111111111111",
+        "candidate_id": "twog-candidate-aaa",
+        "capsule_type": "citation_repair",
+        "title": "T",
+        "contributor": {"kind": "human", "handle": "@a", "contact": "a@example.com"},
+        "method_refs": [],
+        "analysis_summary": "Too short",
+        "findings": "",
+        "output_refs": [],
+        "artifact_manifest": [],
+        "limitations": "",
+        "requested_review_route": None,
+        "content_hash": "sha256:cap",
+        "status": "submitted",
+        "submitted_at": datetime(2026, 5, 22, tzinfo=UTC),
+        "updated_at": datetime(2026, 5, 22, tzinfo=UTC),
+        "review_count": 0,
+    }
+    view = proof_capsules_module.build_proof_capsule_public_view(row)
+    assert "quality_flags" in view
+    assert isinstance(view["quality_flags"], list)
+    assert proof_capsules_module.QUALITY_FLAG_THIN_ANALYSIS in view["quality_flags"]
+
+
+def _make_proof_capsule_review_record(
+    *,
+    proof_capsule_id: UUID | None = None,
+    verdict: str = "accepted",
+    **overrides,
+) -> ProofCapsuleReviewRecord:
+    base = {
+        "proof_capsule_id": proof_capsule_id or uuid4(),
+        "reviewer_type": "operator",
+        "reviewer_id": "chase",
+        "verdict": verdict,
+        "confidence": 0.85,
+        "scientific_usefulness": 0.9,
+        "provenance_strength": 0.8,
+        "reproducibility": 0.7,
+        "actionability": 0.85,
+        "novelty": 0.5,
+        "clarity": 0.9,
+        "downstream_impact": 0.6,
+        "rationale": "Strong primary source, clear write-up.",
+    }
+    base.update(overrides)
+    return ProofCapsuleReviewRecord(**base)
+
+
+def test_reward_event_from_proof_capsule_review_is_deterministic_per_review():
+    """Same review → same reward_event_id (uuid5 over identity_key)."""
+
+    review = _make_proof_capsule_review_record()
+    event_a = proof_capsules_module.reward_event_from_proof_capsule_review(
+        review,
+        candidate_id="twog-candidate-447eb8089965",
+        work_packet_id=None,
+        capsule_type="citation_repair",
+        contributor_handle="@reviewer",
+        contributor_kind="human",
+    )
+    event_b = proof_capsules_module.reward_event_from_proof_capsule_review(
+        review,
+        candidate_id="twog-candidate-447eb8089965",
+        work_packet_id=None,
+        capsule_type="citation_repair",
+        contributor_handle="@reviewer",
+        contributor_kind="human",
+    )
+    assert event_a.reward_event_id == event_b.reward_event_id
+    assert event_a.identity_key == f"reward:proof_capsule_review:review:{review.review_id}"
+    assert event_a.event_source == "proof_capsule_review"
+
+
+def test_reward_event_from_proof_capsule_review_carries_rubric_and_capsule_metadata():
+    capsule_id = uuid4()
+    work_packet_id = uuid4()
+    review = _make_proof_capsule_review_record(proof_capsule_id=capsule_id)
+    event = proof_capsules_module.reward_event_from_proof_capsule_review(
+        review,
+        candidate_id="twog-candidate-447eb8089965",
+        work_packet_id=work_packet_id,
+        capsule_type="demotion_case",
+        contributor_handle="@scout",
+        contributor_kind="human",
+    )
+    assert event.candidate_id == "twog-candidate-447eb8089965"
+    assert event.task_type == "proof_capsule_review"
+    assert event.source_review_id == review.review_id
+    assert event.score == 1.0  # accepted
+    assert event.dimension_scores["overall"] == 1.0
+    assert event.dimension_scores["scientific_usefulness"] == 0.9
+    assert event.dimension_scores["provenance_strength"] == 0.8
+    assert event.dimension_scores["reproducibility"] == 0.7
+    assert event.dimension_scores["clarity"] == 0.9
+    assert event.dimension_scores["downstream_impact"] == 0.6
+    assert event.metadata["proof_capsule_id"] == str(capsule_id)
+    assert event.metadata["work_packet_id"] == str(work_packet_id)
+    assert event.metadata["capsule_type"] == "demotion_case"
+    assert event.metadata["contributor_handle"] == "@scout"
+    assert event.metadata["reviewer_type"] == "operator"
+    # Required-changes is None when empty so the metadata stays terse.
+    assert event.metadata["required_changes"] is None
+    # Human contributors don't get a synthesized agent_name; only agent kinds do.
+    assert event.agent_name is None
+
+
+def test_reward_event_agent_contributor_gets_synthesized_agent_name():
+    """Agent submissions should be discoverable via agent_name lookups."""
+
+    review = _make_proof_capsule_review_record()
+    event = proof_capsules_module.reward_event_from_proof_capsule_review(
+        review,
+        candidate_id="twog-candidate-x",
+        work_packet_id=None,
+        capsule_type="citation_repair",
+        contributor_handle="@reviewer-bot",
+        contributor_kind="agent",
+    )
+    assert event.agent_name == "proof_capsule_contributor:@reviewer-bot"
+
+
+def test_reward_event_verdict_table_maps_every_proof_capsule_verdict():
+    from hsa_research.ingestion_bridge.proof_capsules import (
+        PROOF_CAPSULE_VERDICT_REWARD_SCORES,
+        PROOF_CAPSULE_VERDICTS,
+    )
+
+    assert set(PROOF_CAPSULE_VERDICT_REWARD_SCORES.keys()) == set(PROOF_CAPSULE_VERDICTS)
+    for verdict, score in PROOF_CAPSULE_VERDICT_REWARD_SCORES.items():
+        assert 0.0 <= score <= 1.0, f"verdict {verdict} has out-of-range score {score}"
+
+
+def test_reward_event_accepted_demotion_case_earns_positive_signal():
+    """Delta §9 rule: negative findings (a demotion that holds up) earn signal."""
+
+    review = _make_proof_capsule_review_record(verdict="accepted")
+    event = proof_capsules_module.reward_event_from_proof_capsule_review(
+        review,
+        candidate_id="twog-candidate-x",
+        work_packet_id=None,
+        capsule_type="demotion_case",
+        contributor_handle="@scout",
+        contributor_kind="human",
+    )
+    assert event.outcome_bucket == "positive_signal"
+    assert event.routing_recommendation == "prefer_lane"
+    assert event.verdict == "useful"
+    assert event.churn_risk_score == 0.0
+
+
+def test_reward_event_rejected_capsule_is_negative_signal_with_high_churn():
+    """A reviewer rejecting a capsule is the contributor signal we want to flag."""
+
+    review = _make_proof_capsule_review_record(
+        verdict="rejected",
+        actionability=0.1,
+        rationale="No evidence path beyond the abstract.",
+    )
+    event = proof_capsules_module.reward_event_from_proof_capsule_review(
+        review,
+        candidate_id="twog-candidate-x",
+        work_packet_id=None,
+        capsule_type="citation_repair",
+        contributor_handle="@drive-by",
+        contributor_kind="human",
+    )
+    assert event.score == 0.0
+    assert event.verdict == "bad"
+    assert event.outcome_bucket == "negative_signal"
+    assert event.routing_recommendation == "suppress_or_archive"
+    assert event.churn_risk_score == 1.0
+
+
+def test_reward_event_routed_verdicts_count_as_positive_downstream_lane():
+    for verdict in ("routed_to_validation", "routed_to_compute_review"):
+        review = _make_proof_capsule_review_record(verdict=verdict)
+        event = proof_capsules_module.reward_event_from_proof_capsule_review(
+            review,
+            candidate_id="twog-candidate-x",
+            work_packet_id=None,
+            capsule_type="validation_proposal",
+            contributor_handle=None,
+            contributor_kind=None,
+        )
+        assert event.verdict == "useful", verdict
+        assert event.outcome_bucket == "positive_signal", verdict
+        assert event.score == 0.9, verdict
+
+
+def test_sync_reward_events_from_proof_capsule_reviews_is_idempotent():
+    """Re-running the sync must not double-emit reward events for the same review."""
+
+    repo = InMemoryResearchRepository()
+    capsule_id = uuid4()
+    review = _make_proof_capsule_review_record(proof_capsule_id=capsule_id)
+    # Bypass the DB by monkey-patching the context loader with a function-local override.
+    original_loader = proof_capsules_module.list_proof_capsule_review_contexts
+
+    def fake_loader(**kwargs):
+        return [
+            {
+                "review_id": str(review.review_id),
+                "proof_capsule_id": str(capsule_id),
+                "reviewer_type": review.reviewer_type,
+                "reviewer_id": review.reviewer_id,
+                "verdict": review.verdict,
+                "confidence": review.confidence,
+                "scientific_usefulness": review.scientific_usefulness,
+                "provenance_strength": review.provenance_strength,
+                "reproducibility": review.reproducibility,
+                "actionability": review.actionability,
+                "novelty": review.novelty,
+                "clarity": review.clarity,
+                "downstream_impact": review.downstream_impact,
+                "rationale": review.rationale,
+                "required_changes": review.required_changes,
+                "linked_agent_run_id": None,
+                "review_payload": None,
+                "created_at": review.created_at,
+                "work_packet_id": None,
+                "candidate_id": "twog-candidate-447eb8089965",
+                "capsule_type": "citation_repair",
+                "contributor": {"kind": "human", "handle": "@reviewer", "contact": "r@example.com"},
+            }
+        ]
+
+    proof_capsules_module.list_proof_capsule_review_contexts = fake_loader  # type: ignore[assignment]
+    try:
+        first = proof_capsules_module.sync_reward_events_from_proof_capsule_reviews(repo)
+        second = proof_capsules_module.sync_reward_events_from_proof_capsule_reviews(repo)
+    finally:
+        proof_capsules_module.list_proof_capsule_review_contexts = original_loader  # type: ignore[assignment]
+
+    assert first["scanned_review_count"] == 1
+    assert first["created_count"] == 1
+    assert first["skipped_existing_count"] == 0
+    assert first["errors"] == []
+    # Second run must skip the existing event, not duplicate it.
+    assert second["created_count"] == 0
+    assert second["skipped_existing_count"] == 1
+    # Repository must have exactly one reward event for this review.
+    persisted = repo.list_reward_events(source_review_id=review.review_id, limit=10)
+    assert len(persisted) == 1
+    event = persisted[0]
+    assert event.event_source == "proof_capsule_review"
+    assert event.candidate_id == "twog-candidate-447eb8089965"
+    assert event.metadata["proof_capsule_id"] == str(capsule_id)
+
+
+def test_proof_capsule_cross_candidate_list_groups_by_candidate_for_network_feed():
+    """The /network mission board lists capsules across candidates;
+    summary.candidate_count must reflect distinct candidate_ids."""
+
+    rows = [
+        {
+            "proof_capsule_id": "11111111-1111-1111-1111-111111111111",
+            "candidate_id": "twog-candidate-aaa",
+            "capsule_type": "citation_repair",
+            "title": "A",
+            "contributor": {"kind": "human", "name": "A", "contact": "a@example.com"},
+            "method_refs": [],
+            "analysis_summary": "...",
+            "findings": "",
+            "output_refs": [],
+            "artifact_manifest": [],
+            "limitations": "",
+            "requested_review_route": None,
+            "content_hash": "sha256:1",
+            "status": "submitted",
+            "submitted_at": datetime(2026, 5, 22, tzinfo=UTC),
+            "updated_at": datetime(2026, 5, 22, tzinfo=UTC),
+        },
+        {
+            "proof_capsule_id": "22222222-2222-2222-2222-222222222222",
+            "candidate_id": "twog-candidate-bbb",
+            "capsule_type": "claim_critique",
+            "title": "B",
+            "contributor": {"kind": "human", "name": "B", "contact": "b@example.com"},
+            "method_refs": [],
+            "analysis_summary": "...",
+            "findings": "",
+            "output_refs": [],
+            "artifact_manifest": [],
+            "limitations": "",
+            "requested_review_route": None,
+            "content_hash": "sha256:2",
+            "status": "accepted",
+            "submitted_at": datetime(2026, 5, 21, tzinfo=UTC),
+            "updated_at": datetime(2026, 5, 22, tzinfo=UTC),
+            "reviewed_at": datetime(2026, 5, 22, tzinfo=UTC),
+        },
+        {
+            "proof_capsule_id": "33333333-3333-3333-3333-333333333333",
+            "candidate_id": "twog-candidate-aaa",
+            "capsule_type": "validation_proposal",
+            "title": "C",
+            "contributor": {"kind": "agent", "handle": "@bot", "contact": "bot@example.com"},
+            "method_refs": [],
+            "analysis_summary": "...",
+            "findings": "",
+            "output_refs": [],
+            "artifact_manifest": [],
+            "limitations": "",
+            "requested_review_route": None,
+            "content_hash": "sha256:3",
+            "status": "routed_to_validation",
+            "submitted_at": datetime(2026, 5, 20, tzinfo=UTC),
+            "updated_at": datetime(2026, 5, 22, tzinfo=UTC),
+            "reviewed_at": datetime(2026, 5, 22, tzinfo=UTC),
+        },
+    ]
+    report = proof_capsules_module.build_proof_capsule_list_report_from_rows(
+        rows,
+        statuses=list(proof_capsules_module.PROOF_CAPSULE_STATUSES),
+        limit=50,
+    )
+    assert report["summary"]["candidate_count"] == 2
+    assert report["candidate_counts"]["twog-candidate-aaa"] == 2
+    assert report["candidate_counts"]["twog-candidate-bbb"] == 1
+    # Pure-function builder does not filter candidates server-side; that is
+    # the SQL layer's job. But every row must still be public-safe.
+    for row in report["rows"]:
+        assert "contact" not in row["contributor"]
+        assert "agent_id" not in row["contributor"]
+
+
+def test_proof_capsule_workbench_list_filters_to_accepted_only():
+    """The candidate-page accepted-capsules surface must drop pending capsules."""
+
+    from hsa_research.ingestion_bridge.contracts import PROOF_CAPSULE_ACCEPTED_STATUSES
+
+    rows = [
+        {
+            "proof_capsule_id": "11111111-1111-1111-1111-111111111111",
+            "candidate_id": "twog-candidate-447eb8089965",
+            "capsule_type": "citation_repair",
+            "title": "Pending",
+            "contributor": {"kind": "human", "name": "A", "contact": "a@example.com"},
+            "method_refs": [],
+            "analysis_summary": "...",
+            "findings": "",
+            "output_refs": [],
+            "artifact_manifest": [],
+            "limitations": "",
+            "requested_review_route": None,
+            "content_hash": "sha256:1",
+            "status": "submitted",
+            "submitted_at": datetime(2026, 5, 22, tzinfo=UTC),
+            "updated_at": datetime(2026, 5, 22, tzinfo=UTC),
+        },
+        {
+            "proof_capsule_id": "22222222-2222-2222-2222-222222222222",
+            "candidate_id": "twog-candidate-447eb8089965",
+            "capsule_type": "claim_critique",
+            "title": "Accepted",
+            "contributor": {"kind": "human", "name": "B", "contact": "b@example.com"},
+            "method_refs": [],
+            "analysis_summary": "...",
+            "findings": "Negative finding, supported.",
+            "output_refs": [],
+            "artifact_manifest": [
+                {"label": "evidence.pdf", "content_hash": "sha256:art", "url": "https://example.com"}
+            ],
+            "limitations": "",
+            "requested_review_route": None,
+            "content_hash": "sha256:2",
+            "status": "accepted",
+            "submitted_at": datetime(2026, 5, 21, tzinfo=UTC),
+            "updated_at": datetime(2026, 5, 22, tzinfo=UTC),
+            "reviewed_at": datetime(2026, 5, 22, tzinfo=UTC),
+        },
+        {
+            "proof_capsule_id": "33333333-3333-3333-3333-333333333333",
+            "candidate_id": "twog-candidate-447eb8089965",
+            "capsule_type": "validation_proposal",
+            "title": "Routed",
+            "contributor": {"kind": "agent", "handle": "@bot", "contact": "bot@example.com"},
+            "method_refs": [],
+            "analysis_summary": "...",
+            "findings": "",
+            "output_refs": [],
+            "artifact_manifest": [],
+            "limitations": "",
+            "requested_review_route": None,
+            "content_hash": "sha256:3",
+            "status": "routed_to_validation",
+            "submitted_at": datetime(2026, 5, 20, tzinfo=UTC),
+            "updated_at": datetime(2026, 5, 22, tzinfo=UTC),
+            "reviewed_at": datetime(2026, 5, 22, tzinfo=UTC),
+        },
+    ]
+    report = proof_capsules_module.build_proof_capsule_list_report_from_rows(
+        rows,
+        statuses=list(PROOF_CAPSULE_ACCEPTED_STATUSES),
+        candidate_ids=["twog-candidate-447eb8089965"],
+        limit=10,
+    )
+    # Pure-function builder respects the filter list as the public report's
+    # *declared* filter; it does not itself drop rows (DB layer does that).
+    # But its row count reflects what was passed in.
+    assert report["filters"]["statuses"] == list(PROOF_CAPSULE_ACCEPTED_STATUSES)
+    # Every row in the test set is in this candidate.
+    assert report["summary"]["candidate_count"] == 1
+    # Bucket math is the contract the UI relies on for "n accepted" badges.
+    accepted_total = (
+        report["status_counts"].get("accepted", 0)
+        + report["status_counts"].get("routed_to_validation", 0)
+        + report["status_counts"].get("routed_to_compute_review", 0)
+    )
+    pending_total = (
+        report["status_counts"].get("submitted", 0)
+        + report["status_counts"].get("in_review", 0)
+        + report["status_counts"].get("needs_changes", 0)
+    )
+    assert accepted_total == report["summary"]["accepted_count"]
+    assert pending_total == report["summary"]["pending_count"]
+
+
+# --- Contributor profile aggregation ------------------------------------
+
+
+def _capsule_row(
+    *,
+    handle: str = "@reviewer",
+    capsule_type: str = "citation_repair",
+    candidate_id: str = "twog-candidate-aaa",
+    status: str = "accepted",
+    capsule_id: str | None = None,
+    name: str | None = "Test Reviewer",
+    affiliation: str | None = None,
+    kind: str = "human",
+) -> dict:
+    return {
+        "proof_capsule_id": capsule_id or str(uuid4()),
+        "candidate_id": candidate_id,
+        "capsule_type": capsule_type,
+        "title": f"{capsule_type} on {candidate_id}",
+        "contributor": {
+            "kind": kind,
+            "name": name,
+            "handle": handle,
+            "affiliation": affiliation,
+            "contact": "anyone@example.com",
+        },
+        "status": status,
+        "submitted_at": datetime(2026, 5, 20, tzinfo=UTC),
+        "reviewed_at": datetime(2026, 5, 22, tzinfo=UTC),
+    }
+
+
+def _reward_event_row(
+    *,
+    handle: str = "@reviewer",
+    score: float = 1.0,
+    capsule_type: str = "citation_repair",
+    capsule_id: str | None = None,
+    outcome_bucket: str = "positive_signal",
+    rationale: str = "Strong primary source.",
+    candidate_id: str = "twog-candidate-aaa",
+) -> dict:
+    return {
+        "score": score,
+        "candidate_id": candidate_id,
+        "outcome_bucket": outcome_bucket,
+        "rationale": rationale,
+        "metadata": {
+            "contributor_handle": handle,
+            "capsule_type": capsule_type,
+            "proof_capsule_id": capsule_id or str(uuid4()),
+        },
+    }
+
+
+def test_compute_tier_starts_at_observer_with_no_work():
+    tier = contributor_profiles_module.compute_tier(
+        accepted_count=0,
+        routed_count=0,
+        distinct_candidates=0,
+        capsule_type_counts={},
+        proof_points=0,
+    )
+    assert tier == "observer"
+
+
+def test_compute_tier_scout_for_first_accepted_work():
+    tier = contributor_profiles_module.compute_tier(
+        accepted_count=1,
+        routed_count=0,
+        distinct_candidates=1,
+        capsule_type_counts={"citation_repair": 1},
+        proof_points=100,
+    )
+    assert tier == "scout"
+
+
+def test_compute_tier_citation_repairer_requires_three_with_citation_work():
+    tier = contributor_profiles_module.compute_tier(
+        accepted_count=3,
+        routed_count=0,
+        distinct_candidates=1,
+        capsule_type_counts={"citation_repair": 3},
+        proof_points=300,
+    )
+    assert tier == "citation_repairer"
+
+
+def test_compute_tier_record_builder_needs_distinct_candidates():
+    tier = contributor_profiles_module.compute_tier(
+        accepted_count=5,
+        routed_count=0,
+        distinct_candidates=2,
+        capsule_type_counts={"citation_repair": 2, "claim_critique": 3},
+        proof_points=500,
+    )
+    assert tier == "record_builder"
+
+
+def test_compute_tier_validation_contributor_beats_record_builder():
+    """If a contributor has validation work, the specialty tier wins."""
+
+    tier = contributor_profiles_module.compute_tier(
+        accepted_count=5,
+        routed_count=0,
+        distinct_candidates=3,
+        capsule_type_counts={"validation_proposal": 2, "citation_repair": 3},
+        proof_points=500,
+    )
+    assert tier == "validation_contributor"
+
+
+def test_compute_tier_trusted_reviewer_at_ten_accepted_total():
+    tier = contributor_profiles_module.compute_tier(
+        accepted_count=8,
+        routed_count=2,
+        distinct_candidates=4,
+        capsule_type_counts={"citation_repair": 10},
+        proof_points=1000,
+    )
+    assert tier == "trusted_reviewer"
+
+
+def test_compute_tier_proof_partner_requires_volume_and_points():
+    tier = contributor_profiles_module.compute_tier(
+        accepted_count=18,
+        routed_count=2,
+        distinct_candidates=6,
+        capsule_type_counts={"citation_repair": 20},
+        proof_points=1800,
+    )
+    assert tier == "proof_partner"
+    # Same volume, fewer proof points → drops to trusted_reviewer.
+    fallback = contributor_profiles_module.compute_tier(
+        accepted_count=18,
+        routed_count=2,
+        distinct_candidates=6,
+        capsule_type_counts={"citation_repair": 20},
+        proof_points=400,
+    )
+    assert fallback == "trusted_reviewer"
+
+
+def test_compute_proof_points_rounds_to_integer():
+    assert contributor_profiles_module.compute_proof_points([]) == 0
+    assert contributor_profiles_module.compute_proof_points([1.0]) == 100
+    assert contributor_profiles_module.compute_proof_points([0.9, 0.9]) == 180
+    # Multiple sub-1.0 events accumulate.
+    assert contributor_profiles_module.compute_proof_points([0.55, 0.3, 0.85]) == 170
+
+
+def test_build_contributor_profile_filters_by_handle_and_aggregates_scores():
+    capsule_rows = [
+        _capsule_row(handle="@reviewer", capsule_type="citation_repair", candidate_id="twog-candidate-aaa"),
+        _capsule_row(handle="@reviewer", capsule_type="claim_critique", candidate_id="twog-candidate-bbb"),
+        _capsule_row(handle="@other", capsule_type="citation_repair", candidate_id="twog-candidate-ccc"),
+        _capsule_row(handle="@reviewer", capsule_type="validation_proposal", candidate_id="twog-candidate-ccc", status="routed_to_validation"),
+    ]
+    reward_rows = [
+        _reward_event_row(handle="@reviewer", score=1.0, capsule_type="citation_repair"),
+        _reward_event_row(handle="@reviewer", score=0.9, capsule_type="validation_proposal"),
+        _reward_event_row(handle="@other", score=1.0, capsule_type="citation_repair"),
+    ]
+    profile = contributor_profiles_module.build_contributor_profile_from_rows(
+        handle="@reviewer",
+        capsule_rows=capsule_rows,
+        reward_event_rows=reward_rows,
+    )
+    assert profile["handle"] == "@reviewer"
+    assert profile["summary"]["accepted_capsule_count"] == 2
+    assert profile["summary"]["routed_capsule_count"] == 1
+    assert profile["summary"]["candidate_count"] == 3
+    assert profile["summary"]["reward_event_count"] == 2
+    assert profile["proof_points"] == 190
+    assert profile["capsule_type_counts"] == {
+        "citation_repair": 1,
+        "claim_critique": 1,
+        "validation_proposal": 1,
+    }
+    # The strongest accepted work is the highest-scoring reward event.
+    assert profile["strongest_accepted_work"]["score"] == 1.0
+    # Validation specialty + 3 accepted total → validation_contributor tier.
+    assert profile["tier"] == "validation_contributor"
+    assert profile["profile_url"] == "/contributors/@reviewer"
+
+
+def test_build_contributor_profile_public_boundary_does_not_leak_contact():
+    capsule_rows = [_capsule_row(handle="@reviewer")]
+    reward_rows = [_reward_event_row(handle="@reviewer")]
+    profile = contributor_profiles_module.build_contributor_profile_from_rows(
+        handle="@reviewer",
+        capsule_rows=capsule_rows,
+        reward_event_rows=reward_rows,
+    )
+    # The accepted capsule rows must not include the inline contributor blob
+    # at all (no contact/agent_id/website ever).
+    for entry in profile["accepted_capsules"]:
+        assert "contributor" not in entry
+        assert "contact" not in entry
+    # The top-level profile carries display_name / affiliation only.
+    # contact and other sensitive fields must not appear.
+    sensitive = {"contact", "agent_id", "website"}
+    flat_keys = set(profile.keys())
+    assert flat_keys.isdisjoint(sensitive)
+
+
+def test_build_contributor_profile_empty_handle_returns_observer():
+    profile = contributor_profiles_module.build_contributor_profile_from_rows(
+        handle="@nobody",
+        capsule_rows=[],
+        reward_event_rows=[],
+    )
+    assert profile["tier"] == "observer"
+    assert profile["proof_points"] == 0
+    assert profile["summary"]["accepted_capsule_count"] == 0
+    assert profile["strongest_accepted_work"] is None

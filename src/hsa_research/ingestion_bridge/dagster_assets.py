@@ -203,6 +203,22 @@ _CANDIDATE_CONTRIBUTION_TRIAGE_TABLE_COLUMNS = (
     "promoted_queue_id",
     "would_update",
 )
+_WORK_PACKET_SEED_TABLE_COLUMNS = (
+    "work_packet_id",
+    "candidate_id",
+    "packet_type",
+    "title",
+    "difficulty",
+    "status",
+    "notebook_recommended",
+    "reward_hint",
+)
+_PROOF_CAPSULE_REWARD_SYNC_COLUMNS = (
+    "scanned_review_count",
+    "eligible_review_count",
+    "created_count",
+    "skipped_existing_count",
+)
 _AGENT_PERFORMANCE_TABLE_COLUMNS = (
     "group_type",
     "group_value",
@@ -1006,6 +1022,31 @@ if dg is not None:
                 report.get("rows", []),
                 _CANDIDATE_CONTRIBUTION_INTAKE_TABLE_COLUMNS,
             ),
+        }
+
+    def _work_packet_seed_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "dry_run": bool(report.get("dry_run", True)),
+            "storage_configured": bool(report.get("storage_configured", False)),
+            "table_available": bool(report.get("table_available", True)),
+            "planned_count": dg.MetadataValue.int(int(report.get("planned_count") or 0)),
+            "inserted_count": dg.MetadataValue.int(int(report.get("inserted_count") or 0)),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count") or 0)),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "rows": _metadata_table(
+                report.get("rows", []),
+                _WORK_PACKET_SEED_TABLE_COLUMNS,
+            ),
+        }
+
+    def _proof_capsule_reward_sync_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "scanned_review_count": dg.MetadataValue.int(int(report.get("scanned_review_count") or 0)),
+            "eligible_review_count": dg.MetadataValue.int(int(report.get("eligible_review_count") or 0)),
+            "created_count": dg.MetadataValue.int(int(report.get("created_count") or 0)),
+            "skipped_existing_count": dg.MetadataValue.int(int(report.get("skipped_existing_count") or 0)),
+            "reward_event_ids": dg.MetadataValue.json(report.get("reward_event_ids", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
         }
 
     def _candidate_contribution_triage_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -3571,6 +3612,90 @@ if dg is not None:
             dry_run=config["dry_run"],
         )
         return dg.MaterializeResult(value=report, metadata=_candidate_contribution_triage_report_metadata(report))
+
+    @dg.asset(
+        group_name="control_panel",
+        config_schema={
+            "candidate_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Public candidate IDs to seed curated work packets for.",
+            ),
+            "dry_run": dg.Field(
+                bool,
+                default_value=True,
+                description="Preview the seed. Set false to persist work_packet rows.",
+            ),
+        },
+    )
+    def work_packet_seed_report(context) -> dg.MaterializeResult:
+        """Idempotently seed Proof Network work packets for one or more candidates.
+
+        Each candidate gets the curated starter set (citation_repair,
+        claim_critique, evidence_addition). Inserts are ``ON CONFLICT
+        DO NOTHING`` on work_packet_id, so reruns are safe.
+        """
+
+        from .work_packets import curated_work_packets_for_candidate, seed_work_packets
+
+        config = context.op_config
+        candidate_ids = [str(value).strip() for value in (config.get("candidate_ids") or []) if str(value).strip()]
+        records = []
+        for candidate_id in candidate_ids:
+            records.extend(curated_work_packets_for_candidate(candidate_id))
+        report = seed_work_packets(records, dry_run=bool(config["dry_run"]))
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_work_packet_seed_report_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="agent_ops",
+        config_schema={
+            "reviewer_type": dg.Field(
+                str,
+                is_required=False,
+                description="Optional reviewer_type filter (operator | llm_evaluator | system | external_expert).",
+            ),
+            "limit": dg.Field(int, default_value=500, description="Maximum proof capsule reviews to scan."),
+            "include_existing": dg.Field(
+                bool,
+                default_value=False,
+                description="Regenerate existing reward events instead of skipping them.",
+            ),
+            "created_by": dg.Field(
+                str,
+                default_value="dagster_proof_capsule_review_sync",
+                description="Ledger creator identity.",
+            ),
+        },
+    )
+    def proof_capsule_reward_sync_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Convert proof_capsule_reviews into reward events through the existing ledger.
+
+        Idempotent on review_id via uuid5 over a deterministic identity key.
+        Reruns are safe; the sync skips reviews that already have a reward
+        event unless include_existing is true.
+        """
+
+        from .proof_capsules import sync_reward_events_from_proof_capsule_reviews
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = sync_reward_events_from_proof_capsule_reviews(
+            repository,
+            reviewer_type=config.get("reviewer_type"),
+            limit=config["limit"],
+            include_existing=config["include_existing"],
+            created_by=config["created_by"],
+        )
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_proof_capsule_reward_sync_report_metadata(report),
+        )
 
     @dg.asset(
         group_name="control_panel",
@@ -7938,6 +8063,8 @@ if dg is not None:
         source_health_report,
         candidate_contribution_intake_report,
         candidate_contribution_triage_report,
+        work_packet_seed_report,
+        proof_capsule_reward_sync_report,
         command_center_report,
         research_hunt_queue_report,
         research_hunt_queue_maintenance_report,
@@ -8093,6 +8220,14 @@ if dg is not None:
     candidate_contribution_triage_job = dg.define_asset_job(
         "candidate_contribution_triage_job",
         selection=dg.AssetSelection.assets(candidate_contribution_triage_report),
+    )
+    work_packet_seed_job = dg.define_asset_job(
+        "work_packet_seed_job",
+        selection=dg.AssetSelection.assets(work_packet_seed_report),
+    )
+    proof_capsule_reward_sync_job = dg.define_asset_job(
+        "proof_capsule_reward_sync_job",
+        selection=dg.AssetSelection.assets(proof_capsule_reward_sync_report),
     )
     command_center_job = dg.define_asset_job(
         "command_center_job",
@@ -8562,6 +8697,8 @@ if dg is not None:
             source_health_report_job,
             candidate_contribution_intake_report_job,
             candidate_contribution_triage_job,
+            work_packet_seed_job,
+            proof_capsule_reward_sync_job,
             command_center_job,
             research_hunt_queue_report_job,
             research_hunt_queue_maintenance_job,
@@ -8680,6 +8817,8 @@ else:
     source_health_report_job = None
     candidate_contribution_intake_report_job = None
     candidate_contribution_triage_job = None
+    work_packet_seed_job = None
+    proof_capsule_reward_sync_job = None
     command_center_job = None
     research_hunt_queue_report_job = None
     research_hunt_queue_maintenance_job = None

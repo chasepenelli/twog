@@ -1,0 +1,8 @@
+# Staged copy populated by build.sh — the real source lives at
+# <repo>/src/twog_agent, this dir is a build artifact only.
+twog_agent/
+
+# Build artifacts
+dist/
+*.egg-info/
+__pycache__/

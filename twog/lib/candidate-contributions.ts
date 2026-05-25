@@ -90,6 +90,9 @@ export interface CandidateContributionRecord {
   created_at: string;
 }
 
+// Public boundary: this shape backs GET /api/contributions/:id/status.
+// It must never include private review notes or operator identity. Operator
+// audit fields live in the Python/Dagster intake report, not here.
 export interface CandidateContributionStatus {
   contribution_id: string;
   candidate_id: string;
@@ -101,7 +104,6 @@ export interface CandidateContributionStatus {
   contribution_type: string;
   relation_to_current_record: string;
   requested_system_action: string;
-  review_notes?: string | null;
   promoted_queue_id?: string | null;
   created_at: string;
   updated_at?: string | null;
@@ -389,6 +391,9 @@ export async function createCandidateContribution(
 export async function getCandidateContributionStatus(contributionId: string): Promise<CandidateContributionStatus | null> {
   await ensureCandidateContributionSchema();
 
+  // Public boundary: do not SELECT review_notes here. Operator notes are
+  // intentionally unreachable from any public-facing code path so the route
+  // handler cannot accidentally leak them via a future refactor.
   const result = await pool().query<CandidateContributionStatus>(
     `
       select
@@ -402,7 +407,6 @@ export async function getCandidateContributionStatus(contributionId: string): Pr
         contribution_type,
         relation_to_current_record,
         requested_system_action,
-        review_notes,
         promoted_queue_id,
         created_at,
         updated_at,

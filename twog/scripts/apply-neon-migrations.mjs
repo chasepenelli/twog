@@ -25,6 +25,9 @@ const pool = new Pool({
 const migrationFiles = [
   '001_candidate_contribution_intake.sql',
   '002_candidate_contribution_proof_network.sql',
+  '003_work_packets.sql',
+  '004_proof_capsules.sql',
+  '005_proof_capsule_submission_rate.sql',
 ];
 
 try {

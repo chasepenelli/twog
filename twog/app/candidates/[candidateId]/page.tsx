@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { CandidateContributionPanel } from '@/components/CandidateContributionPanel';
+import { CandidateWorkbench } from '@/components/CandidateWorkbench';
 import {
   formatPublicDate,
   getCandidate,
@@ -317,6 +318,8 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
           ))}
         </div>
       </section>
+
+      <CandidateWorkbench candidateId={candidate.candidate_id} displayId={displayId} />
 
       <CandidateContributionPanel
         candidateId={candidate.candidate_id}

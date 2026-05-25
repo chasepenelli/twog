@@ -1,0 +1,206 @@
+/* Connect page — scoped styles. Reuses .section-kicker, .lab-label,
+   .network-cta, .network-hero, .page-shell, .site-shell from globals.css. */
+
+.shell {
+  display: grid;
+  gap: 0;
+}
+
+.stepCard {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 2.25rem 1.5rem;
+  display: grid;
+  gap: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.stepCard:first-of-type {
+  border-top: none;
+  padding-top: 1.25rem;
+}
+
+.stepHeader {
+  display: grid;
+  grid-template-columns: minmax(56px, 80px) minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.stepNumber {
+  font-family: var(--font-display);
+  font-size: clamp(2.2rem, 4vw, 3rem);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  color: var(--accent-ink);
+  line-height: 0.9;
+  font-variant-numeric: tabular-nums;
+}
+
+.stepHeader h2 {
+  font-family: var(--font-display);
+  font-size: clamp(1.5rem, 2.6vw, 1.95rem);
+  letter-spacing: -0.015em;
+  margin: 0.2rem 0 0.5rem;
+}
+
+.stepLead {
+  color: var(--muted-ink);
+  line-height: 1.55;
+  margin: 0;
+  max-width: 60ch;
+}
+
+.stepNote {
+  font-size: 0.92rem;
+  color: var(--muted-ink);
+  margin: 0;
+  max-width: 70ch;
+  line-height: 1.55;
+}
+
+.stepNote a {
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-decoration-color: var(--accent-line);
+  text-underline-offset: 0.18em;
+}
+
+.inlineCode {
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  padding: 0.05em 0.3em;
+  background: var(--gray-100);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  color: var(--foreground);
+}
+
+.codeBlock,
+.codeBlockMuted {
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  line-height: 1.55;
+  padding: 1rem 1.2rem;
+  border: 1px solid var(--line);
+  background: var(--ink);
+  color: #f4f3ee;
+  overflow-x: auto;
+  margin: 0;
+  white-space: pre;
+}
+
+.codeBlockMuted {
+  background: var(--gray-100);
+  color: var(--foreground);
+  border-color: var(--line);
+}
+
+.details {
+  border: 1px dashed var(--line);
+  padding: 0.6rem 0.9rem;
+  background: var(--paper-warm);
+}
+
+.details summary {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  color: var(--gray-500);
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.details[open] summary {
+  margin-bottom: 0.7rem;
+}
+
+.soulGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.75rem;
+}
+
+.soulCard {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.95rem 1rem;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent-ink);
+  text-decoration: none;
+  color: var(--foreground);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.soulCard:hover {
+  background: var(--paper-warm);
+  border-color: var(--line-strong);
+  border-left-color: var(--accent-ink);
+}
+
+.soulName {
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  letter-spacing: 0.02em;
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.soulCard p {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--muted-ink);
+  line-height: 1.5;
+}
+
+.errorTable {
+  display: grid;
+  gap: 0;
+}
+
+.errorRow {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.6fr) minmax(0, 1.4fr);
+  gap: 1rem;
+  padding: 0.7rem 0;
+  border-top: 1px solid var(--line);
+  align-items: start;
+}
+
+.errorRow:first-child {
+  border-top: none;
+}
+
+.errorRow strong {
+  font-family: var(--font-display);
+  color: var(--foreground);
+  letter-spacing: -0.005em;
+}
+
+.errorRow span,
+.errorRow code {
+  color: var(--muted-ink);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.errorRow .inlineCode {
+  color: var(--foreground);
+}
+
+@media (max-width: 760px) {
+  .stepHeader {
+    grid-template-columns: 1fr;
+    gap: 0.6rem;
+  }
+
+  .stepNumber {
+    font-size: 2rem;
+  }
+
+  .errorRow {
+    grid-template-columns: 1fr;
+  }
+}

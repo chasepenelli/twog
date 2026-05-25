@@ -1,0 +1,71 @@
+[project]
+name = "twog-agent"
+version = "0.2.0"
+description = "Autonomous client + MCP server for the TWOG Proof Network."
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+license = { text = "Same as parent repo" }
+authors = [
+    { name = "TWOG Proof Network maintainers" },
+]
+keywords = [
+    "twog",
+    "proof-network",
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "agent",
+    "research",
+    "biotech",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering",
+]
+
+# Slim runtime deps only. No dagster, no psycopg2, no numpy. The agent
+# CLI + MCP server talks to the public TWOG HTTP API; everything heavy
+# lives in the hosted research pipeline, not on the contributor's machine.
+dependencies = [
+    "httpx>=0.27,<1.0",
+    "mcp>=1.0,<2.0",
+    "cryptography>=42,<46",
+]
+
+[project.urls]
+Homepage = "https://twog.bio"
+Documentation = "https://twog.bio/connect"
+Source = "https://github.com/chasepenelli/twog"
+
+[project.scripts]
+twog-agent = "twog_agent.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# The agent source of truth lives at ``<repo>/src/twog_agent``. The
+# ``build.sh`` next to this file copies that tree into
+# ``packages/twog-agent/twog_agent`` immediately before invoking
+# ``uv build``. Hatch then packages the in-tree copy normally — no
+# symlinks, no relative paths reaching outside the project root, no
+# surprises for downstream wheel installers.
+packages = ["twog_agent"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "twog_agent/**/*.py",
+    "README.md",
+    "pyproject.toml",
+]
