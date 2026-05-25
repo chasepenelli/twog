@@ -107,5 +107,11 @@ def compute_proof_capsule_content_hash(body: dict[str, Any]) -> str:
         "artifact_manifest": _artifact_manifest_digest(body.get("artifact_manifest")),
         "contributor_handle": contributor_handle,
     }
-    serialized = json.dumps(digest_payload, sort_keys=True, default=str)
+    # ensure_ascii=False is load-bearing: the TS server (twog/lib/proof-capsules.ts
+    # `canonicalJsonStringify`) uses native JSON.stringify, which keeps non-ASCII
+    # characters literal in the canonical byte string. Python's default
+    # ensure_ascii=True would escape them to \uXXXX and produce a different
+    # hash for the same logical value — silently breaking ed25519 signatures
+    # on any capsule that contains an em-dash, accented character, etc.
+    serialized = json.dumps(digest_payload, sort_keys=True, default=str, ensure_ascii=False)
     return "sha256:" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()

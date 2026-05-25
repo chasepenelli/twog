@@ -6487,5 +6487,10 @@ def _proof_capsule_content_hash(record: "ProofCapsuleRecord") -> str:
     }
     import json as _json  # local import keeps the module top tidy
 
-    serialized = _json.dumps(digest_payload, sort_keys=True, default=str)
+    # ensure_ascii=False mirrors twog/lib/proof-capsules.ts canonicalJsonStringify
+    # which keeps non-ASCII characters literal in the byte string. Without
+    # this, a body containing an em-dash hashes differently in Python vs TS
+    # and ed25519 signatures over the Python hash fail verification on the
+    # TS server.
+    serialized = _json.dumps(digest_payload, sort_keys=True, default=str, ensure_ascii=False)
     return "sha256:" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()

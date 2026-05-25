@@ -1,0 +1,74 @@
+name: Demo personas tick
+
+# Runs one orchestrator tick: picks an overdue persona, submits a templated
+# proof capsule against a matching open work packet. Designed to keep
+# /network breathing with a steady, varied stream of submissions between
+# human visits.
+#
+# Identity: every persona's ed25519 key is derived from
+# `secrets.TWOG_DEMO_MASTER_SEED` via HKDF salted by the persona handle.
+# Rotating that secret rotates every persona's key at once.
+#
+# Site: set `vars.TWOG_SITE_URL` to the public deployment URL once it's
+# live (e.g. https://twog.bio). Until then this workflow only runs via
+# manual `workflow_dispatch` so the schedule doesn't fire against an
+# unreachable host.
+
+on:
+  workflow_dispatch:
+    inputs:
+      site_url:
+        description: "Override target site URL (default: vars.TWOG_SITE_URL)"
+        required: false
+        default: ""
+      dry_run:
+        description: "Print the chosen persona + packet without submitting"
+        required: false
+        default: "false"
+  # Uncomment once the public site is reachable on a stable URL:
+  # schedule:
+  #   - cron: "17 * * * *"   # hourly at :17, offset to avoid the top-of-hour stampede
+
+permissions:
+  contents: read
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TWOG_DEMO_MASTER_SEED: ${{ secrets.TWOG_DEMO_MASTER_SEED }}
+      TWOG_SITE_URL: ${{ inputs.site_url || vars.TWOG_SITE_URL || 'https://twog.bio' }}
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Verify master seed is set
+        run: |
+          if [ -z "${TWOG_DEMO_MASTER_SEED:-}" ]; then
+            echo "::error::TWOG_DEMO_MASTER_SEED secret is not set."
+            echo "Mint one locally with: uv run python scripts/run_demo_personas.py keygen"
+            exit 1
+          fi
+          echo "master seed configured (length=${#TWOG_DEMO_MASTER_SEED})"
+
+      - name: Tick the orchestrator
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            PYTHONPATH=src uv run python scripts/run_demo_personas.py list
+          else
+            PYTHONPATH=src uv run python scripts/run_demo_personas.py tick
+          fi
