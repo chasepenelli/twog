@@ -186,7 +186,23 @@ Dagster:
 
 ## ProofCapsule / Contribution Link-Back
 
-Contribution intake now preserves `workspace_id` and `checkout_manifest_hash` when those fields are present on a submitted packet. This lets an operator trace a check-in back to:
+`ProofCapsule` is the structured return artifact for workspace work. It is the thing a human, agent, or sandbox sends back after checking out a record and doing focused work.
+
+Required anchors:
+
+- `workspace_id`;
+- `checkout_manifest_hash`;
+- `candidate_id`;
+- packet type, for example `citation_repair`, `claim_critique`, `compute_artifact`, `omics_note`, or `validation_proposal`;
+- requested action, for example `evidence_review`, `citation_repair`, `validation_packet`, `omics_readout`, or `docking_or_md_review`;
+- producer identity;
+- targeted section, claim, evidence ref, or method ref;
+- concise finding, why it matters, and explicit limitations;
+- payload, source refs, artifact refs, conflicts, limitations, and metadata.
+
+The service validates that the capsule matches the workspace candidate and checkout manifest. It rejects manifest mismatches, disallowed task types, destroyed/archived workspaces, and obvious raw secrets such as database URLs or API keys. On accepted persistence, the workspace is marked `submitted` and linked to the capsule ID.
+
+This lets an operator trace a check-in back to:
 
 - the isolated Neon branch or sandbox workspace it came from;
 - the exact checkout manifest used;
@@ -194,6 +210,59 @@ Contribution intake now preserves `workspace_id` and `checkout_manifest_hash` wh
 - the expected task type and requested system action.
 
 This is still additive and gated. A linked contribution does not mutate a candidate, queue compute, or bypass review.
+
+Example submit file:
+
+```json
+{
+  "workspace_id": "025250d3-5982-4e77-84e7-b7e7d75157b2",
+  "checkout_manifest_hash": "sha256:...",
+  "candidate_id": "twog-candidate-447eb8089965",
+  "work_packet_id": "wp-citation-1",
+  "packet_type": "citation_repair",
+  "requested_action": "citation_repair",
+  "producer": {
+    "producer_type": "human",
+    "name": "reviewer name or handle"
+  },
+  "target": {
+    "section": "Literature audit",
+    "evidence_ref": "C1"
+  },
+  "summary": {
+    "title": "Repair KDR citation",
+    "finding": "The current citation should be replaced with a source closer to canine KDR evidence.",
+    "why_it_matters": "The candidate record should not promote a claim unless the citation trail is specific enough to audit.",
+    "limitations": ["This does not evaluate therapeutic efficacy."]
+  },
+  "payload": {
+    "method_notes": "Reviewed the checked-out snapshot and evidence bundle."
+  },
+  "source_refs": [
+    {
+      "title": "Candidate replacement source",
+      "doi": "10.xxxx/example",
+      "claim_supported": "Canine KDR evidence anchor"
+    }
+  ],
+  "limitations": ["Operator review required before public record mutation."]
+}
+```
+
+CLI:
+
+```bash
+hsa-ingestion proof-capsule-submit --file proof-capsule.json
+```
+
+```bash
+hsa-ingestion proof-capsules --candidate-id twog-candidate-447eb8089965
+```
+
+Dagster:
+
+- `proof_capsule_submit_report` / `proof_capsule_submit_job`
+- `proof_capsule_library_report` / `proof_capsule_library_job`
 
 ## Operator Surfaces
 
@@ -225,6 +294,8 @@ Dagster:
 - `research_workspace_library_report` / `research_workspace_library_job`
 - `research_workspace_cleanup_report` / `research_workspace_cleanup_job`
 - `research_workspace_checkout_manifest_report` / `research_workspace_checkout_manifest_job`
+- `proof_capsule_submit_report` / `proof_capsule_submit_job`
+- `proof_capsule_library_report` / `proof_capsule_library_job`
 
 Dagster defaults to `dry_run=true`; live creation requires `dry_run=false` in run config. The GitHub env sync workflow publishes Neon secrets to Dagster+ only when they exist.
 
@@ -243,7 +314,7 @@ Contributor workspaces must not receive production database credentials, OpenRou
 ## Next Slices
 
 1. Live Daytona sandbox allocator with explicit credentials and no prod secrets.
-2. ProofCapsule schema that requires `workspace_id` and `checkout_manifest_hash`.
-3. Operator cleanup/revoke UI surface for workspace reports.
-4. Contribution-to-validation routing preview that shows linked workspace evidence.
-5. Provider-specific revoke/destroy adapters for Daytona, Coder, DevPod, and Codespaces.
+2. Operator cleanup/revoke UI surface for workspace reports.
+3. Contribution-to-validation routing preview that shows linked workspace evidence.
+4. Provider-specific revoke/destroy adapters for Daytona, Coder, DevPod, and Codespaces.
+5. ProofCapsule triage actions that route accepted work into evidence review or validation planning previews.

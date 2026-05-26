@@ -340,6 +340,40 @@ ResearchWorkspaceSkillProfile = Literal[
     "k_dense_biomed",
 ]
 
+ProofCapsulePacketType = Literal[
+    "evidence_addition",
+    "citation_repair",
+    "claim_critique",
+    "replication_result",
+    "compute_artifact",
+    "omics_note",
+    "validation_proposal",
+    "safety_or_translation_note",
+    "candidate_demotion_case",
+]
+
+ProofCapsuleRequestedAction = Literal[
+    "evidence_review",
+    "citation_repair",
+    "validation_packet",
+    "omics_readout",
+    "docking_or_md_review",
+    "candidate_demotion_review",
+    "request_more_information",
+    "no_action",
+]
+
+ProofCapsuleProducerType = Literal["human", "agent", "sandbox", "system"]
+ProofCapsuleStatus = Literal[
+    "submitted",
+    "needs_more_information",
+    "accepted_for_evidence_review",
+    "accepted_for_validation_queue",
+    "accepted_for_compute_review",
+    "rejected",
+    "archived",
+]
+
 ValidationPacketReadiness = Literal[
     "ready_for_committee",
     "ready_for_validation_plan",
@@ -4949,6 +4983,209 @@ class ResearchWorkspaceCheckoutManifestResult(StrictBaseModel):
     workspace: ResearchWorkspaceRecord | None = None
     persisted: bool = False
     errors: list[str] = Field(default_factory=list, max_length=25)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ProofCapsuleProducer(StrictBaseModel):
+    producer_type: ProofCapsuleProducerType = "human"
+    name: str = Field(default="unknown", min_length=1, max_length=260)
+    contact: str | None = Field(default=None, max_length=500)
+    agent_name: str | None = Field(default=None, max_length=260)
+    model_name: str | None = Field(default=None, max_length=260)
+    provider_workspace_id: str | None = Field(default=None, max_length=260)
+
+    @model_validator(mode="after")
+    def normalize_proof_capsule_producer(self) -> "ProofCapsuleProducer":
+        self.name = self.name.strip() or "unknown"
+        self.contact = self.contact.strip() if self.contact else None
+        self.agent_name = self.agent_name.strip() if self.agent_name else None
+        self.model_name = self.model_name.strip() if self.model_name else None
+        self.provider_workspace_id = (
+            self.provider_workspace_id.strip() if self.provider_workspace_id else None
+        )
+        return self
+
+
+class ProofCapsuleTarget(StrictBaseModel):
+    section: str | None = Field(default=None, max_length=120)
+    claim_id: str | None = Field(default=None, max_length=260)
+    evidence_ref: str | None = Field(default=None, max_length=260)
+    method_ref: str | None = Field(default=None, max_length=260)
+
+    @model_validator(mode="after")
+    def require_target_anchor(self) -> "ProofCapsuleTarget":
+        self.section = self.section.strip() if self.section else None
+        self.claim_id = self.claim_id.strip() if self.claim_id else None
+        self.evidence_ref = self.evidence_ref.strip() if self.evidence_ref else None
+        self.method_ref = self.method_ref.strip() if self.method_ref else None
+        if not (self.section or self.claim_id or self.evidence_ref or self.method_ref):
+            raise ValueError("proof capsule target requires a section, claim_id, evidence_ref, or method_ref")
+        return self
+
+
+class ProofCapsuleSummary(StrictBaseModel):
+    title: str = Field(min_length=3, max_length=300)
+    finding: str = Field(min_length=3, max_length=2000)
+    why_it_matters: str = Field(min_length=3, max_length=2000)
+    limitations: list[str] = Field(default_factory=list, min_length=1, max_length=25)
+
+    @model_validator(mode="after")
+    def normalize_proof_capsule_summary(self) -> "ProofCapsuleSummary":
+        self.title = self.title.strip()
+        self.finding = self.finding.strip()
+        self.why_it_matters = self.why_it_matters.strip()
+        self.limitations = _normalized_unique_strings(self.limitations)
+        if not self.limitations:
+            raise ValueError("proof capsule summary requires at least one limitation")
+        return self
+
+
+class ProofCapsuleArtifactRef(StrictBaseModel):
+    artifact_uri: str = Field(min_length=3, max_length=1000)
+    content_hash: str | None = Field(default=None, max_length=160)
+    artifact_type: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def normalize_proof_capsule_artifact(self) -> "ProofCapsuleArtifactRef":
+        self.artifact_uri = self.artifact_uri.strip()
+        self.content_hash = self.content_hash.strip() if self.content_hash else None
+        self.artifact_type = self.artifact_type.strip() if self.artifact_type else None
+        self.description = self.description.strip() if self.description else None
+        return self
+
+
+class ProofCapsuleSourceRef(StrictBaseModel):
+    source_id: str | None = Field(default=None, max_length=260)
+    title: str | None = Field(default=None, max_length=500)
+    url: str | None = Field(default=None, max_length=1000)
+    doi: str | None = Field(default=None, max_length=260)
+    pmid: str | None = Field(default=None, max_length=80)
+    pmcid: str | None = Field(default=None, max_length=80)
+    claim_supported: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def normalize_proof_capsule_source(self) -> "ProofCapsuleSourceRef":
+        self.source_id = self.source_id.strip() if self.source_id else None
+        self.title = self.title.strip() if self.title else None
+        self.url = self.url.strip() if self.url else None
+        self.doi = self.doi.strip() if self.doi else None
+        self.pmid = self.pmid.strip() if self.pmid else None
+        self.pmcid = self.pmcid.strip() if self.pmcid else None
+        self.claim_supported = self.claim_supported.strip() if self.claim_supported else None
+        if not (self.source_id or self.title or self.url or self.doi or self.pmid or self.pmcid):
+            raise ValueError("proof capsule source ref requires at least one identifier, title, or URL")
+        return self
+
+
+class ProofCapsuleSubmitRequest(StrictBaseModel):
+    workspace_id: UUID
+    checkout_manifest_hash: str = Field(min_length=8, max_length=160)
+    candidate_id: str = Field(min_length=3, max_length=260)
+    candidate_snapshot_hash: str | None = Field(default=None, max_length=160)
+    work_packet_id: str | None = Field(default=None, max_length=260)
+    packet_type: ProofCapsulePacketType
+    requested_action: ProofCapsuleRequestedAction
+    producer: ProofCapsuleProducer = Field(default_factory=ProofCapsuleProducer)
+    target: ProofCapsuleTarget
+    summary: ProofCapsuleSummary
+    payload: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[ProofCapsuleArtifactRef] = Field(default_factory=list, max_length=100)
+    source_refs: list[ProofCapsuleSourceRef] = Field(default_factory=list, max_length=100)
+    conflicts: list[str] = Field(default_factory=list, max_length=50)
+    limitations: list[str] = Field(default_factory=list, max_length=50)
+    persist: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_proof_capsule_submit_request(self) -> "ProofCapsuleSubmitRequest":
+        self.checkout_manifest_hash = self.checkout_manifest_hash.strip()
+        self.candidate_id = self.candidate_id.strip()
+        self.candidate_snapshot_hash = (
+            self.candidate_snapshot_hash.strip() if self.candidate_snapshot_hash else None
+        )
+        self.work_packet_id = self.work_packet_id.strip() if self.work_packet_id else None
+        self.conflicts = _normalized_unique_strings(self.conflicts)
+        self.limitations = _normalized_unique_strings(self.limitations)
+        return self
+
+
+class ProofCapsuleRecord(StrictBaseModel):
+    capsule_id: UUID = Field(default_factory=uuid4)
+    capsule_version: str = "proof-capsule-v1"
+    workspace_id: UUID
+    checkout_manifest_hash: str = Field(min_length=8, max_length=160)
+    candidate_id: str = Field(min_length=3, max_length=260)
+    candidate_snapshot_hash: str | None = Field(default=None, max_length=160)
+    work_packet_id: str | None = Field(default=None, max_length=260)
+    packet_type: ProofCapsulePacketType
+    requested_action: ProofCapsuleRequestedAction
+    status: ProofCapsuleStatus = "submitted"
+    producer: ProofCapsuleProducer = Field(default_factory=ProofCapsuleProducer)
+    target: ProofCapsuleTarget
+    summary: ProofCapsuleSummary
+    payload: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[ProofCapsuleArtifactRef] = Field(default_factory=list, max_length=100)
+    source_refs: list[ProofCapsuleSourceRef] = Field(default_factory=list, max_length=100)
+    conflicts: list[str] = Field(default_factory=list, max_length=50)
+    limitations: list[str] = Field(default_factory=list, max_length=50)
+    content_hash: str = Field(min_length=8, max_length=160)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_proof_capsule_record(self) -> "ProofCapsuleRecord":
+        self.checkout_manifest_hash = self.checkout_manifest_hash.strip()
+        self.candidate_id = self.candidate_id.strip()
+        self.candidate_snapshot_hash = (
+            self.candidate_snapshot_hash.strip() if self.candidate_snapshot_hash else None
+        )
+        self.work_packet_id = self.work_packet_id.strip() if self.work_packet_id else None
+        self.conflicts = _normalized_unique_strings(self.conflicts)
+        self.limitations = _normalized_unique_strings(self.limitations)
+        return self
+
+
+class ProofCapsuleSubmitResult(StrictBaseModel):
+    capsule: ProofCapsuleRecord | None = None
+    workspace: ResearchWorkspaceRecord | None = None
+    accepted: bool = False
+    persisted: bool = False
+    errors: list[str] = Field(default_factory=list, max_length=50)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ProofCapsuleLibraryRequest(StrictBaseModel):
+    capsule_id: UUID | None = None
+    workspace_id: UUID | None = None
+    checkout_manifest_hash: str | None = Field(default=None, max_length=160)
+    candidate_id: str | None = Field(default=None, max_length=260)
+    work_packet_id: str | None = Field(default=None, max_length=260)
+    packet_type: ProofCapsulePacketType | None = None
+    requested_action: ProofCapsuleRequestedAction | None = None
+    status: ProofCapsuleStatus | None = None
+    statuses: list[ProofCapsuleStatus] = Field(default_factory=list, max_length=20)
+    limit: int = Field(default=50, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def normalize_proof_capsule_library_request(self) -> "ProofCapsuleLibraryRequest":
+        self.checkout_manifest_hash = (
+            self.checkout_manifest_hash.strip() if self.checkout_manifest_hash else None
+        )
+        self.candidate_id = self.candidate_id.strip() if self.candidate_id else None
+        self.work_packet_id = self.work_packet_id.strip() if self.work_packet_id else None
+        self.statuses = _dedupe_strings(self.statuses)
+        return self
+
+
+class ProofCapsuleLibraryResult(StrictBaseModel):
+    capsule_count: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    packet_type_counts: dict[str, int] = Field(default_factory=dict)
+    requested_action_counts: dict[str, int] = Field(default_factory=dict)
+    capsules: list[ProofCapsuleRecord] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

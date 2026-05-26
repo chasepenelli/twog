@@ -32,6 +32,8 @@ from .contracts import (
     OmicsFollowupRequest,
     OmicsLocusSignalRequest,
     OmicsReadoutRequest,
+    ProofCapsuleLibraryRequest,
+    ProofCapsuleSubmitRequest,
     PubMedIdentifierRepairRequest,
     PublicCandidateGenerateRequest,
     PublicCandidateIntegrityReportRequest,
@@ -831,6 +833,19 @@ _RESEARCH_WORKSPACE_TABLE_COLUMNS = (
     "database_secret_ref",
     "checkout_manifest_hash",
     "error_count",
+)
+_PROOF_CAPSULE_TABLE_COLUMNS = (
+    "capsule_id",
+    "workspace_id",
+    "candidate_id",
+    "work_packet_id",
+    "packet_type",
+    "requested_action",
+    "status",
+    "content_hash",
+    "checkout_manifest_hash",
+    "source_count",
+    "artifact_count",
 )
 
 
@@ -1689,6 +1704,42 @@ if dg is not None:
                 str(manifest.get("manifest_version") or "")
             )
             metadata["persisted"] = bool(report.get("persisted", False))
+        return metadata
+
+    def _proof_capsule_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        capsules = report.get("capsules", [])
+        if not capsules and isinstance(report.get("capsule"), Mapping):
+            capsules = [report["capsule"]]
+        rows = []
+        for capsule in capsules:
+            rows.append(
+                {
+                    "capsule_id": capsule.get("capsule_id"),
+                    "workspace_id": capsule.get("workspace_id"),
+                    "candidate_id": capsule.get("candidate_id"),
+                    "work_packet_id": capsule.get("work_packet_id"),
+                    "packet_type": capsule.get("packet_type"),
+                    "requested_action": capsule.get("requested_action"),
+                    "status": capsule.get("status"),
+                    "content_hash": capsule.get("content_hash"),
+                    "checkout_manifest_hash": capsule.get("checkout_manifest_hash"),
+                    "source_count": len(capsule.get("source_refs") or []),
+                    "artifact_count": len(capsule.get("artifacts") or []),
+                }
+            )
+        metadata = {
+            "capsule_count": dg.MetadataValue.int(int(report.get("capsule_count", len(rows)) or 0)),
+            "accepted": bool(report.get("accepted", bool(rows))),
+            "persisted": bool(report.get("persisted", False)),
+            "status_counts": dg.MetadataValue.json(report.get("status_counts", {})),
+            "packet_type_counts": dg.MetadataValue.json(report.get("packet_type_counts", {})),
+            "requested_action_counts": dg.MetadataValue.json(report.get("requested_action_counts", {})),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "capsules": _metadata_table(rows, _PROOF_CAPSULE_TABLE_COLUMNS),
+        }
+        if isinstance(report.get("capsule"), Mapping):
+            metadata["capsule_id"] = dg.MetadataValue.text(str(report["capsule"].get("capsule_id") or ""))
+            metadata["content_hash"] = dg.MetadataValue.text(str(report["capsule"].get("content_hash") or ""))
         return metadata
 
     def _research_program_evidence_loop_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -4885,6 +4936,73 @@ if dg is not None:
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_research_workspace_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "capsule_json": dg.Field(str, description="Serialized ProofCapsuleSubmitRequest JSON."),
+            "persist": dg.Field(bool, default_value=True),
+        },
+    )
+    def proof_capsule_submit_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Validate and optionally persist a structured workspace check-in."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        payload = json.loads(config["capsule_json"])
+        payload["persist"] = bool(config.get("persist", True))
+        payload.setdefault("metadata", {})
+        payload["metadata"] = {**payload["metadata"], "dagster_run_id": context.run_id}
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).submit_proof_capsule(
+            ProofCapsuleSubmitRequest.model_validate(payload)
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_proof_capsule_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "capsule_id": dg.Field(str, is_required=False),
+            "workspace_id": dg.Field(str, is_required=False),
+            "checkout_manifest_hash": dg.Field(str, is_required=False),
+            "candidate_id": dg.Field(str, is_required=False),
+            "work_packet_id": dg.Field(str, is_required=False),
+            "packet_type": dg.Field(str, is_required=False),
+            "requested_action": dg.Field(str, is_required=False),
+            "status": dg.Field(str, is_required=False),
+            "statuses": dg.Field([str], default_value=[]),
+            "limit": dg.Field(int, default_value=50),
+        },
+    )
+    def proof_capsule_library_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual read-only report of persisted ProofCapsule check-ins."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).list_proof_capsules(
+            ProofCapsuleLibraryRequest(
+                capsule_id=_uuid_or_none(config.get("capsule_id")),
+                workspace_id=_uuid_or_none(config.get("workspace_id")),
+                checkout_manifest_hash=config.get("checkout_manifest_hash"),
+                candidate_id=config.get("candidate_id"),
+                work_packet_id=config.get("work_packet_id"),
+                packet_type=config.get("packet_type"),
+                requested_action=config.get("requested_action"),
+                status=config.get("status"),
+                statuses=config.get("statuses") or [],
+                limit=config.get("limit", 50),
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_proof_capsule_metadata(report))
 
     @dg.asset(
         group_name="ai_research",
@@ -8241,6 +8359,8 @@ if dg is not None:
         research_workspace_library_report,
         research_workspace_cleanup_report,
         research_workspace_checkout_manifest_report,
+        proof_capsule_submit_report,
+        proof_capsule_library_report,
         research_program_evidence_loop_report,
         omics_accession_hunt_report,
         omics_evidence_packet_report,
@@ -8478,6 +8598,14 @@ if dg is not None:
     research_workspace_checkout_manifest_job = dg.define_asset_job(
         "research_workspace_checkout_manifest_job",
         selection=dg.AssetSelection.assets(research_workspace_checkout_manifest_report),
+    )
+    proof_capsule_submit_job = dg.define_asset_job(
+        "proof_capsule_submit_job",
+        selection=dg.AssetSelection.assets(proof_capsule_submit_report),
+    )
+    proof_capsule_library_job = dg.define_asset_job(
+        "proof_capsule_library_job",
+        selection=dg.AssetSelection.assets(proof_capsule_library_report),
     )
     research_program_evidence_loop_job = dg.define_asset_job(
         "research_program_evidence_loop_job",
@@ -8885,6 +9013,8 @@ if dg is not None:
             research_workspace_library_job,
             research_workspace_cleanup_job,
             research_workspace_checkout_manifest_job,
+            proof_capsule_submit_job,
+            proof_capsule_library_job,
             research_program_evidence_loop_job,
             omics_accession_hunt_job,
             omics_evidence_packet_job,

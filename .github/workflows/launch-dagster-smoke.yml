@@ -39,6 +39,8 @@ on:
           - "research_workspace_library_job"
           - "research_workspace_cleanup_job"
           - "research_workspace_checkout_manifest_job"
+          - "proof_capsule_submit_job"
+          - "proof_capsule_library_job"
           - "omics_accession_hunt_job"
           - "omics_evidence_packet_job"
           - "omics_readout_job"

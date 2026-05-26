@@ -41,6 +41,8 @@ from .contracts import (
     OmicsFollowupRequest,
     OmicsLocusSignalRequest,
     OmicsReadoutRequest,
+    ProofCapsuleLibraryRequest,
+    ProofCapsuleSubmitRequest,
     PubMedIdentifierRepairRequest,
     PublicCandidateGenerateRequest,
     PublicCandidateIntegrityReportRequest,
@@ -1177,6 +1179,32 @@ def main() -> None:
         action="store_true",
         help="Actually delete eligible Neon branches. Omit for dry-run cleanup.",
     )
+
+    proof_capsule_submit = subparsers.add_parser(
+        "proof-capsule-submit",
+        help="Submit a structured ProofCapsule returned from a research workspace",
+    )
+    proof_capsule_submit.add_argument("--file", required=True, type=Path, help="ProofCapsule submit JSON file")
+    proof_capsule_submit.add_argument(
+        "--no-persist",
+        action="store_true",
+        help="Validate and hash the ProofCapsule without storing it",
+    )
+
+    proof_capsules = subparsers.add_parser(
+        "proof-capsules",
+        help="List persisted ProofCapsule check-ins",
+    )
+    proof_capsules.add_argument("--id", default=None, help="ProofCapsule ID")
+    proof_capsules.add_argument("--workspace-id", default=None, help="Workspace ID filter")
+    proof_capsules.add_argument("--checkout-manifest-hash", default=None, help="Checkout manifest hash filter")
+    proof_capsules.add_argument("--candidate-id", default=None, help="Candidate filter")
+    proof_capsules.add_argument("--work-packet-id", default=None, help="Work packet filter")
+    proof_capsules.add_argument("--packet-type", default=None, help="Packet type filter")
+    proof_capsules.add_argument("--requested-action", default=None, help="Requested action filter")
+    proof_capsules.add_argument("--status", default=None, help="Single status filter")
+    proof_capsules.add_argument("--status-any", action="append", default=[], help="Allowed status; repeatable")
+    proof_capsules.add_argument("--limit", type=int, default=50, help="Maximum capsules to return")
 
     research_program_evidence_loop = subparsers.add_parser(
         "research-program-evidence-loop",
@@ -2995,6 +3023,28 @@ def main() -> None:
                 reason=args.reason,
                 dry_run=not args.apply,
                 metadata={"cli_command": "research-workspace-cleanup"},
+            )
+        ).model_dump(mode="json")
+    elif args.command == "proof-capsule-submit":
+        payload = json.loads(args.file.read_text())
+        if args.no_persist:
+            payload["persist"] = False
+        output = HSAResearchService(repo).submit_proof_capsule(
+            ProofCapsuleSubmitRequest.model_validate(payload)
+        ).model_dump(mode="json")
+    elif args.command == "proof-capsules":
+        output = HSAResearchService(repo).list_proof_capsules(
+            ProofCapsuleLibraryRequest(
+                capsule_id=UUID(args.id) if args.id else None,
+                workspace_id=UUID(args.workspace_id) if args.workspace_id else None,
+                checkout_manifest_hash=args.checkout_manifest_hash,
+                candidate_id=args.candidate_id,
+                work_packet_id=args.work_packet_id,
+                packet_type=args.packet_type,
+                requested_action=args.requested_action,
+                status=args.status,
+                statuses=args.status_any,
+                limit=args.limit,
             )
         ).model_dump(mode="json")
     elif args.command == "research-program-evidence-loop":

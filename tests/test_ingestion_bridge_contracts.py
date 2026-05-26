@@ -86,6 +86,14 @@ from hsa_research.ingestion_bridge.contracts import (
     OmicsReadoutRequest,
     OmicsReadoutResult,
     PrimitiveCallEvent,
+    ProofCapsuleLibraryRequest,
+    ProofCapsuleLibraryResult,
+    ProofCapsuleRecord,
+    ProofCapsuleSourceRef,
+    ProofCapsuleSubmitRequest,
+    ProofCapsuleSubmitResult,
+    ProofCapsuleSummary,
+    ProofCapsuleTarget,
     PublicCandidateDecisionEvent,
     PublicCandidateGenerateRequest,
     PublicCandidateIntegrityReportRequest,
@@ -235,6 +243,10 @@ from hsa_research.ingestion_bridge.research_workspaces import (
     cleanup_neon_research_workspaces,
     plan_daytona_workspace,
     provision_neon_branch_workspace,
+)
+from hsa_research.ingestion_bridge.proof_capsules import (
+    build_proof_capsule_library,
+    submit_proof_capsule,
 )
 from hsa_research.ingestion_bridge import full_text_ops
 from hsa_research.ingestion_bridge import research_brief_evaluation
@@ -2515,6 +2527,212 @@ def test_research_workspace_checkout_manifest_cli_attaches_to_workspace(monkeypa
     assert output["manifest"]["content_hash"].startswith("sha256:")
     stored = SQLiteResearchRepository(db_path, seed=False).get_research_workspace(workspace.workspace_id)
     assert stored.checkout_manifest_hash == output["manifest"]["content_hash"]
+
+
+def test_proof_capsule_contracts_require_target_source_and_limitations():
+    with pytest.raises(ValidationError):
+        ProofCapsuleTarget()
+    with pytest.raises(ValidationError):
+        ProofCapsuleSourceRef()
+    with pytest.raises(ValidationError):
+        ProofCapsuleSummary(
+            title="Citation repair",
+            finding="The citation should be replaced.",
+            why_it_matters="It anchors the candidate rationale.",
+            limitations=[],
+        )
+
+
+def test_proof_capsule_submit_persists_and_marks_workspace_submitted():
+    repo = InMemoryResearchRepository()
+    workspace = repo.upsert_research_workspace(
+        ResearchWorkspaceRecord(
+            candidate_id="twog-candidate-447eb8089965",
+            work_packet_id="wp-proof-capsule",
+            candidate_snapshot_hash="sha256:snapshot",
+            provider="neon",
+            neon_branch_id="br-proof-capsule",
+            neon_branch_name="twog-proof-capsule",
+            database_secret_ref="neon://project/br-proof-capsule/neondb/neondb_owner",
+            status="requested",
+        )
+    )
+    manifest_result = build_research_workspace_checkout_manifest(
+        repo,
+        ResearchWorkspaceCheckoutManifestRequest(workspace_id=workspace.workspace_id),
+    )
+
+    result = submit_proof_capsule(
+        repo,
+        ProofCapsuleSubmitRequest(
+            workspace_id=workspace.workspace_id,
+            checkout_manifest_hash=manifest_result.manifest.content_hash,
+            candidate_id=workspace.candidate_id,
+            candidate_snapshot_hash="sha256:snapshot",
+            work_packet_id="wp-proof-capsule",
+            packet_type="citation_repair",
+            requested_action="citation_repair",
+            target=ProofCapsuleTarget(section="Literature audit", evidence_ref="C1"),
+            summary=ProofCapsuleSummary(
+                title="Repair KDR evidence citation",
+                finding="The cited claim should point at a canine-specific KDR source.",
+                why_it_matters="The candidate record needs source-level provenance before promotion.",
+                limitations=["This does not evaluate therapeutic efficacy."],
+            ),
+            payload={"method_notes": "Checked the candidate snapshot and evidence bundle."},
+            source_refs=[
+                ProofCapsuleSourceRef(
+                    title="Canine vascular marker review",
+                    doi="10.0000/example",
+                    claim_supported="KDR evidence should be canine-specific.",
+                )
+            ],
+            limitations=["Needs operator review before public record mutation."],
+        ),
+    )
+
+    assert isinstance(result, ProofCapsuleSubmitResult)
+    assert result.accepted is True
+    assert result.persisted is True
+    assert result.capsule is not None
+    assert result.capsule.content_hash.startswith("sha256:")
+    assert repo.get_proof_capsule(result.capsule.capsule_id).packet_type == "citation_repair"
+    stored_workspace = repo.get_research_workspace(workspace.workspace_id)
+    assert stored_workspace.status == "submitted"
+    assert stored_workspace.submitted_proof_capsule_id == result.capsule.capsule_id
+
+    library = build_proof_capsule_library(
+        repo,
+        ProofCapsuleLibraryRequest(candidate_id=workspace.candidate_id, status="submitted"),
+    )
+    assert isinstance(library, ProofCapsuleLibraryResult)
+    assert library.capsule_count == 1
+    assert library.packet_type_counts == {"citation_repair": 1}
+
+
+def test_proof_capsule_rejects_manifest_mismatch_and_raw_secrets():
+    repo = InMemoryResearchRepository()
+    workspace = repo.upsert_research_workspace(
+        ResearchWorkspaceRecord(
+            candidate_id="twog-candidate-447eb8089965",
+            work_packet_id="wp-proof-reject",
+            checkout_manifest_hash="sha256:manifest",
+            checkout_manifest={"allowed_task_types": ["citation_repair"]},
+            status="requested",
+        )
+    )
+    base_request = {
+        "workspace_id": workspace.workspace_id,
+        "candidate_id": workspace.candidate_id,
+        "work_packet_id": workspace.work_packet_id,
+        "packet_type": "citation_repair",
+        "requested_action": "citation_repair",
+        "target": ProofCapsuleTarget(section="Rationale"),
+        "summary": ProofCapsuleSummary(
+            title="Repair citation",
+            finding="A citation is stale.",
+            why_it_matters="The public proof record must stay inspectable.",
+            limitations=["Operator still needs to check the replacement."],
+        ),
+    }
+
+    mismatch = submit_proof_capsule(
+        repo,
+        ProofCapsuleSubmitRequest(
+            **base_request,
+            checkout_manifest_hash="sha256:other-manifest",
+            payload={"note": "manifest mismatch"},
+        ),
+    )
+    assert mismatch.accepted is False
+    assert any("checkout_manifest_hash mismatch" in error for error in mismatch.errors)
+
+    secret = submit_proof_capsule(
+        repo,
+        ProofCapsuleSubmitRequest(
+            **base_request,
+            checkout_manifest_hash="sha256:manifest",
+            payload={"bad": "postgresql://user:pass@example.invalid/neondb"},
+        ),
+    )
+    assert secret.accepted is False
+    assert any("raw secret" in error for error in secret.errors)
+
+
+def test_proof_capsule_cli_and_sqlite_round_trip(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "proof-capsule-cli.sqlite3"
+    repo = SQLiteResearchRepository(db_path, seed=False)
+    workspace = repo.upsert_research_workspace(
+        ResearchWorkspaceRecord(
+            candidate_id="twog-candidate-447eb8089965",
+            work_packet_id="wp-proof-cli",
+            provider="neon",
+            neon_branch_id="br-proof-cli",
+            neon_branch_name="twog-proof-cli",
+            database_secret_ref="neon://project/br-proof-cli/neondb/neondb_owner",
+            status="requested",
+        )
+    )
+    manifest = build_research_workspace_checkout_manifest(
+        repo,
+        ResearchWorkspaceCheckoutManifestRequest(workspace_id=workspace.workspace_id),
+    ).manifest
+    capsule_path = tmp_path / "proof-capsule.json"
+    capsule_payload = ProofCapsuleSubmitRequest(
+        workspace_id=workspace.workspace_id,
+        checkout_manifest_hash=manifest.content_hash,
+        candidate_id=workspace.candidate_id,
+        work_packet_id="wp-proof-cli",
+        packet_type="evidence_addition",
+        requested_action="evidence_review",
+        target=ProofCapsuleTarget(section="Evidence table", claim_id="claim-1"),
+        summary=ProofCapsuleSummary(
+            title="Add companion evidence note",
+            finding="A new source supports the evidence table wording.",
+            why_it_matters="The proof record can become more complete after review.",
+            limitations=["The source has not been promoted by an operator."],
+        ),
+        payload={"method_notes": "External workspace review."},
+        source_refs=[ProofCapsuleSourceRef(title="External evidence note", url="https://example.org/note")],
+    ).model_dump(mode="json")
+    capsule_path.write_text(json.dumps(capsule_payload, sort_keys=True))
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hsa-ingestion",
+            "--db",
+            str(db_path),
+            "proof-capsule-submit",
+            "--file",
+            str(capsule_path),
+        ],
+    )
+    cli_module.main()
+    submit_output = json.loads(capsys.readouterr().out)
+
+    assert submit_output["accepted"] is True
+    assert submit_output["persisted"] is True
+    assert submit_output["capsule"]["packet_type"] == "evidence_addition"
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hsa-ingestion",
+            "--db",
+            str(db_path),
+            "proof-capsules",
+            "--candidate-id",
+            "twog-candidate-447eb8089965",
+        ],
+    )
+    cli_module.main()
+    list_output = json.loads(capsys.readouterr().out)
+
+    assert list_output["capsule_count"] == 1
+    assert list_output["capsules"][0]["workspace_id"] == str(workspace.workspace_id)
 
 
 def test_research_workspace_cleanup_contract_defaults_and_rejects_invalid_provider():
@@ -6909,6 +7127,56 @@ def test_dagster_research_workspace_assets_use_injected_repository(monkeypatch):
             )
             return result.model_copy(update={"workspace": workspace, "persisted": False})
 
+        def submit_proof_capsule(self, request):
+            assert isinstance(request, ProofCapsuleSubmitRequest)
+            assert request.candidate_id == "twog-candidate-447eb8089965"
+            assert request.metadata["dagster_run_id"] == "dagster-proof-capsule-submit-test"
+            capsule = ProofCapsuleRecord(
+                workspace_id=request.workspace_id,
+                checkout_manifest_hash=request.checkout_manifest_hash,
+                candidate_id=request.candidate_id,
+                work_packet_id=request.work_packet_id,
+                packet_type=request.packet_type,
+                requested_action=request.requested_action,
+                target=request.target,
+                summary=request.summary,
+                payload=request.payload,
+                content_hash="sha256:proof-capsule-test",
+            )
+            return ProofCapsuleSubmitResult(
+                capsule=capsule,
+                workspace=workspace,
+                accepted=True,
+                persisted=True,
+            )
+
+        def list_proof_capsules(self, request):
+            assert isinstance(request, ProofCapsuleLibraryRequest)
+            assert request.candidate_id == "twog-candidate-447eb8089965"
+            capsule = ProofCapsuleRecord(
+                workspace_id=workspace.workspace_id,
+                checkout_manifest_hash="sha256:manifest",
+                candidate_id=workspace.candidate_id,
+                work_packet_id=workspace.work_packet_id,
+                packet_type="citation_repair",
+                requested_action="citation_repair",
+                target=ProofCapsuleTarget(section="Literature"),
+                summary=ProofCapsuleSummary(
+                    title="Repair citation",
+                    finding="Citation needs review.",
+                    why_it_matters="It affects public proof quality.",
+                    limitations=["Operator review is still required."],
+                ),
+                content_hash="sha256:proof-capsule-test",
+            )
+            return ProofCapsuleLibraryResult(
+                capsule_count=1,
+                status_counts={"submitted": 1},
+                packet_type_counts={"citation_repair": 1},
+                requested_action_counts={"citation_repair": 1},
+                capsules=[capsule],
+            )
+
     monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
 
     neon_result = dagster_asset_module.research_workspace_neon_report.node_def.compute_fn.decorated_fn(
@@ -7001,8 +7269,59 @@ def test_dagster_research_workspace_assets_use_injected_repository(monkeypatch):
         ),
         FakeRepositoryResource(),
     )
+    proof_capsule_result = dagster_asset_module.proof_capsule_submit_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "capsule_json": json.dumps(
+                    {
+                        "workspace_id": str(workspace.workspace_id),
+                        "checkout_manifest_hash": "sha256:manifest",
+                        "candidate_id": "twog-candidate-447eb8089965",
+                        "work_packet_id": "wp-dagster-1",
+                        "packet_type": "citation_repair",
+                        "requested_action": "citation_repair",
+                        "target": {"section": "Literature"},
+                        "summary": {
+                            "title": "Repair citation",
+                            "finding": "Citation needs review.",
+                            "why_it_matters": "It affects public proof quality.",
+                            "limitations": ["Operator review is still required."],
+                        },
+                    }
+                ),
+                "persist": True,
+            },
+            run_id="dagster-proof-capsule-submit-test",
+        ),
+        FakeRepositoryResource(),
+    )
+    proof_capsule_library_result = dagster_asset_module.proof_capsule_library_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "capsule_id": None,
+                "workspace_id": None,
+                "checkout_manifest_hash": None,
+                "candidate_id": "twog-candidate-447eb8089965",
+                "work_packet_id": None,
+                "packet_type": None,
+                "requested_action": None,
+                "status": None,
+                "statuses": [],
+                "limit": 50,
+            },
+            run_id="dagster-proof-capsule-library-test",
+        ),
+        FakeRepositoryResource(),
+    )
 
-    assert calls == ["build_repository", "build_repository", "build_repository", "build_repository"]
+    assert calls == [
+        "build_repository",
+        "build_repository",
+        "build_repository",
+        "build_repository",
+        "build_repository",
+        "build_repository",
+    ]
     assert neon_result.value["dry_run"] is True
     assert neon_result.metadata["branch_name"].value == "twog-dagster"
     assert library_result.value["workspace_count"] == 1
@@ -7011,6 +7330,10 @@ def test_dagster_research_workspace_assets_use_injected_repository(monkeypatch):
     assert cleanup_result.metadata["candidate_count"].value == 1
     assert manifest_result.value["manifest"]["content_hash"].startswith("sha256:")
     assert manifest_result.metadata["checkout_manifest_hash"].value.startswith("sha256:")
+    assert proof_capsule_result.value["accepted"] is True
+    assert proof_capsule_result.metadata["capsule_id"].value
+    assert proof_capsule_library_result.value["capsule_count"] == 1
+    assert proof_capsule_library_result.metadata["packet_type_counts"].data == {"citation_repair": 1}
 
 
 def test_dagster_validation_plan_asset_uses_injected_repository(monkeypatch):
