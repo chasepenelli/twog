@@ -634,6 +634,10 @@ RewardEventSource = Literal[
     "system_review",
     "downstream_progress",
     "manual",
+    # Public Proof Network: reward events emitted from a reviewed
+    # ProofCapsule. Negative findings (demotion cases, weak-claim proofs,
+    # non-reproducibility) can earn high rewards via the rubric scores.
+    "proof_capsule_review",
 ]
 RewardDimension = Literal[
     "overall",
@@ -645,6 +649,12 @@ RewardDimension = Literal[
     "scientific_risk",
     "operator_usefulness",
     "downstream_progress",
+    # ProofCapsule review rubric dimensions (delta plan §9).
+    "scientific_usefulness",
+    "provenance_strength",
+    "reproducibility",
+    "clarity",
+    "downstream_impact",
 ]
 RewardReportGroupType = Literal["agent_name", "model_profile", "task_type", "source_key", "event_source"]
 RewardOutcomeBucket = Literal[
@@ -6096,3 +6106,391 @@ class ModelProfile(StrictBaseModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_tokens: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# Proof Network — public-facing work objects.
+#
+# A WorkPacket is a bounded, checkout-able task TWOG publishes against a
+# candidate record. Humans and agents pick one up, perform the work, and
+# submit a ProofCapsule. WorkPackets are deliberately small ("repair citation
+# C4", "review evidence gap on KDR binding") so contribution scope stays
+# bounded and reviewable. See deliverables/TWOG_Proof_Network_Techtree_Delta_Plan.md
+# section 3 for the schema and section 11 for the acceptance bar (at least
+# three open packets per candidate).
+
+WorkPacketType = Literal[
+    "citation_repair",
+    "claim_critique",
+    "evidence_addition",
+    "omics_note",
+    "docking_replication",
+    "md_review",
+    "validation_proposal",
+    "demotion_case",
+    "methods_review",
+]
+
+WorkPacketDifficulty = Literal["light", "moderate", "heavy"]
+
+WorkPacketStatus = Literal["open", "in_progress", "completed", "retired"]
+
+
+class WorkPacketRecord(StrictBaseModel):
+    work_packet_id: UUID = Field(default_factory=uuid4)
+    candidate_id: str = Field(min_length=3, max_length=260)
+    packet_type: WorkPacketType
+    title: str = Field(min_length=6, max_length=240)
+    question: str = Field(min_length=12, max_length=1200)
+    why_it_matters: str = Field(default="", max_length=2000)
+    target_claim_ids: list[str] = Field(default_factory=list, max_length=20)
+    target_section: str | None = Field(default=None, max_length=200)
+    required_inputs: list[str] = Field(default_factory=list, max_length=20)
+    suggested_methods: list[str] = Field(default_factory=list, max_length=20)
+    expected_outputs: list[str] = Field(default_factory=list, max_length=20)
+    acceptance_criteria: list[str] = Field(default_factory=list, max_length=20)
+    reward_hint: str = Field(default="", max_length=400)
+    difficulty: WorkPacketDifficulty = "moderate"
+    status: WorkPacketStatus = "open"
+    notebook_recommended: bool = False
+    created_by: str = Field(default="twog_system", max_length=200)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    retired_reason: str | None = Field(default=None, max_length=400)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_work_packet_record(self) -> "WorkPacketRecord":
+        self.candidate_id = self.candidate_id.strip()
+        self.title = self.title.strip()
+        self.question = self.question.strip()
+        self.why_it_matters = self.why_it_matters.strip()
+        self.target_section = self.target_section.strip() if self.target_section else None
+        self.reward_hint = self.reward_hint.strip()
+        self.created_by = self.created_by.strip() or "twog_system"
+        self.target_claim_ids = _dedupe_strings(self.target_claim_ids)
+        self.required_inputs = _normalized_unique_strings(self.required_inputs)
+        self.suggested_methods = _normalized_unique_strings(self.suggested_methods)
+        self.expected_outputs = _normalized_unique_strings(self.expected_outputs)
+        self.acceptance_criteria = _normalized_unique_strings(self.acceptance_criteria)
+        if self.retired_reason is not None:
+            self.retired_reason = self.retired_reason.strip() or None
+        return self
+
+
+# Proof Network — ProofCapsule.
+#
+# A ProofCapsule is the serious sibling of a ContributionPacket. It carries
+# the work a contributor or agent did against a WorkPacket: task manifest,
+# candidate/evidence snapshot hashes, methods, analysis, output refs, an
+# artifact manifest, and (eventually) a review file. Public submissions
+# never mutate the candidate record; capsules enter a review queue and only
+# accepted capsules can be attributed in the candidate decision history.
+#
+# See deliverables/TWOG_Proof_Network_Techtree_Delta_Plan.md sections 3, 4,
+# 8, 9 for the schema, flow, notebook strategy, and reward triggers.
+
+ProofCapsuleType = Literal[
+    "citation_repair",
+    "claim_critique",
+    "evidence_addition",
+    "omics_note",
+    "docking_replication",
+    "md_review",
+    "validation_proposal",
+    "demotion_case",
+    "methods_review",
+    "freeform",
+]
+
+ProofCapsuleStatus = Literal[
+    "submitted",
+    "in_review",
+    "needs_changes",
+    "accepted",
+    "rejected",
+    "archived",
+    "routed_to_validation",
+    "routed_to_compute_review",
+]
+
+# Statuses where the capsule is still in the review loop and may still
+# transition to accepted/rejected/routed. Used to drive listing defaults
+# and the /network mission board's "in flight" rail.
+PROOF_CAPSULE_PENDING_STATUSES = (
+    "submitted",
+    "in_review",
+    "needs_changes",
+)
+
+PROOF_CAPSULE_ACCEPTED_STATUSES = (
+    "accepted",
+    "routed_to_validation",
+    "routed_to_compute_review",
+)
+
+ProofCapsuleContributorKind = Literal[
+    "human",
+    "agent",
+    "team",
+    "lab",
+    "company",
+]
+
+ProofCapsuleReviewerType = Literal[
+    "operator",
+    "llm_evaluator",
+    "system",
+    "external_expert",
+]
+
+ProofCapsuleReviewVerdict = Literal[
+    "accepted",
+    "needs_changes",
+    "rejected",
+    "archived",
+    "routed_to_validation",
+    "routed_to_compute_review",
+]
+
+
+# Recognised content-hash prefixes. Loose by design — we accept anything
+# the contributor can compute locally so long as it is namespaced.
+_PROOF_CAPSULE_ARTIFACT_HASH_PREFIXES = (
+    "sha256:",
+    "sha512:",
+    "sha1:",
+    "md5:",
+    "blake3:",
+    "git:",
+    "ipfs:",
+    "legacy-",
+)
+
+
+class ProofCapsuleArtifact(StrictBaseModel):
+    """An artifact attached to a ProofCapsule.
+
+    Artifacts are addressable by content_hash. TWOG never hosts artifact
+    bodies — only links and hashes — and rejects capsules whose artifact
+    manifest does not declare a hash (so we can detect bit-rot or swap).
+
+    The content_hash must namespace its algorithm with a prefix
+    (e.g. ``sha256:...``) so the value stays self-describing as more
+    algorithms enter the network.
+    """
+
+    label: str = Field(min_length=1, max_length=200)
+    url: str | None = Field(default=None, max_length=2000)
+    content_hash: str = Field(min_length=8, max_length=200)
+    mime_type: str | None = Field(default=None, max_length=160)
+    size_bytes: int | None = Field(default=None, ge=0, le=10**12)
+    method_or_tool: str | None = Field(default=None, max_length=200)
+    container_or_software_versions: dict[str, Any] = Field(default_factory=dict)
+    notes: str = Field(default="", max_length=2000)
+
+    @model_validator(mode="after")
+    def normalize_proof_capsule_artifact(self) -> "ProofCapsuleArtifact":
+        self.label = self.label.strip()
+        if self.url is not None:
+            self.url = self.url.strip() or None
+        self.content_hash = self.content_hash.strip()
+        if not any(
+            self.content_hash.lower().startswith(prefix)
+            for prefix in _PROOF_CAPSULE_ARTIFACT_HASH_PREFIXES
+        ):
+            raise ValueError(
+                "content_hash must be namespaced with an algorithm prefix "
+                "(e.g. sha256:..., blake3:..., legacy-...)."
+            )
+        if self.mime_type is not None:
+            self.mime_type = self.mime_type.strip() or None
+        if self.method_or_tool is not None:
+            self.method_or_tool = self.method_or_tool.strip() or None
+        self.notes = self.notes.strip()
+        return self
+
+
+class ProofCapsuleContributor(StrictBaseModel):
+    """Inline contributor identity attached to a ProofCapsule.
+
+    This is intentionally lightweight while ContributorProfile (B6) is not
+    yet implemented. Once profiles land, capsules can be linked by handle or
+    contact match without changing the on-the-wire shape.
+    """
+
+    kind: ProofCapsuleContributorKind = "human"
+    name: str | None = Field(default=None, max_length=200)
+    handle: str | None = Field(default=None, max_length=120)
+    affiliation: str | None = Field(default=None, max_length=200)
+    contact: str = Field(min_length=3, max_length=320)
+    agent_id: str | None = Field(default=None, max_length=200)
+    website: str | None = Field(default=None, max_length=400)
+
+    @model_validator(mode="after")
+    def normalize_proof_capsule_contributor(self) -> "ProofCapsuleContributor":
+        if self.name is not None:
+            self.name = self.name.strip() or None
+        if self.handle is not None:
+            self.handle = self.handle.strip() or None
+        if self.affiliation is not None:
+            self.affiliation = self.affiliation.strip() or None
+        self.contact = self.contact.strip()
+        if self.agent_id is not None:
+            self.agent_id = self.agent_id.strip() or None
+        if self.website is not None:
+            self.website = self.website.strip() or None
+        return self
+
+    def public_view(self) -> dict[str, Any]:
+        """Render the public-safe subset of the contributor identity.
+
+        Public boundary: contact, agent_id, and website are intentionally
+        omitted from the public capsule status payload. Operators see the
+        full record via the Python intake report only.
+        """
+
+        return {
+            "kind": self.kind,
+            "name": self.name,
+            "handle": self.handle,
+            "affiliation": self.affiliation,
+        }
+
+
+class ProofCapsuleRecord(StrictBaseModel):
+    proof_capsule_id: UUID = Field(default_factory=uuid4)
+    work_packet_id: UUID | None = None
+    candidate_id: str = Field(min_length=3, max_length=260)
+    capsule_type: ProofCapsuleType
+    title: str = Field(min_length=6, max_length=240)
+    contributor: ProofCapsuleContributor
+    task_manifest: dict[str, Any] = Field(default_factory=dict)
+    candidate_snapshot_hash: str | None = Field(default=None, max_length=200)
+    evidence_bundle_hash: str | None = Field(default=None, max_length=200)
+    method_refs: list[str] = Field(default_factory=list, max_length=50)
+    notebook_ref: str | None = Field(default=None, max_length=600)
+    analysis_summary: str = Field(min_length=20, max_length=8000)
+    findings: str = Field(default="", max_length=8000)
+    output_refs: list[str] = Field(default_factory=list, max_length=50)
+    artifact_manifest: list[ProofCapsuleArtifact] = Field(default_factory=list, max_length=50)
+    limitations: str = Field(default="", max_length=4000)
+    conflicts_or_disclosures: str = Field(default="", max_length=4000)
+    requested_review_route: ProofCapsuleReviewVerdict | None = None
+    content_hash: str | None = Field(default=None, max_length=200)
+    signature: str | None = Field(default=None, max_length=600)
+    status: ProofCapsuleStatus = "submitted"
+    submitted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    reviewed_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_proof_capsule_record(self) -> "ProofCapsuleRecord":
+        self.candidate_id = self.candidate_id.strip()
+        self.title = self.title.strip()
+        self.analysis_summary = self.analysis_summary.strip()
+        self.findings = self.findings.strip()
+        self.limitations = self.limitations.strip()
+        self.conflicts_or_disclosures = self.conflicts_or_disclosures.strip()
+        if self.candidate_snapshot_hash is not None:
+            self.candidate_snapshot_hash = self.candidate_snapshot_hash.strip() or None
+        if self.evidence_bundle_hash is not None:
+            self.evidence_bundle_hash = self.evidence_bundle_hash.strip() or None
+        if self.notebook_ref is not None:
+            self.notebook_ref = self.notebook_ref.strip() or None
+        if self.signature is not None:
+            self.signature = self.signature.strip() or None
+        self.method_refs = _normalized_unique_strings(self.method_refs)
+        self.output_refs = _normalized_unique_strings(self.output_refs)
+        # Artifact manifest must have unique content hashes so a capsule
+        # cannot accidentally double-count the same file under two labels.
+        seen_hashes: set[str] = set()
+        for artifact in self.artifact_manifest:
+            if artifact.content_hash in seen_hashes:
+                raise ValueError(
+                    f"artifact_manifest has duplicate content_hash {artifact.content_hash}"
+                )
+            seen_hashes.add(artifact.content_hash)
+        if self.content_hash is None:
+            self.content_hash = _proof_capsule_content_hash(self)
+        return self
+
+
+class ProofCapsuleReviewRecord(StrictBaseModel):
+    """Operator/evaluator review event attached to a ProofCapsule.
+
+    Rubric dimensions match delta plan section 9. Reviews are append-only;
+    each transition (accept, route, reject) emits a new review event so the
+    decision history is auditable. Reward emission (B5) reads these.
+    """
+
+    review_id: UUID = Field(default_factory=uuid4)
+    proof_capsule_id: UUID
+    reviewer_type: ProofCapsuleReviewerType
+    reviewer_id: str = Field(min_length=1, max_length=200)
+    verdict: ProofCapsuleReviewVerdict
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    scientific_usefulness: float | None = Field(default=None, ge=0.0, le=1.0)
+    provenance_strength: float | None = Field(default=None, ge=0.0, le=1.0)
+    reproducibility: float | None = Field(default=None, ge=0.0, le=1.0)
+    actionability: float | None = Field(default=None, ge=0.0, le=1.0)
+    novelty: float | None = Field(default=None, ge=0.0, le=1.0)
+    clarity: float | None = Field(default=None, ge=0.0, le=1.0)
+    downstream_impact: float | None = Field(default=None, ge=0.0, le=1.0)
+    rationale: str = Field(min_length=1, max_length=4000)
+    required_changes: str = Field(default="", max_length=4000)
+    linked_agent_run_id: UUID | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_proof_capsule_review_record(self) -> "ProofCapsuleReviewRecord":
+        self.reviewer_id = self.reviewer_id.strip()
+        self.rationale = self.rationale.strip()
+        self.required_changes = self.required_changes.strip()
+        return self
+
+
+def _proof_capsule_content_hash(record: "ProofCapsuleRecord") -> str:
+    """Stable hash of the load-bearing capsule fields.
+
+    Excludes timestamps and the content_hash itself so re-serialization is
+    idempotent. The artifact manifest's content_hashes participate, so a
+    swapped artifact body invalidates the capsule hash even if the URL is
+    unchanged.
+    """
+
+    manifest_digest = [
+        {
+            "label": artifact.label,
+            "content_hash": artifact.content_hash,
+            "mime_type": artifact.mime_type,
+            "size_bytes": artifact.size_bytes,
+        }
+        for artifact in record.artifact_manifest
+    ]
+    digest_payload = {
+        "candidate_id": record.candidate_id,
+        "work_packet_id": str(record.work_packet_id) if record.work_packet_id else None,
+        "capsule_type": record.capsule_type,
+        "title": record.title,
+        "analysis_summary": record.analysis_summary,
+        "findings": record.findings,
+        "limitations": record.limitations,
+        "candidate_snapshot_hash": record.candidate_snapshot_hash,
+        "evidence_bundle_hash": record.evidence_bundle_hash,
+        "method_refs": record.method_refs,
+        "output_refs": record.output_refs,
+        "notebook_ref": record.notebook_ref,
+        "artifact_manifest": manifest_digest,
+        "contributor_handle": record.contributor.handle,
+    }
+    import json as _json  # local import keeps the module top tidy
+
+    # ensure_ascii=False mirrors twog/lib/proof-capsules.ts canonicalJsonStringify
+    # which keeps non-ASCII characters literal in the byte string. Without
+    # this, a body containing an em-dash hashes differently in Python vs TS
+    # and ed25519 signatures over the Python hash fail verification on the
+    # TS server.
+    serialized = _json.dumps(digest_payload, sort_keys=True, default=str, ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()

@@ -36,6 +36,17 @@ REQUESTED_SYSTEM_ACTIONS = (
     "docking_or_md_review",
     "no_action",
 )
+CONTRIBUTION_TYPES = (
+    "evidence_addition",
+    "citation_repair",
+    "claim_critique",
+    "replication_result",
+    "compute_artifact",
+    "omics_note",
+    "validation_proposal",
+    "safety_or_translation_note",
+    "candidate_demotion_case",
+)
 TRIAGE_ACTIONS = (
     "start_triage",
     "request_more_information",
@@ -166,6 +177,7 @@ def _compact_contributor(contributor: Mapping[str, Any] | None) -> dict[str, Any
     source = contributor or {}
     return {
         "name": source.get("name"),
+        "handle": source.get("handle"),
         "affiliation": source.get("affiliation"),
         "contact": source.get("contact"),
     }
@@ -181,7 +193,13 @@ def _compact_row(row: Mapping[str, Any], include_packet: bool) -> dict[str, Any]
         "candidate_id": row.get("candidate_id"),
         "display_id": row.get("display_id"),
         "snapshot_content_hash": row.get("snapshot_content_hash"),
+        "contribution_content_hash": row.get("contribution_content_hash"),
         "source_payload_url": row.get("source_payload_url"),
+        "status_url": (
+            f"/api/contributions/{row.get('contribution_id')}/status"
+            if row.get("contribution_id")
+            else None
+        ),
         "status": status,
         "contribution_type": row.get("contribution_type"),
         "relation_to_current_record": row.get("relation_to_current_record"),
@@ -234,6 +252,8 @@ def build_candidate_contribution_triage_plan_from_rows(
                     "contribution_id": contribution_id,
                     "candidate_id": row.get("candidate_id"),
                     "display_id": row.get("display_id"),
+                    "contribution_content_hash": row.get("contribution_content_hash"),
+                    "status_url": f"/api/contributions/{contribution_id}/status",
                     "old_status": old_status,
                     "new_status": target_status,
                     "action": normalized_action,
@@ -363,6 +383,7 @@ def build_candidate_contribution_intake_report(
             candidate_id,
             display_id,
             snapshot_content_hash,
+            contribution_content_hash,
             source_payload_url,
             status,
             contribution_type,
@@ -463,6 +484,7 @@ def triage_candidate_contributions(
             contribution_id::text,
             candidate_id,
             display_id,
+            contribution_content_hash,
             status,
             review_notes,
             promoted_queue_id

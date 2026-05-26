@@ -74,6 +74,11 @@ export const methods: MethodRecord[] = [
         detail:
           'The public snapshot receives a content hash. The page can be cited, compared, challenged, and regenerated without pretending the record is more final than it is.',
       },
+      {
+        label: 'Check out / check in',
+        detail:
+          'Readers can download the candidate payload and evidence bundle, do outside work against that exact snapshot, and check in a structured contribution packet for TWOG review.',
+      },
     ],
     auditFields: [
       ['What is being proposed', 'The candidate ID, status, target family, therapy family, and current priority score.'],
@@ -107,6 +112,11 @@ export const methods: MethodRecord[] = [
         heading: 'What the page does not claim',
         body:
           'A candidate page is not a diagnosis, prescription, treatment recommendation, or proof of efficacy. It is a research artifact that makes the reasoning chain easier to inspect, challenge, reproduce, and improve.',
+      },
+      {
+        heading: 'How the Proof Network loop works',
+        body:
+          'The loop is intentionally simple: check out a record, work against the public snapshot hash, check in a structured packet, pass through an operator review gate, and only then update the public decision history if the work holds up.',
       },
     ],
     endpoints: [
@@ -142,7 +152,13 @@ export const methods: MethodRecord[] = [
         path: '/api/public-candidates/twog-candidate-e5e8a4f68611/contribution-template',
         href: '/api/public-candidates/twog-candidate-e5e8a4f68611/contribution-template',
         detail:
-          'Returns a fillable contribution packet for evidence, critique, replication notes, artifacts, or validation proposals tied to this snapshot.',
+          'Returns a fillable Proof Network packet for evidence additions, citation repair, claim critique, replication results, compute artifacts, omics notes, validation proposals, safety/translation notes, or demotion cases.',
+      },
+      {
+        label: 'Track contribution',
+        path: '/api/contributions/{contribution_id}/status',
+        detail:
+          'Returns compact public status for one checked-in packet: receipt hash, candidate, route, status, and timestamps without exposing private review notes.',
       },
     ],
     interpretationRules: [
@@ -192,7 +208,7 @@ export const methods: MethodRecord[] = [
       {
         label: 'Enable check-in',
         detail:
-          'The same packet points to the contribution template so reviewers can return structured evidence, critique, replication notes, artifacts, or validation proposals.',
+          'The same packet points to the contribution template so reviewers can return structured evidence, critique, replication notes, compute artifacts, omics notes, validation proposals, safety notes, or demotion cases.',
       },
     ],
     auditFields: [
@@ -222,6 +238,11 @@ export const methods: MethodRecord[] = [
         heading: 'How compute settings travel',
         body:
           'If MD, docking, omics, or another compute lane informs the candidate, the bundle should include the method reference, input contract, settings, artifact IDs, and run ledger identifiers needed for review.',
+      },
+      {
+        heading: 'How checked-out work comes back',
+        body:
+          'A reviewer should cite the snapshot hash, targeted claim or section, method notes, evidence refs, artifact refs, conflicts, limitations, and requested action. The receipt lets that reviewer track the intake state without changing the candidate directly.',
       },
     ],
     endpoints: [
@@ -264,7 +285,7 @@ export const methods: MethodRecord[] = [
       {
         label: 'Template',
         detail:
-          'The contributor starts from a structured template tied to a candidate ID, snapshot hash, contribution type, and requested review route.',
+          'The contributor starts from a structured Proof Network template tied to a candidate ID, snapshot hash, contribution type, targeted claim, method notes, and requested review route.',
       },
       {
         label: 'Submission',
@@ -274,7 +295,7 @@ export const methods: MethodRecord[] = [
       {
         label: 'Intake queue',
         detail:
-          'Neon-backed storage receives the packet as queued intake. The public record remains unchanged.',
+          'Neon-backed storage receives the packet as queued intake and returns a contribution receipt with content hash and public status URL. The public record remains unchanged.',
       },
       {
         label: 'Operator decision',
@@ -289,7 +310,7 @@ export const methods: MethodRecord[] = [
     ],
     auditFields: [
       ['Contributor context', 'Name, contact, organization, and declared relation to the candidate record.'],
-      ['Contribution type', 'Evidence, critique, replication, artifact, validation proposal, or compute result.'],
+      ['Contribution type', 'Evidence addition, citation repair, claim critique, replication result, compute artifact, omics note, validation proposal, safety/translation note, or demotion case.'],
       ['Route request', 'The lane the contributor believes should handle the packet.'],
       ['Snapshot link', 'Candidate ID and content hash so review is tied to a specific public version.'],
       ['Review outcome', 'Operator decision, rationale, and any downstream queue item created.'],
@@ -303,7 +324,7 @@ export const methods: MethodRecord[] = [
       {
         heading: 'What can be submitted',
         body:
-          'The first accepted packet types are evidence, critique, replication note, artifact, validation proposal, and compute result. Free-form discussion belongs elsewhere.',
+          'The accepted packet types are evidence addition, citation repair, claim critique, replication result, compute artifact, omics note, validation proposal, safety or translation note, and candidate demotion case. Free-form discussion belongs elsewhere.',
       },
       {
         heading: 'What operators decide',
@@ -328,6 +349,11 @@ export const methods: MethodRecord[] = [
         path: '/api/public-candidates/twog-candidate-e5e8a4f68611/contributions',
         href: '/api/public-candidates/twog-candidate-e5e8a4f68611/contributions',
         detail: 'The endpoint shape for submissions when public intake is enabled.',
+      },
+      {
+        label: 'Contribution status',
+        path: '/api/contributions/{contribution_id}/status',
+        detail: 'The public-safe receipt lookup for a queued contribution packet.',
       },
     ],
     interpretationRules: [

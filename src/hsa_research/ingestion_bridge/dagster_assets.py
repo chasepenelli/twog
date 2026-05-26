@@ -182,6 +182,8 @@ _CANDIDATE_CONTRIBUTION_INTAKE_TABLE_COLUMNS = (
     "display_id",
     "status",
     "contribution_type",
+    "contribution_content_hash",
+    "status_url",
     "requested_system_action",
     "recommended_route",
     "evidence_count",
@@ -194,10 +196,28 @@ _CANDIDATE_CONTRIBUTION_TRIAGE_TABLE_COLUMNS = (
     "display_id",
     "old_status",
     "new_status",
+    "contribution_content_hash",
+    "status_url",
     "action",
     "operator",
     "promoted_queue_id",
     "would_update",
+)
+_WORK_PACKET_SEED_TABLE_COLUMNS = (
+    "work_packet_id",
+    "candidate_id",
+    "packet_type",
+    "title",
+    "difficulty",
+    "status",
+    "notebook_recommended",
+    "reward_hint",
+)
+_PROOF_CAPSULE_REWARD_SYNC_COLUMNS = (
+    "scanned_review_count",
+    "eligible_review_count",
+    "created_count",
+    "skipped_existing_count",
 )
 _AGENT_PERFORMANCE_TABLE_COLUMNS = (
     "group_type",
@@ -1002,6 +1022,31 @@ if dg is not None:
                 report.get("rows", []),
                 _CANDIDATE_CONTRIBUTION_INTAKE_TABLE_COLUMNS,
             ),
+        }
+
+    def _work_packet_seed_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "dry_run": bool(report.get("dry_run", True)),
+            "storage_configured": bool(report.get("storage_configured", False)),
+            "table_available": bool(report.get("table_available", True)),
+            "planned_count": dg.MetadataValue.int(int(report.get("planned_count") or 0)),
+            "inserted_count": dg.MetadataValue.int(int(report.get("inserted_count") or 0)),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count") or 0)),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "rows": _metadata_table(
+                report.get("rows", []),
+                _WORK_PACKET_SEED_TABLE_COLUMNS,
+            ),
+        }
+
+    def _proof_capsule_reward_sync_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "scanned_review_count": dg.MetadataValue.int(int(report.get("scanned_review_count") or 0)),
+            "eligible_review_count": dg.MetadataValue.int(int(report.get("eligible_review_count") or 0)),
+            "created_count": dg.MetadataValue.int(int(report.get("created_count") or 0)),
+            "skipped_existing_count": dg.MetadataValue.int(int(report.get("skipped_existing_count") or 0)),
+            "reward_event_ids": dg.MetadataValue.json(report.get("reward_event_ids", [])),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
         }
 
     def _candidate_contribution_triage_report_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -3571,6 +3616,90 @@ if dg is not None:
     @dg.asset(
         group_name="control_panel",
         config_schema={
+            "candidate_ids": dg.Field(
+                [str],
+                default_value=[],
+                description="Public candidate IDs to seed curated work packets for.",
+            ),
+            "dry_run": dg.Field(
+                bool,
+                default_value=True,
+                description="Preview the seed. Set false to persist work_packet rows.",
+            ),
+        },
+    )
+    def work_packet_seed_report(context) -> dg.MaterializeResult:
+        """Idempotently seed Proof Network work packets for one or more candidates.
+
+        Each candidate gets the curated starter set (citation_repair,
+        claim_critique, evidence_addition). Inserts are ``ON CONFLICT
+        DO NOTHING`` on work_packet_id, so reruns are safe.
+        """
+
+        from .work_packets import curated_work_packets_for_candidate, seed_work_packets
+
+        config = context.op_config
+        candidate_ids = [str(value).strip() for value in (config.get("candidate_ids") or []) if str(value).strip()]
+        records = []
+        for candidate_id in candidate_ids:
+            records.extend(curated_work_packets_for_candidate(candidate_id))
+        report = seed_work_packets(records, dry_run=bool(config["dry_run"]))
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_work_packet_seed_report_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="agent_ops",
+        config_schema={
+            "reviewer_type": dg.Field(
+                str,
+                is_required=False,
+                description="Optional reviewer_type filter (operator | llm_evaluator | system | external_expert).",
+            ),
+            "limit": dg.Field(int, default_value=500, description="Maximum proof capsule reviews to scan."),
+            "include_existing": dg.Field(
+                bool,
+                default_value=False,
+                description="Regenerate existing reward events instead of skipping them.",
+            ),
+            "created_by": dg.Field(
+                str,
+                default_value="dagster_proof_capsule_review_sync",
+                description="Ledger creator identity.",
+            ),
+        },
+    )
+    def proof_capsule_reward_sync_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Convert proof_capsule_reviews into reward events through the existing ledger.
+
+        Idempotent on review_id via uuid5 over a deterministic identity key.
+        Reruns are safe; the sync skips reviews that already have a reward
+        event unless include_existing is true.
+        """
+
+        from .proof_capsules import sync_reward_events_from_proof_capsule_reviews
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = sync_reward_events_from_proof_capsule_reviews(
+            repository,
+            reviewer_type=config.get("reviewer_type"),
+            limit=config["limit"],
+            include_existing=config["include_existing"],
+            created_by=config["created_by"],
+        )
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_proof_capsule_reward_sync_report_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="control_panel",
+        config_schema={
             "source_keys": dg.Field(
                 [str],
                 default_value=[],
@@ -4022,6 +4151,167 @@ if dg is not None:
         )
         report = result.model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_reward_sync_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "candidate_id": dg.Field(
+                str,
+                is_required=False,
+                description="Dive one specific candidate; omit to dive all eligible candidates not in cooldown.",
+            ),
+            "cooldown_hours": dg.Field(
+                int,
+                default_value=24,
+                description="Hours between auto-dives on the same candidate.",
+            ),
+            "candidate_limit": dg.Field(
+                int,
+                default_value=50,
+                description="Max candidates to dive per pass (when candidate_id is omitted).",
+            ),
+            "force": dg.Field(
+                bool,
+                default_value=False,
+                description="Ignore the per-candidate cooldown.",
+            ),
+            "dry_run": dg.Field(
+                bool,
+                default_value=False,
+                description="Compute proposed capsules without submitting via /api/proof-capsules.",
+            ),
+            "site_url": dg.Field(
+                str,
+                is_required=False,
+                description="TWOG public site URL (defaults to TWOG_SITE_URL env or http://localhost:3000).",
+            ),
+        },
+    )
+    def candidate_auto_dive_report(context) -> dg.MaterializeResult:
+        """Deterministic auto-dive on candidate snapshots.
+
+        For each candidate not in the @twog-auto-dive cooldown window,
+        runs the deterministic checks (unresolved citations,
+        compute-vs-mechanism alignment) and submits the resulting
+        proof capsules via the public /api/proof-capsules path.
+
+        Requires TWOG_DEMO_MASTER_SEED env (the same seed the demo
+        persona orchestrator uses — @twog-auto-dive's ed25519 key
+        derives from it via HKDF).
+        """
+
+        from .auto_dive_worker import dive, dive_all_eligible
+
+        master_seed = os.environ.get("TWOG_DEMO_MASTER_SEED")
+        if not master_seed:
+            raise RuntimeError(
+                "TWOG_DEMO_MASTER_SEED env var required for auto-dive "
+                "(use the same seed as the demo persona orchestrator)."
+            )
+
+        config = context.op_config
+        site_url = config.get("site_url") or os.environ.get("TWOG_SITE_URL")
+        cooldown = config["cooldown_hours"]
+
+        if config.get("candidate_id"):
+            reports = [
+                dive(
+                    config["candidate_id"],
+                    master_seed_b64=master_seed,
+                    site_url=site_url,
+                    cooldown_hours=cooldown,
+                    force=config["force"],
+                    dry_run=config["dry_run"],
+                )
+            ]
+        else:
+            reports = dive_all_eligible(
+                master_seed_b64=master_seed,
+                site_url=site_url,
+                cooldown_hours=cooldown,
+                candidate_limit=config["candidate_limit"],
+                dry_run=config["dry_run"],
+            )
+
+        summary = {
+            "candidate_count": len(reports),
+            "ok_count": sum(1 for r in reports if r.status == "ok"),
+            "cooldown_count": sum(1 for r in reports if r.status == "cooldown"),
+            "no_candidate_count": sum(1 for r in reports if r.status == "no_candidate"),
+            "total_proposed": sum(len(r.proposed_capsules) for r in reports),
+            "total_submitted": sum(len(r.submitted_capsule_ids) for r in reports),
+            "total_errors": sum(len(r.errors) for r in reports),
+            "dry_run": config["dry_run"],
+            "reports": [
+                {
+                    "candidate_id": r.candidate_id,
+                    "status": r.status,
+                    "proposed_capsule_count": len(r.proposed_capsules),
+                    "submitted_capsule_ids": r.submitted_capsule_ids,
+                    "errors": r.errors,
+                }
+                for r in reports
+            ],
+        }
+        metadata: dict[str, Any] = {
+            "candidates_dove": dg.MetadataValue.int(summary["ok_count"]),
+            "candidates_in_cooldown": dg.MetadataValue.int(summary["cooldown_count"]),
+            "capsules_proposed": dg.MetadataValue.int(summary["total_proposed"]),
+            "capsules_submitted": dg.MetadataValue.int(summary["total_submitted"]),
+            "error_count": dg.MetadataValue.int(summary["total_errors"]),
+        }
+        return dg.MaterializeResult(value=summary, metadata=metadata)
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "limit": dg.Field(
+                int,
+                default_value=20,
+                description="Maximum unreviewed capsules to grade per pass.",
+            ),
+            "model_name": dg.Field(
+                str,
+                is_required=False,
+                description="OpenRouter model identifier (defaults to claude-haiku-4-5-20251001).",
+            ),
+            "dry_run": dg.Field(
+                bool,
+                default_value=False,
+                description="Skip persisting reviews; print scores only.",
+            ),
+        },
+    )
+    def capsule_llm_grade_report(context) -> dg.MaterializeResult:
+        """LLM-as-judge pre-grade for proof capsules.
+
+        Finds capsules without any operator-grade review and asks an LLM
+        to score them across the 7 rubric dimensions. Stores results as
+        proof_capsule_reviews rows with reviewer_type="llm_evaluator" —
+        these are advisory recommendations only and do not award proof
+        points (sync_reward_events_from_proof_capsule_reviews skips
+        reviewer_type=llm_evaluator). Operators can adopt or override
+        the LLM grade when they triage their queue.
+        """
+
+        from .llm_capsule_grader import grade_pending_capsules
+
+        config = context.op_config
+        result = grade_pending_capsules(
+            limit=config["limit"],
+            model_name=config.get("model_name"),
+            dry_run=config["dry_run"],
+        )
+        metadata: dict[str, Any] = {
+            "scanned": dg.MetadataValue.int(result.get("scanned", 0)),
+            "graded": dg.MetadataValue.int(result.get("graded", 0)),
+            "cached_hits": dg.MetadataValue.int(result.get("cached_hits", 0)),
+            "error_count": dg.MetadataValue.int(len(result.get("errors") or [])),
+            "dry_run": dg.MetadataValue.bool(bool(result.get("dry_run"))),
+        }
+        if result.get("errors"):
+            metadata["errors"] = dg.MetadataValue.json(result["errors"])
+        return dg.MaterializeResult(value=result, metadata=metadata)
 
     @dg.asset(
         group_name="ai_research",
@@ -7934,6 +8224,8 @@ if dg is not None:
         source_health_report,
         candidate_contribution_intake_report,
         candidate_contribution_triage_report,
+        work_packet_seed_report,
+        proof_capsule_reward_sync_report,
         command_center_report,
         research_hunt_queue_report,
         research_hunt_queue_maintenance_report,
@@ -7944,6 +8236,8 @@ if dg is not None:
         agent_performance_evaluation_report,
         reward_event_report,
         reward_event_sync_report,
+        capsule_llm_grade_report,
+        candidate_auto_dive_report,
         research_brief_agent_report,
         therapy_committee_report,
         validation_tool_catalog_report,
@@ -8090,6 +8384,14 @@ if dg is not None:
         "candidate_contribution_triage_job",
         selection=dg.AssetSelection.assets(candidate_contribution_triage_report),
     )
+    work_packet_seed_job = dg.define_asset_job(
+        "work_packet_seed_job",
+        selection=dg.AssetSelection.assets(work_packet_seed_report),
+    )
+    proof_capsule_reward_sync_job = dg.define_asset_job(
+        "proof_capsule_reward_sync_job",
+        selection=dg.AssetSelection.assets(proof_capsule_reward_sync_report),
+    )
     command_center_job = dg.define_asset_job(
         "command_center_job",
         selection=dg.AssetSelection.assets(command_center_report),
@@ -8129,6 +8431,14 @@ if dg is not None:
     reward_event_sync_job = dg.define_asset_job(
         "reward_event_sync_job",
         selection=dg.AssetSelection.assets(reward_event_sync_report),
+    )
+    capsule_llm_grade_job = dg.define_asset_job(
+        "capsule_llm_grade_job",
+        selection=dg.AssetSelection.assets(capsule_llm_grade_report),
+    )
+    candidate_auto_dive_job = dg.define_asset_job(
+        "candidate_auto_dive_job",
+        selection=dg.AssetSelection.assets(candidate_auto_dive_report),
     )
     research_brief_agent_job = dg.define_asset_job(
         "research_brief_agent_job",
@@ -8558,6 +8868,8 @@ if dg is not None:
             source_health_report_job,
             candidate_contribution_intake_report_job,
             candidate_contribution_triage_job,
+            work_packet_seed_job,
+            proof_capsule_reward_sync_job,
             command_center_job,
             research_hunt_queue_report_job,
             research_hunt_queue_maintenance_job,
@@ -8568,6 +8880,8 @@ if dg is not None:
             agent_performance_evaluation_job,
             reward_event_report_job,
             reward_event_sync_job,
+            capsule_llm_grade_job,
+            candidate_auto_dive_job,
             research_brief_agent_job,
             therapy_committee_job,
             validation_tool_catalog_job,
@@ -8676,6 +8990,8 @@ else:
     source_health_report_job = None
     candidate_contribution_intake_report_job = None
     candidate_contribution_triage_job = None
+    work_packet_seed_job = None
+    proof_capsule_reward_sync_job = None
     command_center_job = None
     research_hunt_queue_report_job = None
     research_hunt_queue_maintenance_job = None

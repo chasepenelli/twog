@@ -7,12 +7,15 @@ import {
 } from '@/lib/public-contribution-status';
 
 const CONTRIBUTION_TYPES = [
-  'evidence',
-  'critique',
-  'replication',
-  'artifact',
+  'evidence_addition',
+  'citation_repair',
+  'claim_critique',
+  'replication_result',
+  'compute_artifact',
+  'omics_note',
   'validation_proposal',
-  'compute_result',
+  'safety_or_translation_note',
+  'candidate_demotion_case',
 ] as const;
 const RELATIONS = ['supports', 'challenges', 'extends', 'corrects', 'requests_validation', 'requests_compute'] as const;
 const ACTIONS = [
@@ -28,12 +31,15 @@ interface CandidateContributionPanelProps {
   candidateId: string;
   displayId: string;
   payloadPath: string;
+  evidenceBundlePath: string;
   snapshotHash: string;
 }
 
 interface IntakeStatus {
   storage_configured?: boolean;
   contribution_id?: string;
+  contribution_content_hash?: string;
+  status_url?: string;
   status?: string;
   error?: string;
   message?: string;
@@ -44,19 +50,25 @@ export function CandidateContributionPanel({
   candidateId,
   displayId,
   payloadPath,
+  evidenceBundlePath,
   snapshotHash,
 }: CandidateContributionPanelProps) {
   const submissionUrl = `/api/public-candidates/${candidateId}/contributions`;
   const templateUrl = `/api/public-candidates/${candidateId}/contribution-template`;
   const [storageConfigured, setStorageConfigured] = useState<boolean | null>(null);
-  const [contributionType, setContributionType] = useState<(typeof CONTRIBUTION_TYPES)[number]>('evidence');
+  const [contributionType, setContributionType] = useState<(typeof CONTRIBUTION_TYPES)[number]>('evidence_addition');
   const [relation, setRelation] = useState<(typeof RELATIONS)[number]>('extends');
   const [requestedAction, setRequestedAction] = useState<(typeof ACTIONS)[number]>('evidence_review');
   const [name, setName] = useState('');
+  const [handle, setHandle] = useState('');
   const [contact, setContact] = useState('');
   const [title, setTitle] = useState('');
   const [summary, setSummary] = useState('');
   const [claim, setClaim] = useState('');
+  const [targetedSection, setTargetedSection] = useState('');
+  const [methodNotes, setMethodNotes] = useState('');
+  const [evidenceRefs, setEvidenceRefs] = useState('');
+  const [artifactRefs, setArtifactRefs] = useState('');
   const [evidenceUrl, setEvidenceUrl] = useState('');
   const [evidenceTitle, setEvidenceTitle] = useState('');
   const [limitations, setLimitations] = useState('');
@@ -108,10 +120,10 @@ export function CandidateContributionPanel({
       return;
     }
 
-    if (!contact.trim() || !title.trim() || !summary.trim() || !claim.trim()) {
+    if (!contact.trim() || !title.trim() || !summary.trim() || !claim.trim() || !methodNotes.trim()) {
       setResult({
         error: 'missing_required_fields',
-        message: 'Contact, title, summary, and claim/question are required.',
+        message: 'Contact, title, summary, claim/question, and method notes are required.',
       });
       return;
     }
@@ -125,13 +137,24 @@ export function CandidateContributionPanel({
           contribution_type: contributionType,
           contributor: {
             name,
+            handle,
             contact,
           },
           title,
           summary,
           claim_or_question: claim,
+          targeted_claim_or_section: targetedSection || claim,
+          method_notes: methodNotes,
           relation_to_current_record: relation,
+          evidence_refs: evidenceRefs
+            .split(',')
+            .map((value) => value.trim())
+            .filter(Boolean),
           evidence,
+          artifact_refs: artifactRefs
+            .split(',')
+            .map((value) => value.trim())
+            .filter(Boolean),
           artifacts: [],
           requested_system_action: requestedAction,
           conflicts_or_limitations: limitations,
@@ -143,6 +166,10 @@ export function CandidateContributionPanel({
         setTitle('');
         setSummary('');
         setClaim('');
+        setTargetedSection('');
+        setMethodNotes('');
+        setEvidenceRefs('');
+        setArtifactRefs('');
         setEvidenceUrl('');
         setEvidenceTitle('');
         setLimitations('');
@@ -182,7 +209,10 @@ export function CandidateContributionPanel({
         </div>
         <div className="method-actions">
           <a href={payloadPath} className="record-link" target="_blank" rel="noreferrer">
-            Open payload
+            Check out record
+          </a>
+          <a href={evidenceBundlePath} className="record-link" target="_blank" rel="noreferrer">
+            Download evidence bundle
           </a>
           <a href={templateUrl} className="record-link" target="_blank" rel="noreferrer">
             Open template
@@ -242,6 +272,13 @@ export function CandidateContributionPanel({
               <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Your name or group" />
             </label>
             <label>
+              <span>Handle</span>
+              <input value={handle} onChange={(event) => setHandle(event.target.value)} placeholder="@handle, ORCID, or lab" />
+            </label>
+          </div>
+
+          <div className="contribution-form-grid two">
+            <label>
               <span>Contact</span>
               <input
                 value={contact}
@@ -276,6 +313,43 @@ export function CandidateContributionPanel({
               rows={3}
             />
           </label>
+          <label>
+            <span>Targeted claim or section</span>
+            <input
+              value={targetedSection}
+              onChange={(event) => setTargetedSection(event.target.value)}
+              placeholder="Example: rationale paragraph, C12 citation, MD setup, risk note"
+            />
+          </label>
+          <label>
+            <span>Method notes</span>
+            <textarea
+              value={methodNotes}
+              onChange={(event) => setMethodNotes(event.target.value)}
+              placeholder="How did you produce or evaluate this contribution?"
+              required
+              rows={3}
+            />
+          </label>
+
+          <div className="contribution-form-grid two">
+            <label>
+              <span>Evidence refs</span>
+              <input
+                value={evidenceRefs}
+                onChange={(event) => setEvidenceRefs(event.target.value)}
+                placeholder="C1, C20, chunk IDs, DOI refs"
+              />
+            </label>
+            <label>
+              <span>Artifact refs</span>
+              <input
+                value={artifactRefs}
+                onChange={(event) => setArtifactRefs(event.target.value)}
+                placeholder="CID, hash, URL, run ID"
+              />
+            </label>
+          </div>
 
           <div className="contribution-form-grid two">
             <label>
@@ -308,6 +382,12 @@ export function CandidateContributionPanel({
               <>
                 <strong>Queued: {result.contribution_id}</strong>
                 <span>{result.status}</span>
+                {result.contribution_content_hash && <code>{result.contribution_content_hash.slice(0, 16)}</code>}
+                {result.status_url && (
+                  <a href={result.status_url} target="_blank" rel="noreferrer">
+                    Track contribution
+                  </a>
+                )}
               </>
             ) : (
               <>

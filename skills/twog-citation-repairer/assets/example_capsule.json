@@ -1,0 +1,26 @@
+{
+  "candidate_id": "twog-candidate-447eb8089965",
+  "work_packet_id": "abf7301e-8cad-5f1f-9f37-697c1594674b",
+  "capsule_type": "citation_repair",
+  "title": "Replaced second-hand citation C4 with primary source",
+  "analysis_summary": "Citation C4 in the candidate rationale points at a 2022 review that itself cites a 2018 paper for the load-bearing claim. Read the 2018 paper end-to-end; its Methods section and Table 2 do support the sentence in the candidate, but the candidate currently cites the review rather than the primary source. Proposing the swap so the trail is one hop shorter and verifiable from the abstract alone.",
+  "findings": "Replacement DOI: 10.1038/s41586-2018-primary-demo. Original review kept as secondary citation for context. Both DOIs resolve via doi.org as of submission.",
+  "limitations": "Did not check whether the 2018 primary source has since been retracted or expressed-concern; PubMed shows no retraction notice but the check was abstract-only.",
+  "method_refs": ["doi.org resolver", "europepmc query API", "citation-management v1"],
+  "output_refs": [],
+  "artifact_manifest": [
+    {
+      "label": "primary_source_methods_pdf",
+      "content_hash": "sha256:replace-with-real-hash",
+      "url": "https://example.org/primary-source-methods.pdf"
+    }
+  ],
+  "requested_review_route": "operator_review",
+  "contributor": {
+    "kind": "human",
+    "name": "Saanvi",
+    "handle": "@your-handle",
+    "affiliation": "AIIMS Delhi · postdoc",
+    "contact": "you@example.com"
+  }
+}

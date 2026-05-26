@@ -1,0 +1,20 @@
+{
+  "candidate_id": "twog-candidate-447eb8089965",
+  "work_packet_id": "cc7f9eee-6fa0-5b10-8332-c33f5002e569",
+  "capsule_type": "claim_critique",
+  "title": "Headline claim holds but at lower confidence",
+  "analysis_summary": "Re-read the strongest claim against the cited evidence and adjacent literature. The effect size in the source paper is plausible but the confidence interval is wide and the replication evidence is single-lab. The candidate currently treats this as strong-confidence; the evidence supports moderate-confidence at best. No negative-control reported in the source.",
+  "findings": "Claim stands but at lower confidence. Recommending demotion from strong to moderate. The candidate's downstream priority should not change, but the rationale section should be updated to reflect the wider CI.",
+  "limitations": "Adjacent-literature scan was limited to the last 3 years on PubMed; older relevant work may exist. The single-lab observation may be a reporting artifact rather than a true replication gap.",
+  "method_refs": ["source manuscript review", "adjacent-literature scan", "scientific-critical-thinking v1", "peer-review v1"],
+  "output_refs": [],
+  "artifact_manifest": [],
+  "requested_review_route": "operator_review",
+  "contributor": {
+    "kind": "human",
+    "name": "Akira",
+    "handle": "@your-handle",
+    "affiliation": "RIKEN · senior researcher",
+    "contact": "you@example.com"
+  }
+}

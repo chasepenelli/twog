@@ -1,18 +1,38 @@
 import { Pool } from 'pg';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { PublicCandidateDetail } from '@/lib/public-candidates';
 import { publicCandidatePayloadPath } from '@/lib/public-candidates';
 
-const CONTRIBUTION_TYPES = [
+export const CONTRIBUTION_TYPES = [
+  'evidence_addition',
+  'citation_repair',
+  'claim_critique',
+  'replication_result',
+  'compute_artifact',
+  'omics_note',
+  'validation_proposal',
+  'safety_or_translation_note',
+  'candidate_demotion_case',
+] as const;
+
+const LEGACY_CONTRIBUTION_TYPE_ALIASES: Record<string, ContributionType> = {
+  evidence: 'evidence_addition',
+  critique: 'claim_critique',
+  replication: 'replication_result',
+  artifact: 'compute_artifact',
+  compute_result: 'compute_artifact',
+};
+
+const DATABASE_CONTRIBUTION_TYPES = [
+  ...CONTRIBUTION_TYPES,
   'evidence',
   'critique',
   'replication',
   'artifact',
-  'validation_proposal',
   'compute_result',
 ] as const;
 
-const RECORD_RELATIONS = [
+export const RECORD_RELATIONS = [
   'supports',
   'challenges',
   'extends',
@@ -21,7 +41,7 @@ const RECORD_RELATIONS = [
   'requests_compute',
 ] as const;
 
-const REQUESTED_ACTIONS = [
+export const REQUESTED_ACTIONS = [
   'evidence_review',
   'citation_repair',
   'validation_packet',
@@ -38,14 +58,19 @@ export interface CandidateContributionPacket {
   contribution_type: ContributionType;
   contributor: {
     name?: string;
+    handle?: string;
     affiliation?: string;
     contact: string;
   };
   title: string;
   summary: string;
   claim_or_question: string;
+  targeted_claim_or_section: string;
+  method_notes: string;
   relation_to_current_record: RecordRelation;
+  evidence_refs: string[];
   evidence: Array<Record<string, unknown>>;
+  artifact_refs: string[];
   artifacts: Array<Record<string, unknown>>;
   requested_system_action: RequestedSystemAction;
   conflicts_or_limitations?: string;
@@ -56,12 +81,33 @@ export interface CandidateContributionRecord {
   candidate_id: string;
   display_id?: string | null;
   snapshot_content_hash?: string | null;
+  contribution_content_hash?: string | null;
   status: string;
   contribution_type: string;
   relation_to_current_record: string;
   requested_system_action: string;
   source_payload_url: string;
   created_at: string;
+}
+
+// Public boundary: this shape backs GET /api/contributions/:id/status.
+// It must never include private review notes or operator identity. Operator
+// audit fields live in the Python/Dagster intake report, not here.
+export interface CandidateContributionStatus {
+  contribution_id: string;
+  candidate_id: string;
+  display_id?: string | null;
+  snapshot_content_hash?: string | null;
+  contribution_content_hash?: string | null;
+  source_payload_url: string;
+  status: string;
+  contribution_type: string;
+  relation_to_current_record: string;
+  requested_system_action: string;
+  promoted_queue_id?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+  reviewed_at?: string | null;
 }
 
 declare global {
@@ -115,12 +161,14 @@ function pool(): Pool {
 }
 
 export async function ensureCandidateContributionSchema() {
+  const typeConstraintValues = DATABASE_CONTRIBUTION_TYPES.map((value) => `'${value}'`).join(', ');
   await pool().query(`
     create table if not exists candidate_contribution_intake (
       contribution_id uuid primary key,
       candidate_id text not null,
       display_id text,
       snapshot_content_hash text,
+      contribution_content_hash text,
       source_payload_url text not null,
       status text not null default 'queued_for_intake',
       contribution_type text not null,
@@ -148,14 +196,23 @@ export async function ensureCandidateContributionSchema() {
         )),
       constraint candidate_contribution_intake_type_check
         check (contribution_type in (
-          'evidence',
-          'critique',
-          'replication',
-          'artifact',
-          'validation_proposal',
-          'compute_result'
+          ${typeConstraintValues}
         ))
     );
+
+    alter table candidate_contribution_intake
+      add column if not exists contribution_content_hash text;
+
+    update candidate_contribution_intake
+      set contribution_content_hash = concat('legacy-md5:', md5(packet::text))
+      where contribution_content_hash is null;
+
+    alter table candidate_contribution_intake
+      drop constraint if exists candidate_contribution_intake_type_check;
+
+    alter table candidate_contribution_intake
+      add constraint candidate_contribution_intake_type_check
+      check (contribution_type in (${typeConstraintValues}));
 
     create index if not exists candidate_contribution_intake_candidate_created_idx
       on candidate_contribution_intake (candidate_id, created_at desc);
@@ -165,6 +222,9 @@ export async function ensureCandidateContributionSchema() {
 
     create index if not exists candidate_contribution_intake_action_created_idx
       on candidate_contribution_intake (requested_system_action, created_at desc);
+
+    create index if not exists candidate_contribution_intake_hash_idx
+      on candidate_contribution_intake (contribution_content_hash);
   `);
 }
 
@@ -185,8 +245,25 @@ function asArrayOfObjects(value: unknown, limit: number): Array<Record<string, u
   >;
 }
 
+function asArrayOfText(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, limit).filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+}
+
 function pickAllowed<T extends readonly string[]>(value: string, allowed: T): T[number] | undefined {
   return (allowed as readonly string[]).includes(value) ? (value as T[number]) : undefined;
+}
+
+function normalizeContributionType(value: string): ContributionType | undefined {
+  return pickAllowed(value, CONTRIBUTION_TYPES) ?? LEGACY_CONTRIBUTION_TYPE_ALIASES[value];
+}
+
+function packetContentHash(packet: CandidateContributionPacket): string {
+  return createHash('sha256').update(JSON.stringify(packet)).digest('hex');
+}
+
+export function contributionStatusPath(contributionId: string): string {
+  return `/api/contributions/${encodeURIComponent(contributionId)}/status`;
 }
 
 export function normalizeCandidateContributionPacket(body: unknown): CandidateContributionPacket {
@@ -195,12 +272,15 @@ export function normalizeCandidateContributionPacket(body: unknown): CandidateCo
   const contributor = asObject(source.contributor);
   const errors: string[] = [];
 
-  const contributionType = pickAllowed(asText(source.contribution_type), CONTRIBUTION_TYPES);
+  const contributionType = normalizeContributionType(asText(source.contribution_type));
   const relation = pickAllowed(asText(source.relation_to_current_record), RECORD_RELATIONS);
   const requestedAction = pickAllowed(asText(source.requested_system_action), REQUESTED_ACTIONS);
   const title = asText(source.title);
   const summary = asText(source.summary);
   const claimOrQuestion = asText(source.claim_or_question);
+  const targetedClaimOrSection =
+    asText(source.targeted_claim_or_section) || asText(source.targeted_section) || claimOrQuestion;
+  const methodNotes = asText(source.method_notes);
   const contact = asText(contributor.contact);
 
   if (!contributionType) errors.push(`contribution_type must be one of: ${CONTRIBUTION_TYPES.join(', ')}`);
@@ -209,6 +289,8 @@ export function normalizeCandidateContributionPacket(body: unknown): CandidateCo
   if (title.length < 6) errors.push('title must be at least 6 characters.');
   if (summary.length < 20) errors.push('summary must be at least 20 characters.');
   if (claimOrQuestion.length < 12) errors.push('claim_or_question must be at least 12 characters.');
+  if (targetedClaimOrSection.length < 6) errors.push('targeted_claim_or_section is required.');
+  if (methodNotes.length < 6) errors.push('method_notes is required.');
   if (contact.length < 6) errors.push('contributor.contact is required for follow-up.');
 
   if (errors.length > 0 || !contributionType || !relation || !requestedAction) {
@@ -224,14 +306,19 @@ export function normalizeCandidateContributionPacket(body: unknown): CandidateCo
     contribution_type: contributionType,
     contributor: {
       name: asText(contributor.name) || undefined,
+      handle: asText(contributor.handle) || undefined,
       affiliation: asText(contributor.affiliation) || undefined,
       contact,
     },
     title,
     summary,
     claim_or_question: claimOrQuestion,
+    targeted_claim_or_section: targetedClaimOrSection,
+    method_notes: methodNotes,
     relation_to_current_record: relation,
+    evidence_refs: asArrayOfText(source.evidence_refs, 50),
     evidence: asArrayOfObjects(source.evidence, 25),
+    artifact_refs: asArrayOfText(source.artifact_refs, 50),
     artifacts: asArrayOfObjects(source.artifacts, 25),
     requested_system_action: requestedAction,
     conflicts_or_limitations: asText(source.conflicts_or_limitations) || undefined,
@@ -248,6 +335,7 @@ export async function createCandidateContribution(
   const contributionId = randomUUID();
   const sourcePayloadUrl = publicCandidatePayloadPath(record.candidate_id);
   const snapshotContentHash = record.content_hash ?? candidate.latest_snapshot?.content_hash ?? null;
+  const contributionContentHash = packetContentHash(packet);
 
   const result = await pool().query<CandidateContributionRecord>(
     `
@@ -256,6 +344,7 @@ export async function createCandidateContribution(
         candidate_id,
         display_id,
         snapshot_content_hash,
+        contribution_content_hash,
         source_payload_url,
         contribution_type,
         relation_to_current_record,
@@ -265,12 +354,13 @@ export async function createCandidateContribution(
         artifacts,
         packet
       )
-      values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb, $12::jsonb)
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb)
       returning
         contribution_id,
         candidate_id,
         display_id,
         snapshot_content_hash,
+        contribution_content_hash,
         status,
         contribution_type,
         relation_to_current_record,
@@ -283,6 +373,7 @@ export async function createCandidateContribution(
       record.candidate_id,
       record.display_id ?? null,
       snapshotContentHash,
+      contributionContentHash,
       sourcePayloadUrl,
       packet.contribution_type,
       packet.relation_to_current_record,
@@ -295,4 +386,37 @@ export async function createCandidateContribution(
   );
 
   return result.rows[0];
+}
+
+export async function getCandidateContributionStatus(contributionId: string): Promise<CandidateContributionStatus | null> {
+  await ensureCandidateContributionSchema();
+
+  // Public boundary: do not SELECT review_notes here. Operator notes are
+  // intentionally unreachable from any public-facing code path so the route
+  // handler cannot accidentally leak them via a future refactor.
+  const result = await pool().query<CandidateContributionStatus>(
+    `
+      select
+        contribution_id,
+        candidate_id,
+        display_id,
+        snapshot_content_hash,
+        contribution_content_hash,
+        source_payload_url,
+        status,
+        contribution_type,
+        relation_to_current_record,
+        requested_system_action,
+        promoted_queue_id,
+        created_at,
+        updated_at,
+        reviewed_at
+      from candidate_contribution_intake
+      where contribution_id::text = $1
+      limit 1
+    `,
+    [contributionId]
+  );
+
+  return result.rows[0] ?? null;
 }

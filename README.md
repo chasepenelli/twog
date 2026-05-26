@@ -8,6 +8,30 @@ The goal is not to claim that AI can replace scientific review. The goal is to m
 
 Live site: [twog.bio](https://twog.bio)
 
+## Reviewer Brief
+
+If you are trying to understand the state of TWOG quickly: this repo is both the public site and the research infrastructure behind it. The public layer shows inspectable candidate records. The research layer builds those records from typed source evidence, agent reviews, validation packets, and gated compute jobs.
+
+The system is organized around one operating principle:
+
+> Evidence comes in deterministically. Agents argue with it. Operators decide what becomes a durable record.
+
+Current working surface:
+
+- **Public proof records**: candidate pages, evidence bundles, method references, content hashes, and contribution receipts.
+- **Research operating system**: Dagster assets/jobs, typed Python contracts, SQLite/local and Neon/Postgres-hosted stores.
+- **Agent chamber**: OpenRouter-backed synthesis, critique, therapy committee, research-program, omics-review, and performance-review lanes.
+- **Validation bridge**: therapy ideas can become validation packets, which remain recommend-only until explicitly approved.
+- **Compute lane**: RunPod/Docker worker foundation for approval-first MD smoke tests and artifact-led diagnostics.
+- **Proof Network MVP**: external readers can check out a candidate payload, do structured outside work, check it back in, and track intake status without mutating public science or triggering compute.
+
+What is not claimed:
+
+- TWOG does not certify safety, efficacy, dosing, or clinical readiness.
+- Public submissions do not mutate candidate pages.
+- GPU jobs are not public-triggered.
+- LLMs are not the evidence store.
+
 ## The Short Version
 
 TWOG is an AI-assisted research operating system for comparative oncology.
@@ -40,7 +64,9 @@ That audit trail is the product.
 
 - Public website at [twog.bio](https://twog.bio).
 - Public candidate pages with machine-readable JSON payloads.
+- Public-safe evidence bundles for candidate checkout and outside review.
 - Candidate checkout/check-in flow for structured outside critique.
+- Contribution status receipts for tracking submitted work through intake.
 - Neon/Postgres-backed contribution intake.
 - Dagster-readable intake and triage jobs.
 - Local SQLite and hosted Postgres storage adapters.
@@ -164,6 +190,10 @@ Key routes:
 /methods/citation-dedupe-v1                Citation dedupe method
 /api/public-candidates                     Public candidate payload index
 /api/public-candidates/{candidate_id}      One public candidate payload
+/api/public-candidates/{candidate_id}/evidence-bundle
+/api/public-candidates/{candidate_id}/contribution-template
+/api/public-candidates/{candidate_id}/contributions
+/api/contributions/{contribution_id}/status
 ```
 
 The readable page is for humans. The JSON payload is for researchers, reviewers, and other tools.

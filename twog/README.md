@@ -1,14 +1,16 @@
 # TWOG Public Site
 
-This is the public-facing Next.js app for TWOG. It presents the mission, public candidate records, method pages, and the first public contribution-intake surface.
+This is the public-facing Next.js app for TWOG. It presents the mission, public candidate records, method pages, and the first public proof/check-in surface.
 
 ## What This App Does
 
 - Renders the mission-first homepage at `/`.
 - Publishes static candidate pages at `/candidates`.
 - Exposes machine-readable candidate payloads under `/api/public-candidates`.
+- Exposes public-safe evidence bundles for candidate checkout.
 - Documents candidate record methodology under `/methods/candidate-record-v1`.
 - Accepts structured public contribution packets into Neon/Postgres when storage is configured.
+- Returns contribution receipts and public status URLs.
 - Keeps public submissions behind an operator-reviewed intake queue instead of mutating candidate pages directly.
 
 ## Core Routes
@@ -20,8 +22,10 @@ This is the public-facing Next.js app for TWOG. It presents the mission, public 
 /methods/candidate-record-v1                Candidate record method
 /api/public-candidates                      Public candidate payload index
 /api/public-candidates/{candidate_id}        One public candidate payload
+/api/public-candidates/{candidate_id}/evidence-bundle
 /api/public-candidates/{candidate_id}/contribution-template
 /api/public-candidates/{candidate_id}/contributions
+/api/contributions/{contribution_id}/status
 ```
 
 ## Data Strategy
@@ -88,10 +92,11 @@ The public candidate pages build without live database or model credentials. Opt
 The intended public loop is:
 
 1. Open a candidate page.
-2. Open the JSON payload for the exact public snapshot.
-3. Do outside work against that snapshot: critique, citation repair, replication, artifact generation, validation design, or compute review.
+2. Open the JSON payload and evidence bundle for the exact public snapshot.
+3. Do outside work against that snapshot: evidence addition, citation repair, claim critique, replication, omics note, artifact generation, validation proposal, safety/translation note, or demotion case.
 4. Submit a contribution packet through the page form or `POST /api/public-candidates/{candidate_id}/contributions`.
-5. TWOG reviews the packet in the Command Center and explicitly routes it to evidence review, validation planning, compute review, request-more-information, rejection, or archive.
+5. Receive a contribution receipt with a status URL.
+6. TWOG reviews the packet in the Command Center and explicitly routes it to evidence review, validation planning, compute review, request-more-information, rejection, or archive.
 
 The public app writes intake records only. Operator triage lives in the Python/Dagster command layer.
 

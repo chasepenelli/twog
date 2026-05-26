@@ -5,6 +5,7 @@ import {
   type LiteratureRecord,
   type PublicCandidateDetail,
 } from '@/lib/public-candidates';
+import { CONTRIBUTION_TYPES, REQUESTED_ACTIONS } from '@/lib/candidate-contributions';
 
 function topLevelComputeJobIds(candidate: PublicCandidateDetail): string[] {
   const snapshot = candidate.latest_snapshot as
@@ -102,8 +103,11 @@ export function buildPublicEvidenceBundle(candidate: PublicCandidateDetail) {
       evidence_bundle_url: publicCandidateEvidenceBundlePath(record.candidate_id),
       contribution_template_url: `/api/public-candidates/${record.candidate_id}/contribution-template`,
       contribution_submission_url: `/api/public-candidates/${record.candidate_id}/contributions`,
+      contribution_status_url_template: '/api/contributions/{contribution_id}/status',
       intended_use:
         'Use this bundle to inspect the record, cite source refs, reproduce public claims, attach outside evidence, or submit validation/compute work back to TWOG intake.',
+      review_boundary:
+        'Checking in work creates an intake packet only. It cannot mutate the public record, queue validation, or trigger GPU compute without TWOG review.',
     },
     claim_packet: {
       rationale: payload?.rationale ?? {},
@@ -117,6 +121,14 @@ export function buildPublicEvidenceBundle(candidate: PublicCandidateDetail) {
       artifacts: payload?.artifacts ?? [],
       note:
         'Artifacts are listed when the candidate has public-safe files such as poses, plots, notebooks, trajectories, or method outputs.',
+    },
+    open_questions: {
+      next_experiments: payload?.evidence?.next_experiments ?? [],
+      risks: payload?.evidence?.risks ?? record.risk_flags ?? [],
+      blockers: [],
+      limitations: [],
+      note:
+        'These are the safest public work targets: strengthen a claim, repair a citation, reproduce an artifact, or explain why the record should be demoted.',
     },
     compute_manifest: {
       status: computeJobIds.length > 0 ? 'compute_records_attached' : 'no_public_compute_runs_yet',
@@ -161,8 +173,19 @@ export function buildPublicEvidenceBundle(candidate: PublicCandidateDetail) {
       },
     },
     contribution_packet_requirements: {
-      accepted_types: ['evidence', 'critique', 'replication', 'artifact', 'validation_proposal', 'compute_result'],
-      compute_result_minimum_fields: [
+      accepted_types: CONTRIBUTION_TYPES,
+      requested_actions: REQUESTED_ACTIONS,
+      required_receipt_fields: [
+        'content hash',
+        'contributor identity',
+        'targeted claim or section',
+        'method notes',
+        'evidence refs',
+        'artifact refs',
+        'conflicts or limitations',
+        'requested action',
+      ],
+      compute_artifact_minimum_fields: [
         'method_or_tool',
         'input_snapshot_content_hash',
         'input_files_or_urls',

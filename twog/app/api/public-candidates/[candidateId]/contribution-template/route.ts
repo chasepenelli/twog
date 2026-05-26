@@ -9,6 +9,9 @@ import {
   CANDIDATE_CONTRIBUTIONS_PAUSED,
   CANDIDATE_CONTRIBUTIONS_PAUSED_MESSAGE,
 } from '@/lib/public-contribution-status';
+import { CONTRIBUTION_TYPES, RECORD_RELATIONS, REQUESTED_ACTIONS } from '@/lib/candidate-contributions';
+
+export const runtime = 'nodejs';
 
 export async function GET(
   _request: Request,
@@ -43,8 +46,16 @@ export async function GET(
       candidate_payload_url: publicCandidatePayloadPath(record.candidate_id),
       evidence_bundle_url: publicCandidateEvidenceBundlePath(record.candidate_id),
       contribution_submission_url: `/api/public-candidates/${record.candidate_id}/contributions`,
+      contribution_status_url_template: '/api/contributions/{contribution_id}/status',
       snapshot_content_hash: contentHash,
       snapshot_short_hash: shortHash(contentHash),
+      proof_network_loop: [
+        'Check out the candidate payload and evidence bundle.',
+        'Do outside work against the cited snapshot hash.',
+        'Check in a structured contribution packet with evidence, methods, artifacts, limitations, and requested action.',
+        'TWOG reviews the packet through intake before any candidate record, validation queue, or compute lane changes.',
+        'Accepted work can be attributed later in the public decision history.',
+      ],
       check_in_status: {
         live_submission_api: CANDIDATE_CONTRIBUTIONS_PAUSED
           ? 'paused'
@@ -55,20 +66,24 @@ export async function GET(
             : 'POST the completed contribution_packet JSON to contribution_submission_url. Email poppa@bradyandgraffiti.com if the storage endpoint is not configured.',
         intended_queue:
           'candidate_contribution_intake -> provenance review -> citation repair/dedupe -> validation or compute queue',
+        boundary:
+          'Public submissions are intake packets only. They do not mutate candidate records, dispatch validation, or start GPU compute.',
       },
       contribution_packet: {
-        contribution_type:
-          'evidence | critique | replication | artifact | validation_proposal | compute_result',
+        contribution_type: CONTRIBUTION_TYPES.join(' | '),
         contributor: {
           name: '',
+          handle: '',
           affiliation: '',
           contact: '',
         },
         title: '',
         summary: '',
         claim_or_question: '',
-        relation_to_current_record:
-          'supports | challenges | extends | corrects | requests_validation | requests_compute',
+        targeted_claim_or_section: '',
+        method_notes: '',
+        relation_to_current_record: RECORD_RELATIONS.join(' | '),
+        evidence_refs: [],
         evidence: [
           {
             title: '',
@@ -81,6 +96,7 @@ export async function GET(
             notes: '',
           },
         ],
+        artifact_refs: [],
         artifacts: [
           {
             label: '',
@@ -93,8 +109,7 @@ export async function GET(
             notes: '',
           },
         ],
-        requested_system_action:
-          'evidence_review | citation_repair | validation_packet | omics_readout | docking_or_md_review | no_action',
+        requested_system_action: REQUESTED_ACTIONS.join(' | '),
         conflicts_or_limitations: '',
       },
     },

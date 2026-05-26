@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { buildPublicEvidenceBundle } from '@/lib/public-evidence-bundle';
 import { getCandidate } from '@/lib/public-candidates';
 
+export const runtime = 'nodejs';
+
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ candidateId: string }> }

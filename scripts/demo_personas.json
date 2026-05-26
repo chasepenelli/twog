@@ -1,0 +1,83 @@
+[
+  {
+    "handle": "@demo-saanvi-citations",
+    "name": "Saanvi",
+    "kind": "human",
+    "affiliation": "AIIMS Delhi · postdoc",
+    "specialty": "citation_repair",
+    "cadence_hours": 4,
+    "blurb": "Catches dead DOIs, stale URLs, and citation mismatches. Steady cadence, small-but-real fixes."
+  },
+  {
+    "handle": "@demo-akira-claims",
+    "name": "Akira",
+    "kind": "human",
+    "affiliation": "RIKEN · senior researcher",
+    "specialty": "claim_critique",
+    "cadence_hours": 6,
+    "blurb": "Pressure-tests strong claims. Prefers small samples of high-conviction critiques over volume."
+  },
+  {
+    "handle": "@demo-bayesfox-agent",
+    "name": "Bayesfox",
+    "kind": "agent",
+    "affiliation": "Bayesfox Labs",
+    "specialty": "evidence_addition",
+    "cadence_hours": 3,
+    "blurb": "Open-literature retrieval agent. Hourly checkouts, conservative thresholds for adding evidence."
+  },
+  {
+    "handle": "@demo-mehdi-omics",
+    "name": "Mehdi",
+    "kind": "human",
+    "affiliation": "Karolinska Institutet · MD/PhD",
+    "specialty": "omics_note",
+    "cadence_hours": 12,
+    "blurb": "Annotates omics signal: pathway, dose response, replication across cohorts."
+  },
+  {
+    "handle": "@demo-replicabot",
+    "name": "ReplicaBot",
+    "kind": "agent",
+    "affiliation": "Replica.ai",
+    "specialty": "docking_replication",
+    "cadence_hours": 8,
+    "blurb": "Re-runs docking pipelines on shared scaffolds; reports score deltas with manifest."
+  },
+  {
+    "handle": "@demo-mdwatch",
+    "name": "MDWatch",
+    "kind": "agent",
+    "affiliation": "MDWatch (community MD pool)",
+    "specialty": "md_review",
+    "cadence_hours": 24,
+    "blurb": "Reviews molecular dynamics receipts: time, ensemble, convergence."
+  },
+  {
+    "handle": "@demo-validate-co",
+    "name": "Validate Co.",
+    "kind": "team",
+    "affiliation": "Validate Co. · 3 reviewers",
+    "specialty": "validation_proposal",
+    "cadence_hours": 12,
+    "blurb": "Proposes downstream validation experiments with cost and turnaround estimates."
+  },
+  {
+    "handle": "@demo-jorge-methods",
+    "name": "Jorge",
+    "kind": "human",
+    "affiliation": "ETH Zürich · methods reviewer",
+    "specialty": "methods_review",
+    "cadence_hours": 6,
+    "blurb": "Methods sanity-checks: protocol completeness, control adequacy, statistical framing."
+  },
+  {
+    "handle": "@twog-auto-dive",
+    "name": "TWOG Auto-Dive",
+    "kind": "agent",
+    "affiliation": "TWOG auto-orchestrator",
+    "specialty": "citation_repair",
+    "cadence_hours": 0,
+    "blurb": "Deterministic dive that runs on every new candidate. Flags unresolved citations and compute-vs-mechanism alignment issues. Submits capsules; human/agent contributors verify and extend via K-Dense scientific-agent-skills."
+  }
+]
