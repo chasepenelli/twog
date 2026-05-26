@@ -125,29 +125,46 @@ def compute_tier(
 ) -> str:
     """Map contributor stats to a named tier.
 
-    Tiers are ordered most-prestigious-first; the function returns the
-    highest tier the contributor qualifies for. The intent is that a
-    contributor's tier should never decrease as they add accepted work,
-    so each rule is monotonic in the inputs.
+    Thresholds are framed in proof-point terms (not raw count) so that
+    quality-weighted rewards translate into tier movement. A contributor
+    who submits five thin capsules (~40 pp each = ~200 pp) lands as
+    Scout; one who submits two load-bearing capsules (~130 pp each = ~260 pp)
+    lands as Record Builder if they spanned two candidates. This rewards
+    impact over volume.
+
+    Each rule is monotonic in the inputs: more pp / more accepted /
+    more candidates can only move a contributor up, never down.
     """
 
     positive_total = accepted_count + routed_count
     has_replication = any(capsule_type_counts.get(t, 0) > 0 for t in _REPLICATION_TYPES)
     has_validation = any(capsule_type_counts.get(t, 0) > 0 for t in _VALIDATION_TYPES)
     has_citation = any(capsule_type_counts.get(t, 0) > 0 for t in _CITATION_TYPES)
-    if positive_total >= 20 and proof_points >= 1500:
+    # Proof Partner: requires both volume AND meaningful pp accumulation
+    # AND breadth (5+ candidates touched). This is the top of the ladder.
+    if positive_total >= 20 and proof_points >= 2000 and distinct_candidates >= 5:
         return "proof_partner"
-    if positive_total >= 10:
+    # Trusted Reviewer: sustained quality contribution.
+    if proof_points >= 1000:
         return "trusted_reviewer"
-    if has_validation and positive_total >= 2:
+    # Validation Contributor: accepted validation_proposal + pp floor
+    # ensures the validation_proposal wasn't a flyweight contribution.
+    if has_validation and proof_points >= 700:
         return "validation_contributor"
-    if has_replication and positive_total >= 2:
+    # Replication Contributor: accepted docking_replication or md_review
+    # with enough pp to mean it was substantive, not a token submission.
+    if has_replication and proof_points >= 700:
         return "replication_contributor"
-    if positive_total >= 5 and distinct_candidates >= 2:
+    # Record Builder: meaningful pp across multiple candidates.
+    if proof_points >= 500 and distinct_candidates >= 2:
         return "record_builder"
-    if has_citation and positive_total >= 3:
+    # Citation Repairer: accepted citation_repair + enough pp to show
+    # the repairs were substantive (not 4 weak guesses at ~50 pp each).
+    if has_citation and proof_points >= 200:
         return "citation_repairer"
-    if positive_total >= 1:
+    # Scout: first meaningful contribution. The pp floor prevents a
+    # single near-zero-rubric capsule from elevating the contributor.
+    if proof_points >= 50:
         return "scout"
     return "observer"
 

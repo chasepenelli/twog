@@ -345,3 +345,60 @@
     margin-left: 0;
   }
 }
+
+/* Reviewer rubric — horizontal bars per dimension. Quality breakdown
+ * surfaces so contributors see why their capsule earned its pp.
+ */
+.reviewerHint {
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+  margin-top: 0.2rem;
+}
+
+.rubricList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.55rem;
+  font-family: 'IBM Plex Sans', sans-serif;
+}
+
+.rubricRow {
+  display: grid;
+  grid-template-columns: 11rem 1fr 3.5rem;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.92rem;
+}
+
+.rubricLabel {
+  color: var(--ink);
+}
+
+.rubricBarOuter {
+  background: var(--ink-faint, #ece9df);
+  height: 0.55rem;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.rubricBarInner {
+  background: var(--ink);
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+.rubricValue {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.85rem;
+  text-align: right;
+  color: var(--ink);
+}
+
+@media (max-width: 640px) {
+  .rubricRow {
+    grid-template-columns: 8rem 1fr 3rem;
+    font-size: 0.85rem;
+  }
+}

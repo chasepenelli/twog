@@ -970,8 +970,11 @@ def record_proof_capsule_review(
 # call that holds up) still earn positive signal — what we reward is the
 # *work being accepted*, not the conclusion of the work.
 
-# Verdict → primary reward score. The score becomes dimension_scores["overall"]
-# and feeds the existing reward report ranking.
+# Verdict → primary reward score. Used as a fallback when a review has
+# no rubric dimensions populated (legacy reviews written before the
+# weighted-rubric path landed). New reviews are scored via
+# compute_capsule_reward_from_rubric, which differentiates a load-bearing
+# finding from a thin one by weighting the seven rubric dimensions.
 PROOF_CAPSULE_VERDICT_REWARD_SCORES: dict[ProofCapsuleReviewVerdict, float] = {
     "accepted": 1.0,
     "routed_to_validation": 0.9,
@@ -980,6 +983,76 @@ PROOF_CAPSULE_VERDICT_REWARD_SCORES: dict[ProofCapsuleReviewVerdict, float] = {
     "rejected": 0.0,
     "archived": 0.3,
 }
+
+# Verdict gate multiplier for the rubric-weighted reward. Accepted gets
+# full weight, routed gets a small haircut, needs_changes/rejected get
+# zero (no proof points for unaccepted work).
+_PROOF_CAPSULE_VERDICT_MULTIPLIER: dict[ProofCapsuleReviewVerdict, float] = {
+    "accepted": 1.0,
+    "routed_to_validation": 0.9,
+    "routed_to_compute_review": 0.9,
+    "needs_changes": 0.0,
+    "rejected": 0.0,
+    "archived": 0.3,
+}
+
+# Per-rubric weights for the weighted-sum reward. Sum to 1.0 so an
+# all-1.0 capsule on an accepted verdict yields a 100 pp reward
+# (matching the historical flat reward) — but a capsule that scores
+# 0.5 across the board only earns 50 pp, and a high-quality one with
+# strong scientific_usefulness + provenance + actionability can earn
+# more than the legacy flat 100 pp.
+_PROOF_CAPSULE_RUBRIC_WEIGHTS: dict[str, float] = {
+    "scientific_usefulness": 0.25,
+    "provenance_strength": 0.20,
+    "actionability": 0.20,
+    "reproducibility": 0.10,
+    "novelty": 0.10,
+    "downstream_impact": 0.10,
+    "clarity": 0.05,
+}
+
+
+def compute_capsule_reward_from_rubric(
+    review: "ProofCapsuleReviewRecord",
+    verdict: ProofCapsuleReviewVerdict,
+) -> float:
+    """Per-rubric weighted reward, gated by verdict.
+
+    Reads the seven rubric dimensions off the review (each in [0, 1]
+    when present, None otherwise). Returns a score in [0, 1] that
+    feeds the existing dimension_scores["overall"] → compute_proof_points
+    pipeline (which multiplies by 100). When the review has no rubric
+    dimensions populated at all, falls back to the flat
+    PROOF_CAPSULE_VERDICT_REWARD_SCORES to preserve historical reward
+    behavior for legacy reviews.
+    """
+
+    multiplier = _PROOF_CAPSULE_VERDICT_MULTIPLIER.get(verdict, 0.0)
+    if multiplier == 0.0:
+        return 0.0
+
+    weighted_sum = 0.0
+    weight_total = 0.0
+    for dimension, weight in _PROOF_CAPSULE_RUBRIC_WEIGHTS.items():
+        value = getattr(review, dimension, None)
+        if value is None:
+            continue
+        clamped = max(0.0, min(1.0, float(value)))
+        weighted_sum += weight * clamped
+        weight_total += weight
+
+    # No rubric dims populated at all → fall back to the flat lookup so
+    # legacy reviews keep their historical reward. (Verdict gate is
+    # already baked into the flat lookup.)
+    if weight_total == 0.0:
+        return PROOF_CAPSULE_VERDICT_REWARD_SCORES.get(verdict, 0.0)
+
+    # Renormalize when some dimensions are missing so a review with
+    # only 5 of 7 dims populated still scales to [0, 1] over the
+    # weights that are present.
+    base_score = weighted_sum / weight_total if weight_total > 0 else 0.0
+    return round(base_score * multiplier, 4)
 
 # Map the ProofCapsuleReviewVerdict onto the AgentRunReviewVerdict scheme so
 # the reward ledger and existing report aggregations can reason uniformly.
@@ -1056,7 +1129,11 @@ def reward_event_from_proof_capsule_review(
     review always produces the same reward_event_id (uuid5 over the key).
     """
 
-    score = PROOF_CAPSULE_VERDICT_REWARD_SCORES[review.verdict]
+    # llm_evaluator reviews are advisory and do not award proof points.
+    # They are stored as recommendations for the operator to adopt or
+    # override; sync_reward_events_from_proof_capsule_reviews filters
+    # them out so they never become reward events.
+    score = compute_capsule_reward_from_rubric(review, review.verdict)
     identity_key = f"reward:proof_capsule_review:review:{review.review_id}"
     dimension_scores: dict[str, float] = {"overall": score}
     for dimension in _PROOF_CAPSULE_RUBRIC_DIMENSIONS:
@@ -1236,6 +1313,11 @@ def sync_reward_events_from_proof_capsule_reviews(
     reward_event_ids: list[str] = []
 
     for context in contexts:
+        # llm_evaluator reviews are advisory recommendations, not source-of-truth
+        # verdicts. They never award proof points; the operator's manual review
+        # is what counts. Skip them in the reward-event sync.
+        if str(context.get("reviewer_type") or "").lower() == "llm_evaluator":
+            continue
         try:
             review = _review_record_from_context(context)
             contributor_raw = context.get("contributor")

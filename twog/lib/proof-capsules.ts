@@ -144,6 +144,28 @@ export interface ProofCapsulePublicRecord {
   status_url: string;
 }
 
+// Public view of the latest authoritative review (excludes llm_evaluator
+// rows, which are recommendations). Rubric scores surface so readers can
+// see WHY a capsule earned its proof points; reviewer_id and rationale
+// stay private to the operator console.
+export interface ProofCapsuleLatestReview {
+  reviewer_type: string;
+  verdict: string;
+  reviewed_at: string | null;
+  rubric: {
+    scientific_usefulness: number | null;
+    provenance_strength: number | null;
+    reproducibility: number | null;
+    actionability: number | null;
+    novelty: number | null;
+    clarity: number | null;
+    downstream_impact: number | null;
+  };
+  // Weighted reward score 0-1 computed from the rubric. Surfaced so the
+  // page can show pp earned without re-doing the math client-side.
+  reward_score: number | null;
+}
+
 declare global {
   var twogProofCapsulePool: Pool | undefined;
 }
@@ -709,6 +731,107 @@ export async function getProofCapsule(
     [proofCapsuleId]
   );
   return result.rows[0] ? toPublicRecord(result.rows[0]) : null;
+}
+
+// Per-rubric weights mirror Python proof_capsules.compute_capsule_reward_from_rubric.
+// Surfacing the weighted score on the capsule page so contributors and readers
+// can see why a capsule earned its proof points.
+const RUBRIC_WEIGHTS: Record<string, number> = {
+  scientific_usefulness: 0.25,
+  provenance_strength: 0.20,
+  actionability: 0.20,
+  reproducibility: 0.10,
+  novelty: 0.10,
+  downstream_impact: 0.10,
+  clarity: 0.05,
+};
+
+const VERDICT_MULTIPLIER: Record<string, number> = {
+  accepted: 1.0,
+  routed_to_validation: 0.9,
+  routed_to_compute_review: 0.9,
+  needs_changes: 0.0,
+  rejected: 0.0,
+  archived: 0.3,
+};
+
+function weightedRubricScore(rubric: ProofCapsuleLatestReview['rubric'], verdict: string): number | null {
+  const multiplier = VERDICT_MULTIPLIER[verdict];
+  if (multiplier === undefined) return null;
+  if (multiplier === 0) return 0;
+  let weightedSum = 0;
+  let weightTotal = 0;
+  for (const [dim, weight] of Object.entries(RUBRIC_WEIGHTS)) {
+    const value = rubric[dim as keyof typeof rubric];
+    if (value === null || value === undefined) continue;
+    const clamped = Math.max(0, Math.min(1, value));
+    weightedSum += weight * clamped;
+    weightTotal += weight;
+  }
+  if (weightTotal === 0) return null;
+  return Number(((weightedSum / weightTotal) * multiplier).toFixed(4));
+}
+
+// Latest authoritative review (excludes llm_evaluator recommendations).
+// Returns null when no operator-grade review exists. Sensitive operator
+// fields (reviewer_id, rationale, required_changes) intentionally do NOT
+// surface — only the public-facing rubric breakdown.
+export async function getLatestPublicReview(
+  proofCapsuleId: string
+): Promise<ProofCapsuleLatestReview | null> {
+  await ensureProofCapsuleSchema();
+  const result = await pool().query<{
+    reviewer_type: string;
+    verdict: string;
+    created_at: Date | string | null;
+    scientific_usefulness: string | number | null;
+    provenance_strength: string | number | null;
+    reproducibility: string | number | null;
+    actionability: string | number | null;
+    novelty: string | number | null;
+    clarity: string | number | null;
+    downstream_impact: string | number | null;
+  }>(
+    `
+      select
+        reviewer_type,
+        verdict,
+        created_at,
+        scientific_usefulness,
+        provenance_strength,
+        reproducibility,
+        actionability,
+        novelty,
+        clarity,
+        downstream_impact
+      from proof_capsule_reviews
+      where proof_capsule_id::text = $1
+        and reviewer_type != 'llm_evaluator'
+      order by created_at desc
+      limit 1
+    `,
+    [proofCapsuleId]
+  );
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  const numOrNull = (v: string | number | null): number | null =>
+    v === null || v === undefined ? null : Number(v);
+  const rubric = {
+    scientific_usefulness: numOrNull(row.scientific_usefulness),
+    provenance_strength: numOrNull(row.provenance_strength),
+    reproducibility: numOrNull(row.reproducibility),
+    actionability: numOrNull(row.actionability),
+    novelty: numOrNull(row.novelty),
+    clarity: numOrNull(row.clarity),
+    downstream_impact: numOrNull(row.downstream_impact),
+  };
+  return {
+    reviewer_type: row.reviewer_type,
+    verdict: row.verdict,
+    reviewed_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    rubric,
+    reward_score: weightedRubricScore(rubric, row.verdict),
+  };
 }
 
 export async function listProofCapsulesForCandidate(

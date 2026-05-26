@@ -251,6 +251,11 @@ export default async function LeaderboardPage({ searchParams }: PageProps) {
                         <span>
                           <strong>{entry.candidate_count}</strong> candidates
                         </span>
+                        {entry.median_rubric_score !== null ? (
+                          <span title="Median weighted-rubric quality across accepted capsules">
+                            <strong>{Math.round(entry.median_rubric_score * 100)}</strong>/100 rubric
+                          </span>
+                        ) : null}
                         {entry.primary_specialty ? (
                           <span className="leaderboard-row-specialty">
                             {specialtyLabel(entry.primary_specialty)}

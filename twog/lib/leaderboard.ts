@@ -42,6 +42,11 @@ export interface LeaderboardEntry {
   first_event_at: string | null;
   last_event_at: string | null;
   profile_url: string;
+  // Median weighted-rubric score across this contributor's
+  // operator-grade reviews (llm_evaluator rows excluded). Mirrors the
+  // Python compute_capsule_reward_from_rubric formula. null when no
+  // operator-grade reviews exist yet. Surfaces quality next to volume.
+  median_rubric_score: number | null;
 }
 
 export interface LeaderboardNetworkTotals {
@@ -155,6 +160,7 @@ function asNumber(value: unknown): number {
 async function loadLeaderboardRows(window: LeaderboardWindow): Promise<{
   rewardRows: RawRewardRow[];
   capsuleRows: RawCapsuleRow[];
+  medianRows: Array<{ handle: string; median_score: string | null }>;
 }> {
   const params: unknown[] = [];
   let timeFilter = '';
@@ -181,7 +187,7 @@ async function loadLeaderboardRows(window: LeaderboardWindow): Promise<{
   const rewardResult = await pool().query<RawRewardRow>(rewardSql, params);
 
   if (rewardResult.rows.length === 0) {
-    return { rewardRows: [], capsuleRows: [] };
+    return { rewardRows: [], capsuleRows: [], medianRows: [] };
   }
   const handles = rewardResult.rows.map((row) => row.handle);
   const capsuleResult = await pool().query<RawCapsuleRow>(
@@ -200,7 +206,36 @@ async function loadLeaderboardRows(window: LeaderboardWindow): Promise<{
     `,
     [handles],
   );
-  return { rewardRows: rewardResult.rows, capsuleRows: capsuleResult.rows };
+  // Median weighted-rubric score per contributor, computed inline in
+  // SQL so we don't have to pull every review back to the app. Mirrors
+  // proof_capsules.compute_capsule_reward_from_rubric weights.
+  // llm_evaluator rows are advisory; they don't count toward quality.
+  const medianResult = await pool().query<{ handle: string; median_score: string | null }>(
+    `
+      select
+        (c.contributor ->> 'handle') as handle,
+        percentile_cont(0.5) within group (order by
+          0.25 * coalesce(r.scientific_usefulness, 0) +
+          0.20 * coalesce(r.provenance_strength, 0) +
+          0.20 * coalesce(r.actionability, 0) +
+          0.10 * coalesce(r.reproducibility, 0) +
+          0.10 * coalesce(r.novelty, 0) +
+          0.10 * coalesce(r.downstream_impact, 0) +
+          0.05 * coalesce(r.clarity, 0)
+        ) as median_score
+      from proof_capsule_reviews r
+      join proof_capsules c on c.proof_capsule_id = r.proof_capsule_id
+      where (c.contributor ->> 'handle') = any($1)
+        and r.reviewer_type != 'llm_evaluator'
+      group by handle
+    `,
+    [handles],
+  );
+  return {
+    rewardRows: rewardResult.rows,
+    capsuleRows: capsuleResult.rows,
+    medianRows: medianResult.rows,
+  };
 }
 
 interface ContributorAgg {
@@ -216,12 +251,19 @@ interface ContributorAgg {
   routed_count: number;
   candidate_ids: Set<string>;
   capsule_type_counts: Map<string, number>;
+  median_rubric_score: number | null;
 }
 
 function aggregateLeaderboard(
   rewardRows: RawRewardRow[],
   capsuleRows: RawCapsuleRow[],
+  medianRows: Array<{ handle: string; median_score: string | null }> = [],
 ): ContributorAgg[] {
+  const medianByHandle = new Map<string, number | null>();
+  for (const row of medianRows) {
+    const value = row.median_score === null ? null : Number(row.median_score);
+    medianByHandle.set(row.handle, value);
+  }
   const aggs = new Map<string, ContributorAgg>();
   for (const row of rewardRows) {
     aggs.set(row.handle, {
@@ -237,6 +279,7 @@ function aggregateLeaderboard(
       routed_count: 0,
       candidate_ids: new Set(),
       capsule_type_counts: new Map(),
+      median_rubric_score: medianByHandle.get(row.handle) ?? null,
     });
   }
   for (const row of capsuleRows) {
@@ -263,8 +306,8 @@ export async function getLeaderboard(
   const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 25), 200));
   const risingLimit = Math.max(0, Math.min(Math.trunc(options.risingLimit ?? 5), 25));
 
-  const { rewardRows, capsuleRows } = await loadLeaderboardRows(window);
-  const aggs = aggregateLeaderboard(rewardRows, capsuleRows);
+  const { rewardRows, capsuleRows, medianRows } = await loadLeaderboardRows(window);
+  const aggs = aggregateLeaderboard(rewardRows, capsuleRows, medianRows);
 
   const sortedAggs = aggs.sort((a, b) => {
     if (b.total_score !== a.total_score) return b.total_score - a.total_score;
@@ -305,6 +348,7 @@ export async function getLeaderboard(
       first_event_at: agg.first_event_at,
       last_event_at: agg.last_event_at,
       profile_url: `/contributors/${encodeURIComponent(agg.handle)}`,
+      median_rubric_score: agg.median_rubric_score,
     };
   });
 

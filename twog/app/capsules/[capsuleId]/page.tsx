@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import {
+  getLatestPublicReview,
   getProofCapsule,
   isProofCapsuleStorageConfigured,
 } from '@/lib/proof-capsules';
@@ -67,6 +68,10 @@ export default async function ProofCapsulePage({ params }: PageProps) {
   const candidate = getCandidate(capsule.candidate_id);
   const candidateDisplayId =
     candidate?.candidate.display_id ?? candidate?.candidate.candidate_id ?? capsule.candidate_id;
+
+  // Latest operator-grade review (if any). LLM-evaluator recommendations
+  // are intentionally excluded — they're advisory, not authoritative.
+  const latestReview = await getLatestPublicReview(capsule.proof_capsule_id);
 
   const rawUrl = `/api/proof-capsules/${encodeURIComponent(capsule.proof_capsule_id)}`;
   const verdictTone =
@@ -143,6 +148,54 @@ export default async function ProofCapsulePage({ params }: PageProps) {
           </li>
         </ol>
       </section>
+
+      {latestReview ? (
+        <section className={styles.timelinePanel}>
+          <div className={styles.sectionHeading}>
+            <p className="section-kicker">Reviewer rubric</p>
+            <h2>How this capsule was scored.</h2>
+            <p className={styles.reviewerHint}>
+              {latestReview.reward_score !== null ? (
+                <>
+                  Earned <strong>{Math.round(latestReview.reward_score * 100)} proof points</strong>
+                  {' '}from this review ({formatVerdict(latestReview.verdict)}).
+                </>
+              ) : (
+                <>Reviewed but no rubric scores were recorded.</>
+              )}
+            </p>
+          </div>
+          <ul className={styles.rubricList}>
+            {[
+              ['scientific_usefulness', 'Scientific usefulness'],
+              ['provenance_strength', 'Provenance strength'],
+              ['actionability', 'Actionability'],
+              ['reproducibility', 'Reproducibility'],
+              ['novelty', 'Novelty'],
+              ['downstream_impact', 'Downstream impact'],
+              ['clarity', 'Clarity'],
+            ].map(([key, label]) => {
+              const value = latestReview.rubric[key as keyof typeof latestReview.rubric];
+              const pct = value === null ? 0 : Math.round(value * 100);
+              return (
+                <li key={key} className={styles.rubricRow}>
+                  <span className={styles.rubricLabel}>{label}</span>
+                  <div className={styles.rubricBarOuter}>
+                    <div
+                      className={styles.rubricBarInner}
+                      style={{ width: `${value === null ? 0 : pct}%` }}
+                      aria-label={`${label} ${value === null ? 'not scored' : pct + ' percent'}`}
+                    />
+                  </div>
+                  <span className={styles.rubricValue}>
+                    {value === null ? '—' : value.toFixed(2)}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
 
       <section className={styles.workSection}>
         <div className={styles.sectionHeading}>

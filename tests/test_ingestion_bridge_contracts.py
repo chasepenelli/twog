@@ -23204,8 +23204,13 @@ def test_reward_event_from_proof_capsule_review_carries_rubric_and_capsule_metad
     assert event.candidate_id == "twog-candidate-447eb8089965"
     assert event.task_type == "proof_capsule_review"
     assert event.source_review_id == review.review_id
-    assert event.score == 1.0  # accepted
-    assert event.dimension_scores["overall"] == 1.0
+    # Reward is now the weighted-rubric score, not a flat per-verdict
+    # constant. The default fixture rubric (sci_use=0.9, provenance=0.8,
+    # reproducibility=0.7, actionability=0.85, novelty=0.5, clarity=0.9,
+    # downstream=0.6) yields a weighted sum of 0.78 on an accepted verdict.
+    assert event.score == pytest.approx(0.78, abs=0.001)
+    assert event.dimension_scores["overall"] == pytest.approx(0.78, abs=0.001)
+    # Per-dimension scores still surface for transparency in dimension_scores.
     assert event.dimension_scores["scientific_usefulness"] == 0.9
     assert event.dimension_scores["provenance_strength"] == 0.8
     assert event.dimension_scores["reproducibility"] == 0.7
@@ -23302,7 +23307,10 @@ def test_reward_event_routed_verdicts_count_as_positive_downstream_lane():
         )
         assert event.verdict == "useful", verdict
         assert event.outcome_bucket == "positive_signal", verdict
-        assert event.score == 0.9, verdict
+        # Routed verdicts apply the 0.9× verdict-multiplier on top of the
+        # weighted-rubric base. The default fixture rubric (0.78 base) ×
+        # 0.9 = 0.702.
+        assert event.score == pytest.approx(0.702, abs=0.001), verdict
 
 
 def test_sync_reward_events_from_proof_capsule_reviews_is_idempotent():
@@ -23634,19 +23642,23 @@ def test_compute_tier_record_builder_needs_distinct_candidates():
 
 
 def test_compute_tier_validation_contributor_beats_record_builder():
-    """If a contributor has validation work, the specialty tier wins."""
+    """If a contributor has validation work AND enough pp, the specialty tier wins."""
 
+    # 700 pp matches the new validation_contributor floor — below this the
+    # capsule was too thin to claim the specialty tier.
     tier = contributor_profiles_module.compute_tier(
         accepted_count=5,
         routed_count=0,
         distinct_candidates=3,
         capsule_type_counts={"validation_proposal": 2, "citation_repair": 3},
-        proof_points=500,
+        proof_points=700,
     )
     assert tier == "validation_contributor"
 
 
-def test_compute_tier_trusted_reviewer_at_ten_accepted_total():
+def test_compute_tier_trusted_reviewer_at_one_thousand_pp():
+    """Trusted Reviewer now keyed off proof points, not raw accepted count."""
+
     tier = contributor_profiles_module.compute_tier(
         accepted_count=8,
         routed_count=2,
@@ -23657,24 +23669,39 @@ def test_compute_tier_trusted_reviewer_at_ten_accepted_total():
     assert tier == "trusted_reviewer"
 
 
-def test_compute_tier_proof_partner_requires_volume_and_points():
+def test_compute_tier_proof_partner_requires_volume_points_and_breadth():
+    """Proof Partner requires 20+ positive, 2000+ pp, AND 5+ distinct candidates.
+
+    Quality-weighted scoring means a contributor can pile up 20 thin
+    capsules without reaching the proof_partner pp floor.
+    """
+
     tier = contributor_profiles_module.compute_tier(
         accepted_count=18,
         routed_count=2,
         distinct_candidates=6,
         capsule_type_counts={"citation_repair": 20},
-        proof_points=1800,
+        proof_points=2000,
     )
     assert tier == "proof_partner"
     # Same volume, fewer proof points → drops to trusted_reviewer.
-    fallback = contributor_profiles_module.compute_tier(
+    fallback_pp = contributor_profiles_module.compute_tier(
         accepted_count=18,
         routed_count=2,
         distinct_candidates=6,
         capsule_type_counts={"citation_repair": 20},
-        proof_points=400,
+        proof_points=1200,
     )
-    assert fallback == "trusted_reviewer"
+    assert fallback_pp == "trusted_reviewer"
+    # Enough volume + pp, but only 4 candidates → drops to trusted_reviewer.
+    fallback_breadth = contributor_profiles_module.compute_tier(
+        accepted_count=18,
+        routed_count=2,
+        distinct_candidates=4,
+        capsule_type_counts={"citation_repair": 20},
+        proof_points=2200,
+    )
+    assert fallback_breadth == "trusted_reviewer"
 
 
 def test_compute_proof_points_rounds_to_integer():
@@ -23715,8 +23742,11 @@ def test_build_contributor_profile_filters_by_handle_and_aggregates_scores():
     }
     # The strongest accepted work is the highest-scoring reward event.
     assert profile["strongest_accepted_work"]["score"] == 1.0
-    # Validation specialty + 3 accepted total → validation_contributor tier.
-    assert profile["tier"] == "validation_contributor"
+    # Under quality-weighted tiering, 190 pp does NOT clear the validation
+    # tier floor (700 pp) even with a validation_proposal capsule — the
+    # specialty tier requires substantive proof-point accumulation. A thin
+    # validation_proposal alone keeps the contributor at scout.
+    assert profile["tier"] == "scout"
     assert profile["profile_url"] == "/contributors/@reviewer"
 
 

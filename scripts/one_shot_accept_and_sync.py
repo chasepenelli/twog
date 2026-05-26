@@ -56,12 +56,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reviewer-type", default="operator", help="operator|llm_evaluator|system|external_expert")
     parser.add_argument("--rationale", default="One-shot end-to-end smoke. Operator accepts.")
     parser.add_argument("--confidence", type=float, default=0.85)
-    parser.add_argument("--scientific-usefulness", type=float, default=0.9)
-    parser.add_argument("--provenance-strength", type=float, default=0.8)
+    # Rubric defaults sit in the "moderate accept" zone so casual accepts
+    # don't all land at max. Reward is computed via weighted-rubric in
+    # proof_capsules.compute_capsule_reward_from_rubric. An operator who
+    # wants to award a load-bearing capsule should pass higher per-dim
+    # scores explicitly (e.g. --scientific-usefulness 1.0 --provenance 1.0).
+    parser.add_argument("--scientific-usefulness", type=float, default=0.75)
+    parser.add_argument("--provenance-strength", type=float, default=0.75)
     parser.add_argument("--reproducibility", type=float, default=0.7)
-    parser.add_argument("--actionability", type=float, default=0.85)
+    parser.add_argument("--actionability", type=float, default=0.75)
     parser.add_argument("--novelty", type=float, default=0.5)
-    parser.add_argument("--clarity", type=float, default=0.9)
+    parser.add_argument("--clarity", type=float, default=0.8)
     parser.add_argument("--downstream-impact", type=float, default=0.6)
     return parser.parse_args()
 
