@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -33,6 +34,7 @@ from .contracts import (
     FullTextOpsRequest,
     HypothesisPromotionReportRequest,
     MDExpertAgentReviewRequest,
+    NeonBranchWorkspaceRequest,
     OmicsAccessionHuntRequest,
     OmicsEvidencePacketRequest,
     OmicsFollowupRequest,
@@ -62,6 +64,7 @@ from .contracts import (
     ResearchProgramBoardRequest,
     ResearchProgramEvidenceLoopRequest,
     ResearchProgramReviewRequest,
+    ResearchWorkspaceLibraryRequest,
     RewardEventSyncRequest,
     RewardReportRequest,
     RetrievalSmokeRequest,
@@ -109,6 +112,18 @@ from .source_sets import ALL_API_SOURCE_KEYS, STRUCTURED_SOURCE_KEYS
 from .structured_orchestration import (
     build_structured_source_count_report,
     run_structured_sources_pipeline,
+)
+
+
+WORKSPACE_SKILL_PROFILES = (
+    "core",
+    "literature_and_citation",
+    "database_lookup",
+    "chemistry",
+    "omics",
+    "md_review",
+    "validation_planning",
+    "k_dense_biomed",
 )
 
 
@@ -982,6 +997,89 @@ def main() -> None:
     research_programs.add_argument("--gate-decision", default=None, help="Research program gate decision")
     research_programs.add_argument("--query", default=None, help="Thesis/title search")
     research_programs.add_argument("--limit", type=int, default=50, help="Maximum programs to return")
+
+    research_workspace_neon = subparsers.add_parser(
+        "research-workspace-neon",
+        help="Plan or create a Neon-backed isolated research workspace",
+    )
+    research_workspace_neon.add_argument("--candidate-id", required=True, help="Public candidate or candidate packet ID")
+    research_workspace_neon.add_argument("--work-packet-id", default=None, help="Proof/check-in work packet ID")
+    research_workspace_neon.add_argument(
+        "--project-id",
+        default=None,
+        help="Neon project ID. Defaults to NEON_PROJECT_ID; dry runs can omit it.",
+    )
+    research_workspace_neon.add_argument(
+        "--parent-branch-id",
+        default=None,
+        help="Optional Neon parent branch ID. Defaults to NEON_PARENT_BRANCH_ID.",
+    )
+    research_workspace_neon.add_argument("--parent-branch-name", default=None, help="Optional Neon parent branch name")
+    research_workspace_neon.add_argument("--branch-name", default=None, help="Stable branch name to create or reuse")
+    research_workspace_neon.add_argument("--branch-name-prefix", default="twog-workspace", help="Generated branch prefix")
+    research_workspace_neon.add_argument("--database-name", default="neondb", help="Neon database name")
+    research_workspace_neon.add_argument("--role-name", default="neondb_owner", help="Neon role name")
+    research_workspace_neon.add_argument("--ttl-hours", type=int, default=24, help="Workspace branch TTL")
+    research_workspace_neon.add_argument(
+        "--suspend-timeout-seconds",
+        type=int,
+        default=300,
+        help="Neon compute suspend timeout for created endpoint",
+    )
+    research_workspace_neon.add_argument("--candidate-snapshot-hash", default=None, help="Candidate snapshot content hash")
+    research_workspace_neon.add_argument("--evidence-bundle-hash", default=None, help="Evidence bundle content hash")
+    research_workspace_neon.add_argument("--checkout-manifest-hash", default=None, help="Checkout manifest content hash")
+    research_workspace_neon.add_argument("--git-repo", default=None, help="Checkout repository URL")
+    research_workspace_neon.add_argument("--git-ref", default=None, help="Checkout git ref")
+    research_workspace_neon.add_argument("--git-branch", default=None, help="Checkout branch")
+    research_workspace_neon.add_argument("--artifact-root", default=None, help="Workspace artifact root")
+    research_workspace_neon.add_argument(
+        "--skill-profile",
+        choices=WORKSPACE_SKILL_PROFILES,
+        default="core",
+        help="Installable skill preset for the workspace",
+    )
+    research_workspace_neon.add_argument(
+        "--installed-skill-ref",
+        action="append",
+        default=[],
+        help="Additional skill ref to include; repeatable",
+    )
+    research_workspace_neon.add_argument(
+        "--recommended-source-ref",
+        action="append",
+        default=[],
+        help="Recommended source/data ref for workspace users; repeatable",
+    )
+    research_workspace_neon.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually create/reuse a Neon branch. Omit for dry-run planning.",
+    )
+    research_workspace_neon.add_argument("--no-persist", action="store_true", help="Do not persist the workspace record")
+
+    research_workspaces = subparsers.add_parser(
+        "research-workspaces",
+        help="List persisted research workspaces",
+    )
+    research_workspaces.add_argument("--id", default=None, help="Workspace ID")
+    research_workspaces.add_argument("--candidate-id", default=None, help="Candidate filter")
+    research_workspaces.add_argument("--work-packet-id", default=None, help="Work packet filter")
+    research_workspaces.add_argument("--provider", default=None, help="Workspace provider filter")
+    research_workspaces.add_argument("--status", default=None, help="Single status filter")
+    research_workspaces.add_argument("--status-any", action="append", default=[], help="Allowed status; repeatable")
+    research_workspaces.add_argument(
+        "--skill-profile",
+        choices=WORKSPACE_SKILL_PROFILES,
+        default=None,
+        help="Skill preset filter",
+    )
+    research_workspaces.add_argument(
+        "--active-only",
+        action="store_true",
+        help="Exclude expired workspaces from the library result",
+    )
+    research_workspaces.add_argument("--limit", type=int, default=50, help="Maximum workspaces to return")
 
     research_program_evidence_loop = subparsers.add_parser(
         "research-program-evidence-loop",
@@ -2719,6 +2817,51 @@ def main() -> None:
                     limit=args.limit,
                 )
             ).model_dump(mode="json")
+    elif args.command == "research-workspace-neon":
+        project_id = args.project_id or os.getenv("NEON_PROJECT_ID") or ("" if args.execute else "dry-run-project")
+        parent_branch_id = args.parent_branch_id or os.getenv("NEON_PARENT_BRANCH_ID") or None
+        output = HSAResearchService(repo).provision_neon_research_workspace(
+            NeonBranchWorkspaceRequest(
+                candidate_id=args.candidate_id,
+                work_packet_id=args.work_packet_id,
+                project_id=project_id,
+                parent_branch_id=parent_branch_id,
+                parent_branch_name=args.parent_branch_name,
+                branch_name=args.branch_name,
+                branch_name_prefix=args.branch_name_prefix,
+                database_name=args.database_name,
+                role_name=args.role_name,
+                ttl_hours=args.ttl_hours,
+                suspend_timeout_seconds=args.suspend_timeout_seconds,
+                candidate_snapshot_hash=args.candidate_snapshot_hash,
+                evidence_bundle_hash=args.evidence_bundle_hash,
+                checkout_manifest_hash=args.checkout_manifest_hash,
+                git_repo=args.git_repo,
+                git_ref=args.git_ref,
+                git_branch=args.git_branch,
+                artifact_root=args.artifact_root,
+                skill_profile=args.skill_profile,
+                installed_skill_refs=args.installed_skill_ref,
+                recommended_source_refs=args.recommended_source_ref,
+                dry_run=not args.execute,
+                persist=not args.no_persist,
+                metadata={"cli_command": "research-workspace-neon"},
+            )
+        ).model_dump(mode="json")
+    elif args.command == "research-workspaces":
+        output = HSAResearchService(repo).list_research_workspaces(
+            ResearchWorkspaceLibraryRequest(
+                workspace_id=UUID(args.id) if args.id else None,
+                work_packet_id=args.work_packet_id,
+                candidate_id=args.candidate_id,
+                provider=args.provider,
+                status=args.status,
+                statuses=args.status_any,
+                skill_profile=args.skill_profile,
+                include_expired=not args.active_only,
+                limit=args.limit,
+            )
+        ).model_dump(mode="json")
     elif args.command == "research-program-evidence-loop":
         output = HSAResearchService(repo).run_research_program_evidence_loop(
             ResearchProgramEvidenceLoopRequest(

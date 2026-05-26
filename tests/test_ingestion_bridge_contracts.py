@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
@@ -41,6 +42,8 @@ from hsa_research.ingestion_bridge.contracts import (
     ComputeJobReportRequest,
     ComputeJobReportResult,
     CommitHypothesisRequest,
+    DaytonaWorkspaceRequest,
+    DaytonaWorkspaceResult,
     DoiOpenAccessFollowupQueueRequest,
     DocumentChunk,
     EvidenceRefRepairItem,
@@ -68,6 +71,8 @@ from hsa_research.ingestion_bridge.contracts import (
     MDExpertApprovalRecord,
     MDExpertReviewPacketRecord,
     MDInputPacket,
+    NeonBranchWorkspaceRequest,
+    NeonBranchWorkspaceResult,
     OmicsAccessionHuntRequest,
     OmicsAccessionHuntResult,
     OmicsEvidencePacketRequest,
@@ -142,6 +147,9 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchProgramRecord,
     ResearchProgramReviewRequest,
     ResearchProgramReviewResult,
+    ResearchWorkspaceLibraryRequest,
+    ResearchWorkspaceLibraryResult,
+    ResearchWorkspaceRecord,
     RewardEventRecord,
     RewardEventSyncRequest,
     RewardReportRequest,
@@ -218,6 +226,7 @@ from hsa_research.ingestion_bridge.claim_extractor import LocalRuleClaimExtracto
 from hsa_research.ingestion_bridge.chunker import chunk_text
 from hsa_research.ingestion_bridge.full_text_triage import FullTextTriageAgent
 from hsa_research.ingestion_bridge import agent_performance
+from hsa_research.ingestion_bridge.research_workspaces import plan_daytona_workspace, provision_neon_branch_workspace
 from hsa_research.ingestion_bridge import full_text_ops
 from hsa_research.ingestion_bridge import research_brief_evaluation
 from hsa_research.ingestion_bridge import research_followup_resolver
@@ -2131,6 +2140,337 @@ def test_research_program_contract_and_repository_round_trip(tmp_path):
         assert repo.list_research_programs(thesis_query="coagulation", limit=10)
         assert repo.list_research_programs(gate_decision="needs_one_more_pass", limit=10)
         assert repo.list_research_programs(status="active", limit=10) == []
+
+
+def test_research_workspace_contract_and_repository_round_trip(tmp_path):
+    workspace = ResearchWorkspaceRecord(
+        work_packet_id="wp-citation-1",
+        candidate_id="twog-candidate-447eb8089965",
+        candidate_snapshot_hash="sha256:snapshot",
+        evidence_bundle_hash="sha256:evidence",
+        checkout_manifest_hash="sha256:manifest",
+        checkout_manifest={"candidate_id": "twog-candidate-447eb8089965", "packet": "wp-citation-1"},
+        provider="manual",
+        git_repo="https://github.com/chasepenelli/twog",
+        git_ref="main",
+        neon_branch_name="twog-wp-citation-1",
+        skill_profile="literature_and_citation",
+        installed_skill_refs=[
+            "K-Dense-AI/scientific-agent-skills:literature-review",
+            "K-Dense-AI/scientific-agent-skills:citation-management",
+            "K-Dense-AI/scientific-agent-skills:database-lookup",
+            "K-Dense-AI/scientific-agent-skills:database-lookup",
+        ],
+        recommended_source_refs=["pubmed", "crossref", "europe_pmc"],
+        status="requested",
+    )
+
+    assert workspace.installed_skill_refs == [
+        "K-Dense-AI/scientific-agent-skills:literature-review",
+        "K-Dense-AI/scientific-agent-skills:citation-management",
+        "K-Dense-AI/scientific-agent-skills:database-lookup",
+    ]
+
+    payload = workspace.model_dump(mode="json")
+    payload["provider"] = "bad"
+    with pytest.raises(ValidationError):
+        ResearchWorkspaceRecord.model_validate(payload)
+
+    payload = workspace.model_dump(mode="json")
+    payload["provider"] = "e2b"
+    payload["status"] = "ready"
+    payload["provider_workspace_id"] = None
+    with pytest.raises(ValueError):
+        ResearchWorkspaceRecord.model_validate(payload)
+
+    payload = workspace.model_dump(mode="json")
+    payload["provider"] = "e2b"
+    payload["status"] = "ready"
+    payload["provider_workspace_id"] = "sandbox-1"
+    payload["neon_branch_id"] = "br-test"
+    payload["database_secret_ref"] = None
+    with pytest.raises(ValueError):
+        ResearchWorkspaceRecord.model_validate(payload)
+
+    for repo in (
+        InMemoryResearchRepository(),
+        SQLiteResearchRepository(tmp_path / "research-workspaces.sqlite3", seed=False),
+    ):
+        stored = repo.upsert_research_workspace(workspace)
+        assert repo.get_research_workspace(stored.workspace_id).candidate_id == workspace.candidate_id
+        assert repo.list_research_workspaces(candidate_id=workspace.candidate_id, limit=10)
+        assert repo.list_research_workspaces(work_packet_id="wp-citation-1", limit=10)
+        assert repo.list_research_workspaces(skill_profile="literature_and_citation", limit=10)
+        assert repo.list_research_workspaces(status="active", limit=10) == []
+
+
+class _FakeNeonBranchClient:
+    def __init__(
+        self,
+        *,
+        existing_branches: list[dict] | None = None,
+        connection: dict | None = None,
+    ) -> None:
+        self.existing_branches = existing_branches or []
+        self.connection = connection or {"uri": "postgres://secret.example/neondb"}
+        self.created: list[dict] = []
+        self.connection_requests: list[dict] = []
+
+    def list_branches(self, *, project_id: str, search: str | None = None) -> list[dict]:
+        if not search:
+            return self.existing_branches
+        return [branch for branch in self.existing_branches if search in branch.get("name", "")]
+
+    def create_branch(self, *, project_id: str, branch: dict, endpoints: list[dict]) -> dict:
+        self.created.append({"project_id": project_id, "branch": branch, "endpoints": endpoints})
+        return {
+            "branch": {"id": "br-created", "name": branch["name"]},
+            "endpoints": [{"id": "ep-created", "type": "read_write"}],
+            "operations": [{"id": "op-created"}],
+        }
+
+    def get_connection_uri(
+        self,
+        *,
+        project_id: str,
+        branch_id: str,
+        database_name: str,
+        role_name: str,
+        endpoint_id: str | None = None,
+    ) -> dict:
+        self.connection_requests.append(
+            {
+                "project_id": project_id,
+                "branch_id": branch_id,
+                "database_name": database_name,
+                "role_name": role_name,
+                "endpoint_id": endpoint_id,
+            }
+        )
+        return self.connection
+
+
+def test_neon_branch_workspace_dry_run_records_skill_preset():
+    repo = InMemoryResearchRepository()
+    result = provision_neon_branch_workspace(
+        repo,
+        NeonBranchWorkspaceRequest(
+            candidate_id="twog-candidate-447eb8089965",
+            work_packet_id="wp-database-1",
+            project_id="project-test",
+            branch_name="twog-wp-database-1",
+            skill_profile="database_lookup",
+            dry_run=True,
+        ),
+    )
+
+    assert isinstance(result, NeonBranchWorkspaceResult)
+    assert result.dry_run is True
+    assert result.branch_created is False
+    assert result.workspace.status == "requested"
+    assert result.workspace.provider == "neon"
+    assert result.workspace.neon_branch_name == "twog-wp-database-1"
+    assert result.workspace.database_secret_ref == "neon://project-test/twog-wp-database-1/neondb/neondb_owner"
+    assert "K-Dense-AI/scientific-agent-skills:database-lookup" in result.workspace.installed_skill_refs
+    assert repo.get_research_workspace(result.workspace.workspace_id) is not None
+    assert repo.list_research_workspaces(provider="neon", limit=10)
+
+
+def test_neon_branch_workspace_reuses_existing_branch_without_storing_dsn():
+    repo = InMemoryResearchRepository()
+    client = _FakeNeonBranchClient(
+        existing_branches=[{"id": "br-existing", "name": "twog-existing"}],
+    )
+    result = provision_neon_branch_workspace(
+        repo,
+        NeonBranchWorkspaceRequest(
+            candidate_id="twog-candidate-447eb8089965",
+            project_id="project-test",
+            branch_name="twog-existing",
+            skill_profile="md_review",
+            dry_run=False,
+        ),
+        client=client,
+    )
+
+    assert result.branch_reused is True
+    assert result.branch_created is False
+    assert result.branch_id == "br-existing"
+    assert result.workspace.status == "ready"
+    assert result.workspace.provider == "neon"
+    assert result.workspace.provider_workspace_id == "br-existing"
+    assert result.workspace.neon_branch_id == "br-existing"
+    assert result.workspace.database_secret_ref == "neon://project-test/br-existing/neondb/neondb_owner"
+    assert "K-Dense-AI/scientific-agent-skills:molecular-dynamics" in result.workspace.installed_skill_refs
+    assert client.created == []
+    assert "postgres://secret.example" not in result.workspace.model_dump_json()
+
+
+def test_neon_branch_workspace_creates_branch_with_endpoint_and_parent_resolution():
+    repo = InMemoryResearchRepository()
+    client = _FakeNeonBranchClient(
+        existing_branches=[{"id": "br-parent", "name": "main"}],
+    )
+    result = provision_neon_branch_workspace(
+        repo,
+        NeonBranchWorkspaceRequest(
+            candidate_id="twog-candidate-447eb8089965",
+            work_packet_id="wp-citation-1",
+            project_id="project-test",
+            parent_branch_name="main",
+            branch_name="twog-new-branch",
+            suspend_timeout_seconds=120,
+            skill_profile="literature_and_citation",
+            dry_run=False,
+        ),
+        client=client,
+    )
+
+    assert result.branch_created is True
+    assert result.branch_reused is False
+    assert result.branch_id == "br-created"
+    assert result.endpoint_id == "ep-created"
+    assert result.operation_ids == ["op-created"]
+    assert client.created[0]["branch"]["parent_id"] == "br-parent"
+    assert client.created[0]["endpoints"] == [{"type": "read_write", "suspend_timeout_seconds": 120}]
+    assert client.connection_requests[0]["endpoint_id"] == "ep-created"
+    assert repo.get_research_workspace(result.workspace.workspace_id).status == "ready"
+
+
+def test_neon_workspace_service_live_requires_explicit_secrets(monkeypatch):
+    repo = InMemoryResearchRepository()
+    monkeypatch.delenv("NEON_API_KEY", raising=False)
+    monkeypatch.delenv("NEON_PROJECT_ID", raising=False)
+
+    result = HSAResearchService(repo).provision_neon_research_workspace(
+        NeonBranchWorkspaceRequest(
+            candidate_id="twog-candidate-447eb8089965",
+            branch_name="twog-live-blocked",
+            dry_run=False,
+        )
+    )
+
+    assert result.dry_run is False
+    assert result.workspace.status == "failed"
+    assert result.workspace.database_secret_ref is None
+    assert "NEON_PROJECT_ID is required when dry_run is false." in result.errors
+    assert "NEON_API_KEY is required when dry_run is false." in result.errors
+    assert repo.get_research_workspace(result.workspace.workspace_id).status == "failed"
+
+
+def test_research_workspace_service_library_filters():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    result = service.provision_neon_research_workspace(
+        NeonBranchWorkspaceRequest(
+            candidate_id="twog-candidate-447eb8089965",
+            work_packet_id="wp-library-1",
+            project_id="project-test",
+            branch_name="twog-library",
+            skill_profile="chemistry",
+            dry_run=True,
+        )
+    )
+    library = service.list_research_workspaces(
+        ResearchWorkspaceLibraryRequest(
+            candidate_id="twog-candidate-447eb8089965",
+            work_packet_id="wp-library-1",
+            provider="neon",
+            status="requested",
+            skill_profile="chemistry",
+            limit=10,
+        )
+    )
+
+    assert isinstance(library, ResearchWorkspaceLibraryResult)
+    assert library.workspace_count == 1
+    assert library.workspaces[0].workspace_id == result.workspace.workspace_id
+    assert library.provider_counts == {"neon": 1}
+    assert library.status_counts == {"requested": 1}
+
+
+def test_research_workspace_cli_dry_run_persists_without_neon(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "workspace-cli.sqlite3"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hsa-ingestion",
+            "--db",
+            str(db_path),
+            "research-workspace-neon",
+            "--candidate-id",
+            "twog-candidate-447eb8089965",
+            "--work-packet-id",
+            "wp-cli-1",
+            "--branch-name",
+            "twog-cli-dry-run",
+            "--skill-profile",
+            "database_lookup",
+        ],
+    )
+    monkeypatch.delenv("NEON_API_KEY", raising=False)
+    monkeypatch.delenv("NEON_PROJECT_ID", raising=False)
+
+    cli_module.main()
+    output = json.loads(capsys.readouterr().out)
+
+    assert output["dry_run"] is True
+    assert output["workspace"]["status"] == "requested"
+    assert output["workspace"]["provider"] == "neon"
+    assert output["workspace"]["neon_branch_name"] == "twog-cli-dry-run"
+    assert "K-Dense-AI/scientific-agent-skills:database-lookup" in output["workspace"]["installed_skill_refs"]
+
+
+def test_research_workspace_cli_execute_missing_env_fails_cleanly(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "workspace-cli-live.sqlite3"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hsa-ingestion",
+            "--db",
+            str(db_path),
+            "research-workspace-neon",
+            "--candidate-id",
+            "twog-candidate-447eb8089965",
+            "--branch-name",
+            "twog-cli-live-blocked",
+            "--execute",
+        ],
+    )
+    monkeypatch.delenv("NEON_API_KEY", raising=False)
+    monkeypatch.delenv("NEON_PROJECT_ID", raising=False)
+
+    cli_module.main()
+    output = json.loads(capsys.readouterr().out)
+
+    assert output["dry_run"] is False
+    assert output["workspace"]["status"] == "failed"
+    assert output["workspace"]["database_secret_ref"] is None
+    assert "NEON_API_KEY is required when dry_run is false." in output["errors"]
+
+
+def test_daytona_workspace_stub_is_non_live_and_secret_ref_only():
+    repo = InMemoryResearchRepository()
+    result = plan_daytona_workspace(
+        repo,
+        DaytonaWorkspaceRequest(
+            candidate_id="twog-candidate-447eb8089965",
+            work_packet_id="wp-daytona-1",
+            database_secret_ref="neon://project/br-workspace/neondb/neondb_owner",
+            git_repo="https://github.com/chasepenelli/twog",
+            git_ref="main",
+            skill_profile="md_review",
+            dry_run=True,
+        ),
+    )
+
+    assert isinstance(result, DaytonaWorkspaceResult)
+    assert result.workspace.provider == "daytona"
+    assert result.workspace.status == "requested"
+    assert "K-Dense-AI/scientific-agent-skills:molecular-dynamics" in result.workspace.installed_skill_refs
+    assert "postgres://" not in result.workspace.model_dump_json()
 
 
 def test_research_program_evidence_loop_queues_bounded_work():
@@ -6139,6 +6479,107 @@ def test_dagster_research_program_assets_use_injected_repository(monkeypatch):
     assert library_result.metadata["program_count"].value == 1
     assert loop_result.value["selected_task_count"] == 1
     assert loop_result.metadata["loop_count_after"].value == 1
+
+
+def test_dagster_research_workspace_assets_use_injected_repository(monkeypatch):
+    sentinel_repository = object()
+    calls = []
+    workspace = ResearchWorkspaceRecord(
+        candidate_id="twog-candidate-447eb8089965",
+        work_packet_id="wp-dagster-1",
+        provider="neon",
+        neon_branch_name="twog-dagster",
+        skill_profile="database_lookup",
+        status="requested",
+    )
+
+    class FakeRepositoryResource:
+        def build_repository(self):
+            calls.append("build_repository")
+            return sentinel_repository
+
+    class FakeService:
+        def __init__(self, repository):
+            assert repository is sentinel_repository
+
+        def provision_neon_research_workspace(self, request):
+            assert isinstance(request, NeonBranchWorkspaceRequest)
+            assert request.candidate_id == "twog-candidate-447eb8089965"
+            assert request.dry_run is True
+            assert request.metadata["dagster_run_id"] == "dagster-workspace-neon-test"
+            return NeonBranchWorkspaceResult(
+                workspace=workspace,
+                dry_run=True,
+                branch_name="twog-dagster",
+            )
+
+        def list_research_workspaces(self, request):
+            assert isinstance(request, ResearchWorkspaceLibraryRequest)
+            assert request.candidate_id == "twog-candidate-447eb8089965"
+            assert request.provider == "neon"
+            return ResearchWorkspaceLibraryResult(
+                workspace_count=1,
+                status_counts={"requested": 1},
+                provider_counts={"neon": 1},
+                workspaces=[workspace],
+            )
+
+    monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
+
+    neon_result = dagster_asset_module.research_workspace_neon_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "candidate_id": "twog-candidate-447eb8089965",
+                "work_packet_id": "wp-dagster-1",
+                "project_id": "project-test",
+                "parent_branch_id": None,
+                "parent_branch_name": None,
+                "branch_name": "twog-dagster",
+                "branch_name_prefix": "twog-workspace",
+                "database_name": "neondb",
+                "role_name": "neondb_owner",
+                "ttl_hours": 24,
+                "suspend_timeout_seconds": 300,
+                "candidate_snapshot_hash": None,
+                "evidence_bundle_hash": None,
+                "checkout_manifest_hash": None,
+                "git_repo": None,
+                "git_ref": None,
+                "git_branch": None,
+                "artifact_root": None,
+                "skill_profile": "database_lookup",
+                "installed_skill_refs": [],
+                "recommended_source_refs": [],
+                "dry_run": True,
+                "persist": True,
+            },
+            run_id="dagster-workspace-neon-test",
+        ),
+        FakeRepositoryResource(),
+    )
+    library_result = dagster_asset_module.research_workspace_library_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "workspace_id": None,
+                "candidate_id": "twog-candidate-447eb8089965",
+                "work_packet_id": None,
+                "provider": "neon",
+                "status": None,
+                "statuses": [],
+                "skill_profile": None,
+                "include_expired": True,
+                "limit": 50,
+            },
+            run_id="dagster-workspace-library-test",
+        ),
+        FakeRepositoryResource(),
+    )
+
+    assert calls == ["build_repository", "build_repository"]
+    assert neon_result.value["dry_run"] is True
+    assert neon_result.metadata["branch_name"].value == "twog-dagster"
+    assert library_result.value["workspace_count"] == 1
+    assert library_result.metadata["provider_counts"].data == {"neon": 1}
 
 
 def test_dagster_validation_plan_asset_uses_injected_repository(monkeypatch):

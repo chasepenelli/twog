@@ -26,6 +26,7 @@ from .contracts import (
     FullTextOpsRequest,
     HypothesisPromotionReportRequest,
     MDExpertAgentReviewRequest,
+    NeonBranchWorkspaceRequest,
     OmicsAccessionHuntRequest,
     OmicsEvidencePacketRequest,
     OmicsFollowupRequest,
@@ -51,6 +52,7 @@ from .contracts import (
     ResearchProgramBoardRequest,
     ResearchProgramEvidenceLoopRequest,
     ResearchProgramReviewRequest,
+    ResearchWorkspaceLibraryRequest,
     RewardEventSyncRequest,
     RewardReportRequest,
     ResearchObject,
@@ -812,6 +814,18 @@ _COMPUTE_JOB_TABLE_COLUMNS = (
     "dagster_run_id",
     "last_error",
     "updated_at",
+)
+_RESEARCH_WORKSPACE_TABLE_COLUMNS = (
+    "workspace_id",
+    "candidate_id",
+    "work_packet_id",
+    "provider",
+    "status",
+    "skill_profile",
+    "neon_branch_name",
+    "neon_branch_id",
+    "database_secret_ref",
+    "error_count",
 )
 
 
@@ -1612,6 +1626,44 @@ if dg is not None:
             metadata["status_counts"] = dg.MetadataValue.json(report.get("status_counts", {}))
         if "gate_counts" in report:
             metadata["gate_counts"] = dg.MetadataValue.json(report.get("gate_counts", {}))
+        return metadata
+
+    def _research_workspace_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        workspaces = report.get("workspaces", [])
+        if not workspaces and isinstance(report.get("workspace"), Mapping):
+            workspaces = [report["workspace"]]
+        rows = []
+        for workspace in workspaces:
+            rows.append(
+                {
+                    "workspace_id": workspace.get("workspace_id"),
+                    "candidate_id": workspace.get("candidate_id"),
+                    "work_packet_id": workspace.get("work_packet_id"),
+                    "provider": workspace.get("provider"),
+                    "status": workspace.get("status"),
+                    "skill_profile": workspace.get("skill_profile"),
+                    "neon_branch_name": workspace.get("neon_branch_name"),
+                    "neon_branch_id": workspace.get("neon_branch_id"),
+                    "database_secret_ref": workspace.get("database_secret_ref"),
+                    "error_count": len(workspace.get("errors") or []),
+                }
+            )
+        metadata = {
+            "workspace_count": dg.MetadataValue.int(int(report.get("workspace_count", len(rows)) or 0)),
+            "dry_run": bool(report.get("dry_run", True)),
+            "branch_created": bool(report.get("branch_created", False)),
+            "branch_reused": bool(report.get("branch_reused", False)),
+            "status_counts": dg.MetadataValue.json(report.get("status_counts", {})),
+            "provider_counts": dg.MetadataValue.json(report.get("provider_counts", {})),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "workspaces": _metadata_table(rows, _RESEARCH_WORKSPACE_TABLE_COLUMNS),
+        }
+        if report.get("branch_name"):
+            metadata["branch_name"] = dg.MetadataValue.text(str(report.get("branch_name")))
+        if report.get("branch_id"):
+            metadata["branch_id"] = dg.MetadataValue.text(str(report.get("branch_id")))
+        if report.get("endpoint_id"):
+            metadata["endpoint_id"] = dg.MetadataValue.text(str(report.get("endpoint_id")))
         return metadata
 
     def _research_program_evidence_loop_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -4604,6 +4656,114 @@ if dg is not None:
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_research_program_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "candidate_id": dg.Field(str, description="Public candidate or candidate packet ID."),
+            "work_packet_id": dg.Field(str, is_required=False),
+            "project_id": dg.Field(str, is_required=False, description="Defaults to NEON_PROJECT_ID."),
+            "parent_branch_id": dg.Field(str, is_required=False, description="Defaults to NEON_PARENT_BRANCH_ID."),
+            "parent_branch_name": dg.Field(str, is_required=False),
+            "branch_name": dg.Field(str, is_required=False),
+            "branch_name_prefix": dg.Field(str, default_value="twog-workspace"),
+            "database_name": dg.Field(str, default_value="neondb"),
+            "role_name": dg.Field(str, default_value="neondb_owner"),
+            "ttl_hours": dg.Field(int, default_value=24),
+            "suspend_timeout_seconds": dg.Field(int, default_value=300),
+            "candidate_snapshot_hash": dg.Field(str, is_required=False),
+            "evidence_bundle_hash": dg.Field(str, is_required=False),
+            "checkout_manifest_hash": dg.Field(str, is_required=False),
+            "git_repo": dg.Field(str, is_required=False),
+            "git_ref": dg.Field(str, is_required=False),
+            "git_branch": dg.Field(str, is_required=False),
+            "artifact_root": dg.Field(str, is_required=False),
+            "skill_profile": dg.Field(str, default_value="core"),
+            "installed_skill_refs": dg.Field([str], default_value=[]),
+            "recommended_source_refs": dg.Field([str], default_value=[]),
+            "dry_run": dg.Field(bool, default_value=True),
+            "persist": dg.Field(bool, default_value=True),
+        },
+    )
+    def research_workspace_neon_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Plan or create a Neon branch for an isolated research workspace."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        dry_run = config.get("dry_run", True)
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).provision_neon_research_workspace(
+            NeonBranchWorkspaceRequest(
+                candidate_id=config["candidate_id"],
+                work_packet_id=config.get("work_packet_id"),
+                project_id=config.get("project_id") or os.getenv("NEON_PROJECT_ID", "") or ("" if not dry_run else "dry-run-project"),
+                parent_branch_id=config.get("parent_branch_id") or os.getenv("NEON_PARENT_BRANCH_ID"),
+                parent_branch_name=config.get("parent_branch_name"),
+                branch_name=config.get("branch_name"),
+                branch_name_prefix=config.get("branch_name_prefix", "twog-workspace"),
+                database_name=config.get("database_name", "neondb"),
+                role_name=config.get("role_name", "neondb_owner"),
+                ttl_hours=config.get("ttl_hours", 24),
+                suspend_timeout_seconds=config.get("suspend_timeout_seconds", 300),
+                candidate_snapshot_hash=config.get("candidate_snapshot_hash"),
+                evidence_bundle_hash=config.get("evidence_bundle_hash"),
+                checkout_manifest_hash=config.get("checkout_manifest_hash"),
+                git_repo=config.get("git_repo"),
+                git_ref=config.get("git_ref"),
+                git_branch=config.get("git_branch"),
+                artifact_root=config.get("artifact_root"),
+                skill_profile=config.get("skill_profile", "core"),
+                installed_skill_refs=config.get("installed_skill_refs") or [],
+                recommended_source_refs=config.get("recommended_source_refs") or [],
+                dry_run=dry_run,
+                persist=config.get("persist", True),
+                metadata={"dagster_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_research_workspace_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "workspace_id": dg.Field(str, is_required=False),
+            "candidate_id": dg.Field(str, is_required=False),
+            "work_packet_id": dg.Field(str, is_required=False),
+            "provider": dg.Field(str, is_required=False),
+            "status": dg.Field(str, is_required=False),
+            "statuses": dg.Field([str], default_value=[]),
+            "skill_profile": dg.Field(str, is_required=False),
+            "include_expired": dg.Field(bool, default_value=True),
+            "limit": dg.Field(int, default_value=50),
+        },
+    )
+    def research_workspace_library_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual read-only report of persisted research workspaces."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).list_research_workspaces(
+            ResearchWorkspaceLibraryRequest(
+                workspace_id=_uuid_or_none(config.get("workspace_id")),
+                candidate_id=config.get("candidate_id"),
+                work_packet_id=config.get("work_packet_id"),
+                provider=config.get("provider"),
+                status=config.get("status"),
+                statuses=config.get("statuses") or [],
+                skill_profile=config.get("skill_profile"),
+                include_expired=config.get("include_expired", True),
+                limit=config.get("limit", 50),
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_research_workspace_metadata(report))
 
     @dg.asset(
         group_name="ai_research",
@@ -7956,6 +8116,8 @@ if dg is not None:
         validation_decision_report,
         research_program_board_report,
         research_program_library_report,
+        research_workspace_neon_report,
+        research_workspace_library_report,
         research_program_evidence_loop_report,
         omics_accession_hunt_report,
         omics_evidence_packet_report,
@@ -8177,6 +8339,14 @@ if dg is not None:
     research_program_library_job = dg.define_asset_job(
         "research_program_library_job",
         selection=dg.AssetSelection.assets(research_program_library_report),
+    )
+    research_workspace_neon_job = dg.define_asset_job(
+        "research_workspace_neon_job",
+        selection=dg.AssetSelection.assets(research_workspace_neon_report),
+    )
+    research_workspace_library_job = dg.define_asset_job(
+        "research_workspace_library_job",
+        selection=dg.AssetSelection.assets(research_workspace_library_report),
     )
     research_program_evidence_loop_job = dg.define_asset_job(
         "research_program_evidence_loop_job",
@@ -8580,6 +8750,8 @@ if dg is not None:
             validation_decision_job,
             research_program_board_job,
             research_program_library_job,
+            research_workspace_neon_job,
+            research_workspace_library_job,
             research_program_evidence_loop_job,
             omics_accession_hunt_job,
             omics_evidence_packet_job,

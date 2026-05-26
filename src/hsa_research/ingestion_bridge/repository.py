@@ -39,6 +39,7 @@ from .contracts import (
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
     ResearchProgramRecord,
+    ResearchWorkspaceRecord,
     ResearchBriefEvaluationRecord,
     ResearchBriefQueueItem,
     ResearchBriefRecord,
@@ -385,6 +386,26 @@ class ResearchRepository(Protocol):
     ) -> list[ResearchProgramRecord]:
         """Return persisted research programs by durable filters."""
 
+    def upsert_research_workspace(self, record: ResearchWorkspaceRecord) -> ResearchWorkspaceRecord:
+        """Persist an isolated research workspace allocation record."""
+
+    def get_research_workspace(self, workspace_id: UUID) -> ResearchWorkspaceRecord | None:
+        """Return a persisted research workspace."""
+
+    def list_research_workspaces(
+        self,
+        *,
+        work_packet_id: str | None = None,
+        candidate_id: str | None = None,
+        provider: str | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        skill_profile: str | None = None,
+        include_expired: bool = True,
+        limit: int | None = 50,
+    ) -> list[ResearchWorkspaceRecord]:
+        """Return persisted research workspaces by durable filters."""
+
     def upsert_validation_decision(self, record: ValidationDecisionRecord) -> ValidationDecisionRecord:
         """Persist a finite validation decision generated from a validation packet."""
 
@@ -719,6 +740,7 @@ class InMemoryResearchRepository:
         self.research_brief_evaluations: dict[UUID, ResearchBriefEvaluationRecord] = {}
         self.therapy_ideas: dict[UUID, TherapyIdeaRecord] = {}
         self.research_programs: dict[UUID, ResearchProgramRecord] = {}
+        self.research_workspaces: dict[UUID, ResearchWorkspaceRecord] = {}
         self.validation_decisions: dict[str, ValidationDecisionRecord] = {}
         self.public_candidates: dict[str, PublicCandidateRecord] = {}
         self.public_candidate_snapshots: dict[UUID, PublicCandidateSnapshot] = {}
@@ -1520,6 +1542,58 @@ class InMemoryResearchRepository:
                 or normalized in record.disease_model.lower()
             ]
         records.sort(key=lambda record: (record.confidence_score, record.updated_at), reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def upsert_research_workspace(self, record: ResearchWorkspaceRecord) -> ResearchWorkspaceRecord:
+        existing = self.research_workspaces.get(record.workspace_id)
+        if existing:
+            record = record.model_copy(
+                update={
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **record.metadata},
+                }
+            )
+        self.research_workspaces[record.workspace_id] = record
+        return record
+
+    def get_research_workspace(self, workspace_id: UUID) -> ResearchWorkspaceRecord | None:
+        return self.research_workspaces.get(workspace_id)
+
+    def list_research_workspaces(
+        self,
+        *,
+        work_packet_id: str | None = None,
+        candidate_id: str | None = None,
+        provider: str | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        skill_profile: str | None = None,
+        include_expired: bool = True,
+        limit: int | None = 50,
+    ) -> list[ResearchWorkspaceRecord]:
+        records = list(self.research_workspaces.values())
+        if work_packet_id:
+            records = [record for record in records if record.work_packet_id == work_packet_id]
+        if candidate_id:
+            records = [record for record in records if record.candidate_id == candidate_id]
+        if provider:
+            records = [record for record in records if record.provider == provider]
+        if status:
+            records = [record for record in records if record.status == status]
+        if statuses:
+            allowed = set(statuses)
+            records = [record for record in records if record.status in allowed]
+        if skill_profile:
+            records = [record for record in records if record.skill_profile == skill_profile]
+        if not include_expired:
+            now = datetime.now(UTC)
+            records = [
+                record
+                for record in records
+                if record.expires_at is None or record.expires_at > now
+            ]
+        records.sort(key=lambda record: record.updated_at, reverse=True)
         return records[:limit] if limit is not None else records
 
     def upsert_validation_decision(self, record: ValidationDecisionRecord) -> ValidationDecisionRecord:
