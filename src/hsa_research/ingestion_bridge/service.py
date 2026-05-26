@@ -161,6 +161,8 @@ from .contracts import (
     ResearchProgramReviewResult,
     ResearchWorkspaceCleanupRequest,
     ResearchWorkspaceCleanupResult,
+    ResearchWorkspaceCheckoutManifestRequest,
+    ResearchWorkspaceCheckoutManifestResult,
     ResearchWorkspaceLibraryRequest,
     ResearchWorkspaceLibraryResult,
     ResearchWorkspaceRecord,
@@ -298,6 +300,7 @@ from .research_program_board import (
 )
 from .research_workspaces import (
     NeonApiClient,
+    build_research_workspace_checkout_manifest,
     cleanup_neon_research_workspaces,
     plan_daytona_workspace,
     provision_neon_branch_workspace,
@@ -1441,6 +1444,12 @@ class HSAResearchService:
         request: DaytonaWorkspaceRequest,
     ) -> DaytonaWorkspaceResult:
         return plan_daytona_workspace(self.repository, request)
+
+    def build_research_workspace_checkout_manifest(
+        self,
+        request: ResearchWorkspaceCheckoutManifestRequest,
+    ) -> ResearchWorkspaceCheckoutManifestResult:
+        return build_research_workspace_checkout_manifest(self.repository, request)
 
     def get_research_workspace(self, workspace_id: UUID) -> ResearchWorkspaceRecord | None:
         return self.repository.get_research_workspace(workspace_id)

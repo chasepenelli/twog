@@ -4849,6 +4849,109 @@ class ResearchWorkspaceCleanupResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ResearchWorkspaceCheckoutManifestRequest(StrictBaseModel):
+    workspace_id: UUID | None = None
+    candidate_id: str | None = Field(default=None, max_length=260)
+    work_packet_id: str | None = Field(default=None, max_length=260)
+    candidate_snapshot_hash: str | None = Field(default=None, max_length=160)
+    evidence_bundle_hash: str | None = Field(default=None, max_length=160)
+    method_refs: list[str] = Field(default_factory=list, max_length=50)
+    open_questions: list[str] = Field(default_factory=list, max_length=50)
+    allowed_task_types: list[str] = Field(default_factory=list, max_length=50)
+    expected_outputs: list[str] = Field(default_factory=list, max_length=50)
+    artifact_refs: list[str] = Field(default_factory=list, max_length=100)
+    git_repo: str | None = Field(default=None, max_length=500)
+    git_ref: str | None = Field(default=None, max_length=260)
+    git_branch: str | None = Field(default=None, max_length=260)
+    database_secret_ref: str | None = Field(default=None, max_length=260)
+    skill_profile: ResearchWorkspaceSkillProfile = "core"
+    installed_skill_refs: list[str] = Field(default_factory=list, max_length=100)
+    recommended_source_refs: list[str] = Field(default_factory=list, max_length=100)
+    persist_to_workspace: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_checkout_manifest_request(self) -> "ResearchWorkspaceCheckoutManifestRequest":
+        self.candidate_id = self.candidate_id.strip() if self.candidate_id else None
+        self.work_packet_id = self.work_packet_id.strip() if self.work_packet_id else None
+        self.candidate_snapshot_hash = (
+            self.candidate_snapshot_hash.strip() if self.candidate_snapshot_hash else None
+        )
+        self.evidence_bundle_hash = self.evidence_bundle_hash.strip() if self.evidence_bundle_hash else None
+        self.method_refs = _normalized_unique_strings(self.method_refs)
+        self.open_questions = _normalized_unique_strings(self.open_questions)
+        self.allowed_task_types = _dedupe_lower_tokens(self.allowed_task_types)
+        self.expected_outputs = _normalized_unique_strings(self.expected_outputs)
+        self.artifact_refs = _normalized_unique_strings(self.artifact_refs)
+        self.git_repo = self.git_repo.strip() if self.git_repo else None
+        self.git_ref = self.git_ref.strip() if self.git_ref else None
+        self.git_branch = self.git_branch.strip() if self.git_branch else None
+        self.database_secret_ref = self.database_secret_ref.strip() if self.database_secret_ref else None
+        self.installed_skill_refs = _normalized_unique_strings(self.installed_skill_refs)
+        self.recommended_source_refs = _normalized_unique_strings(self.recommended_source_refs)
+        if self.workspace_id is None and not self.candidate_id:
+            raise ValueError("candidate_id is required when workspace_id is not provided")
+        return self
+
+
+class ResearchWorkspaceCheckoutManifest(StrictBaseModel):
+    manifest_id: UUID = Field(default_factory=uuid4)
+    manifest_version: str = "research-workspace-checkout-v1"
+    workspace_id: UUID | None = None
+    candidate_id: str = Field(min_length=3, max_length=260)
+    work_packet_id: str | None = Field(default=None, max_length=260)
+    candidate_snapshot_hash: str | None = Field(default=None, max_length=160)
+    evidence_bundle_hash: str | None = Field(default=None, max_length=160)
+    method_refs: list[str] = Field(default_factory=list, max_length=50)
+    open_questions: list[str] = Field(default_factory=list, max_length=50)
+    allowed_task_types: list[str] = Field(default_factory=list, max_length=50)
+    expected_outputs: list[str] = Field(default_factory=list, max_length=50)
+    artifact_refs: list[str] = Field(default_factory=list, max_length=100)
+    git_repo: str | None = Field(default=None, max_length=500)
+    git_ref: str | None = Field(default=None, max_length=260)
+    git_branch: str | None = Field(default=None, max_length=260)
+    database_secret_ref: str | None = Field(default=None, max_length=260)
+    skill_profile: ResearchWorkspaceSkillProfile = "core"
+    installed_skill_refs: list[str] = Field(default_factory=list, max_length=100)
+    recommended_source_refs: list[str] = Field(default_factory=list, max_length=100)
+    checkout_instructions: list[str] = Field(default_factory=list, max_length=25)
+    boundaries: list[str] = Field(default_factory=list, max_length=25)
+    content_hash: str = Field(min_length=8, max_length=160)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_checkout_manifest(self) -> "ResearchWorkspaceCheckoutManifest":
+        self.candidate_id = self.candidate_id.strip()
+        self.work_packet_id = self.work_packet_id.strip() if self.work_packet_id else None
+        self.candidate_snapshot_hash = (
+            self.candidate_snapshot_hash.strip() if self.candidate_snapshot_hash else None
+        )
+        self.evidence_bundle_hash = self.evidence_bundle_hash.strip() if self.evidence_bundle_hash else None
+        self.method_refs = _normalized_unique_strings(self.method_refs)
+        self.open_questions = _normalized_unique_strings(self.open_questions)
+        self.allowed_task_types = _dedupe_lower_tokens(self.allowed_task_types)
+        self.expected_outputs = _normalized_unique_strings(self.expected_outputs)
+        self.artifact_refs = _normalized_unique_strings(self.artifact_refs)
+        self.git_repo = self.git_repo.strip() if self.git_repo else None
+        self.git_ref = self.git_ref.strip() if self.git_ref else None
+        self.git_branch = self.git_branch.strip() if self.git_branch else None
+        self.database_secret_ref = self.database_secret_ref.strip() if self.database_secret_ref else None
+        self.installed_skill_refs = _normalized_unique_strings(self.installed_skill_refs)
+        self.recommended_source_refs = _normalized_unique_strings(self.recommended_source_refs)
+        self.checkout_instructions = _normalized_unique_strings(self.checkout_instructions)
+        self.boundaries = _normalized_unique_strings(self.boundaries)
+        return self
+
+
+class ResearchWorkspaceCheckoutManifestResult(StrictBaseModel):
+    manifest: ResearchWorkspaceCheckoutManifest
+    workspace: ResearchWorkspaceRecord | None = None
+    persisted: bool = False
+    errors: list[str] = Field(default_factory=list, max_length=25)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class NeonBranchWorkspaceRequest(StrictBaseModel):
     candidate_id: str = Field(min_length=3, max_length=260)
     work_packet_id: str | None = Field(default=None, max_length=260)
@@ -4932,6 +5035,8 @@ class DaytonaWorkspaceRequest(StrictBaseModel):
     git_ref: str | None = Field(default=None, max_length=260)
     git_branch: str | None = Field(default=None, max_length=260)
     artifact_root: str | None = Field(default=None, max_length=1000)
+    workspace_name: str | None = Field(default=None, max_length=260)
+    provider_template: str | None = Field(default=None, max_length=260)
     skill_profile: ResearchWorkspaceSkillProfile = "core"
     installed_skill_refs: list[str] = Field(default_factory=list, max_length=100)
     recommended_source_refs: list[str] = Field(default_factory=list, max_length=100)
@@ -4955,6 +5060,8 @@ class DaytonaWorkspaceRequest(StrictBaseModel):
         self.git_ref = self.git_ref.strip() if self.git_ref else None
         self.git_branch = self.git_branch.strip() if self.git_branch else None
         self.artifact_root = self.artifact_root.strip() if self.artifact_root else None
+        self.workspace_name = self.workspace_name.strip() if self.workspace_name else None
+        self.provider_template = self.provider_template.strip() if self.provider_template else None
         self.installed_skill_refs = _normalized_unique_strings(self.installed_skill_refs)
         self.recommended_source_refs = _normalized_unique_strings(self.recommended_source_refs)
         return self
@@ -4963,6 +5070,8 @@ class DaytonaWorkspaceRequest(StrictBaseModel):
 class DaytonaWorkspaceResult(StrictBaseModel):
     workspace: ResearchWorkspaceRecord
     dry_run: bool = True
+    ready_for_provider_dispatch: bool = False
+    provider_payload: dict[str, Any] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list, max_length=25)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

@@ -171,16 +171,28 @@ def _compact_contributor(contributor: Mapping[str, Any] | None) -> dict[str, Any
     }
 
 
+def _row_packet_value(row: Mapping[str, Any], key: str) -> Any:
+    packet = row.get("packet")
+    if isinstance(packet, dict):
+        return row.get(key) or packet.get(key)
+    return row.get(key)
+
+
 def _compact_row(row: Mapping[str, Any], include_packet: bool) -> dict[str, Any]:
     requested_action = str(row.get("requested_system_action") or "")
     status = str(row.get("status") or "")
     recommended_route, route_reason = _recommended_route(requested_action, status)
-    packet = row.get("packet") if include_packet else None
+    raw_packet = row.get("packet") if isinstance(row.get("packet"), dict) else {}
+    packet = raw_packet if include_packet else None
+    workspace_id = _row_packet_value(row, "workspace_id")
+    checkout_manifest_hash = _row_packet_value(row, "checkout_manifest_hash")
     compact = {
         "contribution_id": str(row.get("contribution_id") or ""),
         "candidate_id": row.get("candidate_id"),
         "display_id": row.get("display_id"),
         "snapshot_content_hash": row.get("snapshot_content_hash"),
+        "workspace_id": workspace_id,
+        "checkout_manifest_hash": checkout_manifest_hash,
         "source_payload_url": row.get("source_payload_url"),
         "status": status,
         "contribution_type": row.get("contribution_type"),
@@ -234,6 +246,8 @@ def build_candidate_contribution_triage_plan_from_rows(
                     "contribution_id": contribution_id,
                     "candidate_id": row.get("candidate_id"),
                     "display_id": row.get("display_id"),
+                    "workspace_id": _row_packet_value(row, "workspace_id"),
+                    "checkout_manifest_hash": _row_packet_value(row, "checkout_manifest_hash"),
                     "old_status": old_status,
                     "new_status": target_status,
                     "action": normalized_action,
@@ -372,6 +386,8 @@ def build_candidate_contribution_intake_report(
             evidence,
             artifacts,
             packet,
+            packet ->> 'workspace_id' as workspace_id,
+            packet ->> 'checkout_manifest_hash' as checkout_manifest_hash,
             review_notes,
             promoted_queue_id,
             created_at,
@@ -464,6 +480,9 @@ def triage_candidate_contributions(
             candidate_id,
             display_id,
             status,
+            packet ->> 'workspace_id' as workspace_id,
+            packet ->> 'checkout_manifest_hash' as checkout_manifest_hash,
+            packet,
             review_notes,
             promoted_queue_id
         from candidate_contribution_intake

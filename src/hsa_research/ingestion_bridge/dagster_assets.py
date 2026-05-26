@@ -53,6 +53,7 @@ from .contracts import (
     ResearchProgramEvidenceLoopRequest,
     ResearchProgramReviewRequest,
     ResearchWorkspaceCleanupRequest,
+    ResearchWorkspaceCheckoutManifestRequest,
     ResearchWorkspaceLibraryRequest,
     RewardEventSyncRequest,
     RewardReportRequest,
@@ -187,6 +188,8 @@ _CANDIDATE_CONTRIBUTION_INTAKE_TABLE_COLUMNS = (
     "contribution_type",
     "requested_system_action",
     "recommended_route",
+    "workspace_id",
+    "checkout_manifest_hash",
     "evidence_count",
     "artifact_count",
     "created_at",
@@ -826,6 +829,7 @@ _RESEARCH_WORKSPACE_TABLE_COLUMNS = (
     "neon_branch_name",
     "neon_branch_id",
     "database_secret_ref",
+    "checkout_manifest_hash",
     "error_count",
 )
 
@@ -1654,6 +1658,7 @@ if dg is not None:
                     "neon_branch_name": workspace.get("neon_branch_name"),
                     "neon_branch_id": workspace.get("neon_branch_id"),
                     "database_secret_ref": workspace.get("database_secret_ref"),
+                    "checkout_manifest_hash": workspace.get("checkout_manifest_hash"),
                     "error_count": len(workspace.get("errors") or []),
                 }
             )
@@ -1677,6 +1682,13 @@ if dg is not None:
             metadata["branch_id"] = dg.MetadataValue.text(str(report.get("branch_id")))
         if report.get("endpoint_id"):
             metadata["endpoint_id"] = dg.MetadataValue.text(str(report.get("endpoint_id")))
+        manifest = report.get("manifest")
+        if isinstance(manifest, Mapping):
+            metadata["checkout_manifest_hash"] = dg.MetadataValue.text(str(manifest.get("content_hash") or ""))
+            metadata["checkout_manifest_version"] = dg.MetadataValue.text(
+                str(manifest.get("manifest_version") or "")
+            )
+            metadata["persisted"] = bool(report.get("persisted", False))
         return metadata
 
     def _research_program_evidence_loop_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -4811,6 +4823,64 @@ if dg is not None:
                 limit=config.get("limit", 50),
                 reason=config.get("reason", "operator_workspace_cleanup"),
                 dry_run=config.get("dry_run", True),
+                metadata={"dagster_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_research_workspace_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "workspace_id": dg.Field(str, is_required=False),
+            "candidate_id": dg.Field(str, is_required=False),
+            "work_packet_id": dg.Field(str, is_required=False),
+            "candidate_snapshot_hash": dg.Field(str, is_required=False),
+            "evidence_bundle_hash": dg.Field(str, is_required=False),
+            "method_refs": dg.Field([str], default_value=[]),
+            "open_questions": dg.Field([str], default_value=[]),
+            "allowed_task_types": dg.Field([str], default_value=[]),
+            "expected_outputs": dg.Field([str], default_value=[]),
+            "artifact_refs": dg.Field([str], default_value=[]),
+            "git_repo": dg.Field(str, is_required=False),
+            "git_ref": dg.Field(str, is_required=False),
+            "git_branch": dg.Field(str, is_required=False),
+            "database_secret_ref": dg.Field(str, is_required=False),
+            "skill_profile": dg.Field(str, default_value="core"),
+            "installed_skill_refs": dg.Field([str], default_value=[]),
+            "recommended_source_refs": dg.Field([str], default_value=[]),
+            "persist_to_workspace": dg.Field(bool, default_value=True),
+        },
+    )
+    def research_workspace_checkout_manifest_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Build and optionally attach a checkout manifest to a research workspace."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).build_research_workspace_checkout_manifest(
+            ResearchWorkspaceCheckoutManifestRequest(
+                workspace_id=_uuid_or_none(config.get("workspace_id")),
+                candidate_id=config.get("candidate_id"),
+                work_packet_id=config.get("work_packet_id"),
+                candidate_snapshot_hash=config.get("candidate_snapshot_hash"),
+                evidence_bundle_hash=config.get("evidence_bundle_hash"),
+                method_refs=config.get("method_refs") or [],
+                open_questions=config.get("open_questions") or [],
+                allowed_task_types=config.get("allowed_task_types") or [],
+                expected_outputs=config.get("expected_outputs") or [],
+                artifact_refs=config.get("artifact_refs") or [],
+                git_repo=config.get("git_repo"),
+                git_ref=config.get("git_ref"),
+                git_branch=config.get("git_branch"),
+                database_secret_ref=config.get("database_secret_ref"),
+                skill_profile=config.get("skill_profile", "core"),
+                installed_skill_refs=config.get("installed_skill_refs") or [],
+                recommended_source_refs=config.get("recommended_source_refs") or [],
+                persist_to_workspace=config.get("persist_to_workspace", True),
                 metadata={"dagster_run_id": context.run_id},
             )
         ).model_dump(mode="json")
@@ -8170,6 +8240,7 @@ if dg is not None:
         research_workspace_neon_report,
         research_workspace_library_report,
         research_workspace_cleanup_report,
+        research_workspace_checkout_manifest_report,
         research_program_evidence_loop_report,
         omics_accession_hunt_report,
         omics_evidence_packet_report,
@@ -8403,6 +8474,10 @@ if dg is not None:
     research_workspace_cleanup_job = dg.define_asset_job(
         "research_workspace_cleanup_job",
         selection=dg.AssetSelection.assets(research_workspace_cleanup_report),
+    )
+    research_workspace_checkout_manifest_job = dg.define_asset_job(
+        "research_workspace_checkout_manifest_job",
+        selection=dg.AssetSelection.assets(research_workspace_checkout_manifest_report),
     )
     research_program_evidence_loop_job = dg.define_asset_job(
         "research_program_evidence_loop_job",
@@ -8809,6 +8884,7 @@ if dg is not None:
             research_workspace_neon_job,
             research_workspace_library_job,
             research_workspace_cleanup_job,
+            research_workspace_checkout_manifest_job,
             research_program_evidence_loop_job,
             omics_accession_hunt_job,
             omics_evidence_packet_job,

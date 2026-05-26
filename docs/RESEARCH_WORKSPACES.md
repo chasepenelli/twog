@@ -144,6 +144,57 @@ Dagster cleanup also defaults to `dry_run=true`. Live cleanup requires `dry_run=
 
 If the Neon API key is rotated, update the GitHub Actions `NEON_API_KEY` secret and rerun `configure-dagster-env.yml` so Dagster+ receives the new value.
 
+## Checkout Manifests
+
+The checkout manifest is the portable handoff package for a workspace. It tells a person, agent, or sandbox provider what record is being checked out, what source hashes are pinned, what work is allowed, and what must come back at check-in.
+
+It includes:
+
+- candidate ID and optional WorkPacket ID;
+- workspace ID when a workspace already exists;
+- candidate snapshot and evidence bundle hashes;
+- method refs such as `candidate-record-v1`, `research-workspace-v1`, and `contribution-packet-v1`;
+- open questions, allowed task types, expected outputs, and artifact refs;
+- git repo/ref/branch;
+- `database_secret_ref` only, never a raw DSN;
+- skill profile, installed skill refs, and recommended source refs;
+- explicit boundaries: no direct candidate mutation, no public-triggered compute, and operator approval as write gate.
+
+The manifest content hash is computed from stable manifest content, excluding timestamps. If it is attached back to an existing workspace, the workspace stores `checkout_manifest_hash` and the full manifest payload for later ProofCapsule or contribution intake link-back.
+
+CLI:
+
+```bash
+hsa-ingestion research-workspace-checkout-manifest \
+  --workspace-id 025250d3-5982-4e77-84e7-b7e7d75157b2 \
+  --open-question "Can this reviewer reproduce the citation trail?"
+```
+
+Candidate-only manifest generation is also supported:
+
+```bash
+hsa-ingestion research-workspace-checkout-manifest \
+  --candidate-id twog-candidate-447eb8089965 \
+  --work-packet-id wp-citation-1 \
+  --skill-profile literature_and_citation \
+  --no-persist
+```
+
+Dagster:
+
+- `research_workspace_checkout_manifest_report` / `research_workspace_checkout_manifest_job`
+
+## ProofCapsule / Contribution Link-Back
+
+Contribution intake now preserves `workspace_id` and `checkout_manifest_hash` when those fields are present on a submitted packet. This lets an operator trace a check-in back to:
+
+- the isolated Neon branch or sandbox workspace it came from;
+- the exact checkout manifest used;
+- the candidate snapshot/evidence bundle hashes the contributor saw;
+- the expected task type and requested system action.
+
+This is still additive and gated. A linked contribution does not mutate a candidate, queue compute, or bypass review.
+
 ## Operator Surfaces
 
 CLI:
@@ -161,17 +212,25 @@ The command above is a dry run. Live Neon creation requires `--execute` and the 
 hsa-ingestion research-workspaces --candidate-id twog-candidate-447eb8089965
 ```
 
+```bash
+hsa-ingestion research-workspace-checkout-manifest \
+  --candidate-id twog-candidate-447eb8089965 \
+  --work-packet-id wp-citation-1 \
+  --skill-profile literature_and_citation
+```
+
 Dagster:
 
 - `research_workspace_neon_report` / `research_workspace_neon_job`
 - `research_workspace_library_report` / `research_workspace_library_job`
 - `research_workspace_cleanup_report` / `research_workspace_cleanup_job`
+- `research_workspace_checkout_manifest_report` / `research_workspace_checkout_manifest_job`
 
 Dagster defaults to `dry_run=true`; live creation requires `dry_run=false` in run config. The GitHub env sync workflow publishes Neon secrets to Dagster+ only when they exist.
 
 ## Daytona Stub
 
-`DaytonaWorkspaceRequest` and `plan_daytona_workspace(...)` are intentionally non-live in this slice. The stub records the intended sandbox shape and fails closed for live execution. The future Daytona provider should receive:
+`DaytonaWorkspaceRequest` and `plan_daytona_workspace(...)` are intentionally non-live until a provider client is wired and reviewed. The stub records the intended sandbox shape and fails closed for live execution. A Daytona provider should receive:
 
 - Neon branch `database_secret_ref`, not a raw DSN;
 - checkout manifest hash and payload;
@@ -183,8 +242,8 @@ Contributor workspaces must not receive production database credentials, OpenRou
 
 ## Next Slices
 
-1. Daytona sandbox allocator.
-2. Checkout manifest builder.
-3. ProofCapsule link-back to `workspace_id`.
-4. Operator cleanup/revoke UI surface for workspace reports.
-5. ProofCapsule link-back from cleanup history.
+1. Live Daytona sandbox allocator with explicit credentials and no prod secrets.
+2. ProofCapsule schema that requires `workspace_id` and `checkout_manifest_hash`.
+3. Operator cleanup/revoke UI surface for workspace reports.
+4. Contribution-to-validation routing preview that shows linked workspace evidence.
+5. Provider-specific revoke/destroy adapters for Daytona, Coder, DevPod, and Codespaces.
