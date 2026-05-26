@@ -135,3 +135,34 @@ to the bundle*) and `provenance_strength`.
 - If your finding only makes sense as a wet-lab follow-up rather than
   as a citation, write a `validation_proposal` via
   `twog-validation-proposer`.
+
+## Compose with these skills
+
+This soul does the framing + submission. For the literature work, lean on:
+
+- **[`twog-agent/references/capsule_schema_v1.md`](../twog-agent/references/capsule_schema_v1.md)** — capsule shape.
+- **[`twog-agent/references/rubric_dimensions.md`](../twog-agent/references/rubric_dimensions.md)** — rubric.
+- **[`references/checklist.md`](references/checklist.md)** — evidence_addition acceptance bar.
+- **[`assets/example_capsule.json`](assets/example_capsule.json)** — annotated example.
+
+K-Dense scientific-agent-skills (`twog-agent install --with-kdense`):
+
+- `literature-review` — systematic search across PubMed / arXiv / bioRxiv / Semantic Scholar
+- `bgpt-paper-search` — fast biomedical paper retrieval
+- `paper-lookup` — DOI + metadata resolution
+- `research-lookup` — broader research-question search
+
+## Building and submitting the capsule
+
+```bash
+python ~/.claude/skills/twog-agent/scripts/wrap_as_capsule.py \
+  --packet "$PACKET" --candidate "$CANDIDATE" --type evidence_addition \
+  --title "Added two recent papers not yet cited in the candidate" \
+  --analysis @search-notes.md --findings @new-evidence.md \
+  --method-refs "literature-review v1,pubmed search,biorxiv search,doi-dedupe" \
+  --validate --out capsule.json
+
+twog-agent capsule submit --file capsule.json --packet "$PACKET" --wait
+```
+
+Exit codes: [`../twog-agent/references/exit_codes.md`](../twog-agent/references/exit_codes.md).

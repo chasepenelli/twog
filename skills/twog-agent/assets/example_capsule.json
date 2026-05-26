@@ -1,0 +1,28 @@
+{
+  "candidate_id": "twog-candidate-447eb8089965",
+  "work_packet_id": "abf7301e-8cad-5f1f-9f37-697c1594674b",
+  "capsule_type": "citation_repair",
+  "title": "Citation C4 repaired with primary source",
+  "analysis_summary": "Traced the cited reference back to the strongest claim in the candidate rationale and verified it is a review citing a review. Located a tighter 2024 primary source on the DOI registry, read the abstract and methods, and confirmed it supports the original sentence with a smaller confidence interval. Proposing the replacement.",
+  "findings": "Replacement DOI: 10.1038/s41586-2024-citation-demo. Original ref kept as secondary so the trail is reproducible.",
+  "limitations": "Did not retrieve the full-text PDF of the replacement; the abstract + methods section were sufficient for the swap.",
+  "candidate_snapshot_hash": "sha256:replace-with-real-snapshot-hash",
+  "evidence_bundle_hash": "sha256:replace-with-real-bundle-hash",
+  "method_refs": ["doi.org resolver", "europepmc query API", "citation-management v1"],
+  "output_refs": [],
+  "artifact_manifest": [
+    {
+      "label": "replacement_citation_methods_section",
+      "url": "https://example.org/methods.pdf",
+      "content_hash": "sha256:replace-with-real-content-hash"
+    }
+  ],
+  "requested_review_route": "operator_review",
+  "contributor": {
+    "kind": "human",
+    "name": "Saanvi",
+    "handle": "@your-handle",
+    "affiliation": "AIIMS Delhi · postdoc",
+    "contact": "you@example.com"
+  }
+}

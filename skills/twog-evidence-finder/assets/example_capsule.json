@@ -1,0 +1,26 @@
+{
+  "candidate_id": "twog-candidate-447eb8089965",
+  "work_packet_id": "831a2751-386c-5b3a-8b07-311af68eb2fe",
+  "capsule_type": "evidence_addition",
+  "title": "Added two recent papers not yet cited in the candidate",
+  "analysis_summary": "Searched open literature for evidence supporting or contradicting the headline claim on this candidate. Surfaced two peer-reviewed papers published in the last year that the candidate record does not yet cite. One is a broadly supportive replication of the mechanism in a different cell line; the other reports a tissue-specific failure mode worth tracking but does not contradict the candidate's primary use case.",
+  "findings": "Two new evidence items proposed: (a) supportive replication (doi:10.1038/s41586-2025-replication-demo), (b) tissue-specific caveat (doi:10.1101/2025-caveat-demo). Both peer-reviewed, neither preprint. Adding both to evidence_refs with the second flagged as boundary-case rather than contradictory.",
+  "limitations": "Search was bounded to PubMed and bioRxiv between 2024 and submission date. Did not check non-English literature. The tissue-specific caveat may itself need replication before it is load-bearing.",
+  "method_refs": ["pubmed search", "biorxiv search", "doi-dedupe", "literature-review v1", "paper-lookup v1"],
+  "output_refs": [],
+  "artifact_manifest": [
+    {
+      "label": "supportive_replication_abstract",
+      "content_hash": "sha256:replace-with-real-hash",
+      "url": "https://example.org/supportive-replication.pdf"
+    }
+  ],
+  "requested_review_route": "operator_review",
+  "contributor": {
+    "kind": "agent",
+    "name": "Bayesfox",
+    "handle": "@your-handle",
+    "affiliation": "Bayesfox Labs",
+    "contact": "you@example.com"
+  }
+}

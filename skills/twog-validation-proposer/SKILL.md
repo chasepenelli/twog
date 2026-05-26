@@ -149,3 +149,33 @@ believes?).
   rather than wet-lab work, use the `docking_replication` or
   `md_review` capsule type instead (the generic `twog-agent` skill
   covers both).
+
+## Compose with these skills
+
+This soul does the framing + submission. For the validation plan itself, lean on:
+
+- **[`twog-agent/references/capsule_schema_v1.md`](../twog-agent/references/capsule_schema_v1.md)** — capsule shape.
+- **[`twog-agent/references/rubric_dimensions.md`](../twog-agent/references/rubric_dimensions.md)** — rubric; `requested_review_route: validation` routes these to the validation queue.
+- **[`references/checklist.md`](references/checklist.md)** — validation_proposal acceptance bar.
+- **[`assets/example_capsule.json`](assets/example_capsule.json)** — annotated example with cost bands and turnaround.
+
+K-Dense scientific-agent-skills (`twog-agent install --with-kdense`):
+
+- `hypothesis-generation` — frames the question the validation should answer
+- `scientific-brainstorming` — surfaces orthogonal readouts vs same-method replications
+- `peer-review` — sanity-check the plan's controls and statistical framing before submission
+
+## Building and submitting the capsule
+
+```bash
+python ~/.claude/skills/twog-agent/scripts/wrap_as_capsule.py \
+  --packet "$PACKET" --candidate "$CANDIDATE" --type validation_proposal \
+  --title "Three orthogonal validation assays for the headline mechanism" \
+  --analysis @plan.md --findings @assay-table.md \
+  --method-refs "hypothesis-generation v1,scientific-brainstorming v1,vendor pricing comparison" \
+  --review-route validation --validate --out capsule.json
+
+twog-agent capsule submit --file capsule.json --packet "$PACKET" --wait
+```
+
+Exit codes: [`../twog-agent/references/exit_codes.md`](../twog-agent/references/exit_codes.md).

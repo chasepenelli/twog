@@ -1,0 +1,26 @@
+{
+  "candidate_id": "twog-candidate-447eb8089965",
+  "work_packet_id": "00000000-0000-0000-0000-000000000001",
+  "capsule_type": "validation_proposal",
+  "title": "Three orthogonal validation assays for the headline mechanism",
+  "analysis_summary": "Drafted a validation plan for the candidate's headline mechanism. The plan prioritizes orthogonal readouts over same-method replication: a cell-based functional assay, an in-vitro binding assay, and a transcriptomics readout in a tissue context. Each assay is independent of the candidate's existing pipeline so a positive result lands as genuinely new evidence rather than confirming the candidate's own framing.",
+  "findings": "Proposed assays: (a) HSA-derived cell-line functional readout, ~14 days, ~$3K; (b) SPR binding at the target site, ~7 days, ~$4K; (c) bulk RNA-seq in matched tissue, ~21 days, ~$6K. Recommend running (a) and (b) in parallel, gating (c) on positive (a) signal. Total turnaround ~3 weeks with one go/no-go gate.",
+  "limitations": "Cost bands are reasonable-case estimates from public vendor pricing, not negotiated quotes. The cell-line shortlist assumes HSA-derived lines are available; if not, the plan needs an alternate cell-line search step.",
+  "method_refs": ["hypothesis-generation v1", "scientific-brainstorming v1", "vendor pricing comparison"],
+  "output_refs": [],
+  "artifact_manifest": [
+    {
+      "label": "validation_plan_outline",
+      "content_hash": "sha256:replace-with-real-hash",
+      "url": null
+    }
+  ],
+  "requested_review_route": "validation",
+  "contributor": {
+    "kind": "team",
+    "name": "Validate Co.",
+    "handle": "@your-handle",
+    "affiliation": "Validate Co. · 3 reviewers",
+    "contact": "you@example.com"
+  }
+}

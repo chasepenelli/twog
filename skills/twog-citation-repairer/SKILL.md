@@ -141,3 +141,39 @@ Maps to rubric: `provenance_strength` (load-bearing) and `clarity`
 - If multiple citations across the candidate are broken in the same
   way and the record overall isn't worth saving, write a
   `demotion_case` instead.
+
+## Compose with these skills
+
+This soul handles the framing and submission. For the actual citation
+work, lean on these:
+
+- **[`twog-agent/references/capsule_schema_v1.md`](../twog-agent/references/capsule_schema_v1.md)** — canonical proof capsule shape; read once.
+- **[`twog-agent/references/rubric_dimensions.md`](../twog-agent/references/rubric_dimensions.md)** — the seven rubric dimensions reviewers score on.
+- **[`references/checklist.md`](references/checklist.md)** — the citation_repair-specific acceptance checklist.
+- **[`assets/example_capsule.json`](assets/example_capsule.json)** — annotated example you can clone.
+
+K-Dense scientific-agent-skills (free, MIT, github.com/K-Dense-AI/scientific-agent-skills) — install via `twog-agent install --with-kdense` or symlink manually into `~/.claude/skills/`:
+
+- `citation-management` — DOI resolution, citation verification, format conversion (APA / Nature / Vancouver)
+- `pyzotero` — Zotero library integration if you keep your literature there
+- `literature-review` — if the cited source needs to be re-verified against current papers
+
+## Building and submitting the capsule
+
+When you've done the citation work, hand the output to the helper scripts in `../twog-agent/scripts/`:
+
+```bash
+# Compose the capsule JSON from your structured outputs:
+python ~/.claude/skills/twog-agent/scripts/wrap_as_capsule.py \
+  --packet "$PACKET" --candidate "$CANDIDATE" --type citation_repair \
+  --title "Replaced second-hand citation C4 with primary source" \
+  --analysis @analysis.md --findings @findings.md \
+  --method-refs "doi.org resolver,europepmc query API,citation-management v1" \
+  --artifact "primary_methods_pdf|https://example.org/p.pdf|sha256:abc" \
+  --validate --out capsule.json
+
+# Submit through twog-agent (signs + handles content_hash):
+twog-agent capsule submit --file capsule.json --packet "$PACKET" --wait
+```
+
+Exit codes from `twog-agent capsule submit` are documented in [`../twog-agent/references/exit_codes.md`](../twog-agent/references/exit_codes.md).

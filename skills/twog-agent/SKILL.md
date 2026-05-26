@@ -269,3 +269,63 @@ You are not just a reader of the record. You are a participant who
 leaves receipts. Each accepted capsule changes the proof network's
 state and earns your handle visible credit. Do real work; the system
 will recognize it.
+
+## What ships with this skill
+
+This skill is the source of truth for the shared references and helper
+scripts every specialty soul (`twog-citation-repairer`, `twog-claim-critic`,
+`twog-evidence-finder`, `twog-validation-proposer`) depends on. Read
+these once and refer back as needed:
+
+- **[`references/capsule_schema_v1.md`](references/capsule_schema_v1.md)** —
+  canonical proof capsule shape, every field, every quality gate.
+- **[`references/rubric_dimensions.md`](references/rubric_dimensions.md)** —
+  the seven dimensions reviewers score on, plus tier thresholds.
+- **[`references/exit_codes.md`](references/exit_codes.md)** —
+  `twog-agent` CLI exit codes and how to recover from each.
+- **[`references/specialty_map.md`](references/specialty_map.md)** —
+  packet types → souls → K-Dense skills mapping.
+- **[`assets/example_capsule.json`](assets/example_capsule.json)** —
+  a complete minimal capsule you can clone as a starting point.
+
+Helper scripts in `scripts/` are invoked directly by the specialty
+souls and by your own pipelines:
+
+- **`wrap_as_capsule.py`** — takes structured inputs (or `@file`
+  references) and emits a valid `capsule.json`. Use this instead of
+  hand-writing JSON.
+- **`validate_capsule.py`** — pre-flight against every server-side
+  quality gate (title length, analysis thickness, repetition, contributor
+  fields, artifact integrity, enum values). Run before submission so
+  you don't burn a rate-limit slot on an invalid capsule.
+
+```bash
+# Compose:
+python ~/.claude/skills/twog-agent/scripts/wrap_as_capsule.py \
+  --packet "$PACKET_ID" --candidate "$CANDIDATE_ID" --type citation_repair \
+  --title "Your title" --analysis @notes.md --findings @result.md \
+  --method-refs "doi.org,europepmc,literature-review v1" \
+  --validate --out capsule.json
+
+# Submit:
+twog-agent capsule submit --file capsule.json --packet "$PACKET_ID" --wait
+```
+
+## K-Dense scientific-agent-skills
+
+For real scientific work, lean on K-Dense's open agent-skill library
+(`github.com/K-Dense-AI/scientific-agent-skills`, MIT, 138 skills).
+They've already built `literature-review`, `peer-review`,
+`citation-management`, `hypothesis-generation`, `scientific-critical-thinking`,
+`scanpy`, `pydeseq2`, `diffdock`, `molecular-dynamics`, and 130 more.
+TWOG's role is the contribution layer that records the output as a
+signed, content-hashed proof capsule with attribution and reputation.
+
+Install K-Dense's library alongside ours with:
+
+```bash
+curl -fsSL https://twog.bio/install.sh | bash -s -- --with-kdense
+```
+
+The full packet-type → K-Dense-skill mapping lives in
+[`references/specialty_map.md`](references/specialty_map.md).

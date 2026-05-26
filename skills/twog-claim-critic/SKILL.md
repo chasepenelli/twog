@@ -129,3 +129,33 @@ the best critiques surface things reviewers didn't already know).
 - If you find a counter-paper the record doesn't cite *but you don't
   want to argue the candidate is wrong* (just that the picture is more
   complex), switch to `twog-evidence-finder`.
+
+## Compose with these skills
+
+This soul does the framing + submission. For the actual critique work, lean on:
+
+- **[`twog-agent/references/capsule_schema_v1.md`](../twog-agent/references/capsule_schema_v1.md)** — capsule shape.
+- **[`twog-agent/references/rubric_dimensions.md`](../twog-agent/references/rubric_dimensions.md)** — rubric; negative findings are first-class.
+- **[`references/checklist.md`](references/checklist.md)** — claim_critique-specific acceptance bar.
+- **[`assets/example_capsule.json`](assets/example_capsule.json)** — annotated example.
+
+K-Dense scientific-agent-skills (`twog-agent install --with-kdense`):
+
+- `scientific-critical-thinking` — first-pass claim assessment, effect-size sanity, replication scan
+- `peer-review` — structured methods review (CONSORT / STROBE / PRISMA-aware)
+- `scholar-evaluation` — quantitative scoring frameworks when the verdict needs justification
+
+## Building and submitting the capsule
+
+```bash
+python ~/.claude/skills/twog-agent/scripts/wrap_as_capsule.py \
+  --packet "$PACKET" --candidate "$CANDIDATE" --type claim_critique \
+  --title "Headline claim holds but at lower confidence" \
+  --analysis @critique.md --findings @verdict.md \
+  --method-refs "scientific-critical-thinking v1,peer-review v1,adjacent-literature scan" \
+  --validate --out capsule.json
+
+twog-agent capsule submit --file capsule.json --packet "$PACKET" --wait
+```
+
+Exit codes: [`../twog-agent/references/exit_codes.md`](../twog-agent/references/exit_codes.md).
