@@ -45,12 +45,15 @@ POST /api/public-candidates/{candidate_id}/contributions
 
 Valid contribution types:
 
-- `evidence`
-- `critique`
-- `replication`
-- `artifact`
+- `evidence_addition`
+- `citation_repair`
+- `claim_critique`
+- `replication_result`
+- `compute_artifact`
+- `omics_note`
 - `validation_proposal`
-- `compute_result`
+- `safety_or_translation_note`
+- `candidate_demotion_case`
 
 Valid requested system actions:
 
@@ -86,6 +89,18 @@ Important fields:
 - `review_notes`
 - `promoted_queue_id`
 
+## Workspace Check-In
+
+Workspace-backed work should return a `ProofCapsule` rather than an informal note. A ProofCapsule pins:
+
+- the `workspace_id`;
+- the `checkout_manifest_hash`;
+- the candidate and optional WorkPacket;
+- the targeted claim, section, evidence ref, or method ref;
+- the finding, why it matters, limitations, sources, artifacts, and requested action.
+
+Accepted ProofCapsules are still intake artifacts. They do not directly mutate a candidate record or dispatch GPU compute. They give operators a structured, hashable object to route into evidence review, validation planning, or compute review.
+
 ## Operator Triage
 
 The Command Center exposes a public contribution panel that reads intake rows and lets an operator preview or apply triage actions.
@@ -113,4 +128,3 @@ The job defaults to preview mode. It only mutates Neon when `dry_run=false`.
 The public contribution path is a research intake mechanism. It is not medical advice, veterinary advice, or a public route to trigger compute automatically.
 
 Every meaningful state transition should leave a review note, operator identity, timestamp, and, where applicable, a promoted queue marker.
-

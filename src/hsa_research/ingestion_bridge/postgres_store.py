@@ -31,6 +31,7 @@ from .contracts import (
     MDExpertApprovalRecord,
     MDExpertReviewPacketRecord,
     PrimitiveCallEvent,
+    ProofCapsuleRecord,
     PublicCandidateDecisionEvent,
     PublicCandidateLibraryRequest,
     PublicCandidateRecord,
@@ -2271,6 +2272,109 @@ class PostgresResearchRepository(ResearchRepository):
             params.append(limit)
         return [ResearchWorkspaceRecord.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
 
+    def upsert_proof_capsule(self, record: ProofCapsuleRecord) -> ProofCapsuleRecord:
+        existing = self.get_proof_capsule(record.capsule_id)
+        if existing:
+            record = record.model_copy(
+                update={
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **record.metadata},
+                }
+            )
+        payload = record.model_dump(mode="json")
+        self._execute(
+            """
+            insert into proof_capsules (
+              capsule_id, workspace_id, checkout_manifest_hash, candidate_id,
+              work_packet_id, packet_type, requested_action, status,
+              created_at, updated_at, payload
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict(capsule_id) do update set
+              workspace_id = excluded.workspace_id,
+              checkout_manifest_hash = excluded.checkout_manifest_hash,
+              candidate_id = excluded.candidate_id,
+              work_packet_id = excluded.work_packet_id,
+              packet_type = excluded.packet_type,
+              requested_action = excluded.requested_action,
+              status = excluded.status,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(record.capsule_id),
+                str(record.workspace_id),
+                record.checkout_manifest_hash,
+                record.candidate_id,
+                record.work_packet_id,
+                record.packet_type,
+                record.requested_action,
+                record.status,
+                record.created_at,
+                record.updated_at,
+                self._json(payload),
+            ),
+        )
+        return record
+
+    def get_proof_capsule(self, capsule_id: UUID) -> ProofCapsuleRecord | None:
+        row = self._fetchone(
+            "select payload from proof_capsules where capsule_id = %s",
+            (str(capsule_id),),
+        )
+        if row is None:
+            return None
+        return ProofCapsuleRecord.model_validate(_payload(row))
+
+    def list_proof_capsules(
+        self,
+        *,
+        workspace_id: UUID | None = None,
+        checkout_manifest_hash: str | None = None,
+        candidate_id: str | None = None,
+        work_packet_id: str | None = None,
+        packet_type: str | None = None,
+        requested_action: str | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        limit: int | None = 50,
+    ) -> list[ProofCapsuleRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if workspace_id:
+            clauses.append("workspace_id = %s")
+            params.append(str(workspace_id))
+        if checkout_manifest_hash:
+            clauses.append("checkout_manifest_hash = %s")
+            params.append(checkout_manifest_hash)
+        if candidate_id:
+            clauses.append("candidate_id = %s")
+            params.append(candidate_id)
+        if work_packet_id:
+            clauses.append("work_packet_id = %s")
+            params.append(work_packet_id)
+        if packet_type:
+            clauses.append("packet_type = %s")
+            params.append(packet_type)
+        if requested_action:
+            clauses.append("requested_action = %s")
+            params.append(requested_action)
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        if statuses:
+            clauses.append("status = any(%s)")
+            params.append(statuses)
+        sql = "select payload from proof_capsules"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by updated_at desc"
+        if limit is not None:
+            sql += " limit %s"
+            params.append(limit)
+        return [ProofCapsuleRecord.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
+
     def upsert_validation_decision(self, record: ValidationDecisionRecord) -> ValidationDecisionRecord:
         existing = self.get_validation_decision(record.decision_id)
         if existing:
@@ -4315,6 +4419,29 @@ class PostgresResearchRepository(ResearchRepository):
               on research_workspaces(provider, status, updated_at desc);
             create index if not exists research_workspaces_skill_idx
               on research_workspaces(skill_profile, updated_at desc);
+
+            create table if not exists proof_capsules (
+              capsule_id text primary key,
+              workspace_id text not null,
+              checkout_manifest_hash text not null,
+              candidate_id text not null,
+              work_packet_id text,
+              packet_type text not null,
+              requested_action text not null,
+              status text not null,
+              payload jsonb not null,
+              created_at timestamptz not null default now(),
+              updated_at timestamptz not null default now()
+            );
+
+            create index if not exists proof_capsules_candidate_status_idx
+              on proof_capsules(candidate_id, status, updated_at desc);
+            create index if not exists proof_capsules_workspace_idx
+              on proof_capsules(workspace_id, updated_at desc);
+            create index if not exists proof_capsules_manifest_idx
+              on proof_capsules(checkout_manifest_hash, updated_at desc);
+            create index if not exists proof_capsules_packet_idx
+              on proof_capsules(packet_type, status, updated_at desc);
 
             create table if not exists validation_decisions (
               decision_record_id text primary key,

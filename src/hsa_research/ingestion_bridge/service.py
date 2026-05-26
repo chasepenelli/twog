@@ -150,6 +150,10 @@ from .contracts import (
     OmicsLocusSignalResult,
     OmicsReadoutRequest,
     OmicsReadoutResult,
+    ProofCapsuleLibraryRequest,
+    ProofCapsuleLibraryResult,
+    ProofCapsuleSubmitRequest,
+    ProofCapsuleSubmitResult,
     ResearchProgramBoardRequest,
     ResearchProgramBoardResult,
     ResearchProgramEvidenceTask,
@@ -290,6 +294,7 @@ from .research_brief_evaluation import (
     evaluate_research_brief_synthesis,
     summarize_research_brief_evaluation,
 )
+from .proof_capsules import build_proof_capsule_library, submit_proof_capsule
 from .research_brief_errors import split_research_brief_errors
 from .repository import ResearchRepository
 from .research_program_board import (
@@ -1510,6 +1515,18 @@ class HSAResearchService:
             provider_counts=dict(sorted(Counter(record.provider for record in records).items())),
             workspaces=records,
         )
+
+    def submit_proof_capsule(
+        self,
+        request: ProofCapsuleSubmitRequest,
+    ) -> ProofCapsuleSubmitResult:
+        return submit_proof_capsule(self.repository, request)
+
+    def list_proof_capsules(
+        self,
+        request: ProofCapsuleLibraryRequest | None = None,
+    ) -> ProofCapsuleLibraryResult:
+        return build_proof_capsule_library(self.repository, request or ProofCapsuleLibraryRequest())
 
     def build_public_candidate_integrity_report(
         self,

@@ -39,6 +39,7 @@ from .contracts import (
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
     ResearchProgramRecord,
+    ProofCapsuleRecord,
     ResearchWorkspaceRecord,
     ResearchBriefEvaluationRecord,
     ResearchBriefQueueItem,
@@ -406,6 +407,27 @@ class ResearchRepository(Protocol):
     ) -> list[ResearchWorkspaceRecord]:
         """Return persisted research workspaces by durable filters."""
 
+    def upsert_proof_capsule(self, record: ProofCapsuleRecord) -> ProofCapsuleRecord:
+        """Persist a structured workspace check-in artifact."""
+
+    def get_proof_capsule(self, capsule_id: UUID) -> ProofCapsuleRecord | None:
+        """Return a persisted proof capsule."""
+
+    def list_proof_capsules(
+        self,
+        *,
+        workspace_id: UUID | None = None,
+        checkout_manifest_hash: str | None = None,
+        candidate_id: str | None = None,
+        work_packet_id: str | None = None,
+        packet_type: str | None = None,
+        requested_action: str | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        limit: int | None = 50,
+    ) -> list[ProofCapsuleRecord]:
+        """Return proof capsules by durable filters."""
+
     def upsert_validation_decision(self, record: ValidationDecisionRecord) -> ValidationDecisionRecord:
         """Persist a finite validation decision generated from a validation packet."""
 
@@ -741,6 +763,7 @@ class InMemoryResearchRepository:
         self.therapy_ideas: dict[UUID, TherapyIdeaRecord] = {}
         self.research_programs: dict[UUID, ResearchProgramRecord] = {}
         self.research_workspaces: dict[UUID, ResearchWorkspaceRecord] = {}
+        self.proof_capsules: dict[UUID, ProofCapsuleRecord] = {}
         self.validation_decisions: dict[str, ValidationDecisionRecord] = {}
         self.public_candidates: dict[str, PublicCandidateRecord] = {}
         self.public_candidate_snapshots: dict[UUID, PublicCandidateSnapshot] = {}
@@ -1593,6 +1616,56 @@ class InMemoryResearchRepository:
                 for record in records
                 if record.expires_at is None or record.expires_at > now
             ]
+        records.sort(key=lambda record: record.updated_at, reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def upsert_proof_capsule(self, record: ProofCapsuleRecord) -> ProofCapsuleRecord:
+        existing = self.proof_capsules.get(record.capsule_id)
+        if existing:
+            record = record.model_copy(
+                update={
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **record.metadata},
+                }
+            )
+        self.proof_capsules[record.capsule_id] = record
+        return record
+
+    def get_proof_capsule(self, capsule_id: UUID) -> ProofCapsuleRecord | None:
+        return self.proof_capsules.get(capsule_id)
+
+    def list_proof_capsules(
+        self,
+        *,
+        workspace_id: UUID | None = None,
+        checkout_manifest_hash: str | None = None,
+        candidate_id: str | None = None,
+        work_packet_id: str | None = None,
+        packet_type: str | None = None,
+        requested_action: str | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        limit: int | None = 50,
+    ) -> list[ProofCapsuleRecord]:
+        records = list(self.proof_capsules.values())
+        if workspace_id:
+            records = [record for record in records if record.workspace_id == workspace_id]
+        if checkout_manifest_hash:
+            records = [record for record in records if record.checkout_manifest_hash == checkout_manifest_hash]
+        if candidate_id:
+            records = [record for record in records if record.candidate_id == candidate_id]
+        if work_packet_id:
+            records = [record for record in records if record.work_packet_id == work_packet_id]
+        if packet_type:
+            records = [record for record in records if record.packet_type == packet_type]
+        if requested_action:
+            records = [record for record in records if record.requested_action == requested_action]
+        if status:
+            records = [record for record in records if record.status == status]
+        if statuses:
+            allowed = set(statuses)
+            records = [record for record in records if record.status in allowed]
         records.sort(key=lambda record: record.updated_at, reverse=True)
         return records[:limit] if limit is not None else records
 
