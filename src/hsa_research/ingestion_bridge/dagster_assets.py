@@ -4155,6 +4155,57 @@ if dg is not None:
     @dg.asset(
         group_name="ai_research",
         config_schema={
+            "limit": dg.Field(
+                int,
+                default_value=20,
+                description="Maximum unreviewed capsules to grade per pass.",
+            ),
+            "model_name": dg.Field(
+                str,
+                is_required=False,
+                description="OpenRouter model identifier (defaults to claude-haiku-4-5-20251001).",
+            ),
+            "dry_run": dg.Field(
+                bool,
+                default_value=False,
+                description="Skip persisting reviews; print scores only.",
+            ),
+        },
+    )
+    def capsule_llm_grade_report(context) -> dg.MaterializeResult:
+        """LLM-as-judge pre-grade for proof capsules.
+
+        Finds capsules without any operator-grade review and asks an LLM
+        to score them across the 7 rubric dimensions. Stores results as
+        proof_capsule_reviews rows with reviewer_type="llm_evaluator" —
+        these are advisory recommendations only and do not award proof
+        points (sync_reward_events_from_proof_capsule_reviews skips
+        reviewer_type=llm_evaluator). Operators can adopt or override
+        the LLM grade when they triage their queue.
+        """
+
+        from .llm_capsule_grader import grade_pending_capsules
+
+        config = context.op_config
+        result = grade_pending_capsules(
+            limit=config["limit"],
+            model_name=config.get("model_name"),
+            dry_run=config["dry_run"],
+        )
+        metadata: dict[str, Any] = {
+            "scanned": dg.MetadataValue.int(result.get("scanned", 0)),
+            "graded": dg.MetadataValue.int(result.get("graded", 0)),
+            "cached_hits": dg.MetadataValue.int(result.get("cached_hits", 0)),
+            "error_count": dg.MetadataValue.int(len(result.get("errors") or [])),
+            "dry_run": dg.MetadataValue.bool(bool(result.get("dry_run"))),
+        }
+        if result.get("errors"):
+            metadata["errors"] = dg.MetadataValue.json(result["errors"])
+        return dg.MaterializeResult(value=result, metadata=metadata)
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
             "topic": dg.Field(
                 str,
                 default_value="canine hemangiosarcoma translational therapy",
@@ -8075,6 +8126,7 @@ if dg is not None:
         agent_performance_evaluation_report,
         reward_event_report,
         reward_event_sync_report,
+        capsule_llm_grade_report,
         research_brief_agent_report,
         therapy_committee_report,
         validation_tool_catalog_report,
@@ -8268,6 +8320,10 @@ if dg is not None:
     reward_event_sync_job = dg.define_asset_job(
         "reward_event_sync_job",
         selection=dg.AssetSelection.assets(reward_event_sync_report),
+    )
+    capsule_llm_grade_job = dg.define_asset_job(
+        "capsule_llm_grade_job",
+        selection=dg.AssetSelection.assets(capsule_llm_grade_report),
     )
     research_brief_agent_job = dg.define_asset_job(
         "research_brief_agent_job",
@@ -8709,6 +8765,7 @@ if dg is not None:
             agent_performance_evaluation_job,
             reward_event_report_job,
             reward_event_sync_job,
+            capsule_llm_grade_job,
             research_brief_agent_job,
             therapy_committee_job,
             validation_tool_catalog_job,
