@@ -35,6 +35,8 @@ on:
           - "research_program_board_job"
           - "research_program_library_job"
           - "research_program_evidence_loop_job"
+          - "research_workspace_neon_job"
+          - "research_workspace_library_job"
           - "omics_accession_hunt_job"
           - "omics_evidence_packet_job"
           - "omics_readout_job"
@@ -143,6 +145,9 @@ jobs:
       HSA_RESEARCH_PROGRAM_BOARD_MODEL: "~anthropic/claude-opus-latest"
       RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
       HSA_RUNPOD_ENDPOINT_ID: ${{ secrets.HSA_RUNPOD_ENDPOINT_ID }}
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+      NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
       HSA_X_LINKED_ARTICLE_APPROVED_BY: "github-actions"
@@ -188,6 +193,12 @@ jobs:
           if [ "$DAGSTER_CLOUD_JOB" = "compute_job_job" ] && printf '%s' "$DAGSTER_CLOUD_CONFIG_JSON" | grep -q '"dry_run"[[:space:]]*:[[:space:]]*false'; then
             if [ -z "$RUNPOD_API_KEY" ] || [ -z "$HSA_RUNPOD_ENDPOINT_ID" ]; then
               echo "::error::RUNPOD_API_KEY and HSA_RUNPOD_ENDPOINT_ID are required for live compute_job_job submissions."
+              exit 1
+            fi
+          fi
+          if [ "$DAGSTER_CLOUD_JOB" = "research_workspace_neon_job" ] && printf '%s' "$DAGSTER_CLOUD_CONFIG_JSON" | grep -q '"dry_run"[[:space:]]*:[[:space:]]*false'; then
+            if [ -z "$NEON_API_KEY" ] || [ -z "$NEON_PROJECT_ID" ]; then
+              echo "::error::NEON_API_KEY and NEON_PROJECT_ID are required for live research_workspace_neon_job submissions."
               exit 1
             fi
           fi
