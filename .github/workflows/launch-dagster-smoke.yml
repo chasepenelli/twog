@@ -37,6 +37,7 @@ on:
           - "research_program_evidence_loop_job"
           - "research_workspace_neon_job"
           - "research_workspace_library_job"
+          - "research_workspace_cleanup_job"
           - "omics_accession_hunt_job"
           - "omics_evidence_packet_job"
           - "omics_readout_job"
@@ -199,6 +200,12 @@ jobs:
           if [ "$DAGSTER_CLOUD_JOB" = "research_workspace_neon_job" ] && printf '%s' "$DAGSTER_CLOUD_CONFIG_JSON" | grep -q '"dry_run"[[:space:]]*:[[:space:]]*false'; then
             if [ -z "$NEON_API_KEY" ] || [ -z "$NEON_PROJECT_ID" ]; then
               echo "::error::NEON_API_KEY and NEON_PROJECT_ID are required for live research_workspace_neon_job submissions."
+              exit 1
+            fi
+          fi
+          if [ "$DAGSTER_CLOUD_JOB" = "research_workspace_cleanup_job" ] && printf '%s' "$DAGSTER_CLOUD_CONFIG_JSON" | grep -q '"dry_run"[[:space:]]*:[[:space:]]*false'; then
+            if [ -z "$NEON_API_KEY" ] || [ -z "$NEON_PROJECT_ID" ]; then
+              echo "::error::NEON_API_KEY and NEON_PROJECT_ID are required for live research_workspace_cleanup_job submissions."
               exit 1
             fi
           fi
@@ -555,14 +562,14 @@ jobs:
         shell: bash
 
       - name: Print hosted research workspace summary
-        if: ${{ always() && (inputs.job == 'research_workspace_neon_job' || inputs.job == 'research_workspace_library_job') }}
+        if: ${{ always() && (inputs.job == 'research_workspace_neon_job' || inputs.job == 'research_workspace_library_job' || inputs.job == 'research_workspace_cleanup_job') }}
         continue-on-error: true
         run: |
           uv run python - <<'PY'
           import json
           import os
 
-          from hsa_research.ingestion_bridge.contracts import ResearchWorkspaceLibraryRequest
+          from hsa_research.ingestion_bridge.contracts import ResearchWorkspaceCleanupRequest, ResearchWorkspaceLibraryRequest
           from hsa_research.ingestion_bridge.service import HSAResearchService
           from hsa_research.ingestion_bridge.storage import build_research_repository
 
@@ -572,7 +579,7 @@ jobs:
               except json.JSONDecodeError:
                   return {}
               ops = config.get("ops") if isinstance(config.get("ops"), dict) else {}
-              for op_name in ("research_workspace_neon_report", "research_workspace_library_report"):
+              for op_name in ("research_workspace_neon_report", "research_workspace_library_report", "research_workspace_cleanup_report"):
                   op_payload = ops.get(op_name)
                   if isinstance(op_payload, dict) and isinstance(op_payload.get("config"), dict):
                       return op_payload["config"]
@@ -618,6 +625,40 @@ jobs:
                   }
               )
 
+          cleanup_preview = None
+          if os.getenv("DAGSTER_CLOUD_JOB") == "research_workspace_cleanup_job":
+              preview = service.cleanup_research_workspaces(
+                  ResearchWorkspaceCleanupRequest(
+                      workspace_id=config.get("workspace_id"),
+                      candidate_id=config.get("candidate_id"),
+                      work_packet_id=config.get("work_packet_id"),
+                      provider=provider,
+                      expired_before=config.get("expired_before"),
+                      limit=int(config.get("limit") or 10),
+                      reason=config.get("reason") or "hosted_cleanup_summary",
+                      dry_run=True,
+                      metadata={"github_summary": True},
+                  )
+              )
+              cleanup_preview = {
+                  "candidate_count": preview.candidate_count,
+                  "skipped_count": preview.skipped_count,
+                  "deleted_count": preview.deleted_count,
+                  "updated_count": preview.updated_count,
+                  "errors": preview.errors,
+                  "candidate_branch_ids": [
+                      candidate.workspace.neon_branch_id for candidate in preview.candidates
+                  ],
+                  "skipped": [
+                      {
+                          "workspace_id": str(candidate.workspace.workspace_id),
+                          "branch_id": candidate.workspace.neon_branch_id,
+                          "reason": candidate.reason,
+                      }
+                      for candidate in preview.skipped
+                  ],
+              }
+
           payload = {
               "dagster_run_id": os.getenv("DAGSTER_CLOUD_RUN_ID"),
               "query": {
@@ -629,6 +670,7 @@ jobs:
               "status_counts": result.status_counts,
               "provider_counts": result.provider_counts,
               "workspaces": rows,
+              "cleanup_preview": cleanup_preview,
           }
           print(json.dumps(payload, indent=2, sort_keys=True))
 

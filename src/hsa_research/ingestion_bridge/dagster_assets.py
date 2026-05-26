@@ -52,6 +52,7 @@ from .contracts import (
     ResearchProgramBoardRequest,
     ResearchProgramEvidenceLoopRequest,
     ResearchProgramReviewRequest,
+    ResearchWorkspaceCleanupRequest,
     ResearchWorkspaceLibraryRequest,
     RewardEventSyncRequest,
     RewardReportRequest,
@@ -1632,6 +1633,14 @@ if dg is not None:
         workspaces = report.get("workspaces", [])
         if not workspaces and isinstance(report.get("workspace"), Mapping):
             workspaces = [report["workspace"]]
+        if not workspaces:
+            workspaces = report.get("updated_workspaces", [])
+        if not workspaces:
+            workspaces = [
+                candidate["workspace"]
+                for candidate in report.get("candidates", [])
+                if isinstance(candidate, Mapping) and isinstance(candidate.get("workspace"), Mapping)
+            ]
         rows = []
         for workspace in workspaces:
             rows.append(
@@ -1656,6 +1665,10 @@ if dg is not None:
             "status_counts": dg.MetadataValue.json(report.get("status_counts", {})),
             "provider_counts": dg.MetadataValue.json(report.get("provider_counts", {})),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "candidate_count": dg.MetadataValue.int(int(report.get("candidate_count", 0) or 0)),
+            "skipped_count": dg.MetadataValue.int(int(report.get("skipped_count", 0) or 0)),
+            "deleted_count": dg.MetadataValue.int(int(report.get("deleted_count", 0) or 0)),
+            "updated_count": dg.MetadataValue.int(int(report.get("updated_count", 0) or 0)),
             "workspaces": _metadata_table(rows, _RESEARCH_WORKSPACE_TABLE_COLUMNS),
         }
         if report.get("branch_name"):
@@ -4761,6 +4774,44 @@ if dg is not None:
                 skill_profile=config.get("skill_profile"),
                 include_expired=config.get("include_expired", True),
                 limit=config.get("limit", 50),
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_research_workspace_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "workspace_id": dg.Field(str, is_required=False),
+            "candidate_id": dg.Field(str, is_required=False),
+            "work_packet_id": dg.Field(str, is_required=False),
+            "provider": dg.Field(str, default_value="neon"),
+            "expired_before": dg.Field(str, is_required=False),
+            "limit": dg.Field(int, default_value=50),
+            "reason": dg.Field(str, default_value="operator_workspace_cleanup"),
+            "dry_run": dg.Field(bool, default_value=True),
+        },
+    )
+    def research_workspace_cleanup_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Manual guarded cleanup report for expired Neon research workspaces."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).cleanup_research_workspaces(
+            ResearchWorkspaceCleanupRequest(
+                workspace_id=_uuid_or_none(config.get("workspace_id")),
+                candidate_id=config.get("candidate_id"),
+                work_packet_id=config.get("work_packet_id"),
+                provider=config.get("provider", "neon"),
+                expired_before=config.get("expired_before"),
+                limit=config.get("limit", 50),
+                reason=config.get("reason", "operator_workspace_cleanup"),
+                dry_run=config.get("dry_run", True),
+                metadata={"dagster_run_id": context.run_id},
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_research_workspace_metadata(report))
@@ -8118,6 +8169,7 @@ if dg is not None:
         research_program_library_report,
         research_workspace_neon_report,
         research_workspace_library_report,
+        research_workspace_cleanup_report,
         research_program_evidence_loop_report,
         omics_accession_hunt_report,
         omics_evidence_packet_report,
@@ -8347,6 +8399,10 @@ if dg is not None:
     research_workspace_library_job = dg.define_asset_job(
         "research_workspace_library_job",
         selection=dg.AssetSelection.assets(research_workspace_library_report),
+    )
+    research_workspace_cleanup_job = dg.define_asset_job(
+        "research_workspace_cleanup_job",
+        selection=dg.AssetSelection.assets(research_workspace_cleanup_report),
     )
     research_program_evidence_loop_job = dg.define_asset_job(
         "research_program_evidence_loop_job",
@@ -8752,6 +8808,7 @@ if dg is not None:
             research_program_library_job,
             research_workspace_neon_job,
             research_workspace_library_job,
+            research_workspace_cleanup_job,
             research_program_evidence_loop_job,
             omics_accession_hunt_job,
             omics_evidence_packet_job,
