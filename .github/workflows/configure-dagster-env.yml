@@ -23,6 +23,9 @@ jobs:
       TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
       RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
       HSA_RUNPOD_ENDPOINT_ID: ${{ secrets.HSA_RUNPOD_ENDPOINT_ID }}
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+      NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
       HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS: "8"
       HSA_FULL_TEXT_REQUEST_ATTEMPTS: "1"
@@ -118,6 +121,24 @@ jobs:
               create_env "$scope" HSA_RUNPOD_ENDPOINT_ID "$HSA_RUNPOD_ENDPOINT_ID"
             else
               echo "::warning::HSA_RUNPOD_ENDPOINT_ID is not configured as a GitHub Actions secret; live RunPod compute will stay disabled in Dagster+."
+            fi
+
+            if [ -n "$NEON_API_KEY" ]; then
+              create_env "$scope" NEON_API_KEY --from-local-env
+            else
+              echo "::warning::NEON_API_KEY is not configured as a GitHub Actions secret; live Neon workspace creation will stay disabled in Dagster+."
+            fi
+
+            if [ -n "$NEON_PROJECT_ID" ]; then
+              create_env "$scope" NEON_PROJECT_ID "$NEON_PROJECT_ID"
+            else
+              echo "::warning::NEON_PROJECT_ID is not configured as a GitHub Actions secret; live Neon workspace creation will stay disabled in Dagster+."
+            fi
+
+            if [ -n "$NEON_PARENT_BRANCH_ID" ]; then
+              create_env "$scope" NEON_PARENT_BRANCH_ID "$NEON_PARENT_BRANCH_ID"
+            else
+              echo "::notice::NEON_PARENT_BRANCH_ID is not configured; Neon workspaces will use Neon project default parent behavior unless configured per run."
             fi
           done
         shell: bash

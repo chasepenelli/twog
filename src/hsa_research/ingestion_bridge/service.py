@@ -48,6 +48,8 @@ from .contracts import (
     ComputeJobReportRequest,
     ComputeJobReportResult,
     CommitHypothesisRequest,
+    DaytonaWorkspaceRequest,
+    DaytonaWorkspaceResult,
     DoiOpenAccessFollowupQueueRequest,
     DocumentChunk,
     EvidenceRefRepairItem,
@@ -71,6 +73,8 @@ from .contracts import (
     MDExpertReviewPacketRecord,
     MDInputPacket,
     ModelProfile,
+    NeonBranchWorkspaceRequest,
+    NeonBranchWorkspaceResult,
     PubMedIdentifierRepairRequest,
     PubMedIdentifierRepairResult,
     PublicCandidateDecisionEvent,
@@ -155,6 +159,9 @@ from .contracts import (
     ResearchProgramRecord,
     ResearchProgramReviewRequest,
     ResearchProgramReviewResult,
+    ResearchWorkspaceLibraryRequest,
+    ResearchWorkspaceLibraryResult,
+    ResearchWorkspaceRecord,
     RewardEventRecord,
     RewardEventSyncRequest,
     RewardEventSyncResult,
@@ -287,6 +294,7 @@ from .research_program_board import (
     run_research_program_board_agent,
     summarize_research_program_board,
 )
+from .research_workspaces import NeonApiClient, plan_daytona_workspace, provision_neon_branch_workspace
 from .research_leads import collect_research_leads_from_agent_runs, persist_research_leads_from_agent_result
 from .research_followup_resolver import (
     RESEARCH_FOLLOWUP_RESOLVER_AGENT_NAME,
@@ -1341,6 +1349,119 @@ class HSAResearchService:
             status_counts=dict(sorted(Counter(record.public_status for record in records).items())),
             visibility_counts=dict(sorted(Counter(record.visibility for record in records).items())),
             candidates=records,
+        )
+
+    def provision_neon_research_workspace(
+        self,
+        request: NeonBranchWorkspaceRequest,
+    ) -> NeonBranchWorkspaceResult:
+        effective_request = request
+        update: dict[str, Any] = {}
+        if not effective_request.project_id and os.getenv("NEON_PROJECT_ID"):
+            update["project_id"] = os.environ["NEON_PROJECT_ID"]
+        if (
+            not effective_request.parent_branch_id
+            and not effective_request.parent_branch_name
+            and os.getenv("NEON_PARENT_BRANCH_ID")
+        ):
+            update["parent_branch_id"] = os.environ["NEON_PARENT_BRANCH_ID"]
+        if update:
+            effective_request = effective_request.model_copy(update=update)
+        if effective_request.dry_run:
+            return provision_neon_branch_workspace(self.repository, effective_request)
+
+        missing = []
+        if not effective_request.project_id:
+            missing.append("NEON_PROJECT_ID")
+        api_key = os.getenv("NEON_API_KEY", "").strip()
+        if not api_key:
+            missing.append("NEON_API_KEY")
+        if missing:
+            return self._failed_neon_workspace_result(
+                effective_request,
+                [f"{name} is required when dry_run is false." for name in missing],
+            )
+
+        client = NeonApiClient(
+            api_key,
+            api_host=os.getenv("NEON_API_HOST", "https://console.neon.tech/api/v2"),
+        )
+        try:
+            return provision_neon_branch_workspace(self.repository, effective_request, client=client)
+        except Exception as exc:  # pragma: no cover - live Neon failures are environment-dependent
+            return self._failed_neon_workspace_result(effective_request, [str(exc)])
+
+    def _failed_neon_workspace_result(
+        self,
+        request: NeonBranchWorkspaceRequest,
+        errors: list[str],
+    ) -> NeonBranchWorkspaceResult:
+        planned_request = request.model_copy(
+            update={
+                "dry_run": True,
+                "project_id": request.project_id or "missing-project",
+                "metadata": {
+                    **request.metadata,
+                    "live_request_blocked": True,
+                },
+            }
+        )
+        planned = provision_neon_branch_workspace(self.repository, planned_request)
+        workspace = planned.workspace.model_copy(
+            update={
+                "status": "failed",
+                "database_secret_ref": None,
+                "errors": errors,
+                "updated_at": datetime.now(UTC),
+                "metadata": {
+                    **planned.workspace.metadata,
+                    "requested_dry_run": False,
+                    "blocked_reason": "missing_or_failed_neon_configuration",
+                },
+            }
+        )
+        if request.persist:
+            workspace = self.repository.upsert_research_workspace(workspace)
+        return NeonBranchWorkspaceResult(
+            workspace=workspace,
+            dry_run=False,
+            branch_name=workspace.neon_branch_name,
+            errors=errors,
+        )
+
+    def plan_daytona_research_workspace(
+        self,
+        request: DaytonaWorkspaceRequest,
+    ) -> DaytonaWorkspaceResult:
+        return plan_daytona_workspace(self.repository, request)
+
+    def get_research_workspace(self, workspace_id: UUID) -> ResearchWorkspaceRecord | None:
+        return self.repository.get_research_workspace(workspace_id)
+
+    def list_research_workspaces(
+        self,
+        request: ResearchWorkspaceLibraryRequest | None = None,
+    ) -> ResearchWorkspaceLibraryResult:
+        request = request or ResearchWorkspaceLibraryRequest()
+        if request.workspace_id:
+            record = self.repository.get_research_workspace(request.workspace_id)
+            records = [record] if record else []
+        else:
+            records = self.repository.list_research_workspaces(
+                work_packet_id=request.work_packet_id,
+                candidate_id=request.candidate_id,
+                provider=request.provider,
+                status=request.status,
+                statuses=list(request.statuses) if request.statuses else None,
+                skill_profile=request.skill_profile,
+                include_expired=request.include_expired,
+                limit=request.limit,
+            )
+        return ResearchWorkspaceLibraryResult(
+            workspace_count=len(records),
+            status_counts=dict(sorted(Counter(record.status for record in records).items())),
+            provider_counts=dict(sorted(Counter(record.provider for record in records).items())),
+            workspaces=records,
         )
 
     def build_public_candidate_integrity_report(

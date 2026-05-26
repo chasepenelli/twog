@@ -306,6 +306,40 @@ PublicCandidateDecisionAction = Literal[
     "snapshot_generated",
 ]
 
+ResearchWorkspaceProvider = Literal[
+    "manual",
+    "local",
+    "neon",
+    "e2b",
+    "daytona",
+    "coder",
+    "devpod",
+    "github_codespaces",
+]
+
+ResearchWorkspaceStatus = Literal[
+    "requested",
+    "provisioning",
+    "ready",
+    "active",
+    "submitted",
+    "expired",
+    "failed",
+    "destroyed",
+    "archived",
+]
+
+ResearchWorkspaceSkillProfile = Literal[
+    "core",
+    "literature_and_citation",
+    "database_lookup",
+    "chemistry",
+    "omics",
+    "md_review",
+    "validation_planning",
+    "k_dense_biomed",
+]
+
 ValidationPacketReadiness = Literal[
     "ready_for_committee",
     "ready_for_validation_plan",
@@ -4674,6 +4708,221 @@ class ValidationDecisionReportResult(StrictBaseModel):
     persisted_decision_count: int = 0
     decisions: list[ValidationDecisionPacket] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ResearchWorkspaceRecord(StrictBaseModel):
+    workspace_id: UUID = Field(default_factory=uuid4)
+    work_packet_id: str | None = Field(default=None, max_length=260)
+    candidate_id: str = Field(min_length=3, max_length=260)
+    candidate_snapshot_hash: str | None = Field(default=None, max_length=160)
+    evidence_bundle_hash: str | None = Field(default=None, max_length=160)
+    checkout_manifest_hash: str | None = Field(default=None, max_length=160)
+    checkout_manifest: dict[str, Any] = Field(default_factory=dict)
+    provider: ResearchWorkspaceProvider = "manual"
+    provider_workspace_id: str | None = Field(default=None, max_length=260)
+    provider_workspace_url: str | None = Field(default=None, max_length=1000)
+    git_repo: str | None = Field(default=None, max_length=500)
+    git_ref: str | None = Field(default=None, max_length=260)
+    git_branch: str | None = Field(default=None, max_length=260)
+    neon_branch_id: str | None = Field(default=None, max_length=260)
+    neon_branch_name: str | None = Field(default=None, max_length=260)
+    neon_parent_branch: str | None = Field(default=None, max_length=260)
+    database_secret_ref: str | None = Field(
+        default=None,
+        max_length=260,
+        description="Secret/env reference for the branch database URL. Never store the raw DSN here.",
+    )
+    artifact_root: str | None = Field(default=None, max_length=1000)
+    skill_profile: ResearchWorkspaceSkillProfile = "core"
+    installed_skill_refs: list[str] = Field(default_factory=list, max_length=100)
+    recommended_source_refs: list[str] = Field(default_factory=list, max_length=100)
+    status: ResearchWorkspaceStatus = "requested"
+    expires_at: datetime | None = None
+    submitted_proof_capsule_id: UUID | None = None
+    errors: list[str] = Field(default_factory=list, max_length=25)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_workspace_record(self) -> "ResearchWorkspaceRecord":
+        self.candidate_id = self.candidate_id.strip()
+        self.work_packet_id = self.work_packet_id.strip() if self.work_packet_id else None
+        self.candidate_snapshot_hash = (
+            self.candidate_snapshot_hash.strip() if self.candidate_snapshot_hash else None
+        )
+        self.evidence_bundle_hash = self.evidence_bundle_hash.strip() if self.evidence_bundle_hash else None
+        self.checkout_manifest_hash = (
+            self.checkout_manifest_hash.strip() if self.checkout_manifest_hash else None
+        )
+        self.provider_workspace_id = (
+            self.provider_workspace_id.strip() if self.provider_workspace_id else None
+        )
+        self.provider_workspace_url = (
+            self.provider_workspace_url.strip() if self.provider_workspace_url else None
+        )
+        self.git_repo = self.git_repo.strip() if self.git_repo else None
+        self.git_ref = self.git_ref.strip() if self.git_ref else None
+        self.git_branch = self.git_branch.strip() if self.git_branch else None
+        self.neon_branch_id = self.neon_branch_id.strip() if self.neon_branch_id else None
+        self.neon_branch_name = self.neon_branch_name.strip() if self.neon_branch_name else None
+        self.neon_parent_branch = self.neon_parent_branch.strip() if self.neon_parent_branch else None
+        self.database_secret_ref = self.database_secret_ref.strip() if self.database_secret_ref else None
+        self.artifact_root = self.artifact_root.strip() if self.artifact_root else None
+        self.installed_skill_refs = _normalized_unique_strings(self.installed_skill_refs)
+        self.recommended_source_refs = _normalized_unique_strings(self.recommended_source_refs)
+        self.errors = _dedupe_strings(self.errors)
+        if self.status in {"ready", "active"} and self.provider != "manual" and not self.provider_workspace_id:
+            raise ValueError("provider_workspace_id is required once a non-manual workspace is ready or active")
+        if self.status in {"ready", "active"} and self.neon_branch_id and not self.database_secret_ref:
+            raise ValueError("database_secret_ref is required when a ready/active workspace has a Neon branch")
+        return self
+
+
+class ResearchWorkspaceLibraryRequest(StrictBaseModel):
+    workspace_id: UUID | None = None
+    work_packet_id: str | None = Field(default=None, max_length=260)
+    candidate_id: str | None = Field(default=None, max_length=260)
+    provider: ResearchWorkspaceProvider | None = None
+    status: ResearchWorkspaceStatus | None = None
+    statuses: list[ResearchWorkspaceStatus] = Field(default_factory=list, max_length=20)
+    skill_profile: ResearchWorkspaceSkillProfile | None = None
+    include_expired: bool = True
+    limit: int = Field(default=50, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def normalize_research_workspace_library_request(self) -> "ResearchWorkspaceLibraryRequest":
+        self.work_packet_id = self.work_packet_id.strip() if self.work_packet_id else None
+        self.candidate_id = self.candidate_id.strip() if self.candidate_id else None
+        self.statuses = _dedupe_strings(self.statuses)
+        return self
+
+
+class ResearchWorkspaceLibraryResult(StrictBaseModel):
+    workspace_count: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    provider_counts: dict[str, int] = Field(default_factory=dict)
+    workspaces: list[ResearchWorkspaceRecord] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class NeonBranchWorkspaceRequest(StrictBaseModel):
+    candidate_id: str = Field(min_length=3, max_length=260)
+    work_packet_id: str | None = Field(default=None, max_length=260)
+    project_id: str = Field(default="", max_length=260)
+    parent_branch_id: str | None = Field(default=None, max_length=260)
+    parent_branch_name: str | None = Field(default=None, max_length=260)
+    branch_name: str | None = Field(default=None, max_length=260)
+    branch_name_prefix: str = Field(default="twog-workspace", min_length=3, max_length=80)
+    database_name: str = Field(default="neondb", min_length=1, max_length=120)
+    role_name: str = Field(default="neondb_owner", min_length=1, max_length=120)
+    ttl_hours: int = Field(default=24, ge=1, le=168)
+    suspend_timeout_seconds: int | None = Field(default=300, ge=0, le=86400)
+    candidate_snapshot_hash: str | None = Field(default=None, max_length=160)
+    evidence_bundle_hash: str | None = Field(default=None, max_length=160)
+    checkout_manifest_hash: str | None = Field(default=None, max_length=160)
+    checkout_manifest: dict[str, Any] = Field(default_factory=dict)
+    git_repo: str | None = Field(default=None, max_length=500)
+    git_ref: str | None = Field(default=None, max_length=260)
+    git_branch: str | None = Field(default=None, max_length=260)
+    artifact_root: str | None = Field(default=None, max_length=1000)
+    skill_profile: ResearchWorkspaceSkillProfile = "core"
+    installed_skill_refs: list[str] = Field(default_factory=list, max_length=100)
+    recommended_source_refs: list[str] = Field(default_factory=list, max_length=100)
+    dry_run: bool = True
+    persist: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_neon_branch_workspace_request(self) -> "NeonBranchWorkspaceRequest":
+        self.candidate_id = self.candidate_id.strip()
+        self.work_packet_id = self.work_packet_id.strip() if self.work_packet_id else None
+        self.project_id = self.project_id.strip()
+        self.parent_branch_id = self.parent_branch_id.strip() if self.parent_branch_id else None
+        self.parent_branch_name = self.parent_branch_name.strip() if self.parent_branch_name else None
+        self.branch_name = self.branch_name.strip() if self.branch_name else None
+        self.branch_name_prefix = re.sub(r"[^a-z0-9-]+", "-", self.branch_name_prefix.lower()).strip("-")
+        if not self.branch_name_prefix:
+            self.branch_name_prefix = "twog-workspace"
+        self.database_name = self.database_name.strip()
+        self.role_name = self.role_name.strip()
+        self.candidate_snapshot_hash = (
+            self.candidate_snapshot_hash.strip() if self.candidate_snapshot_hash else None
+        )
+        self.evidence_bundle_hash = self.evidence_bundle_hash.strip() if self.evidence_bundle_hash else None
+        self.checkout_manifest_hash = (
+            self.checkout_manifest_hash.strip() if self.checkout_manifest_hash else None
+        )
+        self.git_repo = self.git_repo.strip() if self.git_repo else None
+        self.git_ref = self.git_ref.strip() if self.git_ref else None
+        self.git_branch = self.git_branch.strip() if self.git_branch else None
+        self.artifact_root = self.artifact_root.strip() if self.artifact_root else None
+        self.installed_skill_refs = _normalized_unique_strings(self.installed_skill_refs)
+        self.recommended_source_refs = _normalized_unique_strings(self.recommended_source_refs)
+        return self
+
+
+class NeonBranchWorkspaceResult(StrictBaseModel):
+    workspace: ResearchWorkspaceRecord
+    dry_run: bool = True
+    branch_created: bool = False
+    branch_reused: bool = False
+    branch_id: str | None = None
+    branch_name: str | None = None
+    endpoint_id: str | None = None
+    database_secret_ref: str | None = None
+    operation_ids: list[str] = Field(default_factory=list, max_length=25)
+    errors: list[str] = Field(default_factory=list, max_length=25)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class DaytonaWorkspaceRequest(StrictBaseModel):
+    candidate_id: str = Field(min_length=3, max_length=260)
+    work_packet_id: str | None = Field(default=None, max_length=260)
+    neon_workspace_id: UUID | None = None
+    database_secret_ref: str | None = Field(default=None, max_length=260)
+    candidate_snapshot_hash: str | None = Field(default=None, max_length=160)
+    evidence_bundle_hash: str | None = Field(default=None, max_length=160)
+    checkout_manifest_hash: str | None = Field(default=None, max_length=160)
+    checkout_manifest: dict[str, Any] = Field(default_factory=dict)
+    git_repo: str | None = Field(default=None, max_length=500)
+    git_ref: str | None = Field(default=None, max_length=260)
+    git_branch: str | None = Field(default=None, max_length=260)
+    artifact_root: str | None = Field(default=None, max_length=1000)
+    skill_profile: ResearchWorkspaceSkillProfile = "core"
+    installed_skill_refs: list[str] = Field(default_factory=list, max_length=100)
+    recommended_source_refs: list[str] = Field(default_factory=list, max_length=100)
+    dry_run: bool = True
+    persist: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_daytona_workspace_request(self) -> "DaytonaWorkspaceRequest":
+        self.candidate_id = self.candidate_id.strip()
+        self.work_packet_id = self.work_packet_id.strip() if self.work_packet_id else None
+        self.database_secret_ref = self.database_secret_ref.strip() if self.database_secret_ref else None
+        self.candidate_snapshot_hash = (
+            self.candidate_snapshot_hash.strip() if self.candidate_snapshot_hash else None
+        )
+        self.evidence_bundle_hash = self.evidence_bundle_hash.strip() if self.evidence_bundle_hash else None
+        self.checkout_manifest_hash = (
+            self.checkout_manifest_hash.strip() if self.checkout_manifest_hash else None
+        )
+        self.git_repo = self.git_repo.strip() if self.git_repo else None
+        self.git_ref = self.git_ref.strip() if self.git_ref else None
+        self.git_branch = self.git_branch.strip() if self.git_branch else None
+        self.artifact_root = self.artifact_root.strip() if self.artifact_root else None
+        self.installed_skill_refs = _normalized_unique_strings(self.installed_skill_refs)
+        self.recommended_source_refs = _normalized_unique_strings(self.recommended_source_refs)
+        return self
+
+
+class DaytonaWorkspaceResult(StrictBaseModel):
+    workspace: ResearchWorkspaceRecord
+    dry_run: bool = True
+    errors: list[str] = Field(default_factory=list, max_length=25)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

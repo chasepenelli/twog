@@ -43,6 +43,7 @@ from .contracts import (
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
     ResearchProgramRecord,
+    ResearchWorkspaceRecord,
     ResearchBriefEvaluationRecord,
     ResearchBriefQueueItem,
     ResearchBriefRecord,
@@ -2303,6 +2304,117 @@ class SQLiteResearchRepository(ResearchRepository):
             for row in self.conn.execute(sql, params).fetchall()
         ]
 
+    def upsert_research_workspace(self, record: ResearchWorkspaceRecord) -> ResearchWorkspaceRecord:
+        existing = self.get_research_workspace(record.workspace_id)
+        if existing:
+            record = record.model_copy(
+                update={
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **record.metadata},
+                }
+            )
+        payload = record.model_dump(mode="json")
+        self.conn.execute(
+            """
+            insert into research_workspaces (
+              workspace_id, work_packet_id, candidate_id, provider, status,
+              skill_profile, provider_workspace_id, neon_branch_id,
+              neon_branch_name, checkout_manifest_hash, expires_at,
+              created_at, updated_at, payload
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(workspace_id) do update set
+              work_packet_id = excluded.work_packet_id,
+              candidate_id = excluded.candidate_id,
+              provider = excluded.provider,
+              status = excluded.status,
+              skill_profile = excluded.skill_profile,
+              provider_workspace_id = excluded.provider_workspace_id,
+              neon_branch_id = excluded.neon_branch_id,
+              neon_branch_name = excluded.neon_branch_name,
+              checkout_manifest_hash = excluded.checkout_manifest_hash,
+              expires_at = excluded.expires_at,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(record.workspace_id),
+                record.work_packet_id,
+                record.candidate_id,
+                record.provider,
+                record.status,
+                record.skill_profile,
+                record.provider_workspace_id,
+                record.neon_branch_id,
+                record.neon_branch_name,
+                record.checkout_manifest_hash,
+                record.expires_at.isoformat() if record.expires_at else None,
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+        self.conn.commit()
+        return record
+
+    def get_research_workspace(self, workspace_id: UUID) -> ResearchWorkspaceRecord | None:
+        row = self.conn.execute(
+            "select payload from research_workspaces where workspace_id = ?",
+            (str(workspace_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return ResearchWorkspaceRecord.model_validate(json.loads(row["payload"]))
+
+    def list_research_workspaces(
+        self,
+        *,
+        work_packet_id: str | None = None,
+        candidate_id: str | None = None,
+        provider: str | None = None,
+        status: str | None = None,
+        statuses: list[str] | None = None,
+        skill_profile: str | None = None,
+        include_expired: bool = True,
+        limit: int | None = 50,
+    ) -> list[ResearchWorkspaceRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if work_packet_id:
+            clauses.append("work_packet_id = ?")
+            params.append(work_packet_id)
+        if candidate_id:
+            clauses.append("candidate_id = ?")
+            params.append(candidate_id)
+        if provider:
+            clauses.append("provider = ?")
+            params.append(provider)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            clauses.append(f"status in ({placeholders})")
+            params.extend(statuses)
+        if skill_profile:
+            clauses.append("skill_profile = ?")
+            params.append(skill_profile)
+        if not include_expired:
+            clauses.append("(expires_at is null or expires_at > ?)")
+            params.append(datetime.now(UTC).isoformat())
+        sql = "select payload from research_workspaces"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by updated_at desc"
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
+        return [
+            ResearchWorkspaceRecord.model_validate(json.loads(row["payload"]))
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
+
     def upsert_validation_decision(self, record: ValidationDecisionRecord) -> ValidationDecisionRecord:
         existing = self.get_validation_decision(record.decision_id)
         if existing:
@@ -4397,6 +4509,32 @@ class SQLiteResearchRepository(ResearchRepository):
               on research_programs(thesis_area, updated_at desc);
             create index if not exists research_programs_agent_run_idx
               on research_programs(agent_run_id, updated_at desc);
+
+            create table if not exists research_workspaces (
+              workspace_id text primary key,
+              work_packet_id text,
+              candidate_id text not null,
+              provider text not null,
+              status text not null,
+              skill_profile text not null,
+              provider_workspace_id text,
+              neon_branch_id text,
+              neon_branch_name text,
+              checkout_manifest_hash text,
+              expires_at text,
+              payload text not null,
+              created_at text not null default current_timestamp,
+              updated_at text not null default current_timestamp
+            );
+
+            create index if not exists research_workspaces_candidate_status_idx
+              on research_workspaces(candidate_id, status, updated_at desc);
+            create index if not exists research_workspaces_packet_idx
+              on research_workspaces(work_packet_id, updated_at desc);
+            create index if not exists research_workspaces_provider_status_idx
+              on research_workspaces(provider, status, updated_at desc);
+            create index if not exists research_workspaces_skill_idx
+              on research_workspaces(skill_profile, updated_at desc);
 
             create table if not exists validation_decisions (
               decision_record_id text primary key,
