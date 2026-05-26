@@ -47,7 +47,7 @@ export default function FieldGuidePage() {
           found sitting near each other — papers about the same thing, even
           when nobody used the same words for it. We wrote a short synthesis
           for every one, picked three papers to read first, and named the
-          gap we still can't see into.
+          gap we still can&apos;t see into.
         </p>
       </section>
 

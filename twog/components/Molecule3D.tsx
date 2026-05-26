@@ -9,6 +9,19 @@ interface Molecule3DProps {
 
 const STORAGE_BASE = 'https://ktkvqoaskukndgxhutzg.supabase.co/storage/v1/object/public/videos/molecules';
 
+type MoleculeViewer = {
+  addModel: (data: string, format: string) => void;
+  setStyle: (selection: Record<string, never>, style: Record<string, unknown>) => void;
+  zoomTo: () => void;
+  zoom: (factor: number) => void;
+  render: () => void;
+  spin: (axis: string, speed: number) => void;
+};
+
+type ThreeDmolModule = {
+  createViewer: (element: HTMLDivElement, config: Record<string, unknown>) => MoleculeViewer;
+};
+
 export default function Molecule3D({ compoundName, size = 280 }: Molecule3DProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -20,11 +33,11 @@ export default function Molecule3D({ compoundName, size = 280 }: Molecule3DProps
     let cancelled = false;
 
     async function init() {
-      const $3Dmol = await import('3dmol');
+      const $3Dmol = (await import('3dmol')) as unknown as ThreeDmolModule;
       if (cancelled || !viewerRef.current) return;
 
       // Create viewer in the inner square div (no border-radius on the canvas container)
-      const viewer = ($3Dmol as any).createViewer(viewerRef.current, {
+      const viewer = $3Dmol.createViewer(viewerRef.current, {
         backgroundColor: 'rgba(0,0,0,0)',
         antialias: true,
         disableFog: true,

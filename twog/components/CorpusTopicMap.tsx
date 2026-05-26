@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-type Record = {
+type PaperRecord = {
   id: number;
   pmid: string | null;
   doi: string | null;
@@ -26,7 +26,7 @@ type TopicMap = {
     umap_params: { n_neighbors: number; min_dist: number };
     hdbscan_params: { min_cluster_size: number };
   };
-  records: Record[];
+  records: PaperRecord[];
 };
 
 type ClusterLabels = {
@@ -36,6 +36,32 @@ type ClusterLabels = {
     n_papers: number;
     track_mix: { [k: string]: number };
   };
+};
+
+type PlotlyModule = {
+  newPlot: (
+    element: HTMLDivElement,
+    traces: unknown[],
+    layout: Record<string, unknown>,
+    config: Record<string, unknown>,
+  ) => Promise<unknown>;
+  react: (
+    element: HTMLDivElement,
+    traces: unknown[],
+    layout: Record<string, unknown>,
+    config: Record<string, unknown>,
+  ) => Promise<unknown>;
+  purge: (element: HTMLDivElement) => void;
+};
+
+type PlotlyPointEvent = {
+  points?: Array<{ customdata?: number }>;
+};
+
+type PlotlyDiv = HTMLDivElement & {
+  _hasPlot?: boolean;
+  _handlersBound?: boolean;
+  on?: (eventName: 'plotly_hover' | 'plotly_click', handler: (ev: PlotlyPointEvent) => void) => void;
 };
 
 const TRACK_COLORS: { [k: string]: string } = {
@@ -57,10 +83,10 @@ export default function CorpusTopicMap() {
   const [activeTracks, setActiveTracks] = useState<Set<string>>(new Set(TRACK_ORDER));
   const [search, setSearch] = useState('');
   const [selectedCluster, setSelectedCluster] = useState<number | null>(null);
-  const [hoveredPaper, setHoveredPaper] = useState<Record | null>(null);
+  const [hoveredPaper, setHoveredPaper] = useState<PaperRecord | null>(null);
 
   const plotRef = useRef<HTMLDivElement | null>(null);
-  const plotlyRef = useRef<any>(null);
+  const plotlyRef = useRef<PlotlyModule | null>(null);
 
   // Fetch data once
   useEffect(() => {
@@ -86,7 +112,9 @@ export default function CorpusTopicMap() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const mod: any = await import('plotly.js-dist-min');
+      const mod = (await import('plotly.js-dist-min')) as unknown as {
+        default?: PlotlyModule;
+      } & PlotlyModule;
       if (!cancelled) plotlyRef.current = mod.default || mod;
     })();
     return () => {
@@ -97,9 +125,9 @@ export default function CorpusTopicMap() {
   const traces = useMemo(() => {
     if (!data) return [];
     const query = search.trim().toLowerCase();
-    const matchesSearch = (r: Record) =>
+    const matchesSearch = (r: PaperRecord) =>
       !query || r.title.toLowerCase().includes(query) || (r.journal || '').toLowerCase().includes(query);
-    const inCluster = (r: Record) => selectedCluster === null || r.cluster === selectedCluster;
+    const inCluster = (r: PaperRecord) => selectedCluster === null || r.cluster === selectedCluster;
 
     return TRACK_ORDER.filter(t => activeTracks.has(t)).map(track => {
       const filtered = data.records.filter(r => r.track === track && matchesSearch(r) && inCluster(r));
@@ -177,22 +205,23 @@ export default function CorpusTopicMap() {
     };
 
     // Use react() for efficient updates after initial plot
-    const fn = (plotRef.current as any)._hasPlot ? Plotly.react : Plotly.newPlot;
+    const plotNode = plotRef.current as PlotlyDiv;
+    const fn = plotNode._hasPlot ? Plotly.react : Plotly.newPlot;
     fn(plotRef.current, traces, layout, config).then(() => {
-      if (plotRef.current) (plotRef.current as any)._hasPlot = true;
+      if (plotRef.current) (plotRef.current as PlotlyDiv)._hasPlot = true;
     });
 
     // Wire hover / click once
-    const div = plotRef.current as any;
+    const div = plotRef.current as PlotlyDiv;
     if (!div._handlersBound) {
-      div.on('plotly_hover', (ev: any) => {
+      div.on?.('plotly_hover', (ev) => {
         const pt = ev.points?.[0];
         if (!pt) return;
         const id = pt.customdata;
         const rec = data.records.find(r => r.id === id);
         if (rec) setHoveredPaper(rec);
       });
-      div.on('plotly_click', (ev: any) => {
+      div.on?.('plotly_click', (ev) => {
         const pt = ev.points?.[0];
         const id = pt?.customdata;
         const rec = data.records.find(r => r.id === id);
@@ -209,11 +238,12 @@ export default function CorpusTopicMap() {
 
   // Full cleanup on unmount
   useEffect(() => {
+    const plotNode = plotRef.current;
     return () => {
       const Plotly = plotlyRef.current;
-      if (Plotly && plotRef.current) {
+      if (Plotly && plotNode) {
         try {
-          Plotly.purge(plotRef.current);
+          Plotly.purge(plotNode);
         } catch {
           /* noop */
         }

@@ -16,7 +16,7 @@ interface TargetRowProps {
   maxFc?: number;
 }
 
-export default function TargetRow({ gene, fc, tier, aka, role, maxFc = 8.2 }: TargetRowProps) {
+export default function TargetRow({ gene, fc, tier, aka, maxFc = 8.2 }: TargetRowProps) {
   const barRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 

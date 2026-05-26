@@ -69,7 +69,9 @@ export function useMissionData() {
     if (!sb) return;
 
     /* Initial fetch */
-    fetchAll();
+    const initialFetch = window.setTimeout(() => {
+      void fetchAll();
+    }, 0);
 
     /* Poll every hour — realtime subscriptions handle live updates */
     const interval = setInterval(fetchAll, 3_600_000);
@@ -110,6 +112,7 @@ export function useMissionData() {
 
     return () => {
       clearInterval(interval);
+      window.clearTimeout(initialFetch);
       sb.removeChannel(logChannel);
       sb.removeChannel(agentChannel);
       sb.removeChannel(healthChannel);

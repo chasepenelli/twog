@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+/* eslint-disable @next/next/no-img-element */
+
 import ScrollReveal from '@/components/ScrollReveal';
 import SplitTextReveal from '@/components/SplitTextReveal';
 import AudioPlayer from '@/components/AudioPlayer';
@@ -60,7 +61,6 @@ function classifyEpisodes(episodes: Episode[]): {
 export default function ListenPage() {
   const { episodes, loading } = usePodcastData();
   const { deepDive, quickBrief, archive } = classifyEpisodes(episodes);
-  const [expanded, setExpanded] = useState<'deep' | 'brief' | null>(null);
 
   return (
     <>

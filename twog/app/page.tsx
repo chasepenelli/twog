@@ -6,23 +6,23 @@ import { getFeaturedCandidate, shortHash } from '@/lib/public-candidates';
 const OPERATING_LOOP = [
   {
     label: 'Evidence',
-    text: 'Scientific sources enter an owned evidence layer with citations, chunks, entities, identifiers, and provenance.',
+    text: 'Source records keep citations, chunks, identifiers, provenance, and enough context for another reviewer to reconstruct the claim.',
   },
   {
     label: 'Review',
-    text: 'Specialist agents attack the thesis, expose weak assumptions, request missing proof, and preserve the critique.',
+    text: 'Specialist agents challenge the thesis, flag weak evidence, request missing proof, and preserve the critique instead of smoothing it over.',
   },
   {
     label: 'Record',
-    text: 'Operator-approved ideas become public proof records with status, rationale, risks, methods, and decisions.',
+    text: 'Operator-approved ideas become public proof records with status, rationale, risks, methods, decisions, and the next test.',
   },
 ] as const;
 
 const ENGINE_STEPS = [
-  ['01', 'Acquire', 'Papers, datasets, molecules, safety signals, and field notes become structured source records.'],
-  ['02', 'Challenge', 'Agents compare the evidence, surface contradictions, and ask for the missing citations.'],
-  ['03', 'Promote', 'Only ideas with enough signal move into public candidate records or validation packets.'],
-  ['04', 'Test', 'Strong records can route toward compute, partner review, assay design, and lab-ready handoff.'],
+  ['01', 'Publish the proof', 'A candidate record exposes the thesis, citations, methods, risks, decision log, and machine-readable payload.'],
+  ['02', 'Check it out', 'A reviewer or sandbox receives a scoped manifest with the candidate snapshot, evidence bundle, and allowed work types.'],
+  ['03', 'Check it back in', 'Returned ProofCapsules capture critique, repaired citations, artifacts, omics notes, or validation proposals.'],
+  ['04', 'Route the work', 'Operator gates move useful packets toward evidence review, validation planning, compute review, or lab handoff.'],
 ] as const;
 
 const PROOF_POINTS = [
@@ -34,9 +34,16 @@ const PROOF_POINTS = [
 
 const VALIDATION_PATH = [
   ['Proof record', 'Inspectable thesis, evidence, methods, status, and decision history.'],
+  ['ProofCapsule', 'Structured outside work that can be reviewed without mutating the public record.'],
   ['Validation packet', 'Readouts, controls, blockers, missing inputs, and acceptance criteria.'],
   ['Compute artifact', 'Docking, MD smoke, omics readouts, plots, logs, configs, and hashes where useful.'],
   ['Lab handoff', 'A clearer experimental question for collaborators, reviewers, and wet-lab confirmation.'],
+] as const;
+
+const HERO_MARKERS = [
+  ['Public proof records', 'candidate state, citations, methods'],
+  ['Operator-gated writes', 'agents recommend, humans approve'],
+  ['Structured check-ins', 'ProofCapsules from reviewers and sandboxes'],
 ] as const;
 
 export default function Home() {
@@ -56,10 +63,18 @@ export default function Home() {
               <em>A Living Research Engine</em>
             </h1>
             <p className="hero-subhead">
-              TWOG turns fragmented biomedical evidence into inspectable discovery
-              records: hypotheses, citations, agent critique, validation packets, compute
-              artifacts, and the next experiment worth running.
+              TWOG turns biomedical evidence into public proof records, structured
+              check-ins, and validation-ready handoffs: what supports the idea, why it
+              moved, what is still weak, and what should be tested next.
             </p>
+            <div className="home-hero-markers" aria-label="TWOG operating markers">
+              {HERO_MARKERS.map(([label, detail]) => (
+                <span key={label}>
+                  <strong>{label}</strong>
+                  <em>{detail}</em>
+                </span>
+              ))}
+            </div>
             <div className="hero-actions">
               <Link href="/candidates" className="artifact-button primary">
                 Inspect the first record
@@ -79,19 +94,19 @@ export default function Home() {
         <div className="home-section-grid">
           <div className="home-section-header">
             <p className="section-kicker">The thesis</p>
-            <h2>The scarce layer is not information. It is judgment that compounds.</h2>
+            <h2>The scarce layer is not information. It is durable judgment.</h2>
           </div>
           <div className="home-section-copy">
             <p>
-              Biology is drowning in papers, source databases, omics files, adverse-event
-              fragments, and half-remembered leads. TWOG is being built as the operating
-              layer that turns that material into durable scientific signal.
+              Biology is not short on papers, databases, omics files, adverse-event
+              fragments, or half-remembered leads. It is short on systems that keep the
+              reasoning attached as an idea moves from signal to testable record.
             </p>
             <p>
               The first wedge is canine hemangiosarcoma: urgent, under-organized, and
-              translationally relevant. The larger play is a repeatable research engine
-              for overlooked disease areas where evidence exists but decision
-              infrastructure does not.
+              relevant to comparative oncology. The larger play is repeatable
+              infrastructure for overlooked disease areas where evidence exists but
+              decision infrastructure does not.
             </p>
           </div>
         </div>
@@ -122,8 +137,8 @@ export default function Home() {
             <p className="section-kicker">Public proof layer</p>
             <h2>Proof records turn AI output into an asset you can inspect.</h2>
             <p>
-              A serious discovery engine cannot hide behind a polished summary. If TWOG
-              advances an idea, the record should show the mechanism, citation trail,
+              A serious discovery engine cannot hide behind a polished summary. If an
+              idea advances, the record should show the mechanism, citation trail,
               method version, risks, decision log, and remaining uncertainty.
             </p>
           </div>
@@ -161,12 +176,12 @@ export default function Home() {
       <section className="home-section home-engine-section" data-marker="ENGINE / AGENT CRITIQUE">
         <div className="home-section-grid">
           <div className="home-section-header">
-            <p className="section-kicker">Research engine</p>
-            <h2>The loop is the leverage.</h2>
+            <p className="section-kicker">Proof network</p>
+            <h2>The record is not the endpoint. It is the work surface.</h2>
             <p>
-              A source is not valuable because it was collected. It becomes valuable when
-              it is structured, challenged, tied to the right question, and either
-              promoted or held back with a clear reason.
+              TWOG is moving toward a checkout/check-in model for science: publish the
+              record, give collaborators the evidence bundle, accept structured returned
+              work, and route useful packets through review gates.
             </p>
             <p className="operator-line">
               LLMs argue and synthesize. Operator approval is the write gate.
@@ -192,10 +207,10 @@ export default function Home() {
           <p className="section-kicker">Durable testing framework</p>
           <h2>From public proof to validation-grade handoff.</h2>
           <p>
-            Simulations can prioritize hypotheses and produce reproducible artifacts, but
-            they do not prove biology. The business-grade bridge is cheaper
-            prioritization upstream, cleaner review in the middle, and better questions
-            arriving at the lab.
+            The goal is not to pretend simulation proves biology. The goal is to lower
+            the cost of being wrong, preserve the work that changed confidence, and send
+            stronger questions toward expert review, compute, assay design, and lab
+            confirmation.
           </p>
         </div>
 
@@ -216,15 +231,15 @@ export default function Home() {
             <p className="section-kicker">Built in public</p>
             <h2>Follow the build of a research engine that can publish its own proof.</h2>
             <p>
-              TWOG is being built where reviewers, collaborators, and serious backers can
-              inspect the work: the strange leads, the promising candidates, the dead
-              ends, the rewrites, the receipts, and the moments where a question turns
-              into something testable.
+              TWOG is being built where reviewers, collaborators, and serious backers
+              can inspect the work: the strange leads, the promising candidates, the
+              dead ends, the receipts, and the moments where a question becomes
+              structured enough to test.
             </p>
             <p>
               Sign up for field notes from the build: candidate drops, evidence gaps,
-              public proof records, method notes, and the operating lessons behind a new
-              kind of AI-native research infrastructure.
+              public proof records, method notes, and the operating lessons behind
+              AI-native research infrastructure that can be audited.
             </p>
           </div>
 

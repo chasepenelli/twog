@@ -17,7 +17,7 @@ const MODE_DEFAULTS: Record<Mode, { similarity: number; molecules: number }> = {
   moonshot: { similarity: 0.0, molecules: 20 },
 };
 
-export default function DesignControls({ targets, onRefreshTargets }: { targets: TargetInfo[]; onRefreshTargets: () => void }) {
+export default function DesignControls({ targets }: { targets: TargetInfo[]; onRefreshTargets: () => void }) {
   const [mode, setMode] = useState<Mode>('explore');
   const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
   const [numMolecules, setNumMolecules] = useState(15);

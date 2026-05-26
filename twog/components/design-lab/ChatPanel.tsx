@@ -287,11 +287,12 @@ export default function ChatPanel() {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const latestMessageContent = messages[messages.length - 1]?.content;
 
   // Auto-scroll on new messages or streaming content
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, messages[messages.length - 1]?.content]);
+  }, [messages, latestMessageContent]);
 
   const handleSend = () => {
     const text = input.trim();

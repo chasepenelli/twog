@@ -91,7 +91,6 @@ export const PipelineJourney: React.FC<PipelineJourneyProps> = ({ stages }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const isTitlePhase = frame < 50;
-  const isFlowPhase = frame >= 30 && frame < 330;
   const isOverviewPhase = frame >= 320;
 
   /* ── Particle canvas ── */
