@@ -20,6 +20,9 @@ from .contracts import (
     DaytonaWorkspaceResult,
     NeonBranchWorkspaceRequest,
     NeonBranchWorkspaceResult,
+    ResearchWorkspaceCleanupCandidate,
+    ResearchWorkspaceCleanupRequest,
+    ResearchWorkspaceCleanupResult,
     ResearchWorkspaceRecord,
     ResearchWorkspaceSkillProfile,
 )
@@ -98,6 +101,9 @@ class NeonBranchClient(Protocol):
     ) -> dict[str, Any]:
         """Retrieve a branch connection URI. Callers must not persist the URI."""
 
+    def delete_branch(self, *, project_id: str, branch_id: str) -> dict[str, Any]:
+        """Delete a Neon branch."""
+
 
 class NeonApiClient:
     """Small Neon API client.
@@ -170,6 +176,9 @@ class NeonApiClient:
             params["endpoint_id"] = endpoint_id
         query = urllib.parse.urlencode(params)
         return self._request("GET", f"/projects/{project_id}/connection_uri?{query}")
+
+    def delete_branch(self, *, project_id: str, branch_id: str) -> dict[str, Any]:
+        return self._request("DELETE", f"/projects/{project_id}/branches/{urllib.parse.quote(branch_id, safe='')}")
 
 
 def provision_neon_branch_workspace(
@@ -319,6 +328,209 @@ def provision_neon_branch_workspace(
         operation_ids=operation_ids,
         errors=errors,
     )
+
+
+def cleanup_neon_research_workspaces(
+    repository: ResearchRepository,
+    request: ResearchWorkspaceCleanupRequest,
+    *,
+    project_id: str = "",
+    client: NeonBranchClient | None = None,
+    protected_branch_ids: set[str] | None = None,
+) -> ResearchWorkspaceCleanupResult:
+    """Plan or execute cleanup for expired Neon-backed workspaces.
+
+    Dry-runs report the branches that would be deleted. Live cleanup deletes
+    only eligible Neon branches and clears the stored database secret reference
+    after the provider confirms deletion.
+    """
+
+    now = datetime.now(UTC)
+    expired_before = request.expired_before or now
+    protected = {value.strip() for value in (protected_branch_ids or set()) if value and value.strip()}
+    records = _cleanup_records(repository, request)
+    candidates: list[ResearchWorkspaceCleanupCandidate] = []
+    skipped: list[ResearchWorkspaceCleanupCandidate] = []
+    updated_workspaces: list[ResearchWorkspaceRecord] = []
+    deleted_branch_ids: list[str] = []
+    errors: list[str] = []
+
+    for workspace in records:
+        candidate = _cleanup_candidate(
+            workspace,
+            request=request,
+            expired_before=expired_before,
+            protected_branch_ids=protected,
+        )
+        if candidate.eligible:
+            action = "dry_run" if request.dry_run else "delete_neon_branch"
+            candidates.append(candidate.model_copy(update={"action": action}))
+        else:
+            skipped.append(candidate)
+
+    if not request.dry_run and candidates:
+        missing: list[str] = []
+        if not project_id:
+            missing.append("NEON_PROJECT_ID")
+        if client is None:
+            missing.append("NEON_API_KEY")
+        if missing:
+            errors.extend(f"{name} is required when dry_run is false." for name in missing)
+        else:
+            for candidate in candidates:
+                workspace = candidate.workspace
+                branch_id = workspace.neon_branch_id or ""
+                try:
+                    client.delete_branch(project_id=project_id, branch_id=branch_id)
+                except Exception as exc:  # pragma: no cover - live Neon failures are environment-dependent
+                    error = f"Neon branch cleanup failed for {branch_id}: {exc}"
+                    errors.append(error)
+                    failed_workspace = workspace.model_copy(
+                        update={
+                            "errors": [*workspace.errors, error],
+                            "updated_at": now,
+                            "metadata": {
+                                **workspace.metadata,
+                                "cleanup": {
+                                    **_cleanup_metadata(request, now, branch_id),
+                                    "deleted": False,
+                                    "error": str(exc),
+                                },
+                            },
+                        }
+                    )
+                    repository.upsert_research_workspace(failed_workspace)
+                    updated_workspaces.append(failed_workspace)
+                    skipped.append(candidate.model_copy(update={"eligible": False, "action": "skip", "reason": error}))
+                    continue
+
+                deleted_branch_ids.append(branch_id)
+                updated = workspace.model_copy(
+                    update={
+                        "status": "expired",
+                        "database_secret_ref": None,
+                        "updated_at": now,
+                        "metadata": {
+                            **workspace.metadata,
+                            "cleanup": {
+                                **_cleanup_metadata(request, now, branch_id),
+                                "deleted": True,
+                            },
+                        },
+                    }
+                )
+                repository.upsert_research_workspace(updated)
+                updated_workspaces.append(updated)
+
+    return ResearchWorkspaceCleanupResult(
+        dry_run=request.dry_run,
+        workspace_count=len(records),
+        candidate_count=len(candidates),
+        skipped_count=len(skipped),
+        deleted_count=len(deleted_branch_ids),
+        updated_count=len(updated_workspaces),
+        candidates=candidates,
+        skipped=skipped,
+        deleted_branch_ids=deleted_branch_ids,
+        updated_workspaces=updated_workspaces,
+        errors=errors,
+        created_at=now,
+    )
+
+
+def _cleanup_records(
+    repository: ResearchRepository,
+    request: ResearchWorkspaceCleanupRequest,
+) -> list[ResearchWorkspaceRecord]:
+    if request.workspace_id:
+        workspace = repository.get_research_workspace(request.workspace_id)
+        return [workspace] if workspace else []
+    return repository.list_research_workspaces(
+        work_packet_id=request.work_packet_id,
+        candidate_id=request.candidate_id,
+        provider=request.provider,
+        include_expired=True,
+        limit=request.limit,
+    )
+
+
+def _cleanup_candidate(
+    workspace: ResearchWorkspaceRecord,
+    *,
+    request: ResearchWorkspaceCleanupRequest,
+    expired_before: datetime,
+    protected_branch_ids: set[str],
+) -> ResearchWorkspaceCleanupCandidate:
+    explicit_workspace = request.workspace_id is not None
+    branch_id = workspace.neon_branch_id
+    if workspace.provider != "neon":
+        return ResearchWorkspaceCleanupCandidate(
+            workspace=workspace,
+            eligible=False,
+            action="skip",
+            reason="workspace_provider_is_not_neon",
+        )
+    if not branch_id:
+        return ResearchWorkspaceCleanupCandidate(
+            workspace=workspace,
+            eligible=False,
+            action="skip",
+            reason="workspace_has_no_neon_branch_id",
+        )
+    if branch_id in protected_branch_ids:
+        return ResearchWorkspaceCleanupCandidate(
+            workspace=workspace,
+            eligible=False,
+            action="skip",
+            reason="workspace_branch_is_configured_parent_branch",
+        )
+    cleanup_metadata = workspace.metadata.get("cleanup") if isinstance(workspace.metadata, dict) else None
+    if (
+        workspace.database_secret_ref is None
+        and isinstance(cleanup_metadata, dict)
+        and cleanup_metadata.get("deleted") is True
+    ):
+        return ResearchWorkspaceCleanupCandidate(
+            workspace=workspace,
+            eligible=False,
+            action="skip",
+            reason="workspace_branch_already_cleaned",
+        )
+    if not explicit_workspace and workspace.status not in {"failed", "expired"}:
+        if workspace.expires_at is None:
+            return ResearchWorkspaceCleanupCandidate(
+                workspace=workspace,
+                eligible=False,
+                action="skip",
+                reason="workspace_has_no_expiration",
+            )
+        if workspace.expires_at > expired_before:
+            return ResearchWorkspaceCleanupCandidate(
+                workspace=workspace,
+                eligible=False,
+                action="skip",
+                reason="workspace_not_expired",
+            )
+    return ResearchWorkspaceCleanupCandidate(
+        workspace=workspace,
+        eligible=True,
+        action="dry_run" if request.dry_run else "delete_neon_branch",
+        reason="eligible_for_neon_branch_cleanup",
+    )
+
+
+def _cleanup_metadata(
+    request: ResearchWorkspaceCleanupRequest,
+    cleaned_at: datetime,
+    branch_id: str,
+) -> dict[str, Any]:
+    return {
+        **request.metadata,
+        "branch_id": branch_id,
+        "cleaned_at": cleaned_at.isoformat(),
+        "dry_run": request.dry_run,
+        "reason": request.reason,
+    }
 
 
 def plan_daytona_workspace(

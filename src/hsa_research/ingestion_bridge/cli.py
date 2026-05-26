@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+from datetime import UTC, datetime
 import json
 import os
 import sys
@@ -64,6 +65,7 @@ from .contracts import (
     ResearchProgramBoardRequest,
     ResearchProgramEvidenceLoopRequest,
     ResearchProgramReviewRequest,
+    ResearchWorkspaceCleanupRequest,
     ResearchWorkspaceLibraryRequest,
     RewardEventSyncRequest,
     RewardReportRequest,
@@ -1080,6 +1082,31 @@ def main() -> None:
         help="Exclude expired workspaces from the library result",
     )
     research_workspaces.add_argument("--limit", type=int, default=50, help="Maximum workspaces to return")
+
+    research_workspace_cleanup = subparsers.add_parser(
+        "research-workspace-cleanup",
+        help="Dry-run or execute guarded cleanup for Neon research workspaces",
+    )
+    research_workspace_cleanup.add_argument("--workspace-id", default=None, help="Explicit workspace ID to clean")
+    research_workspace_cleanup.add_argument("--candidate-id", default=None, help="Candidate filter")
+    research_workspace_cleanup.add_argument("--work-packet-id", default=None, help="Work packet filter")
+    research_workspace_cleanup.add_argument("--provider", default="neon", help="Workspace provider filter")
+    research_workspace_cleanup.add_argument(
+        "--expired-before",
+        default=None,
+        help="ISO timestamp cutoff. Defaults to now.",
+    )
+    research_workspace_cleanup.add_argument("--limit", type=int, default=50, help="Maximum workspaces to inspect")
+    research_workspace_cleanup.add_argument(
+        "--reason",
+        default="operator_workspace_cleanup",
+        help="Cleanup rationale stored in workspace metadata",
+    )
+    research_workspace_cleanup.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually delete eligible Neon branches. Omit for dry-run cleanup.",
+    )
 
     research_program_evidence_loop = subparsers.add_parser(
         "research-program-evidence-loop",
@@ -2862,6 +2889,20 @@ def main() -> None:
                 limit=args.limit,
             )
         ).model_dump(mode="json")
+    elif args.command == "research-workspace-cleanup":
+        output = HSAResearchService(repo).cleanup_research_workspaces(
+            ResearchWorkspaceCleanupRequest(
+                workspace_id=UUID(args.workspace_id) if args.workspace_id else None,
+                work_packet_id=args.work_packet_id,
+                candidate_id=args.candidate_id,
+                provider=args.provider,
+                expired_before=_parse_cli_datetime(args.expired_before),
+                limit=args.limit,
+                reason=args.reason,
+                dry_run=not args.apply,
+                metadata={"cli_command": "research-workspace-cleanup"},
+            )
+        ).model_dump(mode="json")
     elif args.command == "research-program-evidence-loop":
         output = HSAResearchService(repo).run_research_program_evidence_loop(
             ResearchProgramEvidenceLoopRequest(
@@ -3856,6 +3897,20 @@ def main() -> None:
     if getattr(args, "fail_on_blocking", False) and output.get("should_block_schedule"):
         print(f"Blocking full-text triage: {output.get('action')}", file=sys.stderr)
         raise SystemExit(1)
+
+
+def _parse_cli_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def _model_review_summary(run: dict[str, Any]) -> dict[str, Any]:

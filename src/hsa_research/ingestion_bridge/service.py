@@ -159,6 +159,8 @@ from .contracts import (
     ResearchProgramRecord,
     ResearchProgramReviewRequest,
     ResearchProgramReviewResult,
+    ResearchWorkspaceCleanupRequest,
+    ResearchWorkspaceCleanupResult,
     ResearchWorkspaceLibraryRequest,
     ResearchWorkspaceLibraryResult,
     ResearchWorkspaceRecord,
@@ -294,7 +296,12 @@ from .research_program_board import (
     run_research_program_board_agent,
     summarize_research_program_board,
 )
-from .research_workspaces import NeonApiClient, plan_daytona_workspace, provision_neon_branch_workspace
+from .research_workspaces import (
+    NeonApiClient,
+    cleanup_neon_research_workspaces,
+    plan_daytona_workspace,
+    provision_neon_branch_workspace,
+)
 from .research_leads import collect_research_leads_from_agent_runs, persist_research_leads_from_agent_result
 from .research_followup_resolver import (
     RESEARCH_FOLLOWUP_RESOLVER_AGENT_NAME,
@@ -1437,6 +1444,37 @@ class HSAResearchService:
 
     def get_research_workspace(self, workspace_id: UUID) -> ResearchWorkspaceRecord | None:
         return self.repository.get_research_workspace(workspace_id)
+
+    def cleanup_research_workspaces(
+        self,
+        request: ResearchWorkspaceCleanupRequest | None = None,
+    ) -> ResearchWorkspaceCleanupResult:
+        request = request or ResearchWorkspaceCleanupRequest()
+        if request.dry_run:
+            return cleanup_neon_research_workspaces(
+                self.repository,
+                request,
+                project_id=os.getenv("NEON_PROJECT_ID", "").strip(),
+                protected_branch_ids=_nonempty_set(os.getenv("NEON_PARENT_BRANCH_ID")),
+            )
+
+        project_id = os.getenv("NEON_PROJECT_ID", "").strip()
+        api_key = os.getenv("NEON_API_KEY", "").strip()
+        client = (
+            NeonApiClient(
+                api_key,
+                api_host=os.getenv("NEON_API_HOST", "https://console.neon.tech/api/v2"),
+            )
+            if api_key
+            else None
+        )
+        return cleanup_neon_research_workspaces(
+            self.repository,
+            request,
+            project_id=project_id,
+            client=client,
+            protected_branch_ids=_nonempty_set(os.getenv("NEON_PARENT_BRANCH_ID")),
+        )
 
     def list_research_workspaces(
         self,
@@ -13280,6 +13318,10 @@ def _brief_request_from_queue_item(
             "research_brief_queue_item_id": str(item.queue_item_id),
         },
     )
+
+
+def _nonempty_set(*values: str | None) -> set[str]:
+    return {value.strip() for value in values if value and value.strip()}
 
 
 _SERVICE: HSAResearchService | None = None

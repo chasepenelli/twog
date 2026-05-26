@@ -147,6 +147,8 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchProgramRecord,
     ResearchProgramReviewRequest,
     ResearchProgramReviewResult,
+    ResearchWorkspaceCleanupRequest,
+    ResearchWorkspaceCleanupResult,
     ResearchWorkspaceLibraryRequest,
     ResearchWorkspaceLibraryResult,
     ResearchWorkspaceRecord,
@@ -226,7 +228,11 @@ from hsa_research.ingestion_bridge.claim_extractor import LocalRuleClaimExtracto
 from hsa_research.ingestion_bridge.chunker import chunk_text
 from hsa_research.ingestion_bridge.full_text_triage import FullTextTriageAgent
 from hsa_research.ingestion_bridge import agent_performance
-from hsa_research.ingestion_bridge.research_workspaces import plan_daytona_workspace, provision_neon_branch_workspace
+from hsa_research.ingestion_bridge.research_workspaces import (
+    cleanup_neon_research_workspaces,
+    plan_daytona_workspace,
+    provision_neon_branch_workspace,
+)
 from hsa_research.ingestion_bridge import full_text_ops
 from hsa_research.ingestion_bridge import research_brief_evaluation
 from hsa_research.ingestion_bridge import research_followup_resolver
@@ -2215,6 +2221,7 @@ class _FakeNeonBranchClient:
         self.connection = connection or {"uri": "postgres://secret.example/neondb"}
         self.created: list[dict] = []
         self.connection_requests: list[dict] = []
+        self.deleted: list[dict] = []
 
     def list_branches(self, *, project_id: str, search: str | None = None) -> list[dict]:
         if not search:
@@ -2248,6 +2255,37 @@ class _FakeNeonBranchClient:
             }
         )
         return self.connection
+
+    def delete_branch(self, *, project_id: str, branch_id: str) -> dict:
+        self.deleted.append({"project_id": project_id, "branch_id": branch_id})
+        return {"branch": {"id": branch_id}}
+
+
+class _FailingNeonBranchClient(_FakeNeonBranchClient):
+    def delete_branch(self, *, project_id: str, branch_id: str) -> dict:
+        self.deleted.append({"project_id": project_id, "branch_id": branch_id})
+        raise RuntimeError("delete blocked")
+
+
+def _cleanup_workspace(
+    *,
+    branch_id: str = "br-expired",
+    status: str = "ready",
+    expires_at: datetime | None = None,
+    candidate_id: str = "twog-candidate-447eb8089965",
+    work_packet_id: str = "wp-cleanup-1",
+) -> ResearchWorkspaceRecord:
+    return ResearchWorkspaceRecord(
+        candidate_id=candidate_id,
+        work_packet_id=work_packet_id,
+        provider="neon",
+        provider_workspace_id=branch_id,
+        neon_branch_id=branch_id,
+        neon_branch_name=f"twog-{branch_id}",
+        database_secret_ref=f"neon://project-test/{branch_id}/neondb/neondb_owner",
+        status=status,
+        expires_at=expires_at or datetime.now(UTC) - timedelta(hours=1),
+    )
 
 
 def test_neon_branch_workspace_dry_run_records_skill_preset():
@@ -2389,6 +2427,145 @@ def test_research_workspace_service_library_filters():
     assert library.status_counts == {"requested": 1}
 
 
+def test_research_workspace_cleanup_contract_defaults_and_rejects_invalid_provider():
+    request = ResearchWorkspaceCleanupRequest()
+
+    assert request.provider == "neon"
+    assert request.dry_run is True
+    assert request.reason == "operator_workspace_cleanup"
+
+    with pytest.raises(ValidationError):
+        ResearchWorkspaceCleanupRequest(provider="prod-db")
+
+
+def test_research_workspace_cleanup_dry_run_selects_expired_and_skips_active():
+    repo = InMemoryResearchRepository()
+    expired = repo.upsert_research_workspace(_cleanup_workspace(branch_id="br-expired"))
+    active = repo.upsert_research_workspace(
+        _cleanup_workspace(
+            branch_id="br-active",
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            work_packet_id="wp-cleanup-2",
+        )
+    )
+
+    result = cleanup_neon_research_workspaces(
+        repo,
+        ResearchWorkspaceCleanupRequest(candidate_id=expired.candidate_id, dry_run=True, limit=10),
+        project_id="project-test",
+    )
+
+    assert isinstance(result, ResearchWorkspaceCleanupResult)
+    assert result.dry_run is True
+    assert [candidate.workspace.workspace_id for candidate in result.candidates] == [expired.workspace_id]
+    assert [candidate.workspace.workspace_id for candidate in result.skipped] == [active.workspace_id]
+    assert result.skipped[0].reason == "workspace_not_expired"
+    assert repo.get_research_workspace(expired.workspace_id).database_secret_ref is not None
+
+
+def test_research_workspace_cleanup_explicit_workspace_can_select_non_expired():
+    repo = InMemoryResearchRepository()
+    active = repo.upsert_research_workspace(
+        _cleanup_workspace(branch_id="br-active", expires_at=datetime.now(UTC) + timedelta(hours=2))
+    )
+
+    result = cleanup_neon_research_workspaces(
+        repo,
+        ResearchWorkspaceCleanupRequest(workspace_id=active.workspace_id, dry_run=True),
+        project_id="project-test",
+    )
+
+    assert result.candidate_count == 1
+    assert result.candidates[0].workspace.workspace_id == active.workspace_id
+
+
+def test_research_workspace_cleanup_skips_configured_parent_branch():
+    repo = InMemoryResearchRepository()
+    parent = repo.upsert_research_workspace(_cleanup_workspace(branch_id="br-parent"))
+
+    result = cleanup_neon_research_workspaces(
+        repo,
+        ResearchWorkspaceCleanupRequest(workspace_id=parent.workspace_id, dry_run=True),
+        project_id="project-test",
+        protected_branch_ids={"br-parent"},
+    )
+
+    assert result.candidate_count == 0
+    assert result.skipped_count == 1
+    assert result.skipped[0].reason == "workspace_branch_is_configured_parent_branch"
+
+
+def test_research_workspace_cleanup_live_missing_env_fails_without_mutation(monkeypatch):
+    repo = InMemoryResearchRepository()
+    workspace = repo.upsert_research_workspace(_cleanup_workspace())
+    monkeypatch.delenv("NEON_API_KEY", raising=False)
+    monkeypatch.delenv("NEON_PROJECT_ID", raising=False)
+
+    result = HSAResearchService(repo).cleanup_research_workspaces(
+        ResearchWorkspaceCleanupRequest(workspace_id=workspace.workspace_id, dry_run=False)
+    )
+
+    stored = repo.get_research_workspace(workspace.workspace_id)
+    assert result.dry_run is False
+    assert result.deleted_count == 0
+    assert "NEON_PROJECT_ID is required when dry_run is false." in result.errors
+    assert "NEON_API_KEY is required when dry_run is false." in result.errors
+    assert stored.status == "ready"
+    assert stored.database_secret_ref is not None
+
+
+def test_research_workspace_cleanup_fake_delete_success_clears_secret_ref():
+    repo = InMemoryResearchRepository()
+    workspace = repo.upsert_research_workspace(_cleanup_workspace())
+    client = _FakeNeonBranchClient()
+
+    result = cleanup_neon_research_workspaces(
+        repo,
+        ResearchWorkspaceCleanupRequest(workspace_id=workspace.workspace_id, dry_run=False, reason="ttl_cleanup"),
+        project_id="project-test",
+        client=client,
+    )
+
+    stored = repo.get_research_workspace(workspace.workspace_id)
+    assert result.deleted_count == 1
+    assert result.updated_count == 1
+    assert result.deleted_branch_ids == ["br-expired"]
+    assert client.deleted == [{"project_id": "project-test", "branch_id": "br-expired"}]
+    assert stored.status == "expired"
+    assert stored.database_secret_ref is None
+    assert stored.metadata["cleanup"]["deleted"] is True
+    assert stored.metadata["cleanup"]["reason"] == "ttl_cleanup"
+
+    repeated = cleanup_neon_research_workspaces(
+        repo,
+        ResearchWorkspaceCleanupRequest(workspace_id=workspace.workspace_id, dry_run=True),
+        project_id="project-test",
+    )
+    assert repeated.candidate_count == 0
+    assert repeated.skipped[0].reason == "workspace_branch_already_cleaned"
+
+
+def test_research_workspace_cleanup_fake_delete_failure_preserves_secret_ref():
+    repo = InMemoryResearchRepository()
+    workspace = repo.upsert_research_workspace(_cleanup_workspace())
+    client = _FailingNeonBranchClient()
+
+    result = cleanup_neon_research_workspaces(
+        repo,
+        ResearchWorkspaceCleanupRequest(workspace_id=workspace.workspace_id, dry_run=False),
+        project_id="project-test",
+        client=client,
+    )
+
+    stored = repo.get_research_workspace(workspace.workspace_id)
+    assert result.deleted_count == 0
+    assert result.updated_count == 1
+    assert "Neon branch cleanup failed for br-expired: delete blocked" in result.errors
+    assert stored.status == "ready"
+    assert stored.database_secret_ref is not None
+    assert stored.metadata["cleanup"]["deleted"] is False
+
+
 def test_research_workspace_cli_dry_run_persists_without_neon(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "workspace-cli.sqlite3"
     monkeypatch.setattr(
@@ -2448,6 +2625,61 @@ def test_research_workspace_cli_execute_missing_env_fails_cleanly(monkeypatch, c
     assert output["dry_run"] is False
     assert output["workspace"]["status"] == "failed"
     assert output["workspace"]["database_secret_ref"] is None
+    assert "NEON_API_KEY is required when dry_run is false." in output["errors"]
+
+
+def test_research_workspace_cleanup_cli_defaults_to_dry_run(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "workspace-cleanup-cli.sqlite3"
+    workspace = SQLiteResearchRepository(db_path, seed=False).upsert_research_workspace(_cleanup_workspace())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hsa-ingestion",
+            "--db",
+            str(db_path),
+            "research-workspace-cleanup",
+            "--workspace-id",
+            str(workspace.workspace_id),
+        ],
+    )
+    monkeypatch.delenv("NEON_API_KEY", raising=False)
+    monkeypatch.delenv("NEON_PROJECT_ID", raising=False)
+
+    cli_module.main()
+    output = json.loads(capsys.readouterr().out)
+
+    assert output["dry_run"] is True
+    assert output["candidate_count"] == 1
+    assert output["deleted_count"] == 0
+    assert output["candidates"][0]["workspace"]["workspace_id"] == str(workspace.workspace_id)
+
+
+def test_research_workspace_cleanup_cli_apply_missing_env_fails_cleanly(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "workspace-cleanup-cli-apply.sqlite3"
+    workspace = SQLiteResearchRepository(db_path, seed=False).upsert_research_workspace(_cleanup_workspace())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hsa-ingestion",
+            "--db",
+            str(db_path),
+            "research-workspace-cleanup",
+            "--workspace-id",
+            str(workspace.workspace_id),
+            "--apply",
+        ],
+    )
+    monkeypatch.delenv("NEON_API_KEY", raising=False)
+    monkeypatch.delenv("NEON_PROJECT_ID", raising=False)
+
+    cli_module.main()
+    output = json.loads(capsys.readouterr().out)
+
+    assert output["dry_run"] is False
+    assert output["candidate_count"] == 1
+    assert output["deleted_count"] == 0
     assert "NEON_API_KEY is required when dry_run is false." in output["errors"]
 
 
@@ -6524,6 +6756,25 @@ def test_dagster_research_workspace_assets_use_injected_repository(monkeypatch):
                 workspaces=[workspace],
             )
 
+        def cleanup_research_workspaces(self, request):
+            assert isinstance(request, ResearchWorkspaceCleanupRequest)
+            assert request.candidate_id == "twog-candidate-447eb8089965"
+            assert request.dry_run is True
+            assert request.metadata["dagster_run_id"] == "dagster-workspace-cleanup-test"
+            return ResearchWorkspaceCleanupResult(
+                dry_run=True,
+                workspace_count=1,
+                candidate_count=1,
+                candidates=[
+                    {
+                        "workspace": workspace.model_dump(mode="json"),
+                        "eligible": True,
+                        "action": "dry_run",
+                        "reason": "eligible_for_neon_branch_cleanup",
+                    }
+                ],
+            )
+
     monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
 
     neon_result = dagster_asset_module.research_workspace_neon_report.node_def.compute_fn.decorated_fn(
@@ -6574,12 +6825,30 @@ def test_dagster_research_workspace_assets_use_injected_repository(monkeypatch):
         ),
         FakeRepositoryResource(),
     )
+    cleanup_result = dagster_asset_module.research_workspace_cleanup_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "workspace_id": None,
+                "candidate_id": "twog-candidate-447eb8089965",
+                "work_packet_id": None,
+                "provider": "neon",
+                "expired_before": None,
+                "limit": 50,
+                "reason": "dagster_cleanup_test",
+                "dry_run": True,
+            },
+            run_id="dagster-workspace-cleanup-test",
+        ),
+        FakeRepositoryResource(),
+    )
 
-    assert calls == ["build_repository", "build_repository"]
+    assert calls == ["build_repository", "build_repository", "build_repository"]
     assert neon_result.value["dry_run"] is True
     assert neon_result.metadata["branch_name"].value == "twog-dagster"
     assert library_result.value["workspace_count"] == 1
     assert library_result.metadata["provider_counts"].data == {"neon": 1}
+    assert cleanup_result.value["candidate_count"] == 1
+    assert cleanup_result.metadata["candidate_count"].value == 1
 
 
 def test_dagster_validation_plan_asset_uses_injected_repository(monkeypatch):

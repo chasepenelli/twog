@@ -4808,6 +4808,47 @@ class ResearchWorkspaceLibraryResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ResearchWorkspaceCleanupRequest(StrictBaseModel):
+    workspace_id: UUID | None = None
+    work_packet_id: str | None = Field(default=None, max_length=260)
+    candidate_id: str | None = Field(default=None, max_length=260)
+    provider: ResearchWorkspaceProvider = "neon"
+    expired_before: datetime | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+    reason: str = Field(default="operator_workspace_cleanup", max_length=500)
+    dry_run: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_research_workspace_cleanup_request(self) -> "ResearchWorkspaceCleanupRequest":
+        self.work_packet_id = self.work_packet_id.strip() if self.work_packet_id else None
+        self.candidate_id = self.candidate_id.strip() if self.candidate_id else None
+        self.reason = self.reason.strip() or "operator_workspace_cleanup"
+        return self
+
+
+class ResearchWorkspaceCleanupCandidate(StrictBaseModel):
+    workspace: ResearchWorkspaceRecord
+    eligible: bool = False
+    action: Literal["dry_run", "delete_neon_branch", "skip"] = "skip"
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class ResearchWorkspaceCleanupResult(StrictBaseModel):
+    dry_run: bool = True
+    workspace_count: int = 0
+    candidate_count: int = 0
+    skipped_count: int = 0
+    deleted_count: int = 0
+    updated_count: int = 0
+    candidates: list[ResearchWorkspaceCleanupCandidate] = Field(default_factory=list)
+    skipped: list[ResearchWorkspaceCleanupCandidate] = Field(default_factory=list)
+    deleted_branch_ids: list[str] = Field(default_factory=list, max_length=100)
+    updated_workspaces: list[ResearchWorkspaceRecord] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list, max_length=25)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class NeonBranchWorkspaceRequest(StrictBaseModel):
     candidate_id: str = Field(min_length=3, max_length=260)
     work_packet_id: str | None = Field(default=None, max_length=260)
