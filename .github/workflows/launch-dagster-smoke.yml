@@ -554,6 +554,94 @@ jobs:
             --tail 40
         shell: bash
 
+      - name: Print hosted research workspace summary
+        if: ${{ always() && (inputs.job == 'research_workspace_neon_job' || inputs.job == 'research_workspace_library_job') }}
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+
+          from hsa_research.ingestion_bridge.contracts import ResearchWorkspaceLibraryRequest
+          from hsa_research.ingestion_bridge.service import HSAResearchService
+          from hsa_research.ingestion_bridge.storage import build_research_repository
+
+          def _op_config() -> dict:
+              try:
+                  config = json.loads(os.getenv("DAGSTER_CLOUD_CONFIG_JSON") or "{}")
+              except json.JSONDecodeError:
+                  return {}
+              ops = config.get("ops") if isinstance(config.get("ops"), dict) else {}
+              for op_name in ("research_workspace_neon_report", "research_workspace_library_report"):
+                  op_payload = ops.get(op_name)
+                  if isinstance(op_payload, dict) and isinstance(op_payload.get("config"), dict):
+                      return op_payload["config"]
+              for op_payload in ops.values():
+                  if isinstance(op_payload, dict) and isinstance(op_payload.get("config"), dict):
+                      return op_payload["config"]
+              return {}
+
+          config = _op_config()
+          provider = config.get("provider") or "neon"
+          service = HSAResearchService(build_research_repository())
+          result = service.list_research_workspaces(
+              ResearchWorkspaceLibraryRequest(
+                  candidate_id=config.get("candidate_id"),
+                  work_packet_id=config.get("work_packet_id"),
+                  provider=provider,
+                  include_expired=True,
+                  limit=int(config.get("limit") or 10),
+              )
+          )
+          rows = []
+          for workspace in result.workspaces:
+              metadata = workspace.metadata or {}
+              rows.append(
+                  {
+                      "workspace_id": str(workspace.workspace_id),
+                      "candidate_id": workspace.candidate_id,
+                      "work_packet_id": workspace.work_packet_id,
+                      "provider": workspace.provider,
+                      "status": workspace.status,
+                      "skill_profile": workspace.skill_profile,
+                      "neon_branch_name": workspace.neon_branch_name,
+                      "neon_branch_id": workspace.neon_branch_id,
+                      "neon_parent_branch": workspace.neon_parent_branch,
+                      "endpoint_id": metadata.get("endpoint_id"),
+                      "database_secret_ref": workspace.database_secret_ref,
+                      "branch_created": metadata.get("branch_created"),
+                      "branch_reused": metadata.get("branch_reused"),
+                      "expires_at": workspace.expires_at.isoformat() if workspace.expires_at else None,
+                      "error_count": len(workspace.errors or []),
+                      "created_at": workspace.created_at.isoformat(),
+                      "updated_at": workspace.updated_at.isoformat(),
+                  }
+              )
+
+          payload = {
+              "dagster_run_id": os.getenv("DAGSTER_CLOUD_RUN_ID"),
+              "query": {
+                  "candidate_id": config.get("candidate_id"),
+                  "work_packet_id": config.get("work_packet_id"),
+                  "provider": provider,
+              },
+              "workspace_count": result.workspace_count,
+              "status_counts": result.status_counts,
+              "provider_counts": result.provider_counts,
+              "workspaces": rows,
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("## Hosted research workspace summary\n\n")
+                  summary.write("```json\n")
+                  summary.write(json.dumps(payload, indent=2, sort_keys=True))
+                  summary.write("\n```\n")
+          PY
+        shell: bash
+
       - name: Print hosted reward ledger summary
         if: ${{ always() && (inputs.job == 'reward_event_sync_job' || inputs.job == 'reward_event_report_job') }}
         continue-on-error: true
