@@ -8,6 +8,7 @@ can be layered on top of the same ResearchWorkspaceRecord later.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import hashlib
 import json
 import re
 import urllib.error
@@ -23,6 +24,9 @@ from .contracts import (
     ResearchWorkspaceCleanupCandidate,
     ResearchWorkspaceCleanupRequest,
     ResearchWorkspaceCleanupResult,
+    ResearchWorkspaceCheckoutManifest,
+    ResearchWorkspaceCheckoutManifestRequest,
+    ResearchWorkspaceCheckoutManifestResult,
     ResearchWorkspaceRecord,
     ResearchWorkspaceSkillProfile,
 )
@@ -75,6 +79,47 @@ K_DENSE_WORKSPACE_SKILL_PRESETS: dict[ResearchWorkspaceSkillProfile, list[str]] 
         "K-Dense-AI/scientific-agent-skills:bioservices",
     ],
 }
+
+DEFAULT_CHECKOUT_METHOD_REFS = [
+    "candidate-record-v1",
+    "research-workspace-v1",
+    "contribution-packet-v1",
+]
+
+DEFAULT_CHECKOUT_TASK_TYPES = [
+    "evidence_addition",
+    "citation_repair",
+    "claim_critique",
+    "replication_result",
+    "compute_artifact",
+    "omics_note",
+    "validation_proposal",
+    "safety_or_translation_note",
+    "candidate_demotion_case",
+]
+
+DEFAULT_CHECKOUT_EXPECTED_OUTPUTS = [
+    "proof_capsule_json",
+    "targeted_claim_or_section",
+    "method_notes",
+    "evidence_or_artifact_refs",
+    "conflicts_and_limitations",
+    "requested_action",
+]
+
+DEFAULT_CHECKOUT_INSTRUCTIONS = [
+    "Work from the supplied candidate snapshot, evidence bundle, method refs, and workspace database secret reference.",
+    "Return a contribution packet or ProofCapsule that cites the exact claim or section being changed.",
+    "Include method notes, source/artifact references, conflicts, limitations, and the requested system action.",
+    "Do not mutate candidate records directly; submitted work enters operator-gated intake.",
+]
+
+DEFAULT_CHECKOUT_BOUNDARIES = [
+    "Public or sandbox workspaces never receive production write credentials.",
+    "A checkout manifest is a read/work handoff, not approval to mutate public candidate state.",
+    "GPU compute is approval-first and never triggered by public check-in alone.",
+    "LLMs may argue and synthesize; operator approval is the write gate.",
+]
 
 
 class NeonBranchClient(Protocol):
@@ -438,6 +483,138 @@ def cleanup_neon_research_workspaces(
     )
 
 
+def build_research_workspace_checkout_manifest(
+    repository: ResearchRepository,
+    request: ResearchWorkspaceCheckoutManifestRequest,
+) -> ResearchWorkspaceCheckoutManifestResult:
+    """Build and optionally attach a public-safe workspace checkout manifest."""
+
+    now = datetime.now(UTC)
+    errors: list[str] = []
+    workspace: ResearchWorkspaceRecord | None = None
+    if request.workspace_id:
+        workspace = repository.get_research_workspace(request.workspace_id)
+        if workspace is None:
+            errors.append(f"Research workspace not found: {request.workspace_id}")
+
+    candidate_id = request.candidate_id or (workspace.candidate_id if workspace else None)
+    if not candidate_id:
+        errors.append("candidate_id is required when workspace_id cannot be resolved.")
+        candidate_id = "missing-candidate"
+
+    work_packet_id = request.work_packet_id or (workspace.work_packet_id if workspace else None)
+    candidate_snapshot_hash = request.candidate_snapshot_hash or (
+        workspace.candidate_snapshot_hash if workspace else None
+    )
+    evidence_bundle_hash = request.evidence_bundle_hash or (workspace.evidence_bundle_hash if workspace else None)
+    git_repo = request.git_repo or (workspace.git_repo if workspace else None)
+    git_ref = request.git_ref or (workspace.git_ref if workspace else None)
+    git_branch = request.git_branch or (workspace.git_branch if workspace else None)
+    database_secret_ref = request.database_secret_ref or (workspace.database_secret_ref if workspace else None)
+    skill_profile = workspace.skill_profile if workspace and request.skill_profile == "core" else request.skill_profile
+    installed_skill_refs = _merge_skill_refs(
+        skill_profile,
+        [
+            *(workspace.installed_skill_refs if workspace else []),
+            *request.installed_skill_refs,
+        ],
+    )
+    recommended_source_refs = _unique_strings(
+        [
+            *(workspace.recommended_source_refs if workspace else []),
+            *request.recommended_source_refs,
+        ]
+    )
+    method_refs = request.method_refs or DEFAULT_CHECKOUT_METHOD_REFS
+    allowed_task_types = request.allowed_task_types or DEFAULT_CHECKOUT_TASK_TYPES
+    expected_outputs = request.expected_outputs or DEFAULT_CHECKOUT_EXPECTED_OUTPUTS
+    checkout_instructions = DEFAULT_CHECKOUT_INSTRUCTIONS
+    boundaries = DEFAULT_CHECKOUT_BOUNDARIES
+
+    hash_payload = {
+        "manifest_version": "research-workspace-checkout-v1",
+        "workspace_id": str(workspace.workspace_id) if workspace else (str(request.workspace_id) if request.workspace_id else None),
+        "candidate_id": candidate_id,
+        "work_packet_id": work_packet_id,
+        "candidate_snapshot_hash": candidate_snapshot_hash,
+        "evidence_bundle_hash": evidence_bundle_hash,
+        "method_refs": method_refs,
+        "open_questions": request.open_questions,
+        "allowed_task_types": allowed_task_types,
+        "expected_outputs": expected_outputs,
+        "artifact_refs": request.artifact_refs,
+        "git_repo": git_repo,
+        "git_ref": git_ref,
+        "git_branch": git_branch,
+        "database_secret_ref": database_secret_ref,
+        "skill_profile": skill_profile,
+        "installed_skill_refs": installed_skill_refs,
+        "recommended_source_refs": recommended_source_refs,
+        "checkout_instructions": checkout_instructions,
+        "boundaries": boundaries,
+        "metadata": request.metadata,
+    }
+    content_hash = _stable_hash(hash_payload)
+    manifest = ResearchWorkspaceCheckoutManifest(
+        workspace_id=workspace.workspace_id if workspace else request.workspace_id,
+        candidate_id=candidate_id,
+        work_packet_id=work_packet_id,
+        candidate_snapshot_hash=candidate_snapshot_hash,
+        evidence_bundle_hash=evidence_bundle_hash,
+        method_refs=method_refs,
+        open_questions=request.open_questions,
+        allowed_task_types=allowed_task_types,
+        expected_outputs=expected_outputs,
+        artifact_refs=request.artifact_refs,
+        git_repo=git_repo,
+        git_ref=git_ref,
+        git_branch=git_branch,
+        database_secret_ref=database_secret_ref,
+        skill_profile=skill_profile,
+        installed_skill_refs=installed_skill_refs,
+        recommended_source_refs=recommended_source_refs,
+        checkout_instructions=checkout_instructions,
+        boundaries=boundaries,
+        content_hash=content_hash,
+        created_at=now,
+        metadata={
+            **request.metadata,
+            "source_workspace_status": workspace.status if workspace else None,
+            "source_provider": workspace.provider if workspace else None,
+        },
+    )
+
+    persisted = False
+    if workspace and request.persist_to_workspace and not errors:
+        workspace = workspace.model_copy(
+            update={
+                "checkout_manifest_hash": manifest.content_hash,
+                "checkout_manifest": manifest.model_dump(mode="json"),
+                "candidate_snapshot_hash": candidate_snapshot_hash,
+                "evidence_bundle_hash": evidence_bundle_hash,
+                "updated_at": now,
+                "metadata": {
+                    **workspace.metadata,
+                    "checkout_manifest": {
+                        "content_hash": manifest.content_hash,
+                        "manifest_version": manifest.manifest_version,
+                        "updated_at": now.isoformat(),
+                    },
+                },
+            }
+        )
+        workspace = repository.upsert_research_workspace(workspace)
+        persisted = True
+
+    return ResearchWorkspaceCheckoutManifestResult(
+        manifest=manifest,
+        workspace=workspace,
+        persisted=persisted,
+        errors=errors,
+        created_at=now,
+    )
+
+
 def _cleanup_records(
     repository: ResearchRepository,
     request: ResearchWorkspaceCleanupRequest,
@@ -537,13 +714,52 @@ def plan_daytona_workspace(
     repository: ResearchRepository,
     request: DaytonaWorkspaceRequest,
 ) -> DaytonaWorkspaceResult:
-    """Persist a non-live Daytona workspace request for the next sandbox slice."""
+    """Persist a Daytona workspace handoff plan.
+
+    This intentionally stops before provider API execution. The returned
+    provider_payload is the reviewed shape the live adapter should submit once
+    Daytona credentials/client code are added.
+    """
 
     errors: list[str] = []
     if not request.dry_run:
-        errors.append("Daytona provider is stubbed in this slice; live provisioning is not enabled.")
-    if not request.database_secret_ref:
-        errors.append("database_secret_ref is recommended before a Daytona workspace is executable.")
+        errors.append("Daytona provider client is not configured; live provisioning remains gated.")
+        if not request.database_secret_ref:
+            errors.append("database_secret_ref is required before live Daytona provisioning.")
+        if not request.checkout_manifest_hash:
+            errors.append("checkout_manifest_hash is required before live Daytona provisioning.")
+        if not request.git_repo:
+            errors.append("git_repo is required before live Daytona provisioning.")
+    installed_skill_refs = _merge_skill_refs(request.skill_profile, request.installed_skill_refs)
+    provider_payload = {
+        "workspace_name": request.workspace_name
+        or f"twog-{_slug(request.candidate_id)}-{_slug(request.work_packet_id or 'workspace')}",
+        "provider_template": request.provider_template or "twog-research-workspace",
+        "candidate_id": request.candidate_id,
+        "work_packet_id": request.work_packet_id,
+        "neon_workspace_id": str(request.neon_workspace_id) if request.neon_workspace_id else None,
+        "database_secret_ref": request.database_secret_ref,
+        "checkout_manifest_hash": request.checkout_manifest_hash,
+        "checkout_manifest": request.checkout_manifest,
+        "candidate_snapshot_hash": request.candidate_snapshot_hash,
+        "evidence_bundle_hash": request.evidence_bundle_hash,
+        "git": {
+            "repo": request.git_repo,
+            "ref": request.git_ref,
+            "branch": request.git_branch,
+        },
+        "artifact_root": request.artifact_root,
+        "skill_profile": request.skill_profile,
+        "installed_skill_refs": installed_skill_refs,
+        "recommended_source_refs": request.recommended_source_refs,
+        "forbidden_secrets": ["OPENROUTER_API_KEY", "RUNPOD_API_KEY", "GH_TOKEN", "production_database_url"],
+    }
+    ready_for_provider_dispatch = bool(
+        request.dry_run
+        and request.database_secret_ref
+        and request.checkout_manifest_hash
+        and request.git_repo
+    )
     workspace = ResearchWorkspaceRecord(
         work_packet_id=request.work_packet_id,
         candidate_id=request.candidate_id,
@@ -552,13 +768,14 @@ def plan_daytona_workspace(
         checkout_manifest_hash=request.checkout_manifest_hash,
         checkout_manifest=request.checkout_manifest,
         provider="daytona",
+        provider_workspace_id=None,
         git_repo=request.git_repo,
         git_ref=request.git_ref,
         git_branch=request.git_branch,
         database_secret_ref=request.database_secret_ref,
         artifact_root=request.artifact_root,
         skill_profile=request.skill_profile,
-        installed_skill_refs=_merge_skill_refs(request.skill_profile, request.installed_skill_refs),
+        installed_skill_refs=installed_skill_refs,
         recommended_source_refs=request.recommended_source_refs,
         status="requested" if not errors else "failed",
         errors=errors,
@@ -567,11 +784,19 @@ def plan_daytona_workspace(
             "neon_workspace_id": str(request.neon_workspace_id) if request.neon_workspace_id else None,
             "provider_stub": True,
             "live_provisioning_enabled": False,
+            "ready_for_provider_dispatch": ready_for_provider_dispatch,
+            "provider_template": provider_payload["provider_template"],
         },
     )
     if request.persist:
         workspace = repository.upsert_research_workspace(workspace)
-    return DaytonaWorkspaceResult(workspace=workspace, dry_run=request.dry_run, errors=errors)
+    return DaytonaWorkspaceResult(
+        workspace=workspace,
+        dry_run=request.dry_run,
+        ready_for_provider_dispatch=ready_for_provider_dispatch,
+        provider_payload=provider_payload,
+        errors=errors,
+    )
 
 
 def _workspace_branch_name(request: NeonBranchWorkspaceRequest, now: datetime) -> str:
@@ -601,6 +826,23 @@ def _merge_skill_refs(
             merged.append(normalized)
             seen.add(key)
     return merged
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = str(raw).strip()
+        key = value.casefold()
+        if value and key not in seen:
+            unique.append(value)
+            seen.add(key)
+    return unique
+
+
+def _stable_hash(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return f"sha256:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
 
 
 def _find_existing_branch(branches: list[dict[str, Any]], branch_name: str) -> dict[str, Any] | None:

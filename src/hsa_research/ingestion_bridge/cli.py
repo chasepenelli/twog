@@ -66,6 +66,7 @@ from .contracts import (
     ResearchProgramEvidenceLoopRequest,
     ResearchProgramReviewRequest,
     ResearchWorkspaceCleanupRequest,
+    ResearchWorkspaceCheckoutManifestRequest,
     ResearchWorkspaceLibraryRequest,
     RewardEventSyncRequest,
     RewardReportRequest,
@@ -1059,6 +1060,75 @@ def main() -> None:
         help="Actually create/reuse a Neon branch. Omit for dry-run planning.",
     )
     research_workspace_neon.add_argument("--no-persist", action="store_true", help="Do not persist the workspace record")
+
+    research_workspace_checkout_manifest = subparsers.add_parser(
+        "research-workspace-checkout-manifest",
+        help="Build a public-safe checkout manifest for a workspace or candidate work packet",
+    )
+    research_workspace_checkout_manifest.add_argument("--workspace-id", default=None, help="Existing workspace ID")
+    research_workspace_checkout_manifest.add_argument("--candidate-id", default=None, help="Candidate ID")
+    research_workspace_checkout_manifest.add_argument("--work-packet-id", default=None, help="Work packet ID")
+    research_workspace_checkout_manifest.add_argument(
+        "--candidate-snapshot-hash",
+        default=None,
+        help="Candidate snapshot content hash",
+    )
+    research_workspace_checkout_manifest.add_argument(
+        "--evidence-bundle-hash",
+        default=None,
+        help="Evidence bundle content hash",
+    )
+    research_workspace_checkout_manifest.add_argument("--method-ref", action="append", default=[], help="Method ref")
+    research_workspace_checkout_manifest.add_argument(
+        "--open-question",
+        action="append",
+        default=[],
+        help="Open question for the workspace user",
+    )
+    research_workspace_checkout_manifest.add_argument(
+        "--allowed-task-type",
+        action="append",
+        default=[],
+        help="Allowed contribution task type",
+    )
+    research_workspace_checkout_manifest.add_argument(
+        "--expected-output",
+        action="append",
+        default=[],
+        help="Expected output field/artifact",
+    )
+    research_workspace_checkout_manifest.add_argument("--artifact-ref", action="append", default=[], help="Artifact ref")
+    research_workspace_checkout_manifest.add_argument("--git-repo", default=None, help="Checkout repository URL")
+    research_workspace_checkout_manifest.add_argument("--git-ref", default=None, help="Checkout git ref")
+    research_workspace_checkout_manifest.add_argument("--git-branch", default=None, help="Checkout branch")
+    research_workspace_checkout_manifest.add_argument(
+        "--database-secret-ref",
+        default=None,
+        help="Secret reference for workspace database URL; never pass a raw DSN",
+    )
+    research_workspace_checkout_manifest.add_argument(
+        "--skill-profile",
+        choices=WORKSPACE_SKILL_PROFILES,
+        default="core",
+        help="Installable skill preset for the workspace",
+    )
+    research_workspace_checkout_manifest.add_argument(
+        "--installed-skill-ref",
+        action="append",
+        default=[],
+        help="Additional skill ref to include; repeatable",
+    )
+    research_workspace_checkout_manifest.add_argument(
+        "--recommended-source-ref",
+        action="append",
+        default=[],
+        help="Recommended source/data ref; repeatable",
+    )
+    research_workspace_checkout_manifest.add_argument(
+        "--no-persist",
+        action="store_true",
+        help="Do not attach the manifest back to the workspace record",
+    )
 
     research_workspaces = subparsers.add_parser(
         "research-workspaces",
@@ -2887,6 +2957,30 @@ def main() -> None:
                 skill_profile=args.skill_profile,
                 include_expired=not args.active_only,
                 limit=args.limit,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "research-workspace-checkout-manifest":
+        output = HSAResearchService(repo).build_research_workspace_checkout_manifest(
+            ResearchWorkspaceCheckoutManifestRequest(
+                workspace_id=UUID(args.workspace_id) if args.workspace_id else None,
+                candidate_id=args.candidate_id,
+                work_packet_id=args.work_packet_id,
+                candidate_snapshot_hash=args.candidate_snapshot_hash,
+                evidence_bundle_hash=args.evidence_bundle_hash,
+                method_refs=args.method_ref,
+                open_questions=args.open_question,
+                allowed_task_types=args.allowed_task_type,
+                expected_outputs=args.expected_output,
+                artifact_refs=args.artifact_ref,
+                git_repo=args.git_repo,
+                git_ref=args.git_ref,
+                git_branch=args.git_branch,
+                database_secret_ref=args.database_secret_ref,
+                skill_profile=args.skill_profile,
+                installed_skill_refs=args.installed_skill_ref,
+                recommended_source_refs=args.recommended_source_ref,
+                persist_to_workspace=not args.no_persist,
+                metadata={"cli_command": "research-workspace-checkout-manifest"},
             )
         ).model_dump(mode="json")
     elif args.command == "research-workspace-cleanup":

@@ -149,6 +149,8 @@ from hsa_research.ingestion_bridge.contracts import (
     ResearchProgramReviewResult,
     ResearchWorkspaceCleanupRequest,
     ResearchWorkspaceCleanupResult,
+    ResearchWorkspaceCheckoutManifestRequest,
+    ResearchWorkspaceCheckoutManifestResult,
     ResearchWorkspaceLibraryRequest,
     ResearchWorkspaceLibraryResult,
     ResearchWorkspaceRecord,
@@ -229,6 +231,7 @@ from hsa_research.ingestion_bridge.chunker import chunk_text
 from hsa_research.ingestion_bridge.full_text_triage import FullTextTriageAgent
 from hsa_research.ingestion_bridge import agent_performance
 from hsa_research.ingestion_bridge.research_workspaces import (
+    build_research_workspace_checkout_manifest,
     cleanup_neon_research_workspaces,
     plan_daytona_workspace,
     provision_neon_branch_workspace,
@@ -2427,6 +2430,93 @@ def test_research_workspace_service_library_filters():
     assert library.status_counts == {"requested": 1}
 
 
+def test_research_workspace_checkout_manifest_requires_candidate_or_workspace():
+    with pytest.raises(ValueError):
+        ResearchWorkspaceCheckoutManifestRequest()
+
+
+def test_research_workspace_checkout_manifest_attaches_to_workspace():
+    repo = InMemoryResearchRepository()
+    workspace = repo.upsert_research_workspace(
+        ResearchWorkspaceRecord(
+            candidate_id="twog-candidate-447eb8089965",
+            work_packet_id="wp-proof-1",
+            candidate_snapshot_hash="sha256:snapshot",
+            evidence_bundle_hash="sha256:evidence",
+            provider="neon",
+            neon_branch_id="br-proof",
+            neon_branch_name="twog-proof",
+            database_secret_ref="neon://project-test/br-proof/neondb/neondb_owner",
+            status="requested",
+            skill_profile="k_dense_biomed",
+            recommended_source_refs=["pubmed:123"],
+        )
+    )
+
+    result = build_research_workspace_checkout_manifest(
+        repo,
+        ResearchWorkspaceCheckoutManifestRequest(
+            workspace_id=workspace.workspace_id,
+            open_questions=["Does this repair the KDR citation trail?"],
+            artifact_refs=["artifact://candidate/twog-candidate-447eb8089965/evidence-bundle.json"],
+        ),
+    )
+
+    assert isinstance(result, ResearchWorkspaceCheckoutManifestResult)
+    assert result.persisted is True
+    assert result.errors == []
+    assert result.manifest.candidate_id == workspace.candidate_id
+    assert result.manifest.work_packet_id == "wp-proof-1"
+    assert result.manifest.candidate_snapshot_hash == "sha256:snapshot"
+    assert result.manifest.evidence_bundle_hash == "sha256:evidence"
+    assert result.manifest.content_hash.startswith("sha256:")
+    assert "citation_repair" in result.manifest.allowed_task_types
+    assert "K-Dense-AI/scientific-agent-skills:database-lookup" in result.manifest.installed_skill_refs
+    stored = repo.get_research_workspace(workspace.workspace_id)
+    assert stored.checkout_manifest_hash == result.manifest.content_hash
+    assert stored.checkout_manifest["content_hash"] == result.manifest.content_hash
+    assert "postgres://" not in json.dumps(result.model_dump(mode="json"))
+
+
+def test_research_workspace_checkout_manifest_cli_attaches_to_workspace(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "workspace-manifest-cli.sqlite3"
+    workspace = SQLiteResearchRepository(db_path, seed=False).upsert_research_workspace(
+        ResearchWorkspaceRecord(
+            candidate_id="twog-candidate-447eb8089965",
+            work_packet_id="wp-cli-manifest",
+            provider="neon",
+            neon_branch_id="br-cli-manifest",
+            neon_branch_name="twog-cli-manifest",
+            database_secret_ref="neon://project-test/br-cli-manifest/neondb/neondb_owner",
+            skill_profile="literature_and_citation",
+            status="requested",
+        )
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hsa-ingestion",
+            "--db",
+            str(db_path),
+            "research-workspace-checkout-manifest",
+            "--workspace-id",
+            str(workspace.workspace_id),
+            "--open-question",
+            "Can the external reviewer reproduce the citation trail?",
+        ],
+    )
+
+    cli_module.main()
+    output = json.loads(capsys.readouterr().out)
+
+    assert output["persisted"] is True
+    assert output["manifest"]["candidate_id"] == "twog-candidate-447eb8089965"
+    assert output["manifest"]["content_hash"].startswith("sha256:")
+    stored = SQLiteResearchRepository(db_path, seed=False).get_research_workspace(workspace.workspace_id)
+    assert stored.checkout_manifest_hash == output["manifest"]["content_hash"]
+
+
 def test_research_workspace_cleanup_contract_defaults_and_rejects_invalid_provider():
     request = ResearchWorkspaceCleanupRequest()
 
@@ -2691,6 +2781,7 @@ def test_daytona_workspace_stub_is_non_live_and_secret_ref_only():
             candidate_id="twog-candidate-447eb8089965",
             work_packet_id="wp-daytona-1",
             database_secret_ref="neon://project/br-workspace/neondb/neondb_owner",
+            checkout_manifest_hash="sha256:manifest",
             git_repo="https://github.com/chasepenelli/twog",
             git_ref="main",
             skill_profile="md_review",
@@ -2701,8 +2792,34 @@ def test_daytona_workspace_stub_is_non_live_and_secret_ref_only():
     assert isinstance(result, DaytonaWorkspaceResult)
     assert result.workspace.provider == "daytona"
     assert result.workspace.status == "requested"
+    assert result.ready_for_provider_dispatch is True
+    assert result.provider_payload["checkout_manifest_hash"] == "sha256:manifest"
+    assert result.provider_payload["forbidden_secrets"] == [
+        "OPENROUTER_API_KEY",
+        "RUNPOD_API_KEY",
+        "GH_TOKEN",
+        "production_database_url",
+    ]
     assert "K-Dense-AI/scientific-agent-skills:molecular-dynamics" in result.workspace.installed_skill_refs
     assert "postgres://" not in result.workspace.model_dump_json()
+
+
+def test_daytona_workspace_live_request_fails_closed_without_provider_client():
+    repo = InMemoryResearchRepository()
+    result = plan_daytona_workspace(
+        repo,
+        DaytonaWorkspaceRequest(
+            candidate_id="twog-candidate-447eb8089965",
+            work_packet_id="wp-daytona-live",
+            dry_run=False,
+        ),
+    )
+
+    assert result.dry_run is False
+    assert result.ready_for_provider_dispatch is False
+    assert result.workspace.status == "failed"
+    assert "Daytona provider client is not configured; live provisioning remains gated." in result.errors
+    assert "database_secret_ref is required before live Daytona provisioning." in result.errors
 
 
 def test_research_program_evidence_loop_queues_bounded_work():
@@ -6775,6 +6892,23 @@ def test_dagster_research_workspace_assets_use_injected_repository(monkeypatch):
                 ],
             )
 
+        def build_research_workspace_checkout_manifest(self, request):
+            assert isinstance(request, ResearchWorkspaceCheckoutManifestRequest)
+            assert request.candidate_id == "twog-candidate-447eb8089965"
+            assert request.work_packet_id == "wp-dagster-1"
+            assert request.metadata["dagster_run_id"] == "dagster-workspace-manifest-test"
+            result = build_research_workspace_checkout_manifest(
+                InMemoryResearchRepository(),
+                ResearchWorkspaceCheckoutManifestRequest(
+                    candidate_id=request.candidate_id,
+                    work_packet_id=request.work_packet_id,
+                    method_refs=request.method_refs,
+                    open_questions=request.open_questions,
+                    persist_to_workspace=False,
+                ),
+            )
+            return result.model_copy(update={"workspace": workspace, "persisted": False})
+
     monkeypatch.setattr(service_module, "HSAResearchService", FakeService)
 
     neon_result = dagster_asset_module.research_workspace_neon_report.node_def.compute_fn.decorated_fn(
@@ -6841,14 +6975,42 @@ def test_dagster_research_workspace_assets_use_injected_repository(monkeypatch):
         ),
         FakeRepositoryResource(),
     )
+    manifest_result = dagster_asset_module.research_workspace_checkout_manifest_report.node_def.compute_fn.decorated_fn(
+        SimpleNamespace(
+            op_config={
+                "workspace_id": None,
+                "candidate_id": "twog-candidate-447eb8089965",
+                "work_packet_id": "wp-dagster-1",
+                "candidate_snapshot_hash": None,
+                "evidence_bundle_hash": None,
+                "method_refs": ["candidate-record-v1"],
+                "open_questions": ["What should the reviewer check?"],
+                "allowed_task_types": [],
+                "expected_outputs": [],
+                "artifact_refs": [],
+                "git_repo": None,
+                "git_ref": None,
+                "git_branch": None,
+                "database_secret_ref": None,
+                "skill_profile": "core",
+                "installed_skill_refs": [],
+                "recommended_source_refs": [],
+                "persist_to_workspace": False,
+            },
+            run_id="dagster-workspace-manifest-test",
+        ),
+        FakeRepositoryResource(),
+    )
 
-    assert calls == ["build_repository", "build_repository", "build_repository"]
+    assert calls == ["build_repository", "build_repository", "build_repository", "build_repository"]
     assert neon_result.value["dry_run"] is True
     assert neon_result.metadata["branch_name"].value == "twog-dagster"
     assert library_result.value["workspace_count"] == 1
     assert library_result.metadata["provider_counts"].data == {"neon": 1}
     assert cleanup_result.value["candidate_count"] == 1
     assert cleanup_result.metadata["candidate_count"].value == 1
+    assert manifest_result.value["manifest"]["content_hash"].startswith("sha256:")
+    assert manifest_result.metadata["checkout_manifest_hash"].value.startswith("sha256:")
 
 
 def test_dagster_validation_plan_asset_uses_injected_repository(monkeypatch):
@@ -7070,6 +7232,10 @@ def test_candidate_contribution_intake_report_summarizes_rows():
                 "contributor": {"contact": "reviewer@example.com"},
                 "evidence": [{"url": "https://example.com/paper"}],
                 "artifacts": [],
+                "packet": {
+                    "workspace_id": "025250d3-5982-4e77-84e7-b7e7d75157b2",
+                    "checkout_manifest_hash": "sha256:manifest",
+                },
                 "created_at": datetime(2026, 5, 19, tzinfo=UTC),
             },
             {
@@ -7095,6 +7261,8 @@ def test_candidate_contribution_intake_report_summarizes_rows():
     assert report["requested_action_counts"] == {"evidence_review": 1, "no_action": 1}
     assert report["recommended_route_counts"]["accepted_for_evidence_review"] == 1
     assert report["rows"][0]["created_at"] == "2026-05-19T00:00:00+00:00"
+    assert report["rows"][0]["workspace_id"] == "025250d3-5982-4e77-84e7-b7e7d75157b2"
+    assert report["rows"][0]["checkout_manifest_hash"] == "sha256:manifest"
 
 
 def test_dagster_candidate_contribution_intake_report_lives_in_control_panel_group():
@@ -7173,6 +7341,10 @@ def test_candidate_contribution_triage_plan_routes_accepted_rows():
                 "candidate_id": "twog-candidate-447eb8089965",
                 "display_id": "TWOG-15F50D",
                 "status": "queued_for_intake",
+                "packet": {
+                    "workspace_id": "025250d3-5982-4e77-84e7-b7e7d75157b2",
+                    "checkout_manifest_hash": "sha256:manifest",
+                },
                 "review_notes": None,
                 "promoted_queue_id": None,
             }
@@ -7195,6 +7367,8 @@ def test_candidate_contribution_triage_plan_routes_accepted_rows():
     }
     assert report["rows"][0]["old_status"] == "queued_for_intake"
     assert report["rows"][0]["new_status"] == "accepted_for_evidence_review"
+    assert report["rows"][0]["workspace_id"] == "025250d3-5982-4e77-84e7-b7e7d75157b2"
+    assert report["rows"][0]["checkout_manifest_hash"] == "sha256:manifest"
     assert report["rows"][0]["promoted_queue_id"] == (
         f"candidate_contribution:{contribution_id}:evidence_review"
     )

@@ -38,6 +38,7 @@ on:
           - "research_workspace_neon_job"
           - "research_workspace_library_job"
           - "research_workspace_cleanup_job"
+          - "research_workspace_checkout_manifest_job"
           - "omics_accession_hunt_job"
           - "omics_evidence_packet_job"
           - "omics_readout_job"
@@ -562,7 +563,7 @@ jobs:
         shell: bash
 
       - name: Print hosted research workspace summary
-        if: ${{ always() && (inputs.job == 'research_workspace_neon_job' || inputs.job == 'research_workspace_library_job' || inputs.job == 'research_workspace_cleanup_job') }}
+        if: ${{ always() && (inputs.job == 'research_workspace_neon_job' || inputs.job == 'research_workspace_library_job' || inputs.job == 'research_workspace_cleanup_job' || inputs.job == 'research_workspace_checkout_manifest_job') }}
         continue-on-error: true
         run: |
           uv run python - <<'PY'
@@ -579,7 +580,7 @@ jobs:
               except json.JSONDecodeError:
                   return {}
               ops = config.get("ops") if isinstance(config.get("ops"), dict) else {}
-              for op_name in ("research_workspace_neon_report", "research_workspace_library_report", "research_workspace_cleanup_report"):
+              for op_name in ("research_workspace_neon_report", "research_workspace_library_report", "research_workspace_cleanup_report", "research_workspace_checkout_manifest_report"):
                   op_payload = ops.get(op_name)
                   if isinstance(op_payload, dict) and isinstance(op_payload.get("config"), dict):
                       return op_payload["config"]
@@ -616,6 +617,8 @@ jobs:
                       "neon_parent_branch": workspace.neon_parent_branch,
                       "endpoint_id": metadata.get("endpoint_id"),
                       "database_secret_ref": workspace.database_secret_ref,
+                      "checkout_manifest_hash": workspace.checkout_manifest_hash,
+                      "checkout_manifest_version": (workspace.checkout_manifest or {}).get("manifest_version"),
                       "branch_created": metadata.get("branch_created"),
                       "branch_reused": metadata.get("branch_reused"),
                       "expires_at": workspace.expires_at.isoformat() if workspace.expires_at else None,
