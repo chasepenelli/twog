@@ -23,6 +23,12 @@ jobs:
       TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
       RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
       HSA_RUNPOD_ENDPOINT_ID: ${{ secrets.HSA_RUNPOD_ENDPOINT_ID }}
+      # Master seed for the auto-dive worker's persistent ed25519 identity.
+      # The @twog-auto-dive persona's key derives from this seed via HKDF;
+      # rotating the seed rotates the auto-dive identity. Required by
+      # candidate_auto_dive_job; mint a fresh one with
+      # `uv run python scripts/run_demo_personas.py keygen`.
+      TWOG_DEMO_MASTER_SEED: ${{ secrets.TWOG_DEMO_MASTER_SEED }}
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
       HSA_FULL_TEXT_REQUEST_TIMEOUT_SECONDS: "8"
       HSA_FULL_TEXT_REQUEST_ATTEMPTS: "1"
@@ -118,6 +124,12 @@ jobs:
               create_env "$scope" HSA_RUNPOD_ENDPOINT_ID "$HSA_RUNPOD_ENDPOINT_ID"
             else
               echo "::warning::HSA_RUNPOD_ENDPOINT_ID is not configured as a GitHub Actions secret; live RunPod compute will stay disabled in Dagster+."
+            fi
+
+            if [ -n "$TWOG_DEMO_MASTER_SEED" ]; then
+              create_env "$scope" TWOG_DEMO_MASTER_SEED --from-local-env
+            else
+              echo "::warning::TWOG_DEMO_MASTER_SEED is not configured as a GitHub Actions secret; candidate_auto_dive_job will fail to sign capsules in Dagster+."
             fi
           done
         shell: bash

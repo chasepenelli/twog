@@ -363,11 +363,77 @@ def is_in_cooldown(
 def fetch_candidate_payload(
     candidate_id: str,
     *,
+    database_url: str | None = None,
+    site_url: str | None = None,
+) -> Mapping[str, Any] | None:
+    """Read the candidate's structured payload directly from Neon.
+
+    Auto-dive is a server-side worker; it should not HTTP-roundtrip its
+    own public API to read its own database. Reading from Postgres
+    directly removes the dependency on a deployed/reachable public site
+    so this worker runs cleanly inside Dagster+ Serverless.
+
+    The `site_url` parameter is kept for backwards compatibility but is
+    no longer required. If `database_url` is omitted, we resolve via the
+    standard `candidate_contribution_database_url()` env helper.
+
+    Returns None if the candidate has no published snapshot yet.
+    """
+
+    connection_string = database_url or candidate_contribution_database_url()
+    if not connection_string:
+        if site_url:
+            # Fallback for the local-dev script path where the worker
+            # may be invoked without DB access.
+            return _fetch_candidate_payload_via_http(candidate_id, site_url=site_url)
+        return None
+    try:
+        with psycopg2.connect(connection_string, cursor_factory=RealDictCursor) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select content_hash, payload
+                    from public_candidate_snapshots
+                    where candidate_id = %s
+                    order by snapshot_version desc
+                    limit 1
+                    """,
+                    [candidate_id],
+                )
+                row = cur.fetchone()
+    except psycopg2.errors.UndefinedTable:
+        if site_url:
+            return _fetch_candidate_payload_via_http(candidate_id, site_url=site_url)
+        return None
+    if row is None:
+        return None
+    raw_payload = row["payload"] if isinstance(row, dict) else row[1]
+    # The snapshot row's `payload` jsonb wraps the candidate envelope
+    # plus a nested `payload` dict carrying biology/literature/rationale.
+    # That nested dict is what every diagnostic rule reads from. Match
+    # the HTTP API's shape (data.latest_snapshot.payload) exactly so
+    # the diagnostic functions work identically against either source.
+    if isinstance(raw_payload, dict) and isinstance(raw_payload.get("payload"), dict):
+        inner_payload = raw_payload["payload"]
+        title = raw_payload.get("title")
+    else:
+        inner_payload = raw_payload if isinstance(raw_payload, dict) else {}
+        title = None
+    return {
+        "candidate_id": candidate_id,
+        "candidate_short_id": _short_candidate_id(candidate_id),
+        "snapshot_content_hash": row["content_hash"] if isinstance(row, dict) else row[0],
+        "title": title,
+        "payload": inner_payload,
+    }
+
+
+def _fetch_candidate_payload_via_http(
+    candidate_id: str,
+    *,
     site_url: str,
 ) -> Mapping[str, Any] | None:
-    """Read the candidate's structured payload via the public API.
-    Returns None if the candidate doesn't exist."""
-
+    """Local-dev fallback when no database URL is configured."""
     safe = urlparse.quote(candidate_id, safe="")
     req = urlrequest.Request(
         f"{site_url}/api/public-candidates/{safe}",
@@ -511,7 +577,9 @@ def dive(
     ):
         return AutoDiveReport(candidate_id=candidate_id, status="cooldown")
 
-    snapshot = fetch_candidate_payload(candidate_id, site_url=site)
+    snapshot = fetch_candidate_payload(
+        candidate_id, database_url=database_url, site_url=site
+    )
     if snapshot is None:
         return AutoDiveReport(candidate_id=candidate_id, status="no_candidate")
 
