@@ -93,11 +93,7 @@ export default function PipelineDiagram() {
         preserveAspectRatio="none"
       >
         {/* Lines are positioned via the flex layout — we draw them between node centers */}
-        {Array.from({ length: totalLines }).map((_, i) => {
-          // Each line is a short horizontal segment; actual positioning is handled
-          // by placing SVG lines that overlay the p-line gaps
-          return null; // SVG lines are rendered inline below
-        })}
+        {Array.from({ length: totalLines }).map(() => null)}
       </svg>
 
       {/* Horizontal pipeline flow */}

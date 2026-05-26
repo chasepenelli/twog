@@ -10,8 +10,8 @@ export function useCompoundVideo(compoundId?: number, compoundName?: string) {
 
   useEffect(() => {
     if (!sb || (!compoundId && !compoundName)) {
-      setLoading(false);
-      return;
+      const timeout = window.setTimeout(() => setLoading(false), 0);
+      return () => window.clearTimeout(timeout);
     }
 
     async function fetch() {
@@ -46,7 +46,7 @@ export function useCompoundVideo(compoundId?: number, compoundName?: string) {
       setLoading(false);
     }
 
-    fetch();
+    void fetch();
   }, [sb, compoundId, compoundName]);
 
   return { videoUrl, loading };

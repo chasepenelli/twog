@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import Molecule3D from './Molecule3D';
 import ScoreRubric, { normalizeScore, enumToScore } from './ScoreRubric';
-import ScrollReveal from './ScrollReveal';
 import type { ValidationCompound } from '@/hooks/useValidationData';
 
 function parseJson(val: unknown): unknown[] {

@@ -266,7 +266,7 @@ export default function FieldGuideDetail({ clusterParam }: Props) {
           Neighborhood not found.
         </h1>
         <p className="text-[0.95rem] text-[var(--gray-500)] mb-6">
-          We couldn't find a cluster at <code>{clusterParam}</code>.
+          We couldn&apos;t find a cluster at <code>{clusterParam}</code>.
         </p>
         <Link
           href="/research/field-guide"
@@ -398,7 +398,7 @@ export default function FieldGuideDetail({ clusterParam }: Props) {
       {/* Synthesis */}
       <section className="mb-12 max-w-[720px]">
         <p className="text-[0.6rem] font-mono uppercase tracking-[0.3em] text-[var(--gray-400)] mb-4">
-          What we've read
+          What we&apos;ve read
         </p>
         <FieldGuideSynthesis markdown={entry.synthesis_md} />
       </section>

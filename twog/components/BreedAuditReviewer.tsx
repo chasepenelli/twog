@@ -139,9 +139,12 @@ export default function BreedAuditReviewer() {
 
   // Load persisted decisions once we're in the browser.
   useEffect(() => {
-    const stored = loadStored();
-    setDecisions(stored.decisions);
-    setHydrated(true);
+    const timeout = window.setTimeout(() => {
+      const stored = loadStored();
+      setDecisions(stored.decisions);
+      setHydrated(true);
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, []);
 
   // Persist on change (only after initial hydrate, so we don't clobber storage).
@@ -158,11 +161,14 @@ export default function BreedAuditReviewer() {
 
   // Clamp index whenever the visible list changes.
   useEffect(() => {
-    if (visible.length === 0) {
-      setIndex(0);
-      return;
-    }
-    setIndex(i => Math.min(i, visible.length - 1));
+    const timeout = window.setTimeout(() => {
+      if (visible.length === 0) {
+        setIndex(0);
+        return;
+      }
+      setIndex(i => Math.min(i, visible.length - 1));
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [visible.length]);
 
   const current = visible[index] ?? null;

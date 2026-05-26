@@ -10,7 +10,7 @@ interface V3Result {
   stability_classification: string;
   ligand_rmsd_mean: number | null;
   protein_rmsd_mean: number | null;
-  hbond_occupancy: any;
+  hbond_occupancy: unknown;
   contact_maintained: boolean | null;
   rmsd_plateaued: boolean | null;
   simulation_length_ns: number;
@@ -176,8 +176,6 @@ export default function ValidationPage() {
 
   const stable = v3Results.filter(r => r.stability_classification === 'stable');
   const marginal = v3Results.filter(r => r.stability_classification === 'marginal');
-  const unstable = v3Results.filter(r => r.stability_classification === 'unstable');
-
   return (
     <>
       {/* ── HERO ── */}

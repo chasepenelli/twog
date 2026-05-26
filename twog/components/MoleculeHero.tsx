@@ -18,6 +18,20 @@ interface MoleculeHeroProps {
 
 const STORAGE_BASE = 'https://ktkvqoaskukndgxhutzg.supabase.co/storage/v1/object/public/videos/molecules';
 
+type MoleculeViewer = {
+  addModel: (data: string, format: string) => void;
+  setStyle: (selection: Record<string, never>, style: Record<string, unknown>) => void;
+  zoomTo: () => void;
+  zoom: (factor: number) => void;
+  render: () => void;
+  spin: (axis: string, speed: number) => void;
+  clear: () => void;
+};
+
+type ThreeDmolModule = {
+  createViewer: (element: HTMLDivElement, config: Record<string, unknown>) => MoleculeViewer;
+};
+
 /* Short role labels for each target */
 const TARGET_ROLE: Record<string, string> = {
   cPIK3CA: 'Cell Survival',
@@ -39,7 +53,7 @@ const TARGET_ROLE: Record<string, string> = {
 
 export default function MoleculeHero({ compound, alternatives = [], pipelineStats }: MoleculeHeroProps) {
   const viewerRef = useRef<HTMLDivElement>(null);
-  const viewerInstance = useRef<any>(null);
+  const viewerInstance = useRef<MoleculeViewer | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   // Build top runners-up (different targets from lead)
@@ -59,10 +73,10 @@ export default function MoleculeHero({ compound, alternatives = [], pipelineStat
     let cancelled = false;
 
     async function init() {
-      const $3Dmol = await import('3dmol');
+      const $3Dmol = (await import('3dmol')) as unknown as ThreeDmolModule;
       if (cancelled || !viewerRef.current) return;
 
-      const viewer = ($3Dmol as any).createViewer(viewerRef.current, {
+      const viewer = $3Dmol.createViewer(viewerRef.current, {
         backgroundColor: 'rgba(0,0,0,0)',
         antialias: true,
         cartoonQuality: 10,
