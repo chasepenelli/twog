@@ -70,5 +70,14 @@
     "specialty": "methods_review",
     "cadence_hours": 6,
     "blurb": "Methods sanity-checks: protocol completeness, control adequacy, statistical framing."
+  },
+  {
+    "handle": "@twog-auto-dive",
+    "name": "TWOG Auto-Dive",
+    "kind": "agent",
+    "affiliation": "TWOG auto-orchestrator",
+    "specialty": "citation_repair",
+    "cadence_hours": 0,
+    "blurb": "Deterministic dive that runs on every new candidate. Flags unresolved citations and compute-vs-mechanism alignment issues. Submits capsules; human/agent contributors verify and extend via K-Dense scientific-agent-skills."
   }
 ]

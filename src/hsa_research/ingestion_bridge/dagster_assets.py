@@ -4155,6 +4155,116 @@ if dg is not None:
     @dg.asset(
         group_name="ai_research",
         config_schema={
+            "candidate_id": dg.Field(
+                str,
+                is_required=False,
+                description="Dive one specific candidate; omit to dive all eligible candidates not in cooldown.",
+            ),
+            "cooldown_hours": dg.Field(
+                int,
+                default_value=24,
+                description="Hours between auto-dives on the same candidate.",
+            ),
+            "candidate_limit": dg.Field(
+                int,
+                default_value=50,
+                description="Max candidates to dive per pass (when candidate_id is omitted).",
+            ),
+            "force": dg.Field(
+                bool,
+                default_value=False,
+                description="Ignore the per-candidate cooldown.",
+            ),
+            "dry_run": dg.Field(
+                bool,
+                default_value=False,
+                description="Compute proposed capsules without submitting via /api/proof-capsules.",
+            ),
+            "site_url": dg.Field(
+                str,
+                is_required=False,
+                description="TWOG public site URL (defaults to TWOG_SITE_URL env or http://localhost:3000).",
+            ),
+        },
+    )
+    def candidate_auto_dive_report(context) -> dg.MaterializeResult:
+        """Deterministic auto-dive on candidate snapshots.
+
+        For each candidate not in the @twog-auto-dive cooldown window,
+        runs the deterministic checks (unresolved citations,
+        compute-vs-mechanism alignment) and submits the resulting
+        proof capsules via the public /api/proof-capsules path.
+
+        Requires TWOG_DEMO_MASTER_SEED env (the same seed the demo
+        persona orchestrator uses — @twog-auto-dive's ed25519 key
+        derives from it via HKDF).
+        """
+
+        from .auto_dive_worker import dive, dive_all_eligible
+
+        master_seed = os.environ.get("TWOG_DEMO_MASTER_SEED")
+        if not master_seed:
+            raise RuntimeError(
+                "TWOG_DEMO_MASTER_SEED env var required for auto-dive "
+                "(use the same seed as the demo persona orchestrator)."
+            )
+
+        config = context.op_config
+        site_url = config.get("site_url") or os.environ.get("TWOG_SITE_URL")
+        cooldown = config["cooldown_hours"]
+
+        if config.get("candidate_id"):
+            reports = [
+                dive(
+                    config["candidate_id"],
+                    master_seed_b64=master_seed,
+                    site_url=site_url,
+                    cooldown_hours=cooldown,
+                    force=config["force"],
+                    dry_run=config["dry_run"],
+                )
+            ]
+        else:
+            reports = dive_all_eligible(
+                master_seed_b64=master_seed,
+                site_url=site_url,
+                cooldown_hours=cooldown,
+                candidate_limit=config["candidate_limit"],
+                dry_run=config["dry_run"],
+            )
+
+        summary = {
+            "candidate_count": len(reports),
+            "ok_count": sum(1 for r in reports if r.status == "ok"),
+            "cooldown_count": sum(1 for r in reports if r.status == "cooldown"),
+            "no_candidate_count": sum(1 for r in reports if r.status == "no_candidate"),
+            "total_proposed": sum(len(r.proposed_capsules) for r in reports),
+            "total_submitted": sum(len(r.submitted_capsule_ids) for r in reports),
+            "total_errors": sum(len(r.errors) for r in reports),
+            "dry_run": config["dry_run"],
+            "reports": [
+                {
+                    "candidate_id": r.candidate_id,
+                    "status": r.status,
+                    "proposed_capsule_count": len(r.proposed_capsules),
+                    "submitted_capsule_ids": r.submitted_capsule_ids,
+                    "errors": r.errors,
+                }
+                for r in reports
+            ],
+        }
+        metadata: dict[str, Any] = {
+            "candidates_dove": dg.MetadataValue.int(summary["ok_count"]),
+            "candidates_in_cooldown": dg.MetadataValue.int(summary["cooldown_count"]),
+            "capsules_proposed": dg.MetadataValue.int(summary["total_proposed"]),
+            "capsules_submitted": dg.MetadataValue.int(summary["total_submitted"]),
+            "error_count": dg.MetadataValue.int(summary["total_errors"]),
+        }
+        return dg.MaterializeResult(value=summary, metadata=metadata)
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
             "limit": dg.Field(
                 int,
                 default_value=20,
@@ -8127,6 +8237,7 @@ if dg is not None:
         reward_event_report,
         reward_event_sync_report,
         capsule_llm_grade_report,
+        candidate_auto_dive_report,
         research_brief_agent_report,
         therapy_committee_report,
         validation_tool_catalog_report,
@@ -8324,6 +8435,10 @@ if dg is not None:
     capsule_llm_grade_job = dg.define_asset_job(
         "capsule_llm_grade_job",
         selection=dg.AssetSelection.assets(capsule_llm_grade_report),
+    )
+    candidate_auto_dive_job = dg.define_asset_job(
+        "candidate_auto_dive_job",
+        selection=dg.AssetSelection.assets(candidate_auto_dive_report),
     )
     research_brief_agent_job = dg.define_asset_job(
         "research_brief_agent_job",
@@ -8766,6 +8881,7 @@ if dg is not None:
             reward_event_report_job,
             reward_event_sync_job,
             capsule_llm_grade_job,
+            candidate_auto_dive_job,
             research_brief_agent_job,
             therapy_committee_job,
             validation_tool_catalog_job,
