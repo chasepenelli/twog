@@ -8,6 +8,8 @@ The goal is not to claim that AI can replace scientific review. The goal is to m
 
 Live site: [twog.bio](https://twog.bio)
 
+License: Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
 ## The Short Version
 
 TWOG is an AI-assisted research operating system for comparative oncology.
@@ -313,6 +315,12 @@ Still maturing:
 TWOG candidate records do not certify efficacy, safety, dosing, clinical readiness, veterinary use, or regulatory fitness. They are research artifacts for inspection, challenge, and improvement.
 
 Any medical or veterinary decision belongs with qualified professionals.
+
+## License
+
+Code in this repository is licensed under the [Apache License 2.0](LICENSE). The repository includes a [NOTICE](NOTICE) file for attribution.
+
+Public candidate records, method pages, and data artifacts may carry separate content or data terms when published. Unless a public artifact explicitly says otherwise, treat it as a research record for inspection, critique, and contribution through the documented intake flow.
 
 ## The Bet
 
