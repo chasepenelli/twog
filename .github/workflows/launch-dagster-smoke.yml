@@ -128,6 +128,8 @@ jobs:
       DAGSTER_CLOUD_ORGANIZATION: "twogbio"
       DAGSTER_CLOUD_URL: "https://twogbio.dagster.cloud"
       DAGSTER_CLOUD_DEPLOYMENT: ${{ inputs.deployment }}
+      DAGSTER_CLOUD_API_TOKEN: ${{ secrets.DAGSTER_CLOUD_API_TOKEN }}
+      DAGSTER_CLOUD_RUN_API_TOKEN: ${{ secrets.DAGSTER_CLOUD_API_TOKEN }}
       DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
       DAGSTER_CLOUD_LOCATION: ${{ inputs.location }}
       DAGSTER_CLOUD_JOB: ${{ inputs.job }}
@@ -172,9 +174,18 @@ jobs:
 
       - name: Validate required secrets
         run: |
-          if [ -z "$DAGSTER_PLUS_ENV_API_TOKEN" ]; then
-            echo "::error::DAGSTER_PLUS_ENV_API_TOKEN is not configured."
+          if [ -z "$DAGSTER_CLOUD_RUN_API_TOKEN" ] && [ -n "$DAGSTER_PLUS_ENV_API_TOKEN" ]; then
+            echo "DAGSTER_CLOUD_RUN_API_TOKEN=$DAGSTER_PLUS_ENV_API_TOKEN" >> "$GITHUB_ENV"
+            DAGSTER_CLOUD_RUN_API_TOKEN="$DAGSTER_PLUS_ENV_API_TOKEN"
+          fi
+          if [ -z "$DAGSTER_CLOUD_RUN_API_TOKEN" ]; then
+            echo "::error::DAGSTER_CLOUD_API_TOKEN or DAGSTER_PLUS_ENV_API_TOKEN is required for Dagster run control."
             exit 1
+          fi
+          if [ -z "$DAGSTER_PLUS_ENV_API_TOKEN" ]; then
+            echo "::warning::DAGSTER_PLUS_ENV_API_TOKEN is not configured; hosted job registration will use DAGSTER_CLOUD_RUN_API_TOKEN."
+            echo "DAGSTER_PLUS_ENV_API_TOKEN=$DAGSTER_CLOUD_RUN_API_TOKEN" >> "$GITHUB_ENV"
+            DAGSTER_PLUS_ENV_API_TOKEN="$DAGSTER_CLOUD_RUN_API_TOKEN"
           fi
           if [ -z "$HSA_DATABASE_URL" ]; then
             echo "::error::HSA_DATABASE_URL is not configured."
@@ -376,7 +387,7 @@ jobs:
           launch_tags='{"github_workflow":"launch-dagster-smoke","github_run_id":"'"$GITHUB_RUN_ID"'","github_run_attempt":"'"$GITHUB_RUN_ATTEMPT"'","dagster_job":"'"$DAGSTER_CLOUD_JOB"'"}'
           launch_args=(
             uv run dagster-cloud job launch
-            --api-token "$DAGSTER_PLUS_ENV_API_TOKEN"
+            --api-token "$DAGSTER_CLOUD_RUN_API_TOKEN"
             --organization "$DAGSTER_CLOUD_ORGANIZATION"
             --deployment "$DAGSTER_CLOUD_DEPLOYMENT"
             --location "$DAGSTER_CLOUD_LOCATION"
@@ -452,7 +463,7 @@ jobs:
             set +e
             status_output="$(
               timeout "${query_timeout_seconds}s" uv run dagster-cloud run status "$run_id" \
-                --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+                --api-token "$DAGSTER_CLOUD_RUN_API_TOKEN" \
                 --organization "$DAGSTER_CLOUD_ORGANIZATION" \
                 --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
                 2>&1
@@ -503,7 +514,7 @@ jobs:
               echo "::warning::Requesting Dagster run termination with policy ${DAGSTER_CLOUD_TERMINATE_POLICY_ON_TIMEOUT}."
               uv run python .github/scripts/dagster_cloud_run_control.py \
                 --url "$DAGSTER_CLOUD_URL" \
-                --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+                --api-token "$DAGSTER_CLOUD_RUN_API_TOKEN" \
                 --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
                 --timeout-seconds "$DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS" \
                 terminate \
@@ -528,7 +539,7 @@ jobs:
           set -euo pipefail
           uv run python .github/scripts/dagster_cloud_run_control.py \
             --url "$DAGSTER_CLOUD_URL" \
-            --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+            --api-token "$DAGSTER_CLOUD_RUN_API_TOKEN" \
             --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
             --timeout-seconds "$DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS" \
             terminate \
@@ -543,7 +554,7 @@ jobs:
           run_url="$DAGSTER_CLOUD_URL/$DAGSTER_CLOUD_DEPLOYMENT/runs/$DAGSTER_CLOUD_RUN_ID"
           echo "Dagster run URL: $run_url"
           timeout "${DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS}s" uv run dagster-cloud run status "$DAGSTER_CLOUD_RUN_ID" \
-            --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+            --api-token "$DAGSTER_CLOUD_RUN_API_TOKEN" \
                 --organization "$DAGSTER_CLOUD_ORGANIZATION" \
                 --deployment "$DAGSTER_CLOUD_DEPLOYMENT" || true
         shell: bash
@@ -555,7 +566,7 @@ jobs:
           set -euo pipefail
           uv run python .github/scripts/dagster_cloud_run_control.py \
             --url "$DAGSTER_CLOUD_URL" \
-            --api-token "$DAGSTER_PLUS_ENV_API_TOKEN" \
+            --api-token "$DAGSTER_CLOUD_RUN_API_TOKEN" \
             --deployment "$DAGSTER_CLOUD_DEPLOYMENT" \
             --timeout-seconds "$DAGSTER_CLOUD_RUN_STATUS_QUERY_TIMEOUT_SECONDS" \
             events \

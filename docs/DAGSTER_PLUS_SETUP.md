@@ -63,6 +63,7 @@ The preferred automated path is:
    `HSA_DATABASE_URL`.
 2. Store a Dagster+ token from a user with Editor, Admin, or Organization Admin
    permissions as the GitHub Actions secret `DAGSTER_PLUS_ENV_API_TOKEN`.
+   This token is used for hosted environment-variable sync.
 3. Store the OpenRouter key as the GitHub Actions secret `OPENROUTER_API_KEY`
    if hosted model-review comparison should run.
 4. Store the TwitterAPI.io key as the GitHub Actions secret `TWITTERAPI_IO_KEY`
@@ -162,6 +163,13 @@ GitHub secret directly and runs a small structured-source pipeline against Neon.
 
 Use the manual GitHub Actions workflow `Launch Dagster Smoke Job` to launch a
 hosted Dagster+ smoke job from Actions.
+
+The smoke launcher uses `DAGSTER_CLOUD_API_TOKEN` for Dagster run control
+(`job launch`, run status, event diagnostics, and termination). It falls back to
+`DAGSTER_PLUS_ENV_API_TOKEN` only when the deploy/run token is absent. Keep
+`DAGSTER_PLUS_ENV_API_TOKEN` for environment sync and `DAGSTER_CLOUD_API_TOKEN`
+for deployment/run control; a read-capable env token may list jobs but still
+return `UnauthorizedError` on `launchRun`.
 
 The local `dagster-cloud` CLI currently exposes `dagster-cloud job launch
 --wait`, but the installed 1.13.2 implementation has no wait timeout. It polls
