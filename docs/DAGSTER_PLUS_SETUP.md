@@ -164,6 +164,12 @@ GitHub secret directly and runs a small structured-source pipeline against Neon.
 Use the manual GitHub Actions workflow `Launch Dagster Smoke Job` to launch a
 hosted Dagster+ smoke job from Actions.
 
+The canonical production code location is `hsa-dagster`. Older workflow inputs
+or historical runs may mention `twog`; treat that as stale unless Dagster Cloud
+shows it as `LOADED`. The smoke launcher now fails before launch if the
+requested location is registered but still `LOADING`, and it prints
+repository/location diagnostics for the requested job.
+
 The smoke launcher uses `DAGSTER_CLOUD_API_TOKEN` for Dagster run control
 (`job launch`, run status, event diagnostics, and termination). It falls back to
 `DAGSTER_PLUS_ENV_API_TOKEN` only when the deploy/run token is absent. Keep
@@ -197,6 +203,13 @@ DAGSTER_CLOUD_TERMINATE_POLICY_ON_TIMEOUT=SAFE_TERMINATE
 The workflow also exposes a `timeout_seconds` dispatch input so long-running
 jobs can be tested without changing the file. For the full-text lane, prefer a
 shorter manual timeout while hardening the hosted path.
+
+If the launch step returns `PipelineNotFoundError`, the selected job is not
+deployed in the selected code location. Merge/deploy the branch that defines the
+job, or choose the loaded location/repository that owns it. If the launch step
+returns `DagsterUserCodeUnreachableError`, the selected location is stale or
+unhealthy and must be repaired in Dagster Cloud before GitHub Actions can launch
+that job.
 
 Use `x_topic_monitor_review_job` for a bounded TwitterAPI.io topic-monitoring
 review run. It requires `TWITTERAPI_IO_KEY` and attempts OpenRouter review by

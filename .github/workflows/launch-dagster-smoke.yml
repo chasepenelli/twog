@@ -112,7 +112,12 @@ on:
         description: "Dagster Cloud code location to launch against"
         type: string
         required: true
-        default: "twog"
+        default: "hsa-dagster"
+      repository:
+        description: "Optional Dagster repository name when a code location exposes multiple repositories"
+        type: string
+        required: false
+        default: ""
       x_linked_article_urls:
         description: "Optional comma/newline/JSON-list URLs for x_linked_article_followup_job manual validation"
         type: string
@@ -132,6 +137,7 @@ jobs:
       DAGSTER_CLOUD_RUN_API_TOKEN: ${{ secrets.DAGSTER_CLOUD_API_TOKEN }}
       DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
       DAGSTER_CLOUD_LOCATION: ${{ inputs.location }}
+      DAGSTER_CLOUD_REPOSITORY: ${{ inputs.repository }}
       DAGSTER_CLOUD_JOB: ${{ inputs.job }}
       DAGSTER_CLOUD_CONFIG_JSON: ${{ inputs.config_json }}
       DAGSTER_CLOUD_RUN_TIMEOUT_SECONDS: ${{ inputs.timeout_seconds }}
@@ -271,18 +277,48 @@ jobs:
           job_names = sorted(str(item.get("name") or "") for item in job_items)
           matching_jobs = [item for item in job_items if str(item.get("name") or "") == requested_job]
           found_job = any(name == requested_job for name in job_names)
-          found_location = any(
-              str(item.get("location_name") or "") == requested_location for item in locations
+
+          requested_location_record = next(
+              (
+                  item
+                  for item in locations
+                  if str(item.get("location_name") or "") == requested_location
+              ),
+              None,
           )
-          matching_origins = sorted(
-              str(item.get("repository_origin") or "") for item in matching_jobs
+          found_location = requested_location_record is not None
+          requested_location_status = (
+              str(requested_location_record.get("status") or "")
+              if requested_location_record
+              else ""
           )
-          matching_origins = [origin for origin in matching_origins if origin]
-          found_job_in_location = (
-              found_job
-              if not matching_origins
-              else any(requested_location in origin for origin in matching_origins)
-          )
+          found_location_loaded = requested_location_status == "LOADED"
+
+          def _flatten_strings(value):
+              if isinstance(value, dict):
+                  for nested_value in value.values():
+                      yield from _flatten_strings(nested_value)
+              elif isinstance(value, list):
+                  for nested_value in value:
+                      yield from _flatten_strings(nested_value)
+              elif isinstance(value, str):
+                  yield value
+
+          def _location_descriptors(item):
+              descriptors = []
+              for key, value in item.items():
+                  normalized_key = str(key).lower()
+                  if any(token in normalized_key for token in ("location", "repository", "origin")):
+                      descriptors.extend(str(text) for text in _flatten_strings(value))
+              return [descriptor for descriptor in descriptors if descriptor]
+
+          matching_location_jobs = [
+              item
+              for item in matching_jobs
+              if any(requested_location in descriptor for descriptor in _location_descriptors(item))
+          ]
+          has_location_descriptors = any(_location_descriptors(item) for item in matching_jobs)
+          found_job_in_location = bool(matching_location_jobs) if has_location_descriptors else found_job
 
           print("Registered Dagster code locations:")
           for item in locations:
@@ -298,10 +334,18 @@ jobs:
           print(f"Registered Dagster jobs: {len(job_names)}")
           if requested_job in job_names:
               print(f"Requested job is registered: {requested_job}")
-              if matching_origins:
-                  print("Requested job repository origins:")
-                  for origin in matching_origins:
-                      print(f"- {origin}")
+              print(f"Requested location status: {requested_location_status or 'missing'}")
+              if matching_jobs:
+                  print("Requested job diagnostics:")
+                  for item in matching_jobs:
+                      descriptors = sorted(set(_location_descriptors(item)))
+                      keys = ", ".join(sorted(str(key) for key in item.keys()))
+                      print(f"- keys: {keys}")
+                      if descriptors:
+                          for descriptor in descriptors:
+                              print(f"  descriptor: {descriptor}")
+                      else:
+                          print("  descriptor: unavailable from dg api job list")
           else:
               matches = difflib.get_close_matches(requested_job, job_names, n=8, cutoff=0.2)
               print(f"::error::Requested Dagster job is not registered: {requested_job}")
@@ -317,10 +361,20 @@ jobs:
 
           if not found_location:
               print(f"::error::Requested Dagster code location is not registered: {requested_location}")
+          elif not found_location_loaded:
+              print(
+                  "::error::Requested Dagster code location is registered but not loaded: "
+                  f"{requested_location} status={requested_location_status}"
+              )
           if found_job and not found_job_in_location:
               print(
                   "::error::Requested Dagster job is registered, but not in the requested "
                   f"code location: {requested_location}"
+              )
+          if found_job and found_job_in_location and not has_location_descriptors:
+              print(
+                  "::warning::Dagster job list did not expose repository/location descriptors "
+                  "for this job; launch will still verify the selector."
               )
 
           summary_path = os.getenv("GITHUB_STEP_SUMMARY")
@@ -333,9 +387,10 @@ jobs:
                   summary.write(f"- Jobs: `{len(job_names)}`\n")
                   summary.write(f"- Job registered: `{found_job}`\n")
                   summary.write(f"- Location registered: `{found_location}`\n")
+                  summary.write(f"- Location loaded: `{found_location_loaded}`\n")
                   summary.write(f"- Job registered in location: `{found_job_in_location}`\n")
 
-          if not found_job or not found_location or not found_job_in_location:
+          if not found_job or not found_location or not found_location_loaded or not found_job_in_location:
               sys.exit(1)
           PY
         shell: bash
@@ -394,6 +449,9 @@ jobs:
             --job "$DAGSTER_CLOUD_JOB"
             --tags "$launch_tags"
           )
+          if [ -n "$DAGSTER_CLOUD_REPOSITORY" ]; then
+            launch_args+=(--repository "$DAGSTER_CLOUD_REPOSITORY")
+          fi
           if [ -n "$DAGSTER_CLOUD_CONFIG_JSON" ]; then
             printf '%s' "$DAGSTER_CLOUD_CONFIG_JSON" | python -m json.tool >/dev/null
             launch_args+=(--config-json "$DAGSTER_CLOUD_CONFIG_JSON")
@@ -411,6 +469,10 @@ jobs:
           if [ "$launch_exit" -ne 0 ]; then
             if [ "$launch_exit" -eq 124 ]; then
               echo "::error::Timed out after 5 minutes while launching Dagster job '$DAGSTER_CLOUD_JOB'."
+            elif printf '%s' "$launch_output" | grep -q "DagsterUserCodeUnreachableError"; then
+              echo "::error::Dagster code location '$DAGSTER_CLOUD_LOCATION' is unreachable. Check Dagster Cloud code-location health/agent heartbeat before relaunching."
+            elif printf '%s' "$launch_output" | grep -q "PipelineNotFoundError"; then
+              echo "::error::Dagster job '$DAGSTER_CLOUD_JOB' was not found in location '$DAGSTER_CLOUD_LOCATION'. Deploy the branch to this location or choose the loaded location/repository that owns the job."
             else
               echo "::error::Dagster job launch failed with exit code $launch_exit."
             fi
