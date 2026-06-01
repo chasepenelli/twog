@@ -3,6 +3,14 @@ name: Validate Hosted Postgres
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "Hosted validation mode"
+        required: true
+        type: choice
+        default: "structured_source"
+        options:
+          - "structured_source"
+          - "public_candidate_integrity"
       source:
         description: "Structured source key to run"
         required: true
@@ -20,6 +28,7 @@ jobs:
       HSA_STORAGE_BACKEND: "postgres"
       HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
+      MODE: ${{ inputs.mode }}
       SOURCE: ${{ inputs.source }}
       LIMIT: ${{ inputs.limit }}
 
@@ -46,11 +55,72 @@ jobs:
       - name: Install project dependencies
         run: uv sync
 
-      - name: Run structured source pipeline against hosted Postgres
+      - name: Run hosted validation against Postgres
         run: |
-          uv run python -m hsa_research.ingestion_bridge.cli structured-pipeline \
-            --source "$SOURCE" \
-            --limit "$LIMIT" \
-            --extract-limit 50 \
-            --curate-limit 50
+          set -euo pipefail
+          case "$MODE" in
+            structured_source)
+              uv run python -m hsa_research.ingestion_bridge.cli structured-pipeline \
+                --source "$SOURCE" \
+                --limit "$LIMIT" \
+                --extract-limit 50 \
+                --curate-limit 50
+              ;;
+            public_candidate_integrity)
+              uv run python -m hsa_research.ingestion_bridge.cli public-candidate-integrity \
+                --limit "$LIMIT" | tee /tmp/public-candidate-integrity.json
+              ;;
+            *)
+              echo "::error::Unsupported hosted validation mode: $MODE"
+              exit 1
+              ;;
+          esac
+        shell: bash
+
+      - name: Write public candidate integrity summary
+        if: ${{ always() && inputs.mode == 'public_candidate_integrity' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output_path = Path("/tmp/public-candidate-integrity.json")
+          if not output_path.exists():
+              raise SystemExit("No public candidate integrity output was produced.")
+
+          report = json.loads(output_path.read_text())
+          checks = report.get("checks") or []
+          lines = [
+              "### Public candidate integrity",
+              f"- Repository type: `{report.get('repository_type')}`",
+              f"- Checked candidates: `{report.get('checked_candidate_count')}`",
+              f"- Strict export ready: `{report.get('strict_export_ready')}`",
+              f"- Public publish ready: `{report.get('public_publish_ready')}`",
+              f"- Ready for strict export: `{len(report.get('candidates_ready_for_strict_export') or [])}`",
+              f"- Ready for public publish: `{len(report.get('candidates_ready_for_public_publish') or [])}`",
+              f"- Draft-public candidates: `{len(report.get('draft_public_candidate_ids') or [])}`",
+              f"- Candidates with unresolved refs: `{len(report.get('candidates_with_unresolved_references') or [])}`",
+              f"- Candidates with unverifiable commit: `{len(report.get('candidates_with_unverifiable_commit') or [])}`",
+              "",
+              "| Candidate | Export | Publish | Visibility | Status | Warnings | Problems |",
+              "| --- | --- | --- | --- | --- | --- | --- |",
+          ]
+          for check in checks[:25]:
+              warnings = ", ".join(check.get("public_readiness_warnings") or [])
+              problems = ", ".join(check.get("problems") or [])
+              lines.append(
+                  "| {candidate} | {export} | {publish} | {visibility} | {status} | {warnings} | {problems} |".format(
+                      candidate=check.get("candidate_id") or "",
+                      export=check.get("strict_export_ready"),
+                      publish=check.get("public_publish_ready"),
+                      visibility=check.get("visibility") or "",
+                      status=check.get("public_status") or "",
+                      warnings=warnings.replace("|", "\\|"),
+                      problems=problems.replace("|", "\\|"),
+                  )
+              )
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
+          PY
         shell: bash
