@@ -1,0 +1,109 @@
+name: Public Candidate Integrity
+
+on:
+  workflow_dispatch:
+    inputs:
+      visibility:
+        description: "Optional public candidate visibility filter"
+        required: false
+        default: ""
+      limit:
+        description: "Maximum candidates to inspect"
+        required: true
+        default: "100"
+
+jobs:
+  public_candidate_integrity:
+    name: Public Candidate Integrity
+    runs-on: ubuntu-22.04
+    env:
+      HSA_STORAGE_BACKEND: "postgres"
+      HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
+      HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
+      VISIBILITY: ${{ inputs.visibility }}
+      LIMIT: ${{ inputs.limit }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: python -m pip install uv
+
+      - name: Validate required secrets
+        run: |
+          if [ -z "$HSA_DATABASE_URL" ]; then
+            echo "::error::HSA_DATABASE_URL is not configured as a GitHub Actions secret."
+            exit 1
+          fi
+        shell: bash
+
+      - name: Install project dependencies
+        run: uv sync
+
+      - name: Run public candidate integrity report
+        run: |
+          set -euo pipefail
+          args=(
+            uv run python -m hsa_research.ingestion_bridge.cli
+            public-candidate-integrity
+            --limit "$LIMIT"
+          )
+          if [ -n "$VISIBILITY" ]; then
+            args+=(--visibility "$VISIBILITY")
+          fi
+          "${args[@]}" | tee /tmp/public-candidate-integrity.json
+        shell: bash
+
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          output_path = Path("/tmp/public-candidate-integrity.json")
+          if not output_path.exists():
+              raise SystemExit("No public candidate integrity output was produced.")
+
+          report = json.loads(output_path.read_text())
+          checks = report.get("checks") or []
+          lines = [
+              "### Public candidate integrity",
+              f"- Repository type: `{report.get('repository_type')}`",
+              f"- Checked candidates: `{report.get('checked_candidate_count')}`",
+              f"- Strict export ready: `{report.get('strict_export_ready')}`",
+              f"- Public publish ready: `{report.get('public_publish_ready')}`",
+              f"- Ready for strict export: `{len(report.get('candidates_ready_for_strict_export') or [])}`",
+              f"- Ready for public publish: `{len(report.get('candidates_ready_for_public_publish') or [])}`",
+              f"- Draft-public candidates: `{len(report.get('draft_public_candidate_ids') or [])}`",
+              f"- Candidates with unresolved refs: `{len(report.get('candidates_with_unresolved_references') or [])}`",
+              f"- Candidates with unverifiable commit: `{len(report.get('candidates_with_unverifiable_commit') or [])}`",
+              "",
+              "| Candidate | Export | Publish | Visibility | Status | Warnings | Problems |",
+              "| --- | --- | --- | --- | --- | --- | --- |",
+          ]
+          for check in checks[:25]:
+              warnings = ", ".join(check.get("public_readiness_warnings") or [])
+              problems = ", ".join(check.get("problems") or [])
+              lines.append(
+                  "| {candidate} | {export} | {publish} | {visibility} | {status} | {warnings} | {problems} |".format(
+                      candidate=check.get("candidate_id") or "",
+                      export=check.get("strict_export_ready"),
+                      publish=check.get("public_publish_ready"),
+                      visibility=check.get("visibility") or "",
+                      status=check.get("public_status") or "",
+                      warnings=warnings.replace("|", "\\|"),
+                      problems=problems.replace("|", "\\|"),
+                  )
+              )
+
+          summary_path = Path(__import__("os").environ["GITHUB_STEP_SUMMARY"])
+          summary_path.write_text("\n".join(lines) + "\n")
+          PY
+        shell: bash
