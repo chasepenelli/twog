@@ -164,11 +164,13 @@ GitHub secret directly and runs a small structured-source pipeline against Neon.
 Use the manual GitHub Actions workflow `Launch Dagster Smoke Job` to launch a
 hosted Dagster+ smoke job from Actions.
 
-The canonical production code location is `hsa-dagster`. Older workflow inputs
-or historical runs may mention `twog`; treat that as stale unless Dagster Cloud
-shows it as `LOADED`. The smoke launcher now fails before launch if the
-requested location is registered but still `LOADING`, and it prints
-repository/location diagnostics for the requested job.
+The production deploy workflow currently updates the `twog` code location.
+If that location is registered but remains `LOADING`, do not route around it by
+launching against an older loaded location. Repair the Dagster Cloud deployment
+first by restoring the agent heartbeat or converting/recreating the deployment
+as Serverless in Dagster Cloud. The smoke launcher fails before launch when the
+requested location is not `LOADED`, and it prints repository/location
+diagnostics for the requested job.
 
 The smoke launcher uses `DAGSTER_CLOUD_API_TOKEN` for Dagster run control
 (`job launch`, run status, event diagnostics, and termination). It falls back to
@@ -207,9 +209,11 @@ shorter manual timeout while hardening the hosted path.
 If the launch step returns `PipelineNotFoundError`, the selected job is not
 deployed in the selected code location. Merge/deploy the branch that defines the
 job, or choose the loaded location/repository that owns it. If the launch step
-returns `DagsterUserCodeUnreachableError`, the selected location is stale or
-unhealthy and must be repaired in Dagster Cloud before GitHub Actions can launch
-that job.
+or deploy workflow returns `DagsterUserCodeUnreachableError` or
+`No Dagster Cloud agent is actively heartbeating`, the Dagster Cloud deployment
+is currently agent-backed and has no active agent. GitHub Actions cannot repair
+that by changing job inputs; the Dagster Cloud deployment/agent configuration
+must be fixed first.
 
 Use `x_topic_monitor_review_job` for a bounded TwitterAPI.io topic-monitoring
 review run. It requires `TWITTERAPI_IO_KEY` and attempts OpenRouter review by

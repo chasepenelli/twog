@@ -112,7 +112,7 @@ on:
         description: "Dagster Cloud code location to launch against"
         type: string
         required: true
-        default: "hsa-dagster"
+        default: "twog"
       repository:
         description: "Optional Dagster repository name when a code location exposes multiple repositories"
         type: string

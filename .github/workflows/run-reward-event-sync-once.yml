@@ -17,7 +17,7 @@ jobs:
       DAGSTER_CLOUD_ORGANIZATION: "twogbio"
       DAGSTER_CLOUD_URL: "https://twogbio.dagster.cloud"
       DAGSTER_CLOUD_DEPLOYMENT: "prod"
-      DAGSTER_CLOUD_LOCATION: "hsa-dagster"
+      DAGSTER_CLOUD_LOCATION: "twog"
       DAGSTER_CLOUD_JOB: "reward_event_sync_job"
       DAGSTER_PLUS_ENV_API_TOKEN: ${{ secrets.DAGSTER_PLUS_ENV_API_TOKEN }}
       HSA_STORAGE_BACKEND: "postgres"
