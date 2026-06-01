@@ -6150,6 +6150,50 @@ def _public_candidate_integrity_trace_id(
     )
 
 
+def _public_candidate_integrity_commit_sha(
+    candidate: PublicCandidateRecord | None,
+    snapshot: PublicCandidateSnapshot | None,
+) -> str | None:
+    snapshot_metadata = _public_candidate_integrity_dict(snapshot.metadata if snapshot else None)
+    candidate_metadata = _public_candidate_integrity_dict(candidate.metadata if candidate else None)
+    reproducibility = _public_candidate_integrity_dict((snapshot.payload if snapshot else {}).get("reproducibility"))
+    for value in [
+        snapshot.commit_sha if snapshot else None,
+        reproducibility.get("commit_sha"),
+        snapshot_metadata.get("commit_sha"),
+        candidate_metadata.get("commit_sha"),
+    ]:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _public_candidate_integrity_unresolved_refs(snapshot: PublicCandidateSnapshot | None) -> list[str]:
+    if snapshot is None:
+        return []
+    literature = snapshot.payload.get("literature")
+    if not isinstance(literature, list):
+        return []
+
+    unresolved: list[str] = []
+    for index, item in enumerate(literature, start=1):
+        if not isinstance(item, dict) or item.get("resolved") is not False:
+            continue
+        ref = item.get("ref") or item.get("id") or item.get("citation_ref") or item.get("title") or f"literature:{index}"
+        unresolved.append(str(ref))
+    return list(dict.fromkeys(unresolved))
+
+
+def _public_candidate_integrity_commit_is_unverifiable(commit_sha: str | None) -> bool:
+    if commit_sha is None:
+        return True
+    normalized = commit_sha.strip().lower()
+    return normalized in {"", "local", "unknown", "untracked", "dirty", "none", "null"}
+
+
 def _build_public_candidate_integrity_report(
     repository: ResearchRepository,
     request: PublicCandidateIntegrityReportRequest,
@@ -6172,6 +6216,11 @@ def _build_public_candidate_integrity_report(
     missing_therapy_idea_ids: list[UUID] = []
     candidates_missing_manifest_receipt: list[str] = []
     candidates_ready_for_strict_export: list[str] = []
+    draft_public_candidate_ids: list[str] = []
+    candidates_with_unresolved_references: list[str] = []
+    candidates_with_unverifiable_commit: list[str] = []
+    candidates_ready_for_public_publish: list[str] = []
+    public_readiness_warnings: list[str] = []
     seen_missing_therapy: set[UUID] = set()
 
     for therapy_idea_id in request.therapy_idea_ids:
@@ -6209,6 +6258,11 @@ def _build_public_candidate_integrity_report(
 
         trace_id = _public_candidate_integrity_trace_id(candidate, snapshot)
         run_manifest_id = _public_candidate_integrity_manifest_id(candidate, snapshot)
+        commit_sha = _public_candidate_integrity_commit_sha(candidate, snapshot)
+        content_hash = snapshot.content_hash if snapshot else (candidate.content_hash if candidate else None)
+        unresolved_reference_ids = _public_candidate_integrity_unresolved_refs(snapshot)
+        candidate_visibility = candidate.visibility if candidate else None
+        public_status = snapshot.public_status if snapshot else (candidate.public_status if candidate else None)
         run_manifest_found = bool(run_manifest_id and repository.get_run_manifest(run_manifest_id))
         if trace_id is None:
             problems.append("trace_id_missing")
@@ -6216,6 +6270,23 @@ def _build_public_candidate_integrity_report(
             problems.append("run_manifest_id_missing")
         elif not run_manifest_found:
             problems.append(f"run_manifest_missing:{run_manifest_id}")
+
+        check_warnings: list[str] = []
+        if candidate_visibility == "draft_public":
+            draft_public_candidate_ids.append(candidate_id)
+            check_warnings.append("candidate_visibility_draft_public")
+        elif candidate_visibility != "public":
+            check_warnings.append(f"candidate_visibility_not_public:{candidate_visibility or 'missing'}")
+        if public_status == "draft":
+            check_warnings.append("public_status_draft")
+        if not content_hash:
+            check_warnings.append("content_hash_missing")
+        if unresolved_reference_ids:
+            candidates_with_unresolved_references.append(candidate_id)
+            check_warnings.append(f"unresolved_references:{len(unresolved_reference_ids)}")
+        if _public_candidate_integrity_commit_is_unverifiable(commit_sha):
+            candidates_with_unverifiable_commit.append(candidate_id)
+            check_warnings.append(f"commit_unverifiable:{commit_sha or 'missing'}")
 
         strict_export_ready = bool(
             candidate
@@ -6225,15 +6296,23 @@ def _build_public_candidate_integrity_report(
             and run_manifest_found
             and therapy_idea_found is not False
         )
+        public_publish_ready = bool(strict_export_ready and not check_warnings)
         if strict_export_ready:
             candidates_ready_for_strict_export.append(candidate_id)
         else:
             candidates_missing_manifest_receipt.append(candidate_id)
+        if public_publish_ready:
+            candidates_ready_for_public_publish.append(candidate_id)
+        public_readiness_warnings.extend(f"{candidate_id}:{warning}" for warning in check_warnings)
 
         checks.append(
             PublicCandidateIntegrityCheck(
                 candidate_id=candidate_id,
                 expected_therapy_idea_id=expected_therapy_idea_id,
+                visibility=candidate_visibility,
+                public_status=public_status,
+                content_hash=content_hash,
+                commit_sha=commit_sha,
                 candidate_found=candidate is not None,
                 therapy_idea_found=therapy_idea_found,
                 latest_snapshot_found=snapshot is not None,
@@ -6241,8 +6320,12 @@ def _build_public_candidate_integrity_report(
                 trace_id=trace_id,
                 run_manifest_id=run_manifest_id,
                 run_manifest_found=run_manifest_found,
+                unresolved_reference_count=len(unresolved_reference_ids),
+                unresolved_reference_ids=unresolved_reference_ids,
                 strict_export_ready=strict_export_ready,
+                public_publish_ready=public_publish_ready,
                 problems=problems,
+                public_readiness_warnings=check_warnings,
             )
         )
 
@@ -6257,8 +6340,14 @@ def _build_public_candidate_integrity_report(
         missing_therapy_idea_ids=missing_therapy_idea_ids,
         candidates_missing_manifest_receipt=list(dict.fromkeys(candidates_missing_manifest_receipt)),
         candidates_ready_for_strict_export=list(dict.fromkeys(candidates_ready_for_strict_export)),
+        draft_public_candidate_ids=list(dict.fromkeys(draft_public_candidate_ids)),
+        candidates_with_unresolved_references=list(dict.fromkeys(candidates_with_unresolved_references)),
+        candidates_with_unverifiable_commit=list(dict.fromkeys(candidates_with_unverifiable_commit)),
+        candidates_ready_for_public_publish=list(dict.fromkeys(candidates_ready_for_public_publish)),
         strict_export_ready=bool(checks) and all(check.strict_export_ready for check in checks),
+        public_publish_ready=bool(checks) and all(check.public_publish_ready for check in checks),
         checks=checks,
+        public_readiness_warnings=list(dict.fromkeys(public_readiness_warnings)),
     )
 
 

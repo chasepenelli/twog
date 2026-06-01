@@ -341,14 +341,19 @@ _PUBLIC_CANDIDATE_GATE_TABLE_COLUMNS = (
 )
 _PUBLIC_CANDIDATE_INTEGRITY_TABLE_COLUMNS = (
     "candidate_id",
+    "visibility",
+    "public_status",
     "candidate_found",
     "therapy_idea_found",
     "latest_snapshot_found",
     "trace_id",
     "run_manifest_id",
     "run_manifest_found",
+    "unresolved_reference_count",
     "strict_export_ready",
+    "public_publish_ready",
     "problems",
+    "public_readiness_warnings",
 )
 _HYPOTHESIS_PROMOTION_TABLE_COLUMNS = (
     "candidate_id",
@@ -1472,19 +1477,25 @@ if dg is not None:
             rows.append(
                 {
                     "candidate_id": check.get("candidate_id"),
+                    "visibility": check.get("visibility"),
+                    "public_status": check.get("public_status"),
                     "candidate_found": check.get("candidate_found"),
                     "therapy_idea_found": check.get("therapy_idea_found"),
                     "latest_snapshot_found": check.get("latest_snapshot_found"),
                     "trace_id": check.get("trace_id"),
                     "run_manifest_id": check.get("run_manifest_id"),
                     "run_manifest_found": check.get("run_manifest_found"),
+                    "unresolved_reference_count": check.get("unresolved_reference_count"),
                     "strict_export_ready": check.get("strict_export_ready"),
+                    "public_publish_ready": check.get("public_publish_ready"),
                     "problems": ", ".join(check.get("problems") or []),
+                    "public_readiness_warnings": ", ".join(check.get("public_readiness_warnings") or []),
                 }
             )
         return {
             "repository_type": dg.MetadataValue.text(str(report.get("repository_type") or "")),
             "strict_export_ready": dg.MetadataValue.bool(bool(report.get("strict_export_ready"))),
+            "public_publish_ready": dg.MetadataValue.bool(bool(report.get("public_publish_ready"))),
             "candidate_sample_count": dg.MetadataValue.int(int(report.get("candidate_sample_count") or 0)),
             "snapshot_sample_count": dg.MetadataValue.int(int(report.get("snapshot_sample_count") or 0)),
             "therapy_idea_sample_count": dg.MetadataValue.int(int(report.get("therapy_idea_sample_count") or 0)),
@@ -1494,6 +1505,17 @@ if dg is not None:
             "candidates_missing_manifest_receipt": dg.MetadataValue.json(
                 report.get("candidates_missing_manifest_receipt", [])
             ),
+            "draft_public_candidate_ids": dg.MetadataValue.json(report.get("draft_public_candidate_ids", [])),
+            "candidates_with_unresolved_references": dg.MetadataValue.json(
+                report.get("candidates_with_unresolved_references", [])
+            ),
+            "candidates_with_unverifiable_commit": dg.MetadataValue.json(
+                report.get("candidates_with_unverifiable_commit", [])
+            ),
+            "candidates_ready_for_public_publish": dg.MetadataValue.json(
+                report.get("candidates_ready_for_public_publish", [])
+            ),
+            "public_readiness_warnings": dg.MetadataValue.json(report.get("public_readiness_warnings", [])),
             "checks": _metadata_table(rows, _PUBLIC_CANDIDATE_INTEGRITY_TABLE_COLUMNS),
         }
 

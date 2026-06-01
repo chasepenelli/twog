@@ -5496,6 +5496,10 @@ class PublicCandidateSnapshotResult(StrictBaseModel):
 class PublicCandidateIntegrityCheck(StrictBaseModel):
     candidate_id: str = Field(min_length=3, max_length=260)
     expected_therapy_idea_id: UUID | None = None
+    visibility: PublicCandidateVisibility | None = None
+    public_status: PublicCandidateStatus | None = None
+    content_hash: str | None = None
+    commit_sha: str | None = None
     candidate_found: bool = False
     therapy_idea_found: bool | None = None
     latest_snapshot_found: bool = False
@@ -5503,13 +5507,21 @@ class PublicCandidateIntegrityCheck(StrictBaseModel):
     trace_id: UUID | None = None
     run_manifest_id: UUID | None = None
     run_manifest_found: bool = False
+    unresolved_reference_count: int = Field(default=0, ge=0)
+    unresolved_reference_ids: list[str] = Field(default_factory=list)
     strict_export_ready: bool = False
+    public_publish_ready: bool = False
     problems: list[str] = Field(default_factory=list)
+    public_readiness_warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def normalize_public_candidate_integrity_check(self) -> "PublicCandidateIntegrityCheck":
         self.candidate_id = self.candidate_id.strip()
+        self.content_hash = self.content_hash.strip() if self.content_hash else None
+        self.commit_sha = self.commit_sha.strip() if self.commit_sha else None
+        self.unresolved_reference_ids = _dedupe_strings(self.unresolved_reference_ids)
         self.problems = _dedupe_strings(self.problems)
+        self.public_readiness_warnings = _dedupe_strings(self.public_readiness_warnings)
         return self
 
 
@@ -5541,8 +5553,14 @@ class PublicCandidateIntegrityReportResult(StrictBaseModel):
     missing_therapy_idea_ids: list[UUID] = Field(default_factory=list)
     candidates_missing_manifest_receipt: list[str] = Field(default_factory=list)
     candidates_ready_for_strict_export: list[str] = Field(default_factory=list)
+    draft_public_candidate_ids: list[str] = Field(default_factory=list)
+    candidates_with_unresolved_references: list[str] = Field(default_factory=list)
+    candidates_with_unverifiable_commit: list[str] = Field(default_factory=list)
+    candidates_ready_for_public_publish: list[str] = Field(default_factory=list)
     strict_export_ready: bool = False
+    public_publish_ready: bool = False
     checks: list[PublicCandidateIntegrityCheck] = Field(default_factory=list)
+    public_readiness_warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

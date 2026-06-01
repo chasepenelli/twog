@@ -1513,8 +1513,124 @@ def test_public_candidate_integrity_report_flags_missing_source_and_manifest():
         )
     )
     assert ready.strict_export_ready is True
+    assert ready.public_publish_ready is False
     assert ready.checks[0].strict_export_ready is True
+    assert ready.checks[0].public_publish_ready is False
+    assert ready.checks[0].visibility == "draft_public"
+    assert "candidate_visibility_draft_public" in ready.checks[0].public_readiness_warnings
+    assert "public_status_draft" in ready.checks[0].public_readiness_warnings
+    assert "commit_unverifiable:missing" in ready.checks[0].public_readiness_warnings
+    assert ready.draft_public_candidate_ids == [candidate_id]
+    assert ready.candidates_with_unverifiable_commit == [candidate_id]
     assert ready.candidates_ready_for_strict_export == [candidate_id]
+    assert ready.candidates_ready_for_public_publish == []
+
+
+def test_public_candidate_integrity_report_flags_public_readiness_gaps():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    candidate_id = "twog-candidate-public-readiness"
+    therapy_idea_id = uuid4()
+    snapshot_id = uuid4()
+    trace_id = uuid4()
+    manifest_id = uuid4()
+
+    idea = TherapyIdea(
+        title="Public readiness therapy idea",
+        hypothesis="A public candidate needs resolved citations and reproducible source control.",
+        rationale="Used to test public candidate publish readiness.",
+        candidate_therapies=["test therapy"],
+        targets=["KDR"],
+        evidence_refs=["C1"],
+        priority_score=0.9,
+    ).model_copy(update={"idea_id": therapy_idea_id})
+    repo.upsert_therapy_idea(TherapyIdeaRecord(idea=idea, status="ready_for_promotion", score=0.9))
+    repo.upsert_run_manifest(
+        RunManifestRecord(
+            manifest_id=manifest_id,
+            trace_id=trace_id,
+            manifest_type="public_candidate_snapshot",
+            status="completed",
+            candidate_ids=[candidate_id],
+            therapy_idea_ids=[therapy_idea_id],
+        )
+    )
+
+    candidate = PublicCandidateRecord(
+        candidate_id=candidate_id,
+        trace_id=trace_id,
+        title="Public readiness candidate",
+        visibility="public",
+        public_status="investigating",
+        therapy_idea_id=therapy_idea_id,
+        latest_snapshot_id=snapshot_id,
+    )
+    snapshot = PublicCandidateSnapshot(
+        snapshot_id=snapshot_id,
+        trace_id=trace_id,
+        candidate_id=candidate_id,
+        snapshot_version=1,
+        content_hash="hash-public-readiness",
+        title="Public readiness candidate",
+        public_status="investigating",
+        commit_sha="abcdef1234567890",
+        metadata={"run_manifest_id": str(manifest_id), "trace_id": str(trace_id)},
+        payload={
+            "literature": [
+                {"ref": "C1", "title": "Resolved support", "resolved": True},
+                {"ref": "C2", "title": "Needs repair", "resolved": False},
+            ],
+            "reproducibility": {
+                "run_manifest_id": str(manifest_id),
+                "trace_id": str(trace_id),
+                "commit_sha": "abcdef1234567890",
+            },
+        },
+    )
+    repo.upsert_public_candidate(candidate)
+    repo.upsert_public_candidate_snapshot(snapshot)
+
+    report = service.build_public_candidate_integrity_report(
+        PublicCandidateIntegrityReportRequest(
+            candidate_ids=[candidate_id],
+            expected_candidate_therapy_ids={candidate_id: therapy_idea_id},
+        )
+    )
+    assert report.strict_export_ready is True
+    assert report.public_publish_ready is False
+    assert report.checks[0].strict_export_ready is True
+    assert report.checks[0].public_publish_ready is False
+    assert report.checks[0].unresolved_reference_count == 1
+    assert report.checks[0].unresolved_reference_ids == ["C2"]
+    assert "unresolved_references:1" in report.checks[0].public_readiness_warnings
+    assert report.candidates_with_unresolved_references == [candidate_id]
+    assert report.candidates_with_unverifiable_commit == []
+
+    repaired_snapshot = snapshot.model_copy(
+        update={
+            "payload": {
+                "literature": [{"ref": "C1", "title": "Resolved support", "resolved": True}],
+                "reproducibility": {
+                    "run_manifest_id": str(manifest_id),
+                    "trace_id": str(trace_id),
+                    "commit_sha": "abcdef1234567890",
+                },
+            }
+        }
+    )
+    repo.upsert_public_candidate_snapshot(repaired_snapshot)
+
+    ready = service.build_public_candidate_integrity_report(
+        PublicCandidateIntegrityReportRequest(
+            candidate_ids=[candidate_id],
+            expected_candidate_therapy_ids={candidate_id: therapy_idea_id},
+        )
+    )
+    assert ready.strict_export_ready is True
+    assert ready.public_publish_ready is True
+    assert ready.checks[0].public_publish_ready is True
+    assert ready.checks[0].public_readiness_warnings == []
+    assert ready.candidates_ready_for_public_publish == [candidate_id]
 
 
 def test_public_candidate_generation_blocks_low_grade_incremental_ideas(tmp_path):
