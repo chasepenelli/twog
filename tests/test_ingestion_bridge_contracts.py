@@ -1687,6 +1687,91 @@ def test_public_candidate_proof_compiler_repairs_manifest_and_resolves_citations
     assert "unresolved_references:1" in integrity.checks[0].public_readiness_warnings
 
 
+def test_public_candidate_proof_compiler_uses_candidate_source_brief_for_citations():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    candidate_id = "twog-candidate-proof-compile-candidate-brief"
+    therapy_idea_id = uuid4()
+    brief_id = uuid4()
+    snapshot_id = uuid4()
+    chunk_id = uuid4()
+    research_object_id = uuid4()
+
+    repo.upsert_research_brief(
+        ResearchBriefRecord(
+            brief_id=brief_id,
+            topic="Candidate source brief citation",
+            final_brief="C1 supports a candidate-level public proof citation.",
+            result_payload={
+                "citations": [
+                    {
+                        "citation_id": "C1",
+                        "chunk_id": str(chunk_id),
+                        "research_object_id": str(research_object_id),
+                        "source_key": "pubmed",
+                        "title": "Candidate-level source citation",
+                        "source_url": "https://example.test/candidate-source-c1",
+                        "metadata": {
+                            "identifiers": {"pmid": "654321"},
+                            "provenance": {
+                                "source_keys": ["pubmed"],
+                                "source_urls": ["https://example.test/candidate-source-c1"],
+                                "titles": ["Candidate-level source citation"],
+                                "research_object_ids": [str(research_object_id)],
+                                "chunk_ids": [str(chunk_id)],
+                                "section_labels": ["abstract"],
+                            },
+                        },
+                    }
+                ]
+            },
+            citation_count=1,
+        )
+    )
+    idea = TherapyIdea(
+        title="Candidate source brief therapy idea",
+        hypothesis="C1 supports this public candidate.",
+        rationale="The compiler should use candidate-level source provenance.",
+        candidate_therapies=["proof compiler therapy"],
+        targets=["KDR"],
+        evidence_refs=["C1"],
+        priority_score=0.91,
+    ).model_copy(update={"idea_id": therapy_idea_id})
+    repo.upsert_therapy_idea(TherapyIdeaRecord(idea=idea, status="ready_for_promotion", score=0.91))
+    repo.upsert_public_candidate(
+        PublicCandidateRecord(
+            candidate_id=candidate_id,
+            title="Candidate source brief public candidate",
+            visibility="draft_public",
+            public_status="investigating",
+            therapy_idea_id=therapy_idea_id,
+            source_brief_id=brief_id,
+            latest_snapshot_id=snapshot_id,
+            evidence_refs=["C1"],
+            content_hash="hash-candidate-brief",
+        )
+    )
+    repo.upsert_public_candidate_snapshot(
+        PublicCandidateSnapshot(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate_id,
+            snapshot_version=1,
+            content_hash="hash-candidate-brief",
+            title="Candidate source brief public candidate",
+            public_status="investigating",
+            citation_refs=["C1"],
+            payload={"literature": [{"ref": "C1", "title": "Prior unresolved C1", "resolved": False}]},
+        )
+    )
+
+    preview = service.compile_public_candidate_proofs(
+        PublicCandidateProofCompileRequest(candidate_ids=[candidate_id])
+    )
+
+    assert preview.items[0].resolved_reference_count == 1
+    assert preview.items[0].unresolved_reference_ids == []
+
+
 def test_public_candidate_integrity_report_flags_public_readiness_gaps():
     repo = InMemoryResearchRepository()
     service = HSAResearchService(repo)

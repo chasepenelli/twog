@@ -6651,7 +6651,14 @@ def _compiled_public_candidate_literature(
     citation_refs: list[str],
 ) -> list[dict[str, Any]]:
     if therapy_idea is not None and citation_refs:
-        return _public_candidate_literature(repository, therapy_idea, citation_refs, validation_decisions)
+        return _public_candidate_literature(
+            repository,
+            therapy_idea,
+            citation_refs,
+            validation_decisions,
+            candidate=candidate,
+            snapshot=snapshot,
+        )
     literature = snapshot.payload.get("literature") if isinstance(snapshot.payload, dict) else None
     if isinstance(literature, list):
         return [dict(item) for item in literature if isinstance(item, dict)]
@@ -7629,12 +7636,16 @@ def _public_candidate_literature(
     therapy_idea: TherapyIdeaRecord,
     citation_refs: list[str],
     decisions: list[ValidationDecisionRecord],
+    *,
+    candidate: PublicCandidateRecord | None = None,
+    snapshot: PublicCandidateSnapshot | None = None,
 ) -> list[dict[str, Any]]:
+    source_brief_ids = _public_candidate_source_brief_ids(therapy_idea, candidate, snapshot, citation_refs)
     citation_maps: dict[UUID, dict[str, dict[str, Any]]] = {}
-    if therapy_idea.source_brief_id:
-        brief = repository.get_research_brief(therapy_idea.source_brief_id)
+    for source_brief_id in source_brief_ids:
+        brief = repository.get_research_brief(source_brief_id)
         if brief is not None:
-            citation_maps[therapy_idea.source_brief_id] = _citation_map_for_brief(brief)
+            citation_maps[source_brief_id] = _citation_map_for_brief(brief)
     records: list[dict[str, Any]] = []
     for ref in citation_refs:
         normalized = _normalize_evidence_ref(ref)
@@ -7643,11 +7654,21 @@ def _public_candidate_literature(
         explicit = _explicit_brief_citation_ref(normalized)
         if explicit:
             source_brief_id, citation_ref = explicit
+            if source_brief_id not in citation_maps:
+                brief = repository.get_research_brief(source_brief_id)
+                if brief is not None:
+                    citation_maps[source_brief_id] = _citation_map_for_brief(brief)
             citation = citation_maps.get(source_brief_id, {}).get(citation_ref)
             normalized = citation_ref
-        elif therapy_idea.source_brief_id:
-            source_brief_id = therapy_idea.source_brief_id
-            citation = citation_maps.get(source_brief_id, {}).get(normalized)
+        else:
+            for candidate_source_brief_id in source_brief_ids:
+                candidate_citation = citation_maps.get(candidate_source_brief_id, {}).get(normalized)
+                if candidate_citation is not None:
+                    source_brief_id = candidate_source_brief_id
+                    citation = candidate_citation
+                    break
+            if source_brief_id is None and source_brief_ids:
+                source_brief_id = source_brief_ids[0]
         record = _public_candidate_literature_record(
             citation_ref=normalized,
             source_brief_id=source_brief_id,
@@ -7657,6 +7678,30 @@ def _public_candidate_literature(
         )
         records.append(record)
     return records
+
+
+def _public_candidate_source_brief_ids(
+    therapy_idea: TherapyIdeaRecord,
+    candidate: PublicCandidateRecord | None,
+    snapshot: PublicCandidateSnapshot | None,
+    citation_refs: list[str],
+) -> list[UUID]:
+    payload = snapshot.payload if snapshot and isinstance(snapshot.payload, dict) else {}
+    reproducibility = payload.get("reproducibility") if isinstance(payload.get("reproducibility"), dict) else {}
+    values: list[Any] = [
+        therapy_idea.source_brief_id,
+        candidate.source_brief_id if candidate else None,
+        therapy_idea.metadata.get("source_brief_id") if isinstance(therapy_idea.metadata, dict) else None,
+        candidate.metadata.get("source_brief_id") if candidate and isinstance(candidate.metadata, dict) else None,
+        snapshot.metadata.get("source_brief_id") if snapshot and isinstance(snapshot.metadata, dict) else None,
+        reproducibility.get("source_brief_id"),
+    ]
+    source_refs = snapshot.source_refs if snapshot else []
+    for ref in [*citation_refs, *source_refs]:
+        explicit = _explicit_brief_citation_ref(_normalize_evidence_ref(str(ref)))
+        if explicit:
+            values.append(explicit[0])
+    return _dedupe_uuid_refs(values)
 
 
 def _public_candidate_literature_record(
