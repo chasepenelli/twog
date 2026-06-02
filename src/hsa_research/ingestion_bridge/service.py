@@ -6445,6 +6445,7 @@ def _compile_public_candidate_proof(
     )
     source_citation_counts = _public_candidate_source_citation_counts(repository, source_brief_ids_checked)
     lineage_diagnostics = _public_candidate_lineage_diagnostics(
+        repository=repository,
         therapy_idea=therapy_idea,
         candidate=candidate,
         snapshot=snapshot,
@@ -7764,6 +7765,30 @@ def _public_candidate_source_brief_ids(
         program_values.extend(_values_for_key(snapshot.metadata, "source_program_id"))
     program_values.extend(_values_for_key(reproducibility, "source_program_id"))
     values.extend(_source_brief_ids_from_programs(repository, _dedupe_uuid_refs(program_values)))
+    agent_values: list[Any] = [
+        therapy_idea.agent_run_id,
+        therapy_idea.committee_run_id,
+        candidate.committee_run_id if candidate else None,
+        therapy_idea.metadata.get("agent_run_id") if isinstance(therapy_idea.metadata, dict) else None,
+        therapy_idea.metadata.get("committee_run_id") if isinstance(therapy_idea.metadata, dict) else None,
+        candidate.metadata.get("agent_run_id") if candidate and isinstance(candidate.metadata, dict) else None,
+        candidate.metadata.get("committee_run_id") if candidate and isinstance(candidate.metadata, dict) else None,
+        snapshot.metadata.get("agent_run_id") if snapshot and isinstance(snapshot.metadata, dict) else None,
+        snapshot.metadata.get("committee_run_id") if snapshot and isinstance(snapshot.metadata, dict) else None,
+        reproducibility.get("agent_run_id"),
+        reproducibility.get("committee_run_id"),
+    ]
+    agent_values.extend(_values_for_key(therapy_idea.metadata, "agent_run_id"))
+    agent_values.extend(_values_for_key(therapy_idea.metadata, "committee_run_id"))
+    if candidate is not None:
+        agent_values.extend(_values_for_key(candidate.metadata, "agent_run_id"))
+        agent_values.extend(_values_for_key(candidate.metadata, "committee_run_id"))
+    if snapshot is not None:
+        agent_values.extend(_values_for_key(snapshot.metadata, "agent_run_id"))
+        agent_values.extend(_values_for_key(snapshot.metadata, "committee_run_id"))
+    agent_values.extend(_values_for_key(reproducibility, "agent_run_id"))
+    agent_values.extend(_values_for_key(reproducibility, "committee_run_id"))
+    values.extend(_source_brief_ids_from_agent_runs(repository, _dedupe_uuid_refs(agent_values)))
     source_refs = snapshot.source_refs if snapshot else []
     for ref in [*citation_refs, *source_refs]:
         values.extend(_source_brief_ids_from_ref_text(str(ref)))
@@ -7808,6 +7833,29 @@ def _source_brief_ids_from_programs(
     return _dedupe_uuid_refs(values)
 
 
+def _source_brief_ids_from_agent_runs(
+    repository: ResearchRepository,
+    agent_run_ids: list[UUID],
+) -> list[UUID]:
+    values: list[Any] = []
+    evaluation_values: list[Any] = []
+    for agent_run_id in agent_run_ids:
+        run = repository.get_agent_run(agent_run_id)
+        if run is None:
+            continue
+        for source in (run.input_payload, run.output_payload, run.summary, run.metadata):
+            values.extend(_values_for_key(source, "source_brief_id"))
+            values.extend(_values_for_key(source, "brief_id"))
+            values.extend(_source_brief_ids_from_value(source))
+            evaluation_values.extend(_values_for_key(source, "source_evaluation_id"))
+            evaluation_values.extend(_values_for_key(source, "evaluation_id"))
+    for evaluation_id in _dedupe_uuid_refs(evaluation_values):
+        evaluation = repository.get_research_brief_evaluation(evaluation_id)
+        if evaluation is not None:
+            values.append(evaluation.brief_id)
+    return _dedupe_uuid_refs(values)
+
+
 def _program_lineage_metadata_sources(program: ResearchProgramRecord) -> list[Any]:
     sources: list[Any] = [program.metadata]
     sources.extend(question.metadata for question in program.decisive_questions)
@@ -7832,6 +7880,30 @@ def _source_brief_ids_from_ref_text(ref: str) -> list[UUID]:
     )
     if bare:
         values.append(UUID(bare.group(1)))
+    return _dedupe_uuid_refs(values)
+
+
+def _source_brief_ids_from_value(value: Any, *, max_refs: int = 50, max_depth: int = 6) -> list[UUID]:
+    values: list[UUID] = []
+
+    def visit(item: Any, depth: int) -> None:
+        if len(values) >= max_refs or depth > max_depth:
+            return
+        if isinstance(item, str):
+            values.extend(_source_brief_ids_from_ref_text(item))
+            return
+        if isinstance(item, dict):
+            for child in item.values():
+                visit(child, depth + 1)
+                if len(values) >= max_refs:
+                    return
+        elif isinstance(item, list):
+            for child in item[:50]:
+                visit(child, depth + 1)
+                if len(values) >= max_refs:
+                    return
+
+    visit(value, 0)
     return _dedupe_uuid_refs(values)
 
 
@@ -7862,6 +7934,7 @@ def _values_for_key(value: Any, key_name: str, *, max_values: int = 50, max_dept
 
 def _public_candidate_lineage_diagnostics(
     *,
+    repository: ResearchRepository,
     therapy_idea: TherapyIdeaRecord | None,
     candidate: PublicCandidateRecord,
     snapshot: PublicCandidateSnapshot,
@@ -7892,6 +7965,32 @@ def _public_candidate_lineage_diagnostics(
         },
     }
     if therapy_idea is not None:
+        program_ids = _dedupe_uuid_refs(
+            [
+                therapy_idea.source_program_id,
+                candidate.source_program_id,
+                *_values_for_key(therapy_idea.metadata, "source_program_id"),
+                *_values_for_key(therapy_idea.promotion_metadata, "source_program_id"),
+                *_values_for_key(candidate.metadata, "source_program_id"),
+                *_values_for_key(snapshot.metadata, "source_program_id"),
+                *_values_for_key(reproducibility, "source_program_id"),
+            ]
+        )
+        agent_run_ids = _dedupe_uuid_refs(
+            [
+                therapy_idea.agent_run_id,
+                therapy_idea.committee_run_id,
+                candidate.committee_run_id,
+                *_values_for_key(therapy_idea.metadata, "agent_run_id"),
+                *_values_for_key(therapy_idea.metadata, "committee_run_id"),
+                *_values_for_key(candidate.metadata, "agent_run_id"),
+                *_values_for_key(candidate.metadata, "committee_run_id"),
+                *_values_for_key(snapshot.metadata, "agent_run_id"),
+                *_values_for_key(snapshot.metadata, "committee_run_id"),
+                *_values_for_key(reproducibility, "agent_run_id"),
+                *_values_for_key(reproducibility, "committee_run_id"),
+            ]
+        )
         diagnostics["therapy_idea"] = {
             "source_program_id": _string_or_none(therapy_idea.source_program_id),
             "source_brief_id": _string_or_none(therapy_idea.source_brief_id),
@@ -7910,8 +8009,16 @@ def _public_candidate_lineage_diagnostics(
                 prefix="promotion_metadata",
             ),
         }
+        diagnostics["source_programs"] = [
+            _source_program_lineage_diagnostic(repository, program_id) for program_id in program_ids[:10]
+        ]
+        diagnostics["agent_runs"] = [
+            _agent_run_lineage_diagnostic(repository, agent_run_id) for agent_run_id in agent_run_ids[:10]
+        ]
     else:
         diagnostics["therapy_idea"] = None
+        diagnostics["source_programs"] = []
+        diagnostics["agent_runs"] = []
     return diagnostics
 
 
@@ -7919,6 +8026,96 @@ def _string_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _source_program_lineage_diagnostic(
+    repository: ResearchRepository,
+    program_id: UUID,
+) -> dict[str, Any]:
+    program = repository.get_research_program(program_id)
+    if program is None:
+        return {"program_id": str(program_id), "found": False}
+    lineage_sources = _program_lineage_metadata_sources(program)
+    return {
+        "program_id": str(program_id),
+        "found": True,
+        "source_packet_count": len(program.source_packet_ids),
+        "evidence_ref_count": len(program.evidence_refs),
+        "question_count": len(program.decisive_questions),
+        "evidence_task_count": len(program.evidence_tasks),
+        "source_brief_ids_from_program": [
+            str(brief_id) for brief_id in _source_brief_ids_from_programs(repository, [program_id])
+        ],
+        "source_packet_brief_refs": [
+            str(brief_id)
+            for ref in program.source_packet_ids
+            for brief_id in _source_brief_ids_from_ref_text(ref)
+        ][:25],
+        "metadata_keys": _compact_key_paths(program.metadata, prefix="metadata"),
+        "metadata_uuid_refs": _uuid_ref_paths(program.metadata, prefix="metadata"),
+        "nested_source_brief_ids": [
+            str(value)
+            for source in lineage_sources
+            for value in _values_for_key(source, "source_brief_id")
+            if str(value).strip()
+        ][:25],
+        "nested_source_evaluation_ids": [
+            str(value)
+            for source in lineage_sources
+            for value in _values_for_key(source, "source_evaluation_id")
+            if str(value).strip()
+        ][:25],
+    }
+
+
+def _agent_run_lineage_diagnostic(
+    repository: ResearchRepository,
+    agent_run_id: UUID,
+) -> dict[str, Any]:
+    run = repository.get_agent_run(agent_run_id)
+    if run is None:
+        return {"agent_run_id": str(agent_run_id), "found": False}
+    sources = {
+        "input_payload": run.input_payload,
+        "output_payload": run.output_payload,
+        "summary": run.summary,
+        "metadata": run.metadata,
+    }
+    return {
+        "agent_run_id": str(agent_run_id),
+        "found": True,
+        "agent_name": run.agent_name,
+        "model_profile": run.model_profile,
+        "status": str(run.status),
+        "source_brief_ids_from_run": [
+            str(brief_id) for brief_id in _source_brief_ids_from_agent_runs(repository, [agent_run_id])
+        ],
+        "input_keys": _compact_key_paths(run.input_payload, prefix="input_payload"),
+        "output_keys": _compact_key_paths(run.output_payload, prefix="output_payload"),
+        "summary_keys": _compact_key_paths(run.summary, prefix="summary"),
+        "metadata_keys": _compact_key_paths(run.metadata, prefix="metadata"),
+        "input_uuid_refs": _uuid_ref_paths(run.input_payload, prefix="input_payload"),
+        "output_uuid_refs": _uuid_ref_paths(run.output_payload, prefix="output_payload"),
+        "summary_uuid_refs": _uuid_ref_paths(run.summary, prefix="summary"),
+        "metadata_uuid_refs": _uuid_ref_paths(run.metadata, prefix="metadata"),
+        "lineage_keys": {
+            source_name: {
+                "brief_id": [str(value) for value in _values_for_key(source, "brief_id") if str(value).strip()][:25],
+                "source_brief_id": [
+                    str(value) for value in _values_for_key(source, "source_brief_id") if str(value).strip()
+                ][:25],
+                "evaluation_id": [
+                    str(value) for value in _values_for_key(source, "evaluation_id") if str(value).strip()
+                ][:25],
+                "source_evaluation_id": [
+                    str(value)
+                    for value in _values_for_key(source, "source_evaluation_id")
+                    if str(value).strip()
+                ][:25],
+            }
+            for source_name, source in sources.items()
+        },
+    }
 
 
 def _compact_key_paths(value: Any, *, prefix: str, max_paths: int = 50, max_depth: int = 4) -> list[str]:

@@ -1991,6 +1991,109 @@ def test_public_candidate_proof_compiler_uses_source_program_briefs_for_citation
     assert "source_lineage_missing" not in preview.items[0].warnings
 
 
+def test_public_candidate_proof_compiler_uses_agent_run_brief_for_citations():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    candidate_id = "twog-candidate-proof-compile-agent-run-brief"
+    therapy_idea_id = uuid4()
+    agent_run_id = uuid4()
+    brief_id = uuid4()
+    snapshot_id = uuid4()
+    chunk_id = uuid4()
+    research_object_id = uuid4()
+
+    repo.upsert_research_brief(
+        ResearchBriefRecord(
+            brief_id=brief_id,
+            topic="Agent run source brief citation",
+            final_brief="C1 supports an agent-run-derived public proof citation.",
+            result_payload={
+                "citations": [
+                    {
+                        "citation_id": "C1",
+                        "chunk_id": str(chunk_id),
+                        "research_object_id": str(research_object_id),
+                        "source_key": "pubmed",
+                        "title": "Agent-run source citation",
+                        "source_url": "https://example.test/agent-source-c1",
+                        "metadata": {
+                            "identifiers": {"pmid": "111222"},
+                            "provenance": {
+                                "source_keys": ["pubmed"],
+                                "source_urls": ["https://example.test/agent-source-c1"],
+                                "titles": ["Agent-run source citation"],
+                                "research_object_ids": [str(research_object_id)],
+                                "chunk_ids": [str(chunk_id)],
+                                "section_labels": ["abstract"],
+                            },
+                        },
+                    }
+                ]
+            },
+            citation_count=1,
+        )
+    )
+    repo.create_agent_run(
+        AgentRunRecord(
+            agent_run_id=agent_run_id,
+            agent_name="therapy_committee_chair_agent",
+            model_profile="therapy_committee",
+            input_payload={"brief_id": str(brief_id), "source_key": "pubmed"},
+        )
+    )
+    idea = TherapyIdea(
+        title="Agent run source brief therapy idea",
+        hypothesis="C1 supports this public candidate.",
+        rationale="The compiler should follow agent-run request lineage.",
+        candidate_therapies=["proof compiler therapy"],
+        targets=["KDR"],
+        evidence_refs=["C1"],
+        priority_score=0.91,
+    ).model_copy(update={"idea_id": therapy_idea_id})
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            agent_run_id=agent_run_id,
+            status="ready_for_promotion",
+            score=0.91,
+        )
+    )
+    repo.upsert_public_candidate(
+        PublicCandidateRecord(
+            candidate_id=candidate_id,
+            title="Agent run source brief public candidate",
+            visibility="draft_public",
+            public_status="investigating",
+            therapy_idea_id=therapy_idea_id,
+            latest_snapshot_id=snapshot_id,
+            evidence_refs=["C1"],
+            content_hash="hash-agent-run-brief",
+        )
+    )
+    repo.upsert_public_candidate_snapshot(
+        PublicCandidateSnapshot(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate_id,
+            snapshot_version=1,
+            content_hash="hash-agent-run-brief",
+            title="Agent run source brief public candidate",
+            public_status="investigating",
+            citation_refs=["C1"],
+            payload={"literature": [{"ref": "C1", "title": "Prior unresolved C1", "resolved": False}]},
+        )
+    )
+
+    preview = service.compile_public_candidate_proofs(
+        PublicCandidateProofCompileRequest(candidate_ids=[candidate_id])
+    )
+
+    assert preview.items[0].source_brief_ids_checked == [brief_id]
+    assert preview.items[0].source_citation_counts == {str(brief_id): 1}
+    assert preview.items[0].resolved_reference_count == 1
+    assert preview.items[0].unresolved_reference_ids == []
+    assert "source_lineage_missing" not in preview.items[0].warnings
+
+
 def test_public_candidate_integrity_report_flags_public_readiness_gaps():
     repo = InMemoryResearchRepository()
     service = HSAResearchService(repo)
