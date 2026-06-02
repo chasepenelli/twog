@@ -6444,6 +6444,15 @@ def _compile_public_candidate_proof(
         else _dedupe_uuid_refs([candidate.source_brief_id])
     )
     source_citation_counts = _public_candidate_source_citation_counts(repository, source_brief_ids_checked)
+    if therapy_idea is not None:
+        source_citation_counts.update(
+            _public_candidate_embedded_source_citation_counts(
+                repository,
+                therapy_idea,
+                candidate,
+                snapshot,
+            )
+        )
     lineage_diagnostics = _public_candidate_lineage_diagnostics(
         repository=repository,
         therapy_idea=therapy_idea,
@@ -6563,7 +6572,7 @@ def _compile_public_candidate_proof(
     warnings: list[str] = []
     if unresolved_reference_ids:
         warnings.append(f"unresolved_references:{len(unresolved_reference_ids)}")
-    if citation_refs and not source_brief_ids_checked:
+    if citation_refs and not source_brief_ids_checked and not source_citation_counts:
         warnings.append("source_lineage_missing")
     if compiled_candidate.visibility != "public":
         warnings.append(f"candidate_visibility_not_public:{compiled_candidate.visibility}")
@@ -7663,6 +7672,12 @@ def _public_candidate_literature(
         brief = repository.get_research_brief(source_brief_id)
         if brief is not None:
             citation_maps[source_brief_id] = _citation_map_for_brief(brief)
+    embedded_citation_maps = _public_candidate_embedded_citation_maps(
+        repository,
+        therapy_idea,
+        candidate,
+        snapshot,
+    )
     records: list[dict[str, Any]] = []
     for ref in citation_refs:
         normalized = _normalize_evidence_ref(ref)
@@ -7684,6 +7699,23 @@ def _public_candidate_literature(
                     source_brief_id = candidate_source_brief_id
                     citation = candidate_citation
                     break
+            if citation is None:
+                for embedded_source, embedded_map in embedded_citation_maps.items():
+                    embedded_citation = embedded_map.get(normalized)
+                    if embedded_citation is not None:
+                        embedded_metadata = (
+                            embedded_citation.get("metadata")
+                            if isinstance(embedded_citation.get("metadata"), dict)
+                            else {}
+                        )
+                        citation = {
+                            **embedded_citation,
+                            "metadata": {
+                                **embedded_metadata,
+                                "embedded_source": embedded_source,
+                            },
+                        }
+                        break
             if source_brief_id is None and source_brief_ids:
                 source_brief_id = source_brief_ids[0]
         record = _public_candidate_literature_record(
@@ -7765,7 +7797,26 @@ def _public_candidate_source_brief_ids(
         program_values.extend(_values_for_key(snapshot.metadata, "source_program_id"))
     program_values.extend(_values_for_key(reproducibility, "source_program_id"))
     values.extend(_source_brief_ids_from_programs(repository, _dedupe_uuid_refs(program_values)))
-    agent_values: list[Any] = [
+    values.extend(
+        _source_brief_ids_from_agent_runs(
+            repository,
+            _public_candidate_agent_run_ids(therapy_idea, candidate, snapshot),
+        )
+    )
+    source_refs = snapshot.source_refs if snapshot else []
+    for ref in [*citation_refs, *source_refs]:
+        values.extend(_source_brief_ids_from_ref_text(str(ref)))
+    return _dedupe_uuid_refs(values)
+
+
+def _public_candidate_agent_run_ids(
+    therapy_idea: TherapyIdeaRecord,
+    candidate: PublicCandidateRecord | None,
+    snapshot: PublicCandidateSnapshot | None,
+) -> list[UUID]:
+    payload = snapshot.payload if snapshot and isinstance(snapshot.payload, dict) else {}
+    reproducibility = payload.get("reproducibility") if isinstance(payload.get("reproducibility"), dict) else {}
+    values: list[Any] = [
         therapy_idea.agent_run_id,
         therapy_idea.committee_run_id,
         candidate.committee_run_id if candidate else None,
@@ -7778,20 +7829,16 @@ def _public_candidate_source_brief_ids(
         reproducibility.get("agent_run_id"),
         reproducibility.get("committee_run_id"),
     ]
-    agent_values.extend(_values_for_key(therapy_idea.metadata, "agent_run_id"))
-    agent_values.extend(_values_for_key(therapy_idea.metadata, "committee_run_id"))
+    values.extend(_values_for_key(therapy_idea.metadata, "agent_run_id"))
+    values.extend(_values_for_key(therapy_idea.metadata, "committee_run_id"))
     if candidate is not None:
-        agent_values.extend(_values_for_key(candidate.metadata, "agent_run_id"))
-        agent_values.extend(_values_for_key(candidate.metadata, "committee_run_id"))
+        values.extend(_values_for_key(candidate.metadata, "agent_run_id"))
+        values.extend(_values_for_key(candidate.metadata, "committee_run_id"))
     if snapshot is not None:
-        agent_values.extend(_values_for_key(snapshot.metadata, "agent_run_id"))
-        agent_values.extend(_values_for_key(snapshot.metadata, "committee_run_id"))
-    agent_values.extend(_values_for_key(reproducibility, "agent_run_id"))
-    agent_values.extend(_values_for_key(reproducibility, "committee_run_id"))
-    values.extend(_source_brief_ids_from_agent_runs(repository, _dedupe_uuid_refs(agent_values)))
-    source_refs = snapshot.source_refs if snapshot else []
-    for ref in [*citation_refs, *source_refs]:
-        values.extend(_source_brief_ids_from_ref_text(str(ref)))
+        values.extend(_values_for_key(snapshot.metadata, "agent_run_id"))
+        values.extend(_values_for_key(snapshot.metadata, "committee_run_id"))
+    values.extend(_values_for_key(reproducibility, "agent_run_id"))
+    values.extend(_values_for_key(reproducibility, "committee_run_id"))
     return _dedupe_uuid_refs(values)
 
 
@@ -7804,6 +7851,46 @@ def _public_candidate_source_citation_counts(
         brief = repository.get_research_brief(source_brief_id)
         counts[str(source_brief_id)] = len(_citation_map_for_brief(brief)) if brief is not None else 0
     return counts
+
+
+def _public_candidate_embedded_source_citation_counts(
+    repository: ResearchRepository,
+    therapy_idea: TherapyIdeaRecord,
+    candidate: PublicCandidateRecord | None,
+    snapshot: PublicCandidateSnapshot | None,
+) -> dict[str, int]:
+    return {
+        source: len(citation_map)
+        for source, citation_map in _public_candidate_embedded_citation_maps(
+            repository,
+            therapy_idea,
+            candidate,
+            snapshot,
+        ).items()
+    }
+
+
+def _public_candidate_embedded_citation_maps(
+    repository: ResearchRepository,
+    therapy_idea: TherapyIdeaRecord,
+    candidate: PublicCandidateRecord | None,
+    snapshot: PublicCandidateSnapshot | None,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    citation_maps: dict[str, dict[str, dict[str, Any]]] = {}
+    for agent_run_id in _public_candidate_agent_run_ids(therapy_idea, candidate, snapshot):
+        run = repository.get_agent_run(agent_run_id)
+        if run is None:
+            continue
+        for source_name, source in (
+            ("output_payload", run.output_payload),
+            ("summary", run.summary),
+            ("metadata", run.metadata),
+            ("input_payload", run.input_payload),
+        ):
+            citation_map = _citation_map_from_value(source)
+            if citation_map:
+                citation_maps[f"agent_run:{agent_run_id}:{source_name}"] = citation_map
+    return citation_maps
 
 
 def _source_brief_ids_from_programs(
@@ -9646,6 +9733,47 @@ def _citation_map_for_brief(brief: ResearchBriefRecord) -> dict[str, dict[str, A
         if citation_id and _is_citation_ref(citation_id):
             citation_map[citation_id] = raw
     return citation_map
+
+
+def _citation_map_from_value(
+    value: Any,
+    *,
+    max_items: int = 250,
+    max_depth: int = 8,
+) -> dict[str, dict[str, Any]]:
+    citation_map: dict[str, dict[str, Any]] = {}
+
+    def visit(item: Any, depth: int) -> None:
+        if len(citation_map) >= max_items or depth > max_depth:
+            return
+        if isinstance(item, dict):
+            citation_id = _normalize_evidence_ref(str(item.get("citation_id") or ""))
+            if citation_id and _is_citation_ref(citation_id) and _looks_like_source_citation(item):
+                citation_map.setdefault(citation_id, dict(item))
+            for child in item.values():
+                visit(child, depth + 1)
+                if len(citation_map) >= max_items:
+                    return
+        elif isinstance(item, list):
+            for child in item[:100]:
+                visit(child, depth + 1)
+                if len(citation_map) >= max_items:
+                    return
+
+    visit(value, 0)
+    return citation_map
+
+
+def _looks_like_source_citation(item: dict[str, Any]) -> bool:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    provenance = metadata.get("provenance") if isinstance(metadata.get("provenance"), dict) else {}
+    return any(
+        item.get(key)
+        for key in ("source_url", "source_key", "chunk_id", "research_object_id", "pmid", "doi")
+    ) or any(
+        provenance.get(key)
+        for key in ("source_urls", "source_keys", "chunk_ids", "research_object_ids", "dedupe_keys")
+    )
 
 
 def _normalize_evidence_ref(ref: str) -> str:

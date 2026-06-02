@@ -2094,6 +2094,111 @@ def test_public_candidate_proof_compiler_uses_agent_run_brief_for_citations():
     assert "source_lineage_missing" not in preview.items[0].warnings
 
 
+def test_public_candidate_proof_compiler_uses_embedded_agent_run_citations():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    candidate_id = "twog-candidate-proof-compile-agent-embedded-citation"
+    therapy_idea_id = uuid4()
+    agent_run_id = uuid4()
+    snapshot_id = uuid4()
+    chunk_id = uuid4()
+    research_object_id = uuid4()
+
+    repo.create_agent_run(
+        AgentRunRecord(
+            agent_run_id=agent_run_id,
+            agent_name="therapy_committee_chair_agent",
+            model_profile="therapy_committee",
+            input_payload={
+                "brief_id": None,
+                "evaluation_id": None,
+                "program_id": str(uuid4()),
+            },
+            output_payload={
+                "evidence": {
+                    "brief_evaluation": {
+                        "citations": [
+                            {
+                                "citation_id": "C1",
+                                "chunk_id": str(chunk_id),
+                                "research_object_id": str(research_object_id),
+                                "source_key": "pubmed",
+                                "title": "Embedded agent-run source citation",
+                                "source_url": "https://example.test/agent-embedded-c1",
+                                "metadata": {
+                                    "identifiers": {"pmid": "333444"},
+                                    "provenance": {
+                                        "source_keys": ["pubmed"],
+                                        "source_urls": ["https://example.test/agent-embedded-c1"],
+                                        "titles": ["Embedded agent-run source citation"],
+                                        "research_object_ids": [str(research_object_id)],
+                                        "chunk_ids": [str(chunk_id)],
+                                        "section_labels": ["abstract"],
+                                    },
+                                },
+                            }
+                        ]
+                    },
+                    "citation_count": 1,
+                    "claim_count": 1,
+                }
+            },
+        )
+    )
+    idea = TherapyIdea(
+        title="Embedded citation therapy idea",
+        hypothesis="C1 supports this public candidate.",
+        rationale="The compiler should use embedded agent-run evidence when brief IDs are absent.",
+        candidate_therapies=["proof compiler therapy"],
+        targets=["KDR"],
+        evidence_refs=["C1"],
+        priority_score=0.91,
+    ).model_copy(update={"idea_id": therapy_idea_id})
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            agent_run_id=agent_run_id,
+            status="ready_for_promotion",
+            score=0.91,
+        )
+    )
+    repo.upsert_public_candidate(
+        PublicCandidateRecord(
+            candidate_id=candidate_id,
+            title="Embedded citation public candidate",
+            visibility="draft_public",
+            public_status="investigating",
+            therapy_idea_id=therapy_idea_id,
+            latest_snapshot_id=snapshot_id,
+            evidence_refs=["C1"],
+            content_hash="hash-agent-embedded-citation",
+        )
+    )
+    repo.upsert_public_candidate_snapshot(
+        PublicCandidateSnapshot(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate_id,
+            snapshot_version=1,
+            content_hash="hash-agent-embedded-citation",
+            title="Embedded citation public candidate",
+            public_status="investigating",
+            citation_refs=["C1"],
+            payload={"literature": [{"ref": "C1", "title": "Prior unresolved C1", "resolved": False}]},
+        )
+    )
+
+    preview = service.compile_public_candidate_proofs(
+        PublicCandidateProofCompileRequest(candidate_ids=[candidate_id])
+    )
+
+    embedded_source = f"agent_run:{agent_run_id}:output_payload"
+    assert preview.items[0].source_brief_ids_checked == []
+    assert preview.items[0].source_citation_counts == {embedded_source: 1}
+    assert preview.items[0].resolved_reference_count == 1
+    assert preview.items[0].unresolved_reference_ids == []
+    assert "source_lineage_missing" not in preview.items[0].warnings
+
+
 def test_public_candidate_integrity_report_flags_public_readiness_gaps():
     repo = InMemoryResearchRepository()
     service = HSAResearchService(repo)
