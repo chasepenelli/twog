@@ -11,10 +11,27 @@ on:
         options:
           - "structured_source"
           - "public_candidate_integrity"
+          - "public_candidate_proof_compile"
       source:
         description: "Structured source key to run"
         required: true
         default: "pubchem"
+      candidate_id:
+        description: "Optional public candidate ID for candidate validation modes"
+        required: false
+        default: ""
+      visibility:
+        description: "Optional public candidate visibility filter"
+        required: false
+        default: ""
+      pipeline_version:
+        description: "Optional pipeline version to attach during proof compile preview"
+        required: false
+        default: "hosted-proof-compile-preview"
+      commit_sha:
+        description: "Optional commit SHA to attach during proof compile preview"
+        required: false
+        default: ""
       limit:
         description: "Maximum records per active query"
         required: true
@@ -30,6 +47,10 @@ jobs:
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
       MODE: ${{ inputs.mode }}
       SOURCE: ${{ inputs.source }}
+      CANDIDATE_ID: ${{ inputs.candidate_id }}
+      VISIBILITY: ${{ inputs.visibility }}
+      PIPELINE_VERSION: ${{ inputs.pipeline_version }}
+      COMMIT_SHA: ${{ inputs.commit_sha }}
       LIMIT: ${{ inputs.limit }}
 
     steps:
@@ -67,8 +88,30 @@ jobs:
                 --curate-limit 50
               ;;
             public_candidate_integrity)
-              uv run python -m hsa_research.ingestion_bridge.cli public-candidate-integrity \
-                --limit "$LIMIT" | tee /tmp/public-candidate-integrity.json
+              args=(public-candidate-integrity --limit "$LIMIT")
+              if [ -n "$CANDIDATE_ID" ]; then
+                args+=(--candidate-id "$CANDIDATE_ID")
+              fi
+              if [ -n "$VISIBILITY" ]; then
+                args+=(--visibility "$VISIBILITY")
+              fi
+              uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-integrity.json
+              ;;
+            public_candidate_proof_compile)
+              args=(public-candidate-proof-compile --limit "$LIMIT")
+              if [ -n "$CANDIDATE_ID" ]; then
+                args+=(--candidate-id "$CANDIDATE_ID")
+              fi
+              if [ -n "$VISIBILITY" ]; then
+                args+=(--visibility "$VISIBILITY")
+              fi
+              if [ -n "$PIPELINE_VERSION" ]; then
+                args+=(--pipeline-version "$PIPELINE_VERSION")
+              fi
+              if [ -n "$COMMIT_SHA" ]; then
+                args+=(--commit-sha "$COMMIT_SHA")
+              fi
+              uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-proof-compile.json
               ;;
             *)
               echo "::error::Unsupported hosted validation mode: $MODE"
@@ -120,6 +163,61 @@ jobs:
                       problems=problems.replace("|", "\\|"),
                   )
               )
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
+          PY
+        shell: bash
+
+      - name: Write public candidate proof compile summary
+        if: ${{ always() && inputs.mode == 'public_candidate_proof_compile' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output_path = Path("/tmp/public-candidate-proof-compile.json")
+          if not output_path.exists():
+              raise SystemExit("No public candidate proof compile output was produced.")
+
+          report = json.loads(output_path.read_text())
+          items = report.get("items") or []
+          lines = [
+              "### Public candidate proof compile",
+              f"- Repository type: `{report.get('repository_type')}`",
+              f"- Persisted writes: `{report.get('persist')}`",
+              f"- Candidate count: `{report.get('candidate_count')}`",
+              f"- Compiled count: `{report.get('compiled_count')}`",
+              f"- Manifest written count: `{report.get('manifest_written_count')}`",
+              f"- Candidates with unresolved refs: `{report.get('unresolved_candidate_count')}`",
+              f"- Strict export ready: `{report.get('strict_export_ready_count')}`",
+              f"- Public publish ready: `{report.get('public_publish_ready_count')}`",
+              "",
+              "| Candidate | Snapshot | Manifest before | Refs | Resolved | Unresolved | Strict export | Public publish | Warnings | Errors |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+          ]
+          for item in items[:25]:
+              warnings = ", ".join(item.get("warnings") or [])
+              errors = ", ".join(item.get("errors") or [])
+              lines.append(
+                  "| {candidate} | {snapshot} | {manifest_before} | {refs} | {resolved} | {unresolved} | {strict_export} | {public_publish} | {warnings} | {errors} |".format(
+                      candidate=item.get("candidate_id") or "",
+                      snapshot=item.get("snapshot_id") or "",
+                      manifest_before=item.get("manifest_found_before"),
+                      refs=item.get("citation_ref_count"),
+                      resolved=item.get("resolved_reference_count"),
+                      unresolved=item.get("unresolved_reference_count"),
+                      strict_export=item.get("strict_export_ready_after_compile"),
+                      public_publish=item.get("public_publish_ready_after_compile"),
+                      warnings=warnings.replace("|", "\\|"),
+                      errors=errors.replace("|", "\\|"),
+                  )
+              )
+
+          report_errors = report.get("errors") or []
+          if report_errors:
+              lines.extend(["", "#### Report errors"])
+              lines.extend(f"- `{str(error).replace('`', '')}`" for error in report_errors[:25])
 
           Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
           PY
