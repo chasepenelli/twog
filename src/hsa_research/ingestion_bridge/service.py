@@ -6439,7 +6439,7 @@ def _compile_public_candidate_proof(
     manifest_found_before = repository.get_run_manifest(run_manifest_id) is not None
     citation_refs = _compiled_public_candidate_citation_refs(candidate, snapshot)
     source_brief_ids_checked = (
-        _public_candidate_source_brief_ids(therapy_idea, candidate, snapshot, citation_refs)
+        _public_candidate_source_brief_ids(repository, therapy_idea, candidate, snapshot, citation_refs)
         if therapy_idea is not None
         else _dedupe_uuid_refs([candidate.source_brief_id])
     )
@@ -7648,7 +7648,7 @@ def _public_candidate_literature(
     candidate: PublicCandidateRecord | None = None,
     snapshot: PublicCandidateSnapshot | None = None,
 ) -> list[dict[str, Any]]:
-    source_brief_ids = _public_candidate_source_brief_ids(therapy_idea, candidate, snapshot, citation_refs)
+    source_brief_ids = _public_candidate_source_brief_ids(repository, therapy_idea, candidate, snapshot, citation_refs)
     citation_maps: dict[UUID, dict[str, dict[str, Any]]] = {}
     for source_brief_id in source_brief_ids:
         brief = repository.get_research_brief(source_brief_id)
@@ -7689,6 +7689,7 @@ def _public_candidate_literature(
 
 
 def _public_candidate_source_brief_ids(
+    repository: ResearchRepository,
     therapy_idea: TherapyIdeaRecord,
     candidate: PublicCandidateRecord | None,
     snapshot: PublicCandidateSnapshot | None,
@@ -7704,6 +7705,18 @@ def _public_candidate_source_brief_ids(
         snapshot.metadata.get("source_brief_id") if snapshot and isinstance(snapshot.metadata, dict) else None,
         reproducibility.get("source_brief_id"),
     ]
+    evaluation_values: list[Any] = [
+        therapy_idea.source_evaluation_id,
+        candidate.source_evaluation_id if candidate else None,
+        therapy_idea.metadata.get("source_evaluation_id") if isinstance(therapy_idea.metadata, dict) else None,
+        candidate.metadata.get("source_evaluation_id") if candidate and isinstance(candidate.metadata, dict) else None,
+        snapshot.metadata.get("source_evaluation_id") if snapshot and isinstance(snapshot.metadata, dict) else None,
+        reproducibility.get("source_evaluation_id"),
+    ]
+    for evaluation_id in _dedupe_uuid_refs(evaluation_values):
+        evaluation = repository.get_research_brief_evaluation(evaluation_id)
+        if evaluation is not None:
+            values.append(evaluation.brief_id)
     source_refs = snapshot.source_refs if snapshot else []
     for ref in [*citation_refs, *source_refs]:
         explicit = _explicit_brief_citation_ref(_normalize_evidence_ref(str(ref)))

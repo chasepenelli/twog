@@ -1772,6 +1772,110 @@ def test_public_candidate_proof_compiler_uses_candidate_source_brief_for_citatio
     assert preview.items[0].unresolved_reference_ids == []
 
 
+def test_public_candidate_proof_compiler_uses_source_evaluation_brief_for_citations():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    candidate_id = "twog-candidate-proof-compile-evaluation-brief"
+    therapy_idea_id = uuid4()
+    brief_id = uuid4()
+    evaluation_id = uuid4()
+    snapshot_id = uuid4()
+    chunk_id = uuid4()
+    research_object_id = uuid4()
+
+    repo.upsert_research_brief(
+        ResearchBriefRecord(
+            brief_id=brief_id,
+            topic="Evaluation source brief citation",
+            final_brief="C1 supports an evaluation-level public proof citation.",
+            result_payload={
+                "citations": [
+                    {
+                        "citation_id": "C1",
+                        "chunk_id": str(chunk_id),
+                        "research_object_id": str(research_object_id),
+                        "source_key": "pubmed",
+                        "title": "Evaluation-level source citation",
+                        "source_url": "https://example.test/evaluation-source-c1",
+                        "metadata": {
+                            "identifiers": {"pmid": "777888"},
+                            "provenance": {
+                                "source_keys": ["pubmed"],
+                                "source_urls": ["https://example.test/evaluation-source-c1"],
+                                "titles": ["Evaluation-level source citation"],
+                                "research_object_ids": [str(research_object_id)],
+                                "chunk_ids": [str(chunk_id)],
+                                "section_labels": ["abstract"],
+                            },
+                        },
+                    }
+                ]
+            },
+            citation_count=1,
+        )
+    )
+    repo.upsert_research_brief_evaluation(
+        ResearchBriefEvaluationRecord(
+            evaluation_id=evaluation_id,
+            brief_id=brief_id,
+            topic="Evaluation source brief citation",
+            overall_score=0.9,
+            passes_quality_bar=True,
+            readiness="ready_for_hypothesis_review",
+        )
+    )
+    idea = TherapyIdea(
+        title="Evaluation source brief therapy idea",
+        hypothesis="C1 supports this public candidate.",
+        rationale="The compiler should use evaluation-level source provenance.",
+        candidate_therapies=["proof compiler therapy"],
+        targets=["KDR"],
+        evidence_refs=["C1"],
+        priority_score=0.91,
+    ).model_copy(update={"idea_id": therapy_idea_id})
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            source_evaluation_id=evaluation_id,
+            status="ready_for_promotion",
+            score=0.91,
+        )
+    )
+    repo.upsert_public_candidate(
+        PublicCandidateRecord(
+            candidate_id=candidate_id,
+            title="Evaluation source brief public candidate",
+            visibility="draft_public",
+            public_status="investigating",
+            therapy_idea_id=therapy_idea_id,
+            latest_snapshot_id=snapshot_id,
+            evidence_refs=["C1"],
+            content_hash="hash-evaluation-brief",
+        )
+    )
+    repo.upsert_public_candidate_snapshot(
+        PublicCandidateSnapshot(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate_id,
+            snapshot_version=1,
+            content_hash="hash-evaluation-brief",
+            title="Evaluation source brief public candidate",
+            public_status="investigating",
+            citation_refs=["C1"],
+            payload={"literature": [{"ref": "C1", "title": "Prior unresolved C1", "resolved": False}]},
+        )
+    )
+
+    preview = service.compile_public_candidate_proofs(
+        PublicCandidateProofCompileRequest(candidate_ids=[candidate_id])
+    )
+
+    assert preview.items[0].source_brief_ids_checked == [brief_id]
+    assert preview.items[0].source_citation_counts == {str(brief_id): 1}
+    assert preview.items[0].resolved_reference_count == 1
+    assert preview.items[0].unresolved_reference_ids == []
+
+
 def test_public_candidate_integrity_report_flags_public_readiness_gaps():
     repo = InMemoryResearchRepository()
     service = HSAResearchService(repo)
