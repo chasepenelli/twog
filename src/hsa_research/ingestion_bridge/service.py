@@ -84,6 +84,9 @@ from .contracts import (
     PublicCandidateIntegrityReportResult,
     PublicCandidateLibraryRequest,
     PublicCandidateLibraryResult,
+    PublicCandidateProofCompileItem,
+    PublicCandidateProofCompileRequest,
+    PublicCandidateProofCompileResult,
     PublicCandidateRecord,
     PublicCandidateSnapshot,
     PublicCandidateSnapshotResult,
@@ -1535,6 +1538,15 @@ class HSAResearchService:
         return _build_public_candidate_integrity_report(
             self.repository,
             request or PublicCandidateIntegrityReportRequest(),
+        )
+
+    def compile_public_candidate_proofs(
+        self,
+        request: PublicCandidateProofCompileRequest | None = None,
+    ) -> PublicCandidateProofCompileResult:
+        return _compile_public_candidate_proofs(
+            self.repository,
+            request or PublicCandidateProofCompileRequest(),
         )
 
     def build_evidence_ref_repair_report(
@@ -6348,6 +6360,385 @@ def _build_public_candidate_integrity_report(
         public_publish_ready=bool(checks) and all(check.public_publish_ready for check in checks),
         checks=checks,
         public_readiness_warnings=list(dict.fromkeys(public_readiness_warnings)),
+    )
+
+
+def _compile_public_candidate_proofs(
+    repository: ResearchRepository,
+    request: PublicCandidateProofCompileRequest,
+) -> PublicCandidateProofCompileResult:
+    if request.candidate_ids:
+        candidate_ids = list(request.candidate_ids)
+    else:
+        candidate_ids = [
+            candidate.candidate_id
+            for candidate in repository.list_public_candidates(
+                PublicCandidateLibraryRequest(visibility=request.visibility, limit=request.limit)
+            )
+        ]
+
+    items: list[PublicCandidateProofCompileItem] = []
+    errors: list[str] = []
+    for candidate_id in candidate_ids[: request.limit]:
+        try:
+            items.append(_compile_public_candidate_proof(repository, candidate_id, request))
+        except Exception as exc:
+            errors.append(f"{candidate_id}: {exc}")
+            items.append(
+                PublicCandidateProofCompileItem(
+                    candidate_id=candidate_id,
+                    errors=[f"proof_compile_failed:{exc}"],
+                )
+            )
+
+    return PublicCandidateProofCompileResult(
+        repository_type=type(repository).__name__,
+        persist=request.persist,
+        candidate_count=len(candidate_ids[: request.limit]),
+        compiled_count=sum(1 for item in items if not item.errors and item.latest_snapshot_found),
+        manifest_written_count=sum(1 for item in items if item.manifest_written),
+        unresolved_candidate_count=sum(1 for item in items if item.unresolved_reference_count > 0),
+        strict_export_ready_count=sum(1 for item in items if item.strict_export_ready_after_compile),
+        public_publish_ready_count=sum(1 for item in items if item.public_publish_ready_after_compile),
+        items=items,
+        errors=errors,
+    )
+
+
+def _compile_public_candidate_proof(
+    repository: ResearchRepository,
+    candidate_id: str,
+    request: PublicCandidateProofCompileRequest,
+) -> PublicCandidateProofCompileItem:
+    candidate = repository.get_public_candidate(candidate_id)
+    if candidate is None:
+        return PublicCandidateProofCompileItem(candidate_id=candidate_id, errors=["public_candidate_missing"])
+
+    snapshot = _latest_public_candidate_snapshot(repository, candidate)
+    if snapshot is None:
+        return PublicCandidateProofCompileItem(
+            candidate_id=candidate_id,
+            candidate_found=True,
+            therapy_idea_id=candidate.therapy_idea_id,
+            therapy_idea_found=_therapy_idea_found(repository, candidate.therapy_idea_id),
+            errors=["latest_snapshot_missing"],
+        )
+
+    therapy_idea = repository.get_therapy_idea(candidate.therapy_idea_id) if candidate.therapy_idea_id else None
+    therapy_idea_found = _therapy_idea_found(repository, candidate.therapy_idea_id)
+    validation_decisions = (
+        repository.list_validation_decisions(therapy_idea_id=therapy_idea.therapy_idea_id, limit=25)
+        if therapy_idea is not None
+        else []
+    )
+    trace_id = _compiled_public_candidate_trace_id(candidate, snapshot, request)
+    run_manifest_id = _public_candidate_integrity_manifest_id(candidate, snapshot) or _run_manifest_id(
+        "public_candidate_snapshot",
+        snapshot.snapshot_id,
+    )
+    manifest_found_before = repository.get_run_manifest(run_manifest_id) is not None
+    citation_refs = _compiled_public_candidate_citation_refs(candidate, snapshot)
+    literature = _compiled_public_candidate_literature(
+        repository=repository,
+        candidate=candidate,
+        snapshot=snapshot,
+        therapy_idea=therapy_idea,
+        validation_decisions=validation_decisions,
+        citation_refs=citation_refs,
+    )
+    resolved_count = sum(1 for item in literature if isinstance(item, dict) and item.get("resolved") is True)
+
+    payload = dict(snapshot.payload)
+    if literature:
+        payload["literature"] = literature
+    reproducibility = dict(payload.get("reproducibility") or {})
+    pipeline_version = request.pipeline_version or snapshot.pipeline_version or reproducibility.get("pipeline_version")
+    commit_sha = request.commit_sha or snapshot.commit_sha or reproducibility.get("commit_sha")
+    reproducibility.update(
+        {
+            "trace_id": str(trace_id),
+            "run_manifest_id": str(run_manifest_id),
+            "pipeline_version": pipeline_version,
+            "commit_sha": commit_sha,
+        }
+    )
+    payload["reproducibility"] = reproducibility
+
+    now = datetime.now(UTC)
+    unresolved_reference_ids = _public_candidate_integrity_unresolved_refs(
+        snapshot.model_copy(update={"payload": payload})
+    )
+    proof_metadata = {
+        "compiler": "public_candidate_proof_compiler_v1",
+        "compiled_at": now.isoformat(),
+        "resolved_reference_count": resolved_count,
+        "unresolved_reference_ids": unresolved_reference_ids,
+        "content_hash_preserved": True,
+    }
+    snapshot_metadata = {
+        **snapshot.metadata,
+        **request.metadata,
+        "trace_id": str(trace_id),
+        "run_manifest_id": str(run_manifest_id),
+        "proof_compiler": proof_metadata,
+    }
+    candidate_metadata = {
+        **candidate.metadata,
+        **request.metadata,
+        "trace_id": str(trace_id),
+        "run_manifest_id": str(run_manifest_id),
+        "proof_compiler": proof_metadata,
+    }
+    compiled_snapshot = snapshot.model_copy(
+        update={
+            "trace_id": trace_id,
+            "payload": payload,
+            "citation_refs": citation_refs,
+            "pipeline_version": pipeline_version,
+            "commit_sha": commit_sha,
+            "metadata": snapshot_metadata,
+        }
+    )
+    compiled_candidate = candidate.model_copy(
+        update={
+            "trace_id": trace_id,
+            "content_hash": snapshot.content_hash,
+            "latest_snapshot_id": snapshot.snapshot_id,
+            "updated_at": now,
+            "metadata": candidate_metadata,
+        }
+    )
+    manifest = _compiled_public_candidate_run_manifest(
+        repository=repository,
+        candidate=compiled_candidate,
+        snapshot=compiled_snapshot,
+        therapy_idea=therapy_idea,
+        validation_decisions=validation_decisions,
+        manifest_id=run_manifest_id,
+        trace_id=trace_id,
+        unresolved_reference_ids=unresolved_reference_ids,
+    )
+    event = PublicCandidateDecisionEvent(
+        event_id=uuid5(
+            NAMESPACE_URL,
+            f"twog:public-candidate-event:{candidate.candidate_id}:{snapshot.snapshot_id}:proof-compiled",
+        ),
+        trace_id=trace_id,
+        candidate_id=candidate.candidate_id,
+        action="annotated",
+        rationale_md=(
+            "Compiled the public proof packet by attaching trace, run manifest, "
+            "and citation-resolution metadata without regenerating scientific content."
+        ),
+        actor="public_candidate_proof_compiler",
+        prior_status=candidate.public_status,
+        new_status=candidate.public_status,
+        related_snapshot_id=snapshot.snapshot_id,
+        metadata={
+            "run_manifest_id": str(run_manifest_id),
+            "resolved_reference_count": resolved_count,
+            "unresolved_reference_ids": unresolved_reference_ids,
+            "persist": request.persist,
+        },
+    )
+
+    if request.persist:
+        repository.upsert_public_candidate(compiled_candidate)
+        repository.upsert_public_candidate_snapshot(compiled_snapshot)
+        repository.upsert_run_manifest(manifest)
+        repository.append_public_candidate_decision_event(event)
+
+    warnings: list[str] = []
+    if unresolved_reference_ids:
+        warnings.append(f"unresolved_references:{len(unresolved_reference_ids)}")
+    if compiled_candidate.visibility != "public":
+        warnings.append(f"candidate_visibility_not_public:{compiled_candidate.visibility}")
+    if compiled_snapshot.public_status == "draft":
+        warnings.append("public_status_draft")
+    if _public_candidate_integrity_commit_is_unverifiable(commit_sha):
+        warnings.append(f"commit_unverifiable:{commit_sha or 'missing'}")
+
+    strict_export_ready = bool(
+        compiled_candidate
+        and compiled_snapshot
+        and trace_id
+        and run_manifest_id
+        and (manifest_found_before or request.persist)
+        and therapy_idea_found is not False
+    )
+    public_publish_ready = bool(strict_export_ready and not warnings)
+    return PublicCandidateProofCompileItem(
+        candidate_id=candidate.candidate_id,
+        snapshot_id=snapshot.snapshot_id,
+        trace_id=trace_id,
+        run_manifest_id=run_manifest_id,
+        therapy_idea_id=candidate.therapy_idea_id,
+        candidate_found=True,
+        latest_snapshot_found=True,
+        therapy_idea_found=therapy_idea_found,
+        manifest_found_before=manifest_found_before,
+        manifest_written=request.persist,
+        candidate_updated=request.persist,
+        snapshot_updated=request.persist,
+        decision_event_id=event.event_id if request.persist else None,
+        citation_ref_count=len(citation_refs),
+        resolved_reference_count=resolved_count,
+        unresolved_reference_count=len(unresolved_reference_ids),
+        unresolved_reference_ids=unresolved_reference_ids,
+        strict_export_ready_after_compile=strict_export_ready,
+        public_publish_ready_after_compile=public_publish_ready,
+        warnings=warnings,
+    )
+
+
+def _latest_public_candidate_snapshot(
+    repository: ResearchRepository,
+    candidate: PublicCandidateRecord,
+) -> PublicCandidateSnapshot | None:
+    if candidate.latest_snapshot_id:
+        snapshot = repository.get_public_candidate_snapshot(candidate.latest_snapshot_id)
+        if snapshot is not None:
+            return snapshot
+    snapshots = repository.list_public_candidate_snapshots(candidate_id=candidate.candidate_id, limit=1)
+    return snapshots[0] if snapshots else None
+
+
+def _therapy_idea_found(repository: ResearchRepository, therapy_idea_id: UUID | None) -> bool | None:
+    if therapy_idea_id is None:
+        return None
+    return repository.get_therapy_idea(therapy_idea_id) is not None
+
+
+def _compiled_public_candidate_trace_id(
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+    request: PublicCandidateProofCompileRequest,
+) -> UUID:
+    return _first_uuid(
+        [
+            request.metadata.get("trace_id") if isinstance(request.metadata, dict) else None,
+            _public_candidate_integrity_trace_id(candidate, snapshot),
+        ]
+    ) or uuid5(NAMESPACE_URL, f"twog:public-candidate-trace:{candidate.candidate_id}")
+
+
+def _compiled_public_candidate_citation_refs(
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+) -> list[str]:
+    payload = snapshot.payload if isinstance(snapshot.payload, dict) else {}
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    literature = payload.get("literature") if isinstance(payload.get("literature"), list) else []
+    refs: list[str] = [*snapshot.citation_refs, *candidate.evidence_refs]
+    evidence_refs = evidence.get("evidence_refs")
+    if isinstance(evidence_refs, list):
+        refs.extend(str(ref) for ref in evidence_refs if str(ref).strip())
+    refs.extend(
+        str(item.get("ref") or item.get("citation_ref") or item.get("id"))
+        for item in literature
+        if isinstance(item, dict) and (item.get("ref") or item.get("citation_ref") or item.get("id"))
+    )
+    return _dedupe_texts([_normalize_evidence_ref(ref) for ref in refs if str(ref).strip()])
+
+
+def _compiled_public_candidate_literature(
+    *,
+    repository: ResearchRepository,
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+    therapy_idea: TherapyIdeaRecord | None,
+    validation_decisions: list[ValidationDecisionRecord],
+    citation_refs: list[str],
+) -> list[dict[str, Any]]:
+    if therapy_idea is not None and citation_refs:
+        return _public_candidate_literature(repository, therapy_idea, citation_refs, validation_decisions)
+    literature = snapshot.payload.get("literature") if isinstance(snapshot.payload, dict) else None
+    if isinstance(literature, list):
+        return [dict(item) for item in literature if isinstance(item, dict)]
+    return [
+        {
+            "ref": ref,
+            "title": f"Unresolved citation {ref}",
+            "source_brief_id": str(candidate.source_brief_id) if candidate.source_brief_id else None,
+            "resolved": False,
+        }
+        for ref in citation_refs
+    ]
+
+
+def _compiled_public_candidate_run_manifest(
+    *,
+    repository: ResearchRepository,
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+    therapy_idea: TherapyIdeaRecord | None,
+    validation_decisions: list[ValidationDecisionRecord],
+    manifest_id: UUID,
+    trace_id: UUID,
+    unresolved_reference_ids: list[str],
+) -> RunManifestRecord:
+    agent_run_ids = _dedupe_uuid_refs(
+        [
+            therapy_idea.agent_run_id if therapy_idea else None,
+            therapy_idea.committee_run_id if therapy_idea else None,
+            candidate.committee_run_id,
+        ]
+    )
+    agent_refs = _agent_run_manifest_refs(repository, agent_run_ids)
+    compute_jobs = [
+        job
+        for compute_job_id in snapshot.compute_job_ids
+        for job in [repository.get_compute_job(compute_job_id)]
+        if job is not None
+    ]
+    return RunManifestRecord(
+        manifest_id=manifest_id,
+        trace_id=trace_id,
+        manifest_type="public_candidate_snapshot",
+        status="completed",
+        title=f"Public candidate proof receipt: {candidate.display_id or candidate.candidate_id}",
+        created_by="public_candidate_proof_compiler",
+        dagster_run_id=str(snapshot.metadata.get("dagster_run_id") or "") or None,
+        agent_run_ids=agent_run_ids,
+        brief_ids=_dedupe_uuid_refs([candidate.source_brief_id, therapy_idea.source_brief_id if therapy_idea else None]),
+        therapy_idea_ids=_dedupe_uuid_refs([candidate.therapy_idea_id, therapy_idea.therapy_idea_id if therapy_idea else None]),
+        validation_packet_ids=_dedupe_texts(
+            [
+                candidate.validation_packet_id or "",
+                *(decision.packet_id for decision in validation_decisions),
+            ]
+        ),
+        candidate_ids=[candidate.candidate_id],
+        compute_job_ids=snapshot.compute_job_ids,
+        artifact_ids=snapshot.artifact_ids,
+        model_profiles=agent_refs["model_profiles"],
+        actual_models=agent_refs["actual_models"],
+        prompt_keys=agent_refs["prompt_keys"],
+        method_refs=snapshot.method_refs,
+        content_hashes={"public_candidate_snapshot": snapshot.content_hash},
+        input_refs={
+            "candidate_id": candidate.candidate_id,
+            "snapshot_id": str(snapshot.snapshot_id),
+            "therapy_idea_id": str(candidate.therapy_idea_id) if candidate.therapy_idea_id else None,
+            "citation_refs": snapshot.citation_refs,
+        },
+        output_refs={
+            "candidate_id": candidate.candidate_id,
+            "snapshot_id": str(snapshot.snapshot_id),
+            "snapshot_version": snapshot.snapshot_version,
+            "public_status": snapshot.public_status,
+            "visibility": candidate.visibility,
+            "unresolved_reference_ids": unresolved_reference_ids,
+            "compute_job_statuses": {str(job.compute_job_id): job.status for job in compute_jobs},
+        },
+        created_at=snapshot.created_at,
+        updated_at=datetime.now(UTC),
+        metadata={
+            "pipeline_version": snapshot.pipeline_version,
+            "commit_sha": snapshot.commit_sha,
+            "compiler": "public_candidate_proof_compiler_v1",
+            "content_hash_preserved": True,
+        },
     )
 
 

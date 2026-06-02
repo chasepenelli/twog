@@ -5565,6 +5565,71 @@ class PublicCandidateIntegrityReportResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class PublicCandidateProofCompileRequest(StrictBaseModel):
+    candidate_ids: list[str] = Field(default_factory=list, max_length=50)
+    visibility: PublicCandidateVisibility | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+    pipeline_version: str | None = Field(default=None, max_length=120)
+    commit_sha: str | None = Field(default=None, max_length=80)
+    persist: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_proof_compile_request(self) -> "PublicCandidateProofCompileRequest":
+        self.candidate_ids = _dedupe_strings(self.candidate_ids)
+        if self.pipeline_version:
+            self.pipeline_version = self.pipeline_version.strip() or None
+        if self.commit_sha:
+            self.commit_sha = self.commit_sha.strip() or None
+        return self
+
+
+class PublicCandidateProofCompileItem(StrictBaseModel):
+    candidate_id: str = Field(min_length=3, max_length=260)
+    snapshot_id: UUID | None = None
+    trace_id: UUID | None = None
+    run_manifest_id: UUID | None = None
+    therapy_idea_id: UUID | None = None
+    candidate_found: bool = False
+    latest_snapshot_found: bool = False
+    therapy_idea_found: bool | None = None
+    manifest_found_before: bool = False
+    manifest_written: bool = False
+    candidate_updated: bool = False
+    snapshot_updated: bool = False
+    decision_event_id: UUID | None = None
+    citation_ref_count: int = Field(default=0, ge=0)
+    resolved_reference_count: int = Field(default=0, ge=0)
+    unresolved_reference_count: int = Field(default=0, ge=0)
+    unresolved_reference_ids: list[str] = Field(default_factory=list)
+    strict_export_ready_after_compile: bool = False
+    public_publish_ready_after_compile: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_proof_compile_item(self) -> "PublicCandidateProofCompileItem":
+        self.candidate_id = self.candidate_id.strip()
+        self.unresolved_reference_ids = _dedupe_strings(self.unresolved_reference_ids)
+        self.warnings = _dedupe_strings(self.warnings)
+        self.errors = _dedupe_strings(self.errors)
+        return self
+
+
+class PublicCandidateProofCompileResult(StrictBaseModel):
+    repository_type: str
+    persist: bool = False
+    candidate_count: int = 0
+    compiled_count: int = 0
+    manifest_written_count: int = 0
+    unresolved_candidate_count: int = 0
+    strict_export_ready_count: int = 0
+    public_publish_ready_count: int = 0
+    items: list[PublicCandidateProofCompileItem] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 EvidenceRefRepairStatus = Literal[
     "resolved",
     "stale",

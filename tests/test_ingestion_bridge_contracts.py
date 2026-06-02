@@ -98,6 +98,7 @@ from hsa_research.ingestion_bridge.contracts import (
     PublicCandidateGenerateRequest,
     PublicCandidateIntegrityReportRequest,
     PublicCandidateLibraryRequest,
+    PublicCandidateProofCompileRequest,
     PublicCandidateRecord,
     PublicCandidateSnapshot,
     RawSourceRecord,
@@ -1524,6 +1525,166 @@ def test_public_candidate_integrity_report_flags_missing_source_and_manifest():
     assert ready.candidates_with_unverifiable_commit == [candidate_id]
     assert ready.candidates_ready_for_strict_export == [candidate_id]
     assert ready.candidates_ready_for_public_publish == []
+
+
+def test_public_candidate_proof_compiler_repairs_manifest_and_resolves_citations():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    candidate_id = "twog-candidate-proof-compile"
+    therapy_idea_id = uuid4()
+    brief_id = uuid4()
+    snapshot_id = uuid4()
+    chunk_id = uuid4()
+    research_object_id = uuid4()
+
+    repo.upsert_research_brief(
+        ResearchBriefRecord(
+            brief_id=brief_id,
+            topic="Citation proof compiler",
+            final_brief="C1 supports a public proof candidate. C2 remains unresolved.",
+            result_payload={
+                "citations": [
+                    {
+                        "citation_id": "C1",
+                        "chunk_id": str(chunk_id),
+                        "research_object_id": str(research_object_id),
+                        "source_key": "pubmed",
+                        "title": "Resolved canine HSA citation",
+                        "source_url": "https://example.test/resolved-c1",
+                        "section_label": "abstract",
+                        "metadata": {
+                            "identifiers": {"pmid": "123456"},
+                            "publication_year": 2026,
+                            "provenance": {
+                                "source_keys": ["pubmed"],
+                                "source_urls": ["https://example.test/resolved-c1"],
+                                "titles": ["Resolved canine HSA citation"],
+                                "research_object_ids": [str(research_object_id)],
+                                "chunk_ids": [str(chunk_id)],
+                                "section_labels": ["abstract"],
+                            },
+                        },
+                    }
+                ]
+            },
+            citation_count=1,
+        )
+    )
+    idea = TherapyIdea(
+        title="Citation proof compiler therapy idea",
+        hypothesis="C1 supports this public candidate while C2 should stay unresolved.",
+        rationale="The compiler should attach provenance without changing the scientific claim.",
+        candidate_therapies=["proof compiler therapy"],
+        targets=["KDR"],
+        evidence_refs=["C1", "C2"],
+        priority_score=0.91,
+    ).model_copy(update={"idea_id": therapy_idea_id})
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            source_brief_id=brief_id,
+            status="ready_for_promotion",
+            score=0.91,
+        )
+    )
+    candidate = PublicCandidateRecord(
+        candidate_id=candidate_id,
+        title="Citation proof compiler candidate",
+        visibility="draft_public",
+        public_status="investigating",
+        therapy_idea_id=therapy_idea_id,
+        source_brief_id=brief_id,
+        latest_snapshot_id=snapshot_id,
+        evidence_refs=["C1"],
+        content_hash="hash-proof-compile",
+    )
+    snapshot = PublicCandidateSnapshot(
+        snapshot_id=snapshot_id,
+        candidate_id=candidate_id,
+        snapshot_version=1,
+        content_hash="hash-proof-compile",
+        title="Citation proof compiler candidate",
+        public_status="investigating",
+        citation_refs=["C1", "C2"],
+        payload={
+            "literature": [
+                {"ref": "C1", "title": "Prior unresolved C1", "resolved": False},
+                {"ref": "C2", "title": "Prior unresolved C2", "resolved": False},
+            ],
+            "reproducibility": {},
+        },
+    )
+    repo.upsert_public_candidate(candidate)
+    repo.upsert_public_candidate_snapshot(snapshot)
+
+    preview = service.compile_public_candidate_proofs(
+        PublicCandidateProofCompileRequest(
+            candidate_ids=[candidate_id],
+            pipeline_version="proof-compiler-test",
+            commit_sha="abc123",
+        )
+    )
+
+    assert preview.persist is False
+    assert preview.compiled_count == 1
+    assert preview.manifest_written_count == 0
+    assert preview.items[0].manifest_written is False
+    assert preview.items[0].resolved_reference_count == 1
+    assert preview.items[0].unresolved_reference_ids == ["C2"]
+    assert repo.get_run_manifest(preview.items[0].run_manifest_id) is None
+    assert repo.get_public_candidate(candidate_id).trace_id is None
+
+    applied = service.compile_public_candidate_proofs(
+        PublicCandidateProofCompileRequest(
+            candidate_ids=[candidate_id],
+            pipeline_version="proof-compiler-test",
+            commit_sha="abc123",
+            persist=True,
+        )
+    )
+
+    item = applied.items[0]
+    assert applied.persist is True
+    assert applied.manifest_written_count == 1
+    assert item.manifest_written is True
+    assert item.strict_export_ready_after_compile is True
+    assert item.public_publish_ready_after_compile is False
+    assert item.unresolved_reference_ids == ["C2"]
+
+    stored_candidate = repo.get_public_candidate(candidate_id)
+    stored_snapshot = repo.get_public_candidate_snapshot(snapshot_id)
+    manifest = repo.get_run_manifest(item.run_manifest_id)
+    events = repo.list_public_candidate_decision_events(candidate_id=candidate_id)
+    assert stored_candidate.trace_id == item.trace_id
+    assert stored_candidate.content_hash == "hash-proof-compile"
+    assert stored_candidate.metadata["proof_compiler"]["content_hash_preserved"] is True
+    assert stored_snapshot.trace_id == item.trace_id
+    assert stored_snapshot.payload["literature"][0]["ref"] == "C1"
+    assert stored_snapshot.payload["literature"][0]["resolved"] is True
+    assert stored_snapshot.payload["literature"][0]["identifiers"]["pmid"] == "123456"
+    assert stored_snapshot.payload["literature"][1]["ref"] == "C2"
+    assert stored_snapshot.payload["literature"][1]["resolved"] is False
+    assert stored_snapshot.payload["reproducibility"]["run_manifest_id"] == str(item.run_manifest_id)
+    assert stored_snapshot.payload["reproducibility"]["trace_id"] == str(item.trace_id)
+    assert stored_snapshot.payload["reproducibility"]["pipeline_version"] == "proof-compiler-test"
+    assert stored_snapshot.payload["reproducibility"]["commit_sha"] == "abc123"
+    assert manifest is not None
+    assert manifest.trace_id == item.trace_id
+    assert manifest.candidate_ids == [candidate_id]
+    assert manifest.content_hashes["public_candidate_snapshot"] == "hash-proof-compile"
+    assert events[-1].action == "annotated"
+    assert events[-1].metadata["resolved_reference_count"] == 1
+
+    integrity = service.build_public_candidate_integrity_report(
+        PublicCandidateIntegrityReportRequest(
+            candidate_ids=[candidate_id],
+            expected_candidate_therapy_ids={candidate_id: therapy_idea_id},
+        )
+    )
+    assert integrity.strict_export_ready is True
+    assert integrity.checks[0].problems == []
+    assert integrity.checks[0].unresolved_reference_ids == ["C2"]
+    assert "unresolved_references:1" in integrity.checks[0].public_readiness_warnings
 
 
 def test_public_candidate_integrity_report_flags_public_readiness_gaps():

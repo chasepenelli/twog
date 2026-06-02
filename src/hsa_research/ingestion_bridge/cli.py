@@ -47,6 +47,7 @@ from .contracts import (
     PublicCandidateGenerateRequest,
     PublicCandidateIntegrityReportRequest,
     PublicCandidateLibraryRequest,
+    PublicCandidateProofCompileRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
     ResearchBriefOperatorDocRequest,
@@ -840,6 +841,30 @@ def main() -> None:
     )
     public_candidate_integrity.add_argument("--visibility", default=None, help="Optional visibility sample filter")
     public_candidate_integrity.add_argument("--limit", type=int, default=100, help="Maximum sampled records")
+
+    public_candidate_proof_compile = subparsers.add_parser(
+        "public-candidate-proof-compile",
+        help="Compile trace, manifest, and citation proof receipts for public candidates",
+    )
+    public_candidate_proof_compile.add_argument(
+        "--candidate-id",
+        action="append",
+        default=[],
+        help="Candidate ID to compile; repeatable",
+    )
+    public_candidate_proof_compile.add_argument("--visibility", default=None, help="Optional visibility sample filter")
+    public_candidate_proof_compile.add_argument("--limit", type=int, default=100, help="Maximum sampled records")
+    public_candidate_proof_compile.add_argument(
+        "--pipeline-version",
+        default=None,
+        help="Pipeline/methodology version to attach",
+    )
+    public_candidate_proof_compile.add_argument("--commit-sha", default=None, help="Code commit SHA to attach")
+    public_candidate_proof_compile.add_argument(
+        "--apply",
+        action="store_true",
+        help="Persist compiled candidate, snapshot, manifest, and decision receipt",
+    )
 
     hypothesis_promotion = subparsers.add_parser(
         "hypothesis-promotion-report",
@@ -2821,6 +2846,17 @@ def main() -> None:
                 expected_candidate_therapy_ids=expected_pairs,
                 visibility=args.visibility,
                 limit=args.limit,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "public-candidate-proof-compile":
+        output = HSAResearchService(repo).compile_public_candidate_proofs(
+            PublicCandidateProofCompileRequest(
+                candidate_ids=args.candidate_id,
+                visibility=args.visibility,
+                limit=args.limit,
+                pipeline_version=args.pipeline_version,
+                commit_sha=args.commit_sha,
+                persist=args.apply,
             )
         ).model_dump(mode="json")
     elif args.command == "hypothesis-promotion-report":
