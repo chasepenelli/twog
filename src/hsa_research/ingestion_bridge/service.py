@@ -7709,27 +7709,64 @@ def _public_candidate_source_brief_ids(
         therapy_idea.source_brief_id,
         candidate.source_brief_id if candidate else None,
         therapy_idea.metadata.get("source_brief_id") if isinstance(therapy_idea.metadata, dict) else None,
+        therapy_idea.promotion_metadata.get("source_brief_id")
+        if isinstance(therapy_idea.promotion_metadata, dict)
+        else None,
         candidate.metadata.get("source_brief_id") if candidate and isinstance(candidate.metadata, dict) else None,
         snapshot.metadata.get("source_brief_id") if snapshot and isinstance(snapshot.metadata, dict) else None,
         reproducibility.get("source_brief_id"),
     ]
+    values.extend(_values_for_key(therapy_idea.metadata, "source_brief_id"))
+    values.extend(_values_for_key(therapy_idea.promotion_metadata, "source_brief_id"))
+    if candidate is not None:
+        values.extend(_values_for_key(candidate.metadata, "source_brief_id"))
+    if snapshot is not None:
+        values.extend(_values_for_key(snapshot.metadata, "source_brief_id"))
+    values.extend(_values_for_key(reproducibility, "source_brief_id"))
     evaluation_values: list[Any] = [
         therapy_idea.source_evaluation_id,
         candidate.source_evaluation_id if candidate else None,
         therapy_idea.metadata.get("source_evaluation_id") if isinstance(therapy_idea.metadata, dict) else None,
+        therapy_idea.promotion_metadata.get("source_evaluation_id")
+        if isinstance(therapy_idea.promotion_metadata, dict)
+        else None,
         candidate.metadata.get("source_evaluation_id") if candidate and isinstance(candidate.metadata, dict) else None,
         snapshot.metadata.get("source_evaluation_id") if snapshot and isinstance(snapshot.metadata, dict) else None,
         reproducibility.get("source_evaluation_id"),
     ]
+    evaluation_values.extend(_values_for_key(therapy_idea.metadata, "source_evaluation_id"))
+    evaluation_values.extend(_values_for_key(therapy_idea.promotion_metadata, "source_evaluation_id"))
+    if candidate is not None:
+        evaluation_values.extend(_values_for_key(candidate.metadata, "source_evaluation_id"))
+    if snapshot is not None:
+        evaluation_values.extend(_values_for_key(snapshot.metadata, "source_evaluation_id"))
+    evaluation_values.extend(_values_for_key(reproducibility, "source_evaluation_id"))
     for evaluation_id in _dedupe_uuid_refs(evaluation_values):
         evaluation = repository.get_research_brief_evaluation(evaluation_id)
         if evaluation is not None:
             values.append(evaluation.brief_id)
+    program_values: list[Any] = [
+        therapy_idea.source_program_id,
+        candidate.source_program_id if candidate else None,
+        therapy_idea.metadata.get("source_program_id") if isinstance(therapy_idea.metadata, dict) else None,
+        therapy_idea.promotion_metadata.get("source_program_id")
+        if isinstance(therapy_idea.promotion_metadata, dict)
+        else None,
+        candidate.metadata.get("source_program_id") if candidate and isinstance(candidate.metadata, dict) else None,
+        snapshot.metadata.get("source_program_id") if snapshot and isinstance(snapshot.metadata, dict) else None,
+        reproducibility.get("source_program_id"),
+    ]
+    program_values.extend(_values_for_key(therapy_idea.metadata, "source_program_id"))
+    program_values.extend(_values_for_key(therapy_idea.promotion_metadata, "source_program_id"))
+    if candidate is not None:
+        program_values.extend(_values_for_key(candidate.metadata, "source_program_id"))
+    if snapshot is not None:
+        program_values.extend(_values_for_key(snapshot.metadata, "source_program_id"))
+    program_values.extend(_values_for_key(reproducibility, "source_program_id"))
+    values.extend(_source_brief_ids_from_programs(repository, _dedupe_uuid_refs(program_values)))
     source_refs = snapshot.source_refs if snapshot else []
     for ref in [*citation_refs, *source_refs]:
-        explicit = _explicit_brief_citation_ref(_normalize_evidence_ref(str(ref)))
-        if explicit:
-            values.append(explicit[0])
+        values.extend(_source_brief_ids_from_ref_text(str(ref)))
     return _dedupe_uuid_refs(values)
 
 
@@ -7742,6 +7779,85 @@ def _public_candidate_source_citation_counts(
         brief = repository.get_research_brief(source_brief_id)
         counts[str(source_brief_id)] = len(_citation_map_for_brief(brief)) if brief is not None else 0
     return counts
+
+
+def _source_brief_ids_from_programs(
+    repository: ResearchRepository,
+    program_ids: list[UUID],
+) -> list[UUID]:
+    values: list[Any] = []
+    evaluation_values: list[Any] = []
+    for program_id in program_ids:
+        program = repository.get_research_program(program_id)
+        if program is None:
+            continue
+        refs: list[str] = []
+        refs.extend(program.source_packet_ids)
+        refs.extend(program.evidence_refs)
+        refs.extend(ref for question in program.decisive_questions for ref in question.evidence_refs)
+        refs.extend(ref for task in program.evidence_tasks for ref in task.evidence_refs)
+        for ref in refs:
+            values.extend(_source_brief_ids_from_ref_text(ref))
+        for source in _program_lineage_metadata_sources(program):
+            values.extend(_values_for_key(source, "source_brief_id"))
+            evaluation_values.extend(_values_for_key(source, "source_evaluation_id"))
+    for evaluation_id in _dedupe_uuid_refs(evaluation_values):
+        evaluation = repository.get_research_brief_evaluation(evaluation_id)
+        if evaluation is not None:
+            values.append(evaluation.brief_id)
+    return _dedupe_uuid_refs(values)
+
+
+def _program_lineage_metadata_sources(program: ResearchProgramRecord) -> list[Any]:
+    sources: list[Any] = [program.metadata]
+    sources.extend(question.metadata for question in program.decisive_questions)
+    sources.extend(task.metadata for task in program.evidence_tasks)
+    return sources
+
+
+def _source_brief_ids_from_ref_text(ref: str) -> list[UUID]:
+    values: list[UUID] = []
+    normalized = _normalize_evidence_ref(str(ref))
+    explicit = _explicit_brief_citation_ref(normalized)
+    if explicit:
+        values.append(explicit[0])
+    for explicit_ref in _explicit_refs_in_text(str(ref)):
+        explicit = _explicit_brief_citation_ref(_normalize_evidence_ref(explicit_ref))
+        if explicit:
+            values.append(explicit[0])
+    bare = re.fullmatch(
+        r"(?:research_brief|brief):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+        normalized,
+        re.IGNORECASE,
+    )
+    if bare:
+        values.append(UUID(bare.group(1)))
+    return _dedupe_uuid_refs(values)
+
+
+def _values_for_key(value: Any, key_name: str, *, max_values: int = 50, max_depth: int = 6) -> list[Any]:
+    values: list[Any] = []
+
+    def visit(item: Any, depth: int) -> None:
+        if len(values) >= max_values or depth > max_depth:
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if str(key) == key_name:
+                    values.append(child)
+                    if len(values) >= max_values:
+                        return
+                visit(child, depth + 1)
+                if len(values) >= max_values:
+                    return
+        elif isinstance(item, list):
+            for child in item[:25]:
+                visit(child, depth + 1)
+                if len(values) >= max_values:
+                    return
+
+    visit(value, 0)
+    return values
 
 
 def _public_candidate_lineage_diagnostics(

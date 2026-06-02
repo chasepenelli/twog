@@ -1876,6 +1876,121 @@ def test_public_candidate_proof_compiler_uses_source_evaluation_brief_for_citati
     assert preview.items[0].unresolved_reference_ids == []
 
 
+def test_public_candidate_proof_compiler_uses_source_program_briefs_for_citations():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    candidate_id = "twog-candidate-proof-compile-program-brief"
+    therapy_idea_id = uuid4()
+    program_id = uuid4()
+    brief_id = uuid4()
+    snapshot_id = uuid4()
+    chunk_id = uuid4()
+    research_object_id = uuid4()
+
+    repo.upsert_research_brief(
+        ResearchBriefRecord(
+            brief_id=brief_id,
+            topic="Program source packet citation",
+            final_brief="C1 supports a program-derived public proof citation.",
+            result_payload={
+                "citations": [
+                    {
+                        "citation_id": "C1",
+                        "chunk_id": str(chunk_id),
+                        "research_object_id": str(research_object_id),
+                        "source_key": "pubmed",
+                        "title": "Program-level source citation",
+                        "source_url": "https://example.test/program-source-c1",
+                        "metadata": {
+                            "identifiers": {"pmid": "999111"},
+                            "provenance": {
+                                "source_keys": ["pubmed"],
+                                "source_urls": ["https://example.test/program-source-c1"],
+                                "titles": ["Program-level source citation"],
+                                "research_object_ids": [str(research_object_id)],
+                                "chunk_ids": [str(chunk_id)],
+                                "section_labels": ["abstract"],
+                            },
+                        },
+                    }
+                ]
+            },
+            citation_count=1,
+        )
+    )
+    repo.upsert_research_program(
+        ResearchProgramRecord(
+            program_id=program_id,
+            title="Program-derived proof source",
+            thesis="Program source packets can preserve brief-level citation provenance.",
+            disease_model="Canine hemangiosarcoma comparative oncology.",
+            decisive_questions=[
+                ResearchProgramQuestion(question="Does the program keep source citations?"),
+                ResearchProgramQuestion(question="Can downstream records resolve them?"),
+            ],
+            evidence_tasks=[
+                ResearchProgramEvidenceTask(
+                    title="Program citation packet",
+                    objective="Keep the research brief as a source packet for public proof compilation.",
+                )
+            ],
+            stop_criteria=["No source packet citation provenance."],
+            source_packet_ids=[f"research_brief:{brief_id}"],
+        )
+    )
+    idea = TherapyIdea(
+        title="Program source brief therapy idea",
+        hypothesis="C1 supports this public candidate.",
+        rationale="The compiler should follow program lineage to source packets.",
+        candidate_therapies=["proof compiler therapy"],
+        targets=["KDR"],
+        evidence_refs=["C1"],
+        priority_score=0.91,
+    ).model_copy(update={"idea_id": therapy_idea_id})
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            source_program_id=program_id,
+            status="ready_for_promotion",
+            score=0.91,
+        )
+    )
+    repo.upsert_public_candidate(
+        PublicCandidateRecord(
+            candidate_id=candidate_id,
+            title="Program source brief public candidate",
+            visibility="draft_public",
+            public_status="investigating",
+            therapy_idea_id=therapy_idea_id,
+            latest_snapshot_id=snapshot_id,
+            evidence_refs=["C1"],
+            content_hash="hash-program-brief",
+        )
+    )
+    repo.upsert_public_candidate_snapshot(
+        PublicCandidateSnapshot(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate_id,
+            snapshot_version=1,
+            content_hash="hash-program-brief",
+            title="Program source brief public candidate",
+            public_status="investigating",
+            citation_refs=["C1"],
+            payload={"literature": [{"ref": "C1", "title": "Prior unresolved C1", "resolved": False}]},
+        )
+    )
+
+    preview = service.compile_public_candidate_proofs(
+        PublicCandidateProofCompileRequest(candidate_ids=[candidate_id])
+    )
+
+    assert preview.items[0].source_brief_ids_checked == [brief_id]
+    assert preview.items[0].source_citation_counts == {str(brief_id): 1}
+    assert preview.items[0].resolved_reference_count == 1
+    assert preview.items[0].unresolved_reference_ids == []
+    assert "source_lineage_missing" not in preview.items[0].warnings
+
+
 def test_public_candidate_integrity_report_flags_public_readiness_gaps():
     repo = InMemoryResearchRepository()
     service = HSAResearchService(repo)
