@@ -193,16 +193,22 @@ jobs:
               f"- Strict export ready: `{report.get('strict_export_ready_count')}`",
               f"- Public publish ready: `{report.get('public_publish_ready_count')}`",
               "",
-              "| Candidate | Snapshot | Manifest before | Refs | Resolved | Unresolved | Strict export | Public publish | Warnings | Errors |",
-              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+              "| Candidate | Snapshot | Source briefs | Citation maps | Manifest before | Refs | Resolved | Unresolved | Strict export | Public publish | Warnings | Errors |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
           ]
           for item in items[:25]:
               warnings = ", ".join(item.get("warnings") or [])
               errors = ", ".join(item.get("errors") or [])
+              source_briefs = ", ".join(item.get("source_brief_ids_checked") or [])
+              citation_maps = ", ".join(
+                  f"{brief_id}:{count}" for brief_id, count in (item.get("source_citation_counts") or {}).items()
+              )
               lines.append(
-                  "| {candidate} | {snapshot} | {manifest_before} | {refs} | {resolved} | {unresolved} | {strict_export} | {public_publish} | {warnings} | {errors} |".format(
+                  "| {candidate} | {snapshot} | {source_briefs} | {citation_maps} | {manifest_before} | {refs} | {resolved} | {unresolved} | {strict_export} | {public_publish} | {warnings} | {errors} |".format(
                       candidate=item.get("candidate_id") or "",
                       snapshot=item.get("snapshot_id") or "",
+                      source_briefs=source_briefs,
+                      citation_maps=citation_maps,
                       manifest_before=item.get("manifest_found_before"),
                       refs=item.get("citation_ref_count"),
                       resolved=item.get("resolved_reference_count"),

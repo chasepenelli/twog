@@ -6438,6 +6438,12 @@ def _compile_public_candidate_proof(
     )
     manifest_found_before = repository.get_run_manifest(run_manifest_id) is not None
     citation_refs = _compiled_public_candidate_citation_refs(candidate, snapshot)
+    source_brief_ids_checked = (
+        _public_candidate_source_brief_ids(therapy_idea, candidate, snapshot, citation_refs)
+        if therapy_idea is not None
+        else _dedupe_uuid_refs([candidate.source_brief_id])
+    )
+    source_citation_counts = _public_candidate_source_citation_counts(repository, source_brief_ids_checked)
     literature = _compiled_public_candidate_literature(
         repository=repository,
         candidate=candidate,
@@ -6576,6 +6582,8 @@ def _compile_public_candidate_proof(
         candidate_found=True,
         latest_snapshot_found=True,
         therapy_idea_found=therapy_idea_found,
+        source_brief_ids_checked=source_brief_ids_checked,
+        source_citation_counts=source_citation_counts,
         manifest_found_before=manifest_found_before,
         manifest_written=request.persist,
         candidate_updated=request.persist,
@@ -7702,6 +7710,17 @@ def _public_candidate_source_brief_ids(
         if explicit:
             values.append(explicit[0])
     return _dedupe_uuid_refs(values)
+
+
+def _public_candidate_source_citation_counts(
+    repository: ResearchRepository,
+    source_brief_ids: list[UUID],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for source_brief_id in source_brief_ids:
+        brief = repository.get_research_brief(source_brief_id)
+        counts[str(source_brief_id)] = len(_citation_map_for_brief(brief)) if brief is not None else 0
+    return counts
 
 
 def _public_candidate_literature_record(
