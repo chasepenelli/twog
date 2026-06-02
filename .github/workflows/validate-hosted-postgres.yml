@@ -220,6 +220,36 @@ jobs:
                   )
               )
 
+          if items:
+              lines.extend(["", "#### Lineage diagnostics"])
+              for item in items[:10]:
+                  diagnostics = item.get("lineage_diagnostics") or {}
+                  lines.append(f"- `{item.get('candidate_id') or ''}`")
+                  for section_name in ("candidate", "therapy_idea", "snapshot"):
+                      section = diagnostics.get(section_name)
+                      if not isinstance(section, dict):
+                          lines.append(f"  - `{section_name}`: none")
+                          continue
+                      direct_ids = {
+                          key: value
+                          for key, value in section.items()
+                          if key.endswith("_id") and value
+                      }
+                      keys = section.get("metadata_keys") or section.get("reproducibility_keys") or []
+                      uuid_refs = section.get("metadata_uuid_refs") or section.get("reproducibility_uuid_refs") or []
+                      lines.append(
+                          "  - `{section}` ids=`{ids}` keys=`{keys}` uuid_refs=`{uuid_refs}`".format(
+                              section=section_name,
+                              ids=json.dumps(direct_ids, sort_keys=True),
+                              keys=", ".join(str(key) for key in keys[:12]),
+                              uuid_refs=json.dumps(uuid_refs[:8], sort_keys=True),
+                          )
+                      )
+                  snapshot = diagnostics.get("snapshot") if isinstance(diagnostics.get("snapshot"), dict) else {}
+                  durable_refs = snapshot.get("durable_source_refs") if isinstance(snapshot, dict) else []
+                  if durable_refs:
+                      lines.append(f"  - `snapshot.durable_source_refs`: `{json.dumps(durable_refs[:8])}`")
+
           report_errors = report.get("errors") or []
           if report_errors:
               lines.extend(["", "#### Report errors"])

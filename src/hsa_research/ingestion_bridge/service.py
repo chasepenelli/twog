@@ -6444,6 +6444,11 @@ def _compile_public_candidate_proof(
         else _dedupe_uuid_refs([candidate.source_brief_id])
     )
     source_citation_counts = _public_candidate_source_citation_counts(repository, source_brief_ids_checked)
+    lineage_diagnostics = _public_candidate_lineage_diagnostics(
+        therapy_idea=therapy_idea,
+        candidate=candidate,
+        snapshot=snapshot,
+    )
     literature = _compiled_public_candidate_literature(
         repository=repository,
         candidate=candidate,
@@ -6557,6 +6562,8 @@ def _compile_public_candidate_proof(
     warnings: list[str] = []
     if unresolved_reference_ids:
         warnings.append(f"unresolved_references:{len(unresolved_reference_ids)}")
+    if citation_refs and not source_brief_ids_checked:
+        warnings.append("source_lineage_missing")
     if compiled_candidate.visibility != "public":
         warnings.append(f"candidate_visibility_not_public:{compiled_candidate.visibility}")
     if compiled_snapshot.public_status == "draft":
@@ -6584,6 +6591,7 @@ def _compile_public_candidate_proof(
         therapy_idea_found=therapy_idea_found,
         source_brief_ids_checked=source_brief_ids_checked,
         source_citation_counts=source_citation_counts,
+        lineage_diagnostics=lineage_diagnostics,
         manifest_found_before=manifest_found_before,
         manifest_written=request.persist,
         candidate_updated=request.persist,
@@ -7734,6 +7742,126 @@ def _public_candidate_source_citation_counts(
         brief = repository.get_research_brief(source_brief_id)
         counts[str(source_brief_id)] = len(_citation_map_for_brief(brief)) if brief is not None else 0
     return counts
+
+
+def _public_candidate_lineage_diagnostics(
+    *,
+    therapy_idea: TherapyIdeaRecord | None,
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+) -> dict[str, Any]:
+    payload = snapshot.payload if isinstance(snapshot.payload, dict) else {}
+    reproducibility = payload.get("reproducibility") if isinstance(payload.get("reproducibility"), dict) else {}
+    diagnostics: dict[str, Any] = {
+        "candidate": {
+            "source_program_id": _string_or_none(candidate.source_program_id),
+            "source_brief_id": _string_or_none(candidate.source_brief_id),
+            "source_evaluation_id": _string_or_none(candidate.source_evaluation_id),
+            "committee_run_id": _string_or_none(candidate.committee_run_id),
+            "primary_compute_job_id": _string_or_none(candidate.primary_compute_job_id),
+            "metadata_keys": _compact_key_paths(candidate.metadata, prefix="metadata"),
+            "metadata_uuid_refs": _uuid_ref_paths(candidate.metadata, prefix="metadata"),
+        },
+        "snapshot": {
+            "source_ref_count": len(snapshot.source_refs),
+            "citation_ref_count": len(snapshot.citation_refs),
+            "method_ref_count": len(snapshot.method_refs),
+            "compute_job_count": len(snapshot.compute_job_ids),
+            "metadata_keys": _compact_key_paths(snapshot.metadata, prefix="metadata"),
+            "metadata_uuid_refs": _uuid_ref_paths(snapshot.metadata, prefix="metadata"),
+            "payload_keys": sorted(str(key) for key in payload.keys())[:50],
+            "reproducibility_keys": _compact_key_paths(reproducibility, prefix="reproducibility"),
+            "reproducibility_uuid_refs": _uuid_ref_paths(reproducibility, prefix="reproducibility"),
+            "durable_source_refs": _durable_source_refs(snapshot.source_refs),
+        },
+    }
+    if therapy_idea is not None:
+        diagnostics["therapy_idea"] = {
+            "source_program_id": _string_or_none(therapy_idea.source_program_id),
+            "source_brief_id": _string_or_none(therapy_idea.source_brief_id),
+            "source_evaluation_id": _string_or_none(therapy_idea.source_evaluation_id),
+            "committee_run_id": _string_or_none(therapy_idea.committee_run_id),
+            "agent_run_id": _string_or_none(therapy_idea.agent_run_id),
+            "source_key": therapy_idea.source_key,
+            "metadata_keys": _compact_key_paths(therapy_idea.metadata, prefix="metadata"),
+            "metadata_uuid_refs": _uuid_ref_paths(therapy_idea.metadata, prefix="metadata"),
+            "promotion_metadata_keys": _compact_key_paths(
+                therapy_idea.promotion_metadata,
+                prefix="promotion_metadata",
+            ),
+            "promotion_metadata_uuid_refs": _uuid_ref_paths(
+                therapy_idea.promotion_metadata,
+                prefix="promotion_metadata",
+            ),
+        }
+    else:
+        diagnostics["therapy_idea"] = None
+    return diagnostics
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _compact_key_paths(value: Any, *, prefix: str, max_paths: int = 50, max_depth: int = 4) -> list[str]:
+    paths: list[str] = []
+
+    def visit(item: Any, path: str, depth: int) -> None:
+        if len(paths) >= max_paths or depth > max_depth:
+            return
+        if isinstance(item, dict):
+            for key in sorted(item.keys(), key=str):
+                child_path = f"{path}.{key}"
+                paths.append(child_path)
+                if len(paths) >= max_paths:
+                    return
+                visit(item[key], child_path, depth + 1)
+        elif isinstance(item, list):
+            for index, child in enumerate(item[:5]):
+                child_path = f"{path}[{index}]"
+                paths.append(child_path)
+                if len(paths) >= max_paths:
+                    return
+                visit(child, child_path, depth + 1)
+
+    visit(value, prefix, 0)
+    return paths
+
+
+def _uuid_ref_paths(value: Any, *, prefix: str, max_refs: int = 50, max_depth: int = 5) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+
+    def visit(item: Any, path: str, depth: int) -> None:
+        if len(refs) >= max_refs or depth > max_depth:
+            return
+        uuid_value = _uuid_from_any(item)
+        if uuid_value is not None:
+            refs.append({"path": path, "value": str(uuid_value)})
+            return
+        if isinstance(item, dict):
+            for key in sorted(item.keys(), key=str):
+                visit(item[key], f"{path}.{key}", depth + 1)
+                if len(refs) >= max_refs:
+                    return
+        elif isinstance(item, list):
+            for index, child in enumerate(item[:25]):
+                visit(child, f"{path}[{index}]", depth + 1)
+                if len(refs) >= max_refs:
+                    return
+
+    visit(value, prefix, 0)
+    return refs
+
+
+def _durable_source_refs(source_refs: list[str]) -> list[str]:
+    durable_refs: list[str] = []
+    for ref in source_refs:
+        normalized = _normalize_evidence_ref(ref)
+        if _explicit_brief_citation_ref(normalized) or _DURABLE_EVIDENCE_REF_PATTERN.match(ref.strip()):
+            durable_refs.append(ref)
+    return durable_refs[:25]
 
 
 def _public_candidate_literature_record(

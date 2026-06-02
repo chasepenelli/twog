@@ -5595,6 +5595,7 @@ class PublicCandidateProofCompileItem(StrictBaseModel):
     therapy_idea_found: bool | None = None
     source_brief_ids_checked: list[UUID] = Field(default_factory=list, max_length=25)
     source_citation_counts: dict[str, int] = Field(default_factory=dict)
+    lineage_diagnostics: dict[str, Any] = Field(default_factory=dict)
     manifest_found_before: bool = False
     manifest_written: bool = False
     candidate_updated: bool = False
