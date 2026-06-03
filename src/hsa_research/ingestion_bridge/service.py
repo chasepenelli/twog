@@ -87,6 +87,9 @@ from .contracts import (
     PublicCandidateProofCompileItem,
     PublicCandidateProofCompileRequest,
     PublicCandidateProofCompileResult,
+    PublicCandidateProofRepairItem,
+    PublicCandidateProofRepairRequest,
+    PublicCandidateProofRepairResult,
     PublicCandidateRecord,
     PublicCandidateSnapshot,
     PublicCandidateSnapshotResult,
@@ -1547,6 +1550,15 @@ class HSAResearchService:
         return _compile_public_candidate_proofs(
             self.repository,
             request or PublicCandidateProofCompileRequest(),
+        )
+
+    def repair_public_candidate_proof_lineage(
+        self,
+        request: PublicCandidateProofRepairRequest | None = None,
+    ) -> PublicCandidateProofRepairResult:
+        return _repair_public_candidate_proof_lineage(
+            self.repository,
+            request or PublicCandidateProofRepairRequest(),
         )
 
     def build_evidence_ref_repair_report(
@@ -6616,6 +6628,283 @@ def _compile_public_candidate_proof(
         strict_export_ready_after_compile=strict_export_ready,
         public_publish_ready_after_compile=public_publish_ready,
         warnings=warnings,
+    )
+
+
+def _repair_public_candidate_proof_lineage(
+    repository: ResearchRepository,
+    request: PublicCandidateProofRepairRequest,
+) -> PublicCandidateProofRepairResult:
+    if request.candidate_ids:
+        candidate_ids = list(request.candidate_ids)
+    else:
+        candidate_ids = [
+            candidate.candidate_id
+            for candidate in repository.list_public_candidates(
+                PublicCandidateLibraryRequest(visibility=request.visibility, limit=request.limit)
+            )
+        ]
+
+    items: list[PublicCandidateProofRepairItem] = []
+    errors: list[str] = []
+    for candidate_id in candidate_ids[: request.limit]:
+        try:
+            items.append(_repair_public_candidate_proof_lineage_item(repository, candidate_id, request))
+        except Exception as exc:
+            errors.append(f"{candidate_id}: {exc}")
+            items.append(
+                PublicCandidateProofRepairItem(
+                    candidate_id=candidate_id,
+                    errors=[f"proof_repair_failed:{exc}"],
+                )
+            )
+
+    return PublicCandidateProofRepairResult(
+        repository_type=type(repository).__name__,
+        persist=request.persist,
+        candidate_count=len(candidate_ids[: request.limit]),
+        repaired_count=sum(1 for item in items if item.candidate_updated or item.snapshot_updated),
+        would_update_count=sum(1 for item in items if item.would_update),
+        unresolved_candidate_count=sum(1 for item in items if item.after_unresolved_reference_count > 0),
+        items=items,
+        errors=errors,
+    )
+
+
+def _repair_public_candidate_proof_lineage_item(
+    repository: ResearchRepository,
+    candidate_id: str,
+    request: PublicCandidateProofRepairRequest,
+) -> PublicCandidateProofRepairItem:
+    candidate = repository.get_public_candidate(candidate_id)
+    if candidate is None:
+        return PublicCandidateProofRepairItem(candidate_id=candidate_id, errors=["public_candidate_missing"])
+
+    snapshot = _latest_public_candidate_snapshot(repository, candidate)
+    if snapshot is None:
+        return PublicCandidateProofRepairItem(
+            candidate_id=candidate_id,
+            therapy_idea_id=candidate.therapy_idea_id,
+            candidate_found=True,
+            therapy_idea_found=_therapy_idea_found(repository, candidate.therapy_idea_id),
+            errors=["latest_snapshot_missing"],
+        )
+
+    therapy_idea = repository.get_therapy_idea(candidate.therapy_idea_id) if candidate.therapy_idea_id else None
+    therapy_idea_found = _therapy_idea_found(repository, candidate.therapy_idea_id)
+    before = _compile_public_candidate_proof(
+        repository,
+        candidate_id,
+        PublicCandidateProofCompileRequest(
+            pipeline_version=request.pipeline_version,
+            commit_sha=request.commit_sha,
+            metadata=request.metadata,
+        ),
+    )
+    citation_refs = _compiled_public_candidate_citation_refs(candidate, snapshot)
+    lineage_diagnostics = _public_candidate_lineage_diagnostics(
+        repository=repository,
+        therapy_idea=therapy_idea,
+        candidate=candidate,
+        snapshot=snapshot,
+    )
+    current_source_brief_ids = (
+        _public_candidate_source_brief_ids(repository, therapy_idea, candidate, snapshot, citation_refs)
+        if therapy_idea is not None
+        else _dedupe_uuid_refs([candidate.source_brief_id])
+    )
+
+    proposed_source_brief_id = request.source_brief_id
+    proposed_source_evaluation_id = request.source_evaluation_id
+    warnings: list[str] = []
+    errors: list[str] = []
+    if proposed_source_evaluation_id is not None:
+        evaluation = repository.get_research_brief_evaluation(proposed_source_evaluation_id)
+        if evaluation is None:
+            errors.append(f"source_evaluation_missing:{proposed_source_evaluation_id}")
+        else:
+            if proposed_source_brief_id is None:
+                proposed_source_brief_id = evaluation.brief_id
+            elif proposed_source_brief_id != evaluation.brief_id:
+                warnings.append(
+                    f"source_evaluation_brief_mismatch:{proposed_source_evaluation_id}:{evaluation.brief_id}"
+                )
+    if proposed_source_brief_id is not None and repository.get_research_brief(proposed_source_brief_id) is None:
+        errors.append(f"source_brief_missing:{proposed_source_brief_id}")
+
+    proposed_candidate = candidate
+    proposed_snapshot = snapshot
+    if not errors and (proposed_source_brief_id is not None or proposed_source_evaluation_id is not None):
+        proposed_candidate, proposed_snapshot = _public_candidate_with_repaired_source_lineage(
+            candidate=candidate,
+            snapshot=snapshot,
+            source_brief_id=proposed_source_brief_id,
+            source_evaluation_id=proposed_source_evaluation_id,
+            metadata=request.metadata,
+            persist=request.persist,
+        )
+    elif not errors:
+        warnings.append("repair_source_not_supplied")
+
+    proposed_source_brief_ids = (
+        _public_candidate_source_brief_ids(repository, therapy_idea, proposed_candidate, proposed_snapshot, citation_refs)
+        if therapy_idea is not None
+        else _dedupe_uuid_refs([proposed_candidate.source_brief_id])
+    )
+    validation_decisions = (
+        repository.list_validation_decisions(therapy_idea_id=therapy_idea.therapy_idea_id, limit=25)
+        if therapy_idea is not None
+        else []
+    )
+    proposed_literature = _compiled_public_candidate_literature(
+        repository=repository,
+        candidate=proposed_candidate,
+        snapshot=proposed_snapshot,
+        therapy_idea=therapy_idea,
+        validation_decisions=validation_decisions,
+        citation_refs=citation_refs,
+    )
+    proposed_payload = dict(proposed_snapshot.payload)
+    if proposed_literature:
+        proposed_payload["literature"] = proposed_literature
+    proposed_snapshot = proposed_snapshot.model_copy(update={"payload": proposed_payload})
+    after_unresolved_ids = _public_candidate_integrity_unresolved_refs(proposed_snapshot)
+    after_resolved_count = sum(
+        1 for item in proposed_literature if isinstance(item, dict) and item.get("resolved") is True
+    )
+    if proposed_source_brief_ids and after_resolved_count <= before.resolved_reference_count:
+        warnings.append("repair_does_not_increase_resolved_refs")
+
+    would_update = bool(
+        not errors
+        and (proposed_source_brief_id is not None or proposed_source_evaluation_id is not None)
+        and (
+            proposed_candidate != candidate
+            or proposed_snapshot.source_refs != snapshot.source_refs
+            or proposed_snapshot.metadata != snapshot.metadata
+            or proposed_snapshot.payload != snapshot.payload
+        )
+    )
+    candidate_updated = False
+    snapshot_updated = False
+    manifest_written = False
+    decision_event_id: UUID | None = None
+    if request.persist and would_update:
+        repository.upsert_public_candidate(proposed_candidate)
+        repository.upsert_public_candidate_snapshot(proposed_snapshot)
+        compiled = _compile_public_candidate_proof(
+            repository,
+            candidate_id,
+            PublicCandidateProofCompileRequest(
+                pipeline_version=request.pipeline_version,
+                commit_sha=request.commit_sha,
+                persist=True,
+                metadata={
+                    **request.metadata,
+                    "proof_lineage_repair_applied": True,
+                },
+            ),
+        )
+        candidate_updated = compiled.candidate_updated
+        snapshot_updated = compiled.snapshot_updated
+        manifest_written = compiled.manifest_written
+        decision_event_id = compiled.decision_event_id
+        after_unresolved_ids = compiled.unresolved_reference_ids
+        after_resolved_count = compiled.resolved_reference_count
+        proposed_source_brief_ids = compiled.source_brief_ids_checked
+
+    return PublicCandidateProofRepairItem(
+        candidate_id=candidate.candidate_id,
+        snapshot_id=snapshot.snapshot_id,
+        therapy_idea_id=candidate.therapy_idea_id,
+        candidate_found=True,
+        latest_snapshot_found=True,
+        therapy_idea_found=therapy_idea_found,
+        current_source_brief_ids=current_source_brief_ids,
+        proposed_source_brief_ids=proposed_source_brief_ids,
+        source_citation_counts=_public_candidate_source_citation_counts(repository, proposed_source_brief_ids),
+        current_source_refs=snapshot.source_refs,
+        proposed_source_refs=proposed_snapshot.source_refs,
+        citation_ref_count=len(citation_refs),
+        before_resolved_reference_count=before.resolved_reference_count,
+        before_unresolved_reference_count=before.unresolved_reference_count,
+        before_unresolved_reference_ids=before.unresolved_reference_ids,
+        after_resolved_reference_count=after_resolved_count,
+        after_unresolved_reference_count=len(after_unresolved_ids),
+        after_unresolved_reference_ids=after_unresolved_ids,
+        would_update=would_update,
+        candidate_updated=candidate_updated,
+        snapshot_updated=snapshot_updated,
+        manifest_written=manifest_written,
+        decision_event_id=decision_event_id,
+        lineage_diagnostics=lineage_diagnostics,
+        warnings=warnings,
+        errors=errors,
+    )
+
+
+def _public_candidate_with_repaired_source_lineage(
+    *,
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+    source_brief_id: UUID | None,
+    source_evaluation_id: UUID | None,
+    metadata: dict[str, Any],
+    persist: bool,
+) -> tuple[PublicCandidateRecord, PublicCandidateSnapshot]:
+    now = datetime.now(UTC)
+    repair_metadata = {
+        "source_brief_id": str(source_brief_id) if source_brief_id else None,
+        "source_evaluation_id": str(source_evaluation_id) if source_evaluation_id else None,
+        "persist": persist,
+        "requested_at": now.isoformat(),
+    }
+    candidate_metadata = {
+        **candidate.metadata,
+        **metadata,
+        "source_brief_id": str(source_brief_id) if source_brief_id else candidate.metadata.get("source_brief_id"),
+        "source_evaluation_id": str(source_evaluation_id)
+        if source_evaluation_id
+        else candidate.metadata.get("source_evaluation_id"),
+        "proof_lineage_repair": repair_metadata,
+    }
+    payload = dict(snapshot.payload)
+    reproducibility = dict(payload.get("reproducibility") or {})
+    if source_brief_id is not None:
+        reproducibility["source_brief_id"] = str(source_brief_id)
+    if source_evaluation_id is not None:
+        reproducibility["source_evaluation_id"] = str(source_evaluation_id)
+    payload["reproducibility"] = reproducibility
+    source_refs = list(snapshot.source_refs)
+    if source_brief_id is not None:
+        source_refs.append(f"research_brief:{source_brief_id}")
+    if source_evaluation_id is not None:
+        source_refs.append(f"research_brief_evaluation:{source_evaluation_id}")
+    snapshot_metadata = {
+        **snapshot.metadata,
+        **metadata,
+        "source_brief_id": str(source_brief_id) if source_brief_id else snapshot.metadata.get("source_brief_id"),
+        "source_evaluation_id": str(source_evaluation_id)
+        if source_evaluation_id
+        else snapshot.metadata.get("source_evaluation_id"),
+        "proof_lineage_repair": repair_metadata,
+    }
+    return (
+        candidate.model_copy(
+            update={
+                "source_brief_id": source_brief_id or candidate.source_brief_id,
+                "source_evaluation_id": source_evaluation_id or candidate.source_evaluation_id,
+                "updated_at": now,
+                "metadata": candidate_metadata,
+            }
+        ),
+        snapshot.model_copy(
+            update={
+                "payload": payload,
+                "source_refs": _dedupe_texts(source_refs),
+                "metadata": snapshot_metadata,
+            }
+        ),
     )
 
 

@@ -99,6 +99,7 @@ from hsa_research.ingestion_bridge.contracts import (
     PublicCandidateIntegrityReportRequest,
     PublicCandidateLibraryRequest,
     PublicCandidateProofCompileRequest,
+    PublicCandidateProofRepairRequest,
     PublicCandidateRecord,
     PublicCandidateSnapshot,
     RawSourceRecord,
@@ -1685,6 +1686,185 @@ def test_public_candidate_proof_compiler_repairs_manifest_and_resolves_citations
     assert integrity.checks[0].problems == []
     assert integrity.checks[0].unresolved_reference_ids == ["C2"]
     assert "unresolved_references:1" in integrity.checks[0].public_readiness_warnings
+
+
+def _seed_candidate_for_proof_repair(repo: InMemoryResearchRepository) -> dict[str, UUID | str]:
+    candidate_id = "twog-candidate-proof-repair"
+    therapy_idea_id = uuid4()
+    brief_id = uuid4()
+    evaluation_id = uuid4()
+    snapshot_id = uuid4()
+    chunk_id = uuid4()
+    research_object_id = uuid4()
+    repo.upsert_research_brief(
+        ResearchBriefRecord(
+            brief_id=brief_id,
+            topic="Citation proof repair",
+            final_brief="C1 and C2 support explicit public proof lineage.",
+            result_payload={
+                "citations": [
+                    {
+                        "citation_id": "C1",
+                        "chunk_id": str(chunk_id),
+                        "research_object_id": str(research_object_id),
+                        "source_key": "pubmed",
+                        "title": "Repair citation one",
+                        "source_url": "https://example.test/repair-c1",
+                        "metadata": {"identifiers": {"pmid": "111111"}},
+                    },
+                    {
+                        "citation_id": "C2",
+                        "chunk_id": str(chunk_id),
+                        "research_object_id": str(research_object_id),
+                        "source_key": "pubmed",
+                        "title": "Repair citation two",
+                        "source_url": "https://example.test/repair-c2",
+                        "metadata": {"identifiers": {"pmid": "222222"}},
+                    },
+                ]
+            },
+            citation_count=2,
+        )
+    )
+    repo.upsert_research_brief_evaluation(
+        ResearchBriefEvaluationRecord(
+            evaluation_id=evaluation_id,
+            brief_id=brief_id,
+            topic="Citation proof repair",
+            overall_score=0.92,
+            passes_quality_bar=True,
+            readiness="ready_for_hypothesis_review",
+        )
+    )
+    idea = TherapyIdea(
+        title="Citation proof repair therapy idea",
+        hypothesis="C1 and C2 support this candidate.",
+        rationale="The candidate was generated without durable source lineage.",
+        candidate_therapies=["proof repair therapy"],
+        targets=["KDR"],
+        evidence_refs=["C1", "C2"],
+        priority_score=0.91,
+    ).model_copy(update={"idea_id": therapy_idea_id})
+    repo.upsert_therapy_idea(TherapyIdeaRecord(idea=idea, status="ready_for_promotion", score=0.91))
+    repo.upsert_public_candidate(
+        PublicCandidateRecord(
+            candidate_id=candidate_id,
+            title="Citation proof repair candidate",
+            visibility="draft_public",
+            public_status="investigating",
+            therapy_idea_id=therapy_idea_id,
+            latest_snapshot_id=snapshot_id,
+            evidence_refs=["C1", "C2"],
+            content_hash="hash-proof-repair",
+        )
+    )
+    repo.upsert_public_candidate_snapshot(
+        PublicCandidateSnapshot(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate_id,
+            snapshot_version=1,
+            content_hash="hash-proof-repair",
+            title="Citation proof repair candidate",
+            public_status="investigating",
+            citation_refs=["C1", "C2"],
+            payload={
+                "literature": [
+                    {"ref": "C1", "title": "Unresolved C1", "resolved": False},
+                    {"ref": "C2", "title": "Unresolved C2", "resolved": False},
+                ],
+                "reproducibility": {},
+            },
+        )
+    )
+    return {
+        "candidate_id": candidate_id,
+        "therapy_idea_id": therapy_idea_id,
+        "brief_id": brief_id,
+        "evaluation_id": evaluation_id,
+        "snapshot_id": snapshot_id,
+    }
+
+
+def test_public_candidate_proof_repair_reports_missing_source_without_mutation():
+    repo = InMemoryResearchRepository()
+    ids = _seed_candidate_for_proof_repair(repo)
+    service = HSAResearchService(repo)
+
+    report = service.repair_public_candidate_proof_lineage(
+        PublicCandidateProofRepairRequest(candidate_ids=[ids["candidate_id"]])
+    )
+
+    item = report.items[0]
+    assert report.persist is False
+    assert item.current_source_brief_ids == []
+    assert item.proposed_source_brief_ids == []
+    assert item.before_unresolved_reference_ids == ["C1", "C2"]
+    assert item.after_unresolved_reference_ids == ["C1", "C2"]
+    assert item.would_update is False
+    assert "repair_source_not_supplied" in item.warnings
+    assert repo.get_public_candidate(ids["candidate_id"]).source_brief_id is None
+
+
+def test_public_candidate_proof_repair_previews_explicit_source_brief_resolution():
+    repo = InMemoryResearchRepository()
+    ids = _seed_candidate_for_proof_repair(repo)
+    service = HSAResearchService(repo)
+
+    report = service.repair_public_candidate_proof_lineage(
+        PublicCandidateProofRepairRequest(
+            candidate_ids=[ids["candidate_id"]],
+            source_brief_id=ids["brief_id"],
+        )
+    )
+
+    item = report.items[0]
+    assert report.persist is False
+    assert item.current_source_brief_ids == []
+    assert item.proposed_source_brief_ids == [ids["brief_id"]]
+    assert item.source_citation_counts[str(ids["brief_id"])] == 2
+    assert item.before_unresolved_reference_ids == ["C1", "C2"]
+    assert item.after_unresolved_reference_ids == []
+    assert item.after_resolved_reference_count == 2
+    assert item.would_update is True
+    assert f"research_brief:{ids['brief_id']}" in item.proposed_source_refs
+    assert repo.get_public_candidate(ids["candidate_id"]).source_brief_id is None
+
+
+def test_public_candidate_proof_repair_persists_source_evaluation_and_compiles():
+    repo = InMemoryResearchRepository()
+    ids = _seed_candidate_for_proof_repair(repo)
+    service = HSAResearchService(repo)
+
+    report = service.repair_public_candidate_proof_lineage(
+        PublicCandidateProofRepairRequest(
+            candidate_ids=[ids["candidate_id"]],
+            source_evaluation_id=ids["evaluation_id"],
+            pipeline_version="proof-repair-test",
+            commit_sha="abc123",
+            persist=True,
+        )
+    )
+
+    item = report.items[0]
+    assert report.persist is True
+    assert report.repaired_count == 1
+    assert item.candidate_updated is True
+    assert item.snapshot_updated is True
+    assert item.manifest_written is True
+    assert item.proposed_source_brief_ids == [ids["brief_id"]]
+    assert item.after_unresolved_reference_ids == []
+    stored_candidate = repo.get_public_candidate(ids["candidate_id"])
+    stored_snapshot = repo.get_public_candidate_snapshot(ids["snapshot_id"])
+    assert stored_candidate.source_brief_id == ids["brief_id"]
+    assert stored_candidate.source_evaluation_id == ids["evaluation_id"]
+    assert stored_candidate.metadata["proof_lineage_repair"]["source_brief_id"] == str(ids["brief_id"])
+    assert stored_snapshot.payload["literature"][0]["resolved"] is True
+    assert stored_snapshot.payload["literature"][0]["identifiers"]["pmid"] == "111111"
+    assert stored_snapshot.payload["reproducibility"]["source_brief_id"] == str(ids["brief_id"])
+    assert stored_snapshot.payload["reproducibility"]["source_evaluation_id"] == str(ids["evaluation_id"])
+    assert repo.get_run_manifest(UUID(stored_snapshot.payload["reproducibility"]["run_manifest_id"])) is not None
+    events = repo.list_public_candidate_decision_events(candidate_id=ids["candidate_id"])
+    assert events[-1].event_id == item.decision_event_id
 
 
 def test_public_candidate_proof_compiler_uses_candidate_source_brief_for_citations():

@@ -12,6 +12,7 @@ on:
           - "structured_source"
           - "public_candidate_integrity"
           - "public_candidate_proof_compile"
+          - "public_candidate_proof_repair"
       source:
         description: "Structured source key to run"
         required: true
@@ -30,6 +31,14 @@ on:
         default: "hosted-proof-compile-preview"
       commit_sha:
         description: "Optional commit SHA to attach during proof compile preview"
+        required: false
+        default: ""
+      source_brief_id:
+        description: "Optional source brief ID for public candidate proof repair preview"
+        required: false
+        default: ""
+      source_evaluation_id:
+        description: "Optional source evaluation ID for public candidate proof repair preview"
         required: false
         default: ""
       limit:
@@ -51,6 +60,8 @@ jobs:
       VISIBILITY: ${{ inputs.visibility }}
       PIPELINE_VERSION: ${{ inputs.pipeline_version }}
       COMMIT_SHA: ${{ inputs.commit_sha }}
+      SOURCE_BRIEF_ID: ${{ inputs.source_brief_id }}
+      SOURCE_EVALUATION_ID: ${{ inputs.source_evaluation_id }}
       LIMIT: ${{ inputs.limit }}
 
     steps:
@@ -113,6 +124,28 @@ jobs:
               fi
               uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-proof-compile.json
               ;;
+            public_candidate_proof_repair)
+              args=(public-candidate-proof-repair --limit "$LIMIT")
+              if [ -n "$CANDIDATE_ID" ]; then
+                args+=(--candidate-id "$CANDIDATE_ID")
+              fi
+              if [ -n "$VISIBILITY" ]; then
+                args+=(--visibility "$VISIBILITY")
+              fi
+              if [ -n "$SOURCE_BRIEF_ID" ]; then
+                args+=(--source-brief-id "$SOURCE_BRIEF_ID")
+              fi
+              if [ -n "$SOURCE_EVALUATION_ID" ]; then
+                args+=(--source-evaluation-id "$SOURCE_EVALUATION_ID")
+              fi
+              if [ -n "$PIPELINE_VERSION" ]; then
+                args+=(--pipeline-version "$PIPELINE_VERSION")
+              fi
+              if [ -n "$COMMIT_SHA" ]; then
+                args+=(--commit-sha "$COMMIT_SHA")
+              fi
+              uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-proof-repair.json
+              ;;
             *)
               echo "::error::Unsupported hosted validation mode: $MODE"
               exit 1
@@ -163,6 +196,67 @@ jobs:
                       problems=problems.replace("|", "\\|"),
                   )
               )
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
+          PY
+        shell: bash
+
+      - name: Write public candidate proof repair summary
+        if: ${{ always() && inputs.mode == 'public_candidate_proof_repair' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output_path = Path("/tmp/public-candidate-proof-repair.json")
+          if not output_path.exists():
+              raise SystemExit("No public candidate proof repair output was produced.")
+
+          report = json.loads(output_path.read_text())
+          items = report.get("items") or []
+          lines = [
+              "### Public candidate proof repair",
+              f"- Repository type: `{report.get('repository_type')}`",
+              f"- Persisted writes: `{report.get('persist')}`",
+              f"- Candidate count: `{report.get('candidate_count')}`",
+              f"- Would update count: `{report.get('would_update_count')}`",
+              f"- Repaired count: `{report.get('repaired_count')}`",
+              f"- Candidates still unresolved: `{report.get('unresolved_candidate_count')}`",
+              "",
+              "| Candidate | Snapshot | Current briefs | Proposed briefs | Citation maps | Refs | Before unresolved | After unresolved | Would update | Warnings | Errors |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+          ]
+          for item in items[:25]:
+              warnings = ", ".join(item.get("warnings") or [])
+              errors = ", ".join(item.get("errors") or [])
+              current_briefs = ", ".join(item.get("current_source_brief_ids") or [])
+              proposed_briefs = ", ".join(item.get("proposed_source_brief_ids") or [])
+              citation_maps = ", ".join(
+                  f"{brief_id}:{count}" for brief_id, count in (item.get("source_citation_counts") or {}).items()
+              )
+              before_unresolved = ", ".join(item.get("before_unresolved_reference_ids") or [])
+              after_unresolved = ", ".join(item.get("after_unresolved_reference_ids") or [])
+              lines.append(
+                  "| {candidate} | {snapshot} | {current_briefs} | {proposed_briefs} | {citation_maps} | {refs} | {before_unresolved} | {after_unresolved} | {would_update} | {warnings} | {errors} |".format(
+                      candidate=item.get("candidate_id") or "",
+                      snapshot=item.get("snapshot_id") or "",
+                      current_briefs=current_briefs,
+                      proposed_briefs=proposed_briefs,
+                      citation_maps=citation_maps,
+                      refs=item.get("citation_ref_count"),
+                      before_unresolved=before_unresolved.replace("|", "\\|"),
+                      after_unresolved=after_unresolved.replace("|", "\\|"),
+                      would_update=item.get("would_update"),
+                      warnings=warnings.replace("|", "\\|"),
+                      errors=errors.replace("|", "\\|"),
+                  )
+              )
+
+          report_errors = report.get("errors") or []
+          if report_errors:
+              lines.extend(["", "#### Report errors"])
+              lines.extend(f"- `{str(error).replace('`', '')}`" for error in report_errors[:25])
 
           Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
           PY

@@ -48,6 +48,7 @@ from .contracts import (
     PublicCandidateIntegrityReportRequest,
     PublicCandidateLibraryRequest,
     PublicCandidateProofCompileRequest,
+    PublicCandidateProofRepairRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
     ResearchBriefOperatorDocRequest,
@@ -864,6 +865,40 @@ def main() -> None:
         "--apply",
         action="store_true",
         help="Persist compiled candidate, snapshot, manifest, and decision receipt",
+    )
+
+    public_candidate_proof_repair = subparsers.add_parser(
+        "public-candidate-proof-repair",
+        help="Preview or apply explicit source lineage repair for public candidate citation proofs",
+    )
+    public_candidate_proof_repair.add_argument(
+        "--candidate-id",
+        action="append",
+        default=[],
+        help="Candidate ID to repair; repeatable",
+    )
+    public_candidate_proof_repair.add_argument("--visibility", default=None, help="Optional visibility sample filter")
+    public_candidate_proof_repair.add_argument("--limit", type=int, default=100, help="Maximum sampled records")
+    public_candidate_proof_repair.add_argument(
+        "--source-brief-id",
+        default=None,
+        help="Explicit source research brief ID to attach",
+    )
+    public_candidate_proof_repair.add_argument(
+        "--source-evaluation-id",
+        default=None,
+        help="Explicit source brief evaluation ID to attach; resolves to its brief ID",
+    )
+    public_candidate_proof_repair.add_argument(
+        "--pipeline-version",
+        default=None,
+        help="Pipeline/methodology version to attach if repair is applied",
+    )
+    public_candidate_proof_repair.add_argument("--commit-sha", default=None, help="Code commit SHA to attach")
+    public_candidate_proof_repair.add_argument(
+        "--apply",
+        action="store_true",
+        help="Persist explicit source lineage repair and rerun proof compile",
     )
 
     hypothesis_promotion = subparsers.add_parser(
@@ -2854,6 +2889,19 @@ def main() -> None:
                 candidate_ids=args.candidate_id,
                 visibility=args.visibility,
                 limit=args.limit,
+                pipeline_version=args.pipeline_version,
+                commit_sha=args.commit_sha,
+                persist=args.apply,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "public-candidate-proof-repair":
+        output = HSAResearchService(repo).repair_public_candidate_proof_lineage(
+            PublicCandidateProofRepairRequest(
+                candidate_ids=args.candidate_id,
+                visibility=args.visibility,
+                limit=args.limit,
+                source_brief_id=UUID(args.source_brief_id) if args.source_brief_id else None,
+                source_evaluation_id=UUID(args.source_evaluation_id) if args.source_evaluation_id else None,
                 pipeline_version=args.pipeline_version,
                 commit_sha=args.commit_sha,
                 persist=args.apply,
