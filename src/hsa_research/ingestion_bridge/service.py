@@ -84,6 +84,19 @@ from .contracts import (
     PublicCandidateIntegrityReportResult,
     PublicCandidateLibraryRequest,
     PublicCandidateLibraryResult,
+    PublicCandidateProofCompileItem,
+    PublicCandidateProofCompileRequest,
+    PublicCandidateProofCompileResult,
+    PublicCandidateProofLineageSearchItem,
+    PublicCandidateProofLineageSearchMatch,
+    PublicCandidateProofLineageSearchRequest,
+    PublicCandidateProofLineageSearchResult,
+    PublicCandidateProofRepairItem,
+    PublicCandidateProofRepairRequest,
+    PublicCandidateProofRepairResult,
+    PublicCandidateProofStewardItem,
+    PublicCandidateProofStewardRequest,
+    PublicCandidateProofStewardResult,
     PublicCandidateRecord,
     PublicCandidateSnapshot,
     PublicCandidateSnapshotResult,
@@ -1535,6 +1548,42 @@ class HSAResearchService:
         return _build_public_candidate_integrity_report(
             self.repository,
             request or PublicCandidateIntegrityReportRequest(),
+        )
+
+    def compile_public_candidate_proofs(
+        self,
+        request: PublicCandidateProofCompileRequest | None = None,
+    ) -> PublicCandidateProofCompileResult:
+        return _compile_public_candidate_proofs(
+            self.repository,
+            request or PublicCandidateProofCompileRequest(),
+        )
+
+    def repair_public_candidate_proof_lineage(
+        self,
+        request: PublicCandidateProofRepairRequest | None = None,
+    ) -> PublicCandidateProofRepairResult:
+        return _repair_public_candidate_proof_lineage(
+            self.repository,
+            request or PublicCandidateProofRepairRequest(),
+        )
+
+    def search_public_candidate_proof_lineage(
+        self,
+        request: PublicCandidateProofLineageSearchRequest | None = None,
+    ) -> PublicCandidateProofLineageSearchResult:
+        return _search_public_candidate_proof_lineage(
+            self.repository,
+            request or PublicCandidateProofLineageSearchRequest(),
+        )
+
+    def review_public_candidate_proof_steward(
+        self,
+        request: PublicCandidateProofStewardRequest | None = None,
+    ) -> PublicCandidateProofStewardResult:
+        return _review_public_candidate_proof_steward(
+            self.repository,
+            request or PublicCandidateProofStewardRequest(),
         )
 
     def build_evidence_ref_repair_report(
@@ -5684,12 +5733,14 @@ class HSAResearchService:
         agent_name: str | None = None,
         status: str | None = None,
         source_key: str | None = None,
+        dagster_run_id: str | None = None,
         limit: int = 50,
     ) -> list[AgentRunRecord]:
         return self.repository.list_agent_runs(
             agent_name=agent_name,
             status=status,
             source_key=source_key,
+            dagster_run_id=dagster_run_id,
             limit=limit,
         )
 
@@ -6351,6 +6402,1203 @@ def _build_public_candidate_integrity_report(
     )
 
 
+def _compile_public_candidate_proofs(
+    repository: ResearchRepository,
+    request: PublicCandidateProofCompileRequest,
+) -> PublicCandidateProofCompileResult:
+    if request.candidate_ids:
+        candidate_ids = list(request.candidate_ids)
+    else:
+        candidate_ids = [
+            candidate.candidate_id
+            for candidate in repository.list_public_candidates(
+                PublicCandidateLibraryRequest(visibility=request.visibility, limit=request.limit)
+            )
+        ]
+
+    items: list[PublicCandidateProofCompileItem] = []
+    errors: list[str] = []
+    for candidate_id in candidate_ids[: request.limit]:
+        try:
+            items.append(_compile_public_candidate_proof(repository, candidate_id, request))
+        except Exception as exc:
+            errors.append(f"{candidate_id}: {exc}")
+            items.append(
+                PublicCandidateProofCompileItem(
+                    candidate_id=candidate_id,
+                    errors=[f"proof_compile_failed:{exc}"],
+                )
+            )
+
+    return PublicCandidateProofCompileResult(
+        repository_type=type(repository).__name__,
+        persist=request.persist,
+        candidate_count=len(candidate_ids[: request.limit]),
+        compiled_count=sum(1 for item in items if not item.errors and item.latest_snapshot_found),
+        manifest_written_count=sum(1 for item in items if item.manifest_written),
+        unresolved_candidate_count=sum(1 for item in items if item.unresolved_reference_count > 0),
+        strict_export_ready_count=sum(1 for item in items if item.strict_export_ready_after_compile),
+        public_publish_ready_count=sum(1 for item in items if item.public_publish_ready_after_compile),
+        items=items,
+        errors=errors,
+    )
+
+
+def _compile_public_candidate_proof(
+    repository: ResearchRepository,
+    candidate_id: str,
+    request: PublicCandidateProofCompileRequest,
+) -> PublicCandidateProofCompileItem:
+    candidate = repository.get_public_candidate(candidate_id)
+    if candidate is None:
+        return PublicCandidateProofCompileItem(candidate_id=candidate_id, errors=["public_candidate_missing"])
+
+    snapshot = _latest_public_candidate_snapshot(repository, candidate)
+    if snapshot is None:
+        return PublicCandidateProofCompileItem(
+            candidate_id=candidate_id,
+            candidate_found=True,
+            therapy_idea_id=candidate.therapy_idea_id,
+            therapy_idea_found=_therapy_idea_found(repository, candidate.therapy_idea_id),
+            errors=["latest_snapshot_missing"],
+        )
+
+    therapy_idea = repository.get_therapy_idea(candidate.therapy_idea_id) if candidate.therapy_idea_id else None
+    therapy_idea_found = _therapy_idea_found(repository, candidate.therapy_idea_id)
+    validation_decisions = (
+        repository.list_validation_decisions(therapy_idea_id=therapy_idea.therapy_idea_id, limit=25)
+        if therapy_idea is not None
+        else []
+    )
+    trace_id = _compiled_public_candidate_trace_id(candidate, snapshot, request)
+    run_manifest_id = _public_candidate_integrity_manifest_id(candidate, snapshot) or _run_manifest_id(
+        "public_candidate_snapshot",
+        snapshot.snapshot_id,
+    )
+    manifest_found_before = repository.get_run_manifest(run_manifest_id) is not None
+    citation_refs = _compiled_public_candidate_citation_refs(candidate, snapshot)
+    source_brief_ids_checked = (
+        _public_candidate_source_brief_ids(repository, therapy_idea, candidate, snapshot, citation_refs)
+        if therapy_idea is not None
+        else _dedupe_uuid_refs([candidate.source_brief_id])
+    )
+    source_citation_counts = _public_candidate_source_citation_counts(repository, source_brief_ids_checked)
+    if therapy_idea is not None:
+        source_citation_counts.update(
+            _public_candidate_embedded_source_citation_counts(
+                repository,
+                therapy_idea,
+                candidate,
+                snapshot,
+            )
+        )
+    lineage_diagnostics = _public_candidate_lineage_diagnostics(
+        repository=repository,
+        therapy_idea=therapy_idea,
+        candidate=candidate,
+        snapshot=snapshot,
+    )
+    literature = _compiled_public_candidate_literature(
+        repository=repository,
+        candidate=candidate,
+        snapshot=snapshot,
+        therapy_idea=therapy_idea,
+        validation_decisions=validation_decisions,
+        citation_refs=citation_refs,
+    )
+    resolved_count = sum(1 for item in literature if isinstance(item, dict) and item.get("resolved") is True)
+
+    payload = dict(snapshot.payload)
+    if literature:
+        payload["literature"] = literature
+    reproducibility = dict(payload.get("reproducibility") or {})
+    pipeline_version = request.pipeline_version or snapshot.pipeline_version or reproducibility.get("pipeline_version")
+    commit_sha = request.commit_sha or snapshot.commit_sha or reproducibility.get("commit_sha")
+    reproducibility.update(
+        {
+            "trace_id": str(trace_id),
+            "run_manifest_id": str(run_manifest_id),
+            "pipeline_version": pipeline_version,
+            "commit_sha": commit_sha,
+        }
+    )
+    payload["reproducibility"] = reproducibility
+
+    now = datetime.now(UTC)
+    unresolved_reference_ids = _public_candidate_integrity_unresolved_refs(
+        snapshot.model_copy(update={"payload": payload})
+    )
+    proof_metadata = {
+        "compiler": "public_candidate_proof_compiler_v1",
+        "compiled_at": now.isoformat(),
+        "resolved_reference_count": resolved_count,
+        "unresolved_reference_ids": unresolved_reference_ids,
+        "content_hash_preserved": True,
+    }
+    snapshot_metadata = {
+        **snapshot.metadata,
+        **request.metadata,
+        "trace_id": str(trace_id),
+        "run_manifest_id": str(run_manifest_id),
+        "proof_compiler": proof_metadata,
+    }
+    candidate_metadata = {
+        **candidate.metadata,
+        **request.metadata,
+        "trace_id": str(trace_id),
+        "run_manifest_id": str(run_manifest_id),
+        "proof_compiler": proof_metadata,
+    }
+    compiled_snapshot = snapshot.model_copy(
+        update={
+            "trace_id": trace_id,
+            "payload": payload,
+            "citation_refs": citation_refs,
+            "pipeline_version": pipeline_version,
+            "commit_sha": commit_sha,
+            "metadata": snapshot_metadata,
+        }
+    )
+    compiled_candidate = candidate.model_copy(
+        update={
+            "trace_id": trace_id,
+            "content_hash": snapshot.content_hash,
+            "latest_snapshot_id": snapshot.snapshot_id,
+            "updated_at": now,
+            "metadata": candidate_metadata,
+        }
+    )
+    manifest = _compiled_public_candidate_run_manifest(
+        repository=repository,
+        candidate=compiled_candidate,
+        snapshot=compiled_snapshot,
+        therapy_idea=therapy_idea,
+        validation_decisions=validation_decisions,
+        manifest_id=run_manifest_id,
+        trace_id=trace_id,
+        unresolved_reference_ids=unresolved_reference_ids,
+    )
+    event = PublicCandidateDecisionEvent(
+        event_id=uuid5(
+            NAMESPACE_URL,
+            f"twog:public-candidate-event:{candidate.candidate_id}:{snapshot.snapshot_id}:proof-compiled",
+        ),
+        trace_id=trace_id,
+        candidate_id=candidate.candidate_id,
+        action="annotated",
+        rationale_md=(
+            "Compiled the public proof packet by attaching trace, run manifest, "
+            "and citation-resolution metadata without regenerating scientific content."
+        ),
+        actor="public_candidate_proof_compiler",
+        prior_status=candidate.public_status,
+        new_status=candidate.public_status,
+        related_snapshot_id=snapshot.snapshot_id,
+        metadata={
+            "run_manifest_id": str(run_manifest_id),
+            "resolved_reference_count": resolved_count,
+            "unresolved_reference_ids": unresolved_reference_ids,
+            "persist": request.persist,
+        },
+    )
+
+    if request.persist:
+        repository.upsert_public_candidate(compiled_candidate)
+        repository.upsert_public_candidate_snapshot(compiled_snapshot)
+        repository.upsert_run_manifest(manifest)
+        repository.append_public_candidate_decision_event(event)
+
+    warnings: list[str] = []
+    if unresolved_reference_ids:
+        warnings.append(f"unresolved_references:{len(unresolved_reference_ids)}")
+    if citation_refs and not source_brief_ids_checked and not source_citation_counts:
+        warnings.append("source_lineage_missing")
+    if compiled_candidate.visibility != "public":
+        warnings.append(f"candidate_visibility_not_public:{compiled_candidate.visibility}")
+    if compiled_snapshot.public_status == "draft":
+        warnings.append("public_status_draft")
+    if _public_candidate_integrity_commit_is_unverifiable(commit_sha):
+        warnings.append(f"commit_unverifiable:{commit_sha or 'missing'}")
+
+    strict_export_ready = bool(
+        compiled_candidate
+        and compiled_snapshot
+        and trace_id
+        and run_manifest_id
+        and (manifest_found_before or request.persist)
+        and therapy_idea_found is not False
+    )
+    public_publish_ready = bool(strict_export_ready and not warnings)
+    return PublicCandidateProofCompileItem(
+        candidate_id=candidate.candidate_id,
+        snapshot_id=snapshot.snapshot_id,
+        trace_id=trace_id,
+        run_manifest_id=run_manifest_id,
+        therapy_idea_id=candidate.therapy_idea_id,
+        candidate_found=True,
+        latest_snapshot_found=True,
+        therapy_idea_found=therapy_idea_found,
+        source_brief_ids_checked=source_brief_ids_checked,
+        source_citation_counts=source_citation_counts,
+        lineage_diagnostics=lineage_diagnostics,
+        manifest_found_before=manifest_found_before,
+        manifest_written=request.persist,
+        candidate_updated=request.persist,
+        snapshot_updated=request.persist,
+        decision_event_id=event.event_id if request.persist else None,
+        citation_ref_count=len(citation_refs),
+        resolved_reference_count=resolved_count,
+        unresolved_reference_count=len(unresolved_reference_ids),
+        unresolved_reference_ids=unresolved_reference_ids,
+        strict_export_ready_after_compile=strict_export_ready,
+        public_publish_ready_after_compile=public_publish_ready,
+        warnings=warnings,
+    )
+
+
+def _repair_public_candidate_proof_lineage(
+    repository: ResearchRepository,
+    request: PublicCandidateProofRepairRequest,
+) -> PublicCandidateProofRepairResult:
+    if request.candidate_ids:
+        candidate_ids = list(request.candidate_ids)
+    else:
+        candidate_ids = [
+            candidate.candidate_id
+            for candidate in repository.list_public_candidates(
+                PublicCandidateLibraryRequest(visibility=request.visibility, limit=request.limit)
+            )
+        ]
+
+    items: list[PublicCandidateProofRepairItem] = []
+    errors: list[str] = []
+    for candidate_id in candidate_ids[: request.limit]:
+        try:
+            items.append(_repair_public_candidate_proof_lineage_item(repository, candidate_id, request))
+        except Exception as exc:
+            errors.append(f"{candidate_id}: {exc}")
+            items.append(
+                PublicCandidateProofRepairItem(
+                    candidate_id=candidate_id,
+                    errors=[f"proof_repair_failed:{exc}"],
+                )
+            )
+
+    return PublicCandidateProofRepairResult(
+        repository_type=type(repository).__name__,
+        persist=request.persist,
+        candidate_count=len(candidate_ids[: request.limit]),
+        repaired_count=sum(1 for item in items if item.candidate_updated or item.snapshot_updated),
+        would_update_count=sum(1 for item in items if item.would_update),
+        unresolved_candidate_count=sum(1 for item in items if item.after_unresolved_reference_count > 0),
+        items=items,
+        errors=errors,
+    )
+
+
+def _repair_public_candidate_proof_lineage_item(
+    repository: ResearchRepository,
+    candidate_id: str,
+    request: PublicCandidateProofRepairRequest,
+) -> PublicCandidateProofRepairItem:
+    candidate = repository.get_public_candidate(candidate_id)
+    if candidate is None:
+        return PublicCandidateProofRepairItem(candidate_id=candidate_id, errors=["public_candidate_missing"])
+
+    snapshot = _latest_public_candidate_snapshot(repository, candidate)
+    if snapshot is None:
+        return PublicCandidateProofRepairItem(
+            candidate_id=candidate_id,
+            therapy_idea_id=candidate.therapy_idea_id,
+            candidate_found=True,
+            therapy_idea_found=_therapy_idea_found(repository, candidate.therapy_idea_id),
+            errors=["latest_snapshot_missing"],
+        )
+
+    therapy_idea = repository.get_therapy_idea(candidate.therapy_idea_id) if candidate.therapy_idea_id else None
+    therapy_idea_found = _therapy_idea_found(repository, candidate.therapy_idea_id)
+    before = _compile_public_candidate_proof(
+        repository,
+        candidate_id,
+        PublicCandidateProofCompileRequest(
+            pipeline_version=request.pipeline_version,
+            commit_sha=request.commit_sha,
+            metadata=request.metadata,
+        ),
+    )
+    citation_refs = _compiled_public_candidate_citation_refs(candidate, snapshot)
+    lineage_diagnostics = _public_candidate_lineage_diagnostics(
+        repository=repository,
+        therapy_idea=therapy_idea,
+        candidate=candidate,
+        snapshot=snapshot,
+    )
+    current_source_brief_ids = (
+        _public_candidate_source_brief_ids(repository, therapy_idea, candidate, snapshot, citation_refs)
+        if therapy_idea is not None
+        else _dedupe_uuid_refs([candidate.source_brief_id])
+    )
+
+    proposed_source_brief_id = request.source_brief_id
+    proposed_source_evaluation_id = request.source_evaluation_id
+    warnings: list[str] = []
+    errors: list[str] = []
+    if proposed_source_evaluation_id is not None:
+        evaluation = repository.get_research_brief_evaluation(proposed_source_evaluation_id)
+        if evaluation is None:
+            errors.append(f"source_evaluation_missing:{proposed_source_evaluation_id}")
+        else:
+            if proposed_source_brief_id is None:
+                proposed_source_brief_id = evaluation.brief_id
+            elif proposed_source_brief_id != evaluation.brief_id:
+                warnings.append(
+                    f"source_evaluation_brief_mismatch:{proposed_source_evaluation_id}:{evaluation.brief_id}"
+                )
+    if proposed_source_brief_id is not None and repository.get_research_brief(proposed_source_brief_id) is None:
+        errors.append(f"source_brief_missing:{proposed_source_brief_id}")
+
+    proposed_candidate = candidate
+    proposed_snapshot = snapshot
+    if not errors and (proposed_source_brief_id is not None or proposed_source_evaluation_id is not None):
+        proposed_candidate, proposed_snapshot = _public_candidate_with_repaired_source_lineage(
+            candidate=candidate,
+            snapshot=snapshot,
+            source_brief_id=proposed_source_brief_id,
+            source_evaluation_id=proposed_source_evaluation_id,
+            metadata=request.metadata,
+            persist=request.persist,
+        )
+    elif not errors:
+        warnings.append("repair_source_not_supplied")
+
+    proposed_source_brief_ids = (
+        _public_candidate_source_brief_ids(repository, therapy_idea, proposed_candidate, proposed_snapshot, citation_refs)
+        if therapy_idea is not None
+        else _dedupe_uuid_refs([proposed_candidate.source_brief_id])
+    )
+    validation_decisions = (
+        repository.list_validation_decisions(therapy_idea_id=therapy_idea.therapy_idea_id, limit=25)
+        if therapy_idea is not None
+        else []
+    )
+    proposed_literature = _compiled_public_candidate_literature(
+        repository=repository,
+        candidate=proposed_candidate,
+        snapshot=proposed_snapshot,
+        therapy_idea=therapy_idea,
+        validation_decisions=validation_decisions,
+        citation_refs=citation_refs,
+    )
+    proposed_payload = dict(proposed_snapshot.payload)
+    if proposed_literature:
+        proposed_payload["literature"] = proposed_literature
+    proposed_snapshot = proposed_snapshot.model_copy(update={"payload": proposed_payload})
+    after_unresolved_ids = _public_candidate_integrity_unresolved_refs(proposed_snapshot)
+    after_resolved_count = sum(
+        1 for item in proposed_literature if isinstance(item, dict) and item.get("resolved") is True
+    )
+    if proposed_source_brief_ids and after_resolved_count <= before.resolved_reference_count:
+        warnings.append("repair_does_not_increase_resolved_refs")
+
+    would_update = bool(
+        not errors
+        and (proposed_source_brief_id is not None or proposed_source_evaluation_id is not None)
+        and (
+            proposed_candidate != candidate
+            or proposed_snapshot.source_refs != snapshot.source_refs
+            or proposed_snapshot.metadata != snapshot.metadata
+            or proposed_snapshot.payload != snapshot.payload
+        )
+    )
+    candidate_updated = False
+    snapshot_updated = False
+    manifest_written = False
+    decision_event_id: UUID | None = None
+    if request.persist and would_update:
+        repository.upsert_public_candidate(proposed_candidate)
+        repository.upsert_public_candidate_snapshot(proposed_snapshot)
+        compiled = _compile_public_candidate_proof(
+            repository,
+            candidate_id,
+            PublicCandidateProofCompileRequest(
+                pipeline_version=request.pipeline_version,
+                commit_sha=request.commit_sha,
+                persist=True,
+                metadata={
+                    **request.metadata,
+                    "proof_lineage_repair_applied": True,
+                },
+            ),
+        )
+        candidate_updated = compiled.candidate_updated
+        snapshot_updated = compiled.snapshot_updated
+        manifest_written = compiled.manifest_written
+        decision_event_id = compiled.decision_event_id
+        after_unresolved_ids = compiled.unresolved_reference_ids
+        after_resolved_count = compiled.resolved_reference_count
+        proposed_source_brief_ids = compiled.source_brief_ids_checked
+
+    return PublicCandidateProofRepairItem(
+        candidate_id=candidate.candidate_id,
+        snapshot_id=snapshot.snapshot_id,
+        therapy_idea_id=candidate.therapy_idea_id,
+        candidate_found=True,
+        latest_snapshot_found=True,
+        therapy_idea_found=therapy_idea_found,
+        current_source_brief_ids=current_source_brief_ids,
+        proposed_source_brief_ids=proposed_source_brief_ids,
+        source_citation_counts=_public_candidate_source_citation_counts(repository, proposed_source_brief_ids),
+        current_source_refs=snapshot.source_refs,
+        proposed_source_refs=proposed_snapshot.source_refs,
+        citation_ref_count=len(citation_refs),
+        before_resolved_reference_count=before.resolved_reference_count,
+        before_unresolved_reference_count=before.unresolved_reference_count,
+        before_unresolved_reference_ids=before.unresolved_reference_ids,
+        after_resolved_reference_count=after_resolved_count,
+        after_unresolved_reference_count=len(after_unresolved_ids),
+        after_unresolved_reference_ids=after_unresolved_ids,
+        would_update=would_update,
+        candidate_updated=candidate_updated,
+        snapshot_updated=snapshot_updated,
+        manifest_written=manifest_written,
+        decision_event_id=decision_event_id,
+        lineage_diagnostics=lineage_diagnostics,
+        warnings=warnings,
+        errors=errors,
+    )
+
+
+def _public_candidate_with_repaired_source_lineage(
+    *,
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+    source_brief_id: UUID | None,
+    source_evaluation_id: UUID | None,
+    metadata: dict[str, Any],
+    persist: bool,
+) -> tuple[PublicCandidateRecord, PublicCandidateSnapshot]:
+    now = datetime.now(UTC)
+    repair_metadata = {
+        "source_brief_id": str(source_brief_id) if source_brief_id else None,
+        "source_evaluation_id": str(source_evaluation_id) if source_evaluation_id else None,
+        "persist": persist,
+        "requested_at": now.isoformat(),
+    }
+    candidate_metadata = {
+        **candidate.metadata,
+        **metadata,
+        "source_brief_id": str(source_brief_id) if source_brief_id else candidate.metadata.get("source_brief_id"),
+        "source_evaluation_id": str(source_evaluation_id)
+        if source_evaluation_id
+        else candidate.metadata.get("source_evaluation_id"),
+        "proof_lineage_repair": repair_metadata,
+    }
+    payload = dict(snapshot.payload)
+    reproducibility = dict(payload.get("reproducibility") or {})
+    if source_brief_id is not None:
+        reproducibility["source_brief_id"] = str(source_brief_id)
+    if source_evaluation_id is not None:
+        reproducibility["source_evaluation_id"] = str(source_evaluation_id)
+    payload["reproducibility"] = reproducibility
+    source_refs = list(snapshot.source_refs)
+    if source_brief_id is not None:
+        source_refs.append(f"research_brief:{source_brief_id}")
+    if source_evaluation_id is not None:
+        source_refs.append(f"research_brief_evaluation:{source_evaluation_id}")
+    snapshot_metadata = {
+        **snapshot.metadata,
+        **metadata,
+        "source_brief_id": str(source_brief_id) if source_brief_id else snapshot.metadata.get("source_brief_id"),
+        "source_evaluation_id": str(source_evaluation_id)
+        if source_evaluation_id
+        else snapshot.metadata.get("source_evaluation_id"),
+        "proof_lineage_repair": repair_metadata,
+    }
+    return (
+        candidate.model_copy(
+            update={
+                "source_brief_id": source_brief_id or candidate.source_brief_id,
+                "source_evaluation_id": source_evaluation_id or candidate.source_evaluation_id,
+                "updated_at": now,
+                "metadata": candidate_metadata,
+            }
+        ),
+        snapshot.model_copy(
+            update={
+                "payload": payload,
+                "source_refs": _dedupe_texts(source_refs),
+                "metadata": snapshot_metadata,
+            }
+        ),
+    )
+
+
+def _search_public_candidate_proof_lineage(
+    repository: ResearchRepository,
+    request: PublicCandidateProofLineageSearchRequest,
+) -> PublicCandidateProofLineageSearchResult:
+    if request.candidate_ids:
+        candidate_ids = list(request.candidate_ids)
+    else:
+        candidate_ids = [
+            candidate.candidate_id
+            for candidate in repository.list_public_candidates(
+                PublicCandidateLibraryRequest(visibility=request.visibility, limit=request.limit)
+            )
+        ]
+
+    briefs = repository.list_research_briefs(limit=request.brief_limit)
+    items: list[PublicCandidateProofLineageSearchItem] = []
+    errors: list[str] = []
+    for candidate_id in candidate_ids[: request.limit]:
+        try:
+            items.append(_search_public_candidate_proof_lineage_item(repository, candidate_id, briefs, request))
+        except Exception as exc:
+            errors.append(f"{candidate_id}: {exc}")
+            items.append(
+                PublicCandidateProofLineageSearchItem(
+                    candidate_id=candidate_id,
+                    errors=[f"proof_lineage_search_failed:{exc}"],
+                )
+            )
+
+    return PublicCandidateProofLineageSearchResult(
+        repository_type=type(repository).__name__,
+        candidate_count=len(candidate_ids[: request.limit]),
+        scanned_brief_count=len(briefs),
+        matched_candidate_count=sum(1 for item in items if item.matches),
+        items=items,
+        errors=errors,
+    )
+
+
+def _search_public_candidate_proof_lineage_item(
+    repository: ResearchRepository,
+    candidate_id: str,
+    briefs: list[ResearchBriefRecord],
+    request: PublicCandidateProofLineageSearchRequest,
+) -> PublicCandidateProofLineageSearchItem:
+    candidate = repository.get_public_candidate(candidate_id)
+    if candidate is None:
+        return PublicCandidateProofLineageSearchItem(candidate_id=candidate_id, errors=["public_candidate_missing"])
+
+    snapshot = _latest_public_candidate_snapshot(repository, candidate)
+    if snapshot is None:
+        return PublicCandidateProofLineageSearchItem(
+            candidate_id=candidate_id,
+            therapy_idea_id=candidate.therapy_idea_id,
+            candidate_found=True,
+            therapy_idea_found=_therapy_idea_found(repository, candidate.therapy_idea_id),
+            errors=["latest_snapshot_missing"],
+        )
+
+    therapy_idea = repository.get_therapy_idea(candidate.therapy_idea_id) if candidate.therapy_idea_id else None
+    therapy_idea_found = _therapy_idea_found(repository, candidate.therapy_idea_id)
+    citation_refs = _compiled_public_candidate_citation_refs(candidate, snapshot)
+    current_source_brief_ids = (
+        _public_candidate_source_brief_ids(repository, therapy_idea, candidate, snapshot, citation_refs)
+        if therapy_idea is not None
+        else _dedupe_uuid_refs([candidate.source_brief_id])
+    )
+    candidate_terms = _public_candidate_lineage_search_terms(
+        candidate=candidate,
+        snapshot=snapshot,
+        therapy_idea=therapy_idea,
+        extra_terms=request.query_terms,
+    )
+
+    matches: list[PublicCandidateProofLineageSearchMatch] = []
+    for brief in briefs:
+        match = _score_public_candidate_lineage_brief_match(
+            repository=repository,
+            brief=brief,
+            candidate_terms=candidate_terms,
+            citation_refs=citation_refs,
+        )
+        if match is not None and match.score >= request.min_score:
+            matches.append(match)
+    matches.sort(key=lambda match: (match.score, match.citation_count, match.topic), reverse=True)
+
+    warnings: list[str] = []
+    if not current_source_brief_ids:
+        warnings.append("current_source_lineage_missing")
+    if citation_refs and not matches:
+        warnings.append("no_candidate_source_match_found")
+
+    return PublicCandidateProofLineageSearchItem(
+        candidate_id=candidate.candidate_id,
+        snapshot_id=snapshot.snapshot_id,
+        therapy_idea_id=candidate.therapy_idea_id,
+        candidate_found=True,
+        latest_snapshot_found=True,
+        therapy_idea_found=therapy_idea_found,
+        citation_ref_count=len(citation_refs),
+        citation_refs=citation_refs,
+        candidate_terms=candidate_terms,
+        current_source_brief_ids=current_source_brief_ids,
+        matches=matches[:25],
+        warnings=warnings,
+    )
+
+
+_PUBLIC_CANDIDATE_LINEAGE_STOPWORDS = {
+    "about",
+    "after",
+    "against",
+    "also",
+    "analysis",
+    "another",
+    "around",
+    "back",
+    "because",
+    "brief",
+    "candidate",
+    "cancer",
+    "canine",
+    "case",
+    "claim",
+    "claims",
+    "clinical",
+    "cohort",
+    "context",
+    "could",
+    "data",
+    "disease",
+    "dog",
+    "dogs",
+    "evidence",
+    "find",
+    "finding",
+    "follow",
+    "for",
+    "from",
+    "generate",
+    "group",
+    "hemangiosarcoma",
+    "human",
+    "idea",
+    "into",
+    "lineage",
+    "logic",
+    "mechanism",
+    "more",
+    "next",
+    "note",
+    "notes",
+    "patient",
+    "patients",
+    "public",
+    "record",
+    "repair",
+    "research",
+    "review",
+    "shared",
+    "show",
+    "shows",
+    "source",
+    "status",
+    "strategy",
+    "study",
+    "supporting",
+    "support",
+    "supports",
+    "therapy",
+    "the",
+    "this",
+    "three",
+    "tumor",
+    "tumors",
+    "using",
+    "validation",
+    "will",
+    "with",
+}
+
+_PUBLIC_CANDIDATE_LINEAGE_SPECIFIC_TERMS = {
+    "adc",
+    "car-t",
+    "doxorubicin",
+    "egfr",
+    "fidocure",
+    "kdr",
+    "mtor",
+    "mtorc1",
+    "pik3ca",
+    "ps6k1",
+    "rapamycin",
+    "sirna",
+    "sirolimus",
+    "tp53",
+    "vegfr",
+    "vegfr2",
+    "vim",
+}
+
+_PUBLIC_CANDIDATE_LINEAGE_OPERATIONAL_PHRASES = {
+    "citation dedupe",
+    "citation repair",
+    "duplicate citation",
+    "duplicate citations",
+    "integrity report",
+    "manifest repair",
+    "public candidate integrity",
+    "repair duplicate",
+    "run manifest",
+    "source health",
+    "source-health",
+}
+
+_PUBLIC_CANDIDATE_LINEAGE_RESEARCH_QUEUE_PHRASES = {
+    "follow up research gap",
+    "research lead:",
+    "review research lead",
+}
+
+
+def _public_candidate_lineage_search_terms(
+    *,
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+    therapy_idea: TherapyIdeaRecord | None,
+    extra_terms: list[str],
+) -> list[str]:
+    phrases: list[str] = [
+        candidate.title,
+        candidate.summary,
+        candidate.rationale_md,
+        snapshot.title,
+        *candidate.targets,
+        *candidate.biomarkers,
+        *candidate.candidate_therapies,
+        *extra_terms,
+    ]
+    if therapy_idea is not None:
+        phrases.extend(
+            [
+                therapy_idea.idea.title,
+                therapy_idea.idea.hypothesis,
+                therapy_idea.idea.rationale,
+                therapy_idea.idea.mechanism or "",
+                therapy_idea.topic,
+                *therapy_idea.targets,
+                *therapy_idea.biomarkers,
+                *therapy_idea.candidate_therapies,
+                *therapy_idea.idea.targets,
+                *therapy_idea.idea.biomarkers,
+                *therapy_idea.idea.candidate_therapies,
+            ]
+        )
+    payload = snapshot.payload if isinstance(snapshot.payload, dict) else {}
+    for key in ("targets", "biomarkers", "candidate_therapies", "therapy_family"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            phrases.extend(str(item) for item in value)
+        elif value:
+            phrases.append(str(value))
+
+    terms: list[str] = []
+    for phrase in phrases:
+        text = str(phrase).strip()
+        if not text:
+            continue
+        if len(text) <= 80 and len(text.split()) <= 5:
+            terms.append(text)
+        terms.extend(
+            token
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", text)
+            if token.lower() not in _PUBLIC_CANDIDATE_LINEAGE_STOPWORDS
+        )
+    return _dedupe_texts(terms)[:100]
+
+
+def _public_candidate_lineage_term_is_specific(term: str) -> bool:
+    stripped = term.strip()
+    lowered = stripped.lower()
+    if lowered in _PUBLIC_CANDIDATE_LINEAGE_SPECIFIC_TERMS:
+        return True
+    if any(char.isdigit() for char in stripped):
+        return True
+    if "-" in stripped and len(stripped) >= 4:
+        return True
+    if stripped.isupper() and 3 <= len(stripped) <= 12:
+        return True
+    if any(char.isupper() for char in stripped[1:]) and len(stripped) <= 16:
+        return True
+    return False
+
+
+def _public_candidate_lineage_operational_reason_codes(haystack_lower: str) -> list[str]:
+    reason_codes: list[str] = []
+    if any(phrase in haystack_lower for phrase in _PUBLIC_CANDIDATE_LINEAGE_OPERATIONAL_PHRASES):
+        reason_codes.append("operational_brief_penalty")
+    if any(phrase in haystack_lower for phrase in _PUBLIC_CANDIDATE_LINEAGE_RESEARCH_QUEUE_PHRASES):
+        reason_codes.append("research_queue_brief_penalty")
+    return reason_codes
+
+
+def _score_public_candidate_lineage_brief_match(
+    *,
+    repository: ResearchRepository,
+    brief: ResearchBriefRecord,
+    candidate_terms: list[str],
+    citation_refs: list[str],
+) -> PublicCandidateProofLineageSearchMatch | None:
+    haystack = _research_brief_lineage_search_text(brief)
+    haystack_lower = haystack.lower()
+    matched_terms = [term for term in candidate_terms if term.lower() in haystack_lower]
+    specific_matched_terms = [
+        term for term in matched_terms if _public_candidate_lineage_term_is_specific(term)
+    ]
+    generic_matched_terms = [
+        term for term in matched_terms if not _public_candidate_lineage_term_is_specific(term)
+    ]
+    citation_map = _citation_map_for_brief(brief)
+    matched_refs = [ref for ref in citation_refs if _normalize_evidence_ref(ref) in citation_map]
+    if not matched_terms and not matched_refs:
+        return None
+
+    evaluation = _latest_research_brief_evaluation(repository, brief)
+    score = min(0.5, len(specific_matched_terms) * 0.12)
+    score += min(0.16, len(generic_matched_terms) * 0.025)
+    if matched_terms:
+        score += min(0.1, len(matched_refs) * 0.015)
+    else:
+        score += min(0.04, len(matched_refs) * 0.006)
+    reason_codes: list[str] = []
+    if specific_matched_terms:
+        reason_codes.append("candidate_specific_term_overlap")
+    if generic_matched_terms:
+        reason_codes.append("candidate_generic_term_overlap")
+    if matched_refs:
+        reason_codes.append("local_citation_ref_overlap")
+    if evaluation is not None:
+        if evaluation.passes_quality_bar:
+            score += 0.05
+            reason_codes.append("brief_evaluation_passes_quality_bar")
+        if evaluation.readiness in {"ready_for_hypothesis_review", "ready_for_validation"}:
+            score += 0.05
+            reason_codes.append(f"brief_evaluation_{evaluation.readiness}")
+    if brief.status == "completed":
+        score += 0.03
+        reason_codes.append("brief_completed")
+    operational_reason_codes = _public_candidate_lineage_operational_reason_codes(haystack_lower)
+    if operational_reason_codes:
+        score -= 0.2
+        reason_codes.extend(operational_reason_codes)
+    if matched_refs and not specific_matched_terms:
+        score -= 0.08
+        reason_codes.append("citation_overlap_without_specific_terms")
+
+    return PublicCandidateProofLineageSearchMatch(
+        brief_id=brief.brief_id,
+        evaluation_id=evaluation.evaluation_id if evaluation else None,
+        topic=brief.topic,
+        source_key=brief.source_key,
+        status=brief.status,
+        readiness=evaluation.readiness if evaluation else None,
+        passes_quality_bar=evaluation.passes_quality_bar if evaluation else None,
+        citation_count=len(citation_map),
+        matched_terms=matched_terms[:100],
+        matched_reference_ids=matched_refs[:100],
+        score=max(0.0, min(1.0, round(score, 4))),
+        reason_codes=reason_codes,
+    )
+
+
+def _research_brief_lineage_search_text(brief: ResearchBriefRecord) -> str:
+    parts = [brief.topic, brief.disease_scope, brief.final_brief]
+    if isinstance(brief.result_payload, dict):
+        parts.append(json.dumps(brief.result_payload, sort_keys=True, default=str))
+    if isinstance(brief.metadata, dict):
+        parts.append(json.dumps(brief.metadata, sort_keys=True, default=str))
+    return "\n".join(str(part) for part in parts if str(part).strip())
+
+
+def _review_public_candidate_proof_steward(
+    repository: ResearchRepository,
+    request: PublicCandidateProofStewardRequest,
+) -> PublicCandidateProofStewardResult:
+    search = _search_public_candidate_proof_lineage(
+        repository,
+        PublicCandidateProofLineageSearchRequest(
+            candidate_ids=request.candidate_ids,
+            visibility=request.visibility,
+            query_terms=request.query_terms,
+            limit=request.limit,
+            brief_limit=request.brief_limit,
+            min_score=request.min_score,
+        ),
+    )
+    items: list[PublicCandidateProofStewardItem] = []
+    errors: list[str] = list(search.errors)
+    for search_item in search.items:
+        try:
+            items.append(_proof_steward_item_from_search(repository, search_item, request))
+        except Exception as exc:
+            errors.append(f"{search_item.candidate_id}: {exc}")
+            items.append(
+                PublicCandidateProofStewardItem(
+                    candidate_id=search_item.candidate_id,
+                    errors=[f"proof_steward_failed:{exc}"],
+                )
+            )
+    return PublicCandidateProofStewardResult(
+        repository_type=type(repository).__name__,
+        candidate_count=search.candidate_count,
+        recommendation_count=sum(1 for item in items if item.recommended_action == "attach_source_lineage"),
+        items=items,
+        errors=errors,
+    )
+
+
+def _proof_steward_item_from_search(
+    repository: ResearchRepository,
+    search_item: PublicCandidateProofLineageSearchItem,
+    request: PublicCandidateProofStewardRequest,
+) -> PublicCandidateProofStewardItem:
+    if search_item.errors:
+        return PublicCandidateProofStewardItem(
+            candidate_id=search_item.candidate_id,
+            snapshot_id=search_item.snapshot_id,
+            recommended_action="manual_review",
+            rationale="The steward could not inspect this candidate cleanly.",
+            warnings=search_item.warnings,
+            errors=search_item.errors,
+        )
+    if search_item.current_source_brief_ids:
+        return PublicCandidateProofStewardItem(
+            candidate_id=search_item.candidate_id,
+            snapshot_id=search_item.snapshot_id,
+            recommended_action="no_action",
+            confidence_score=1.0,
+            rationale="The candidate already has durable source brief lineage.",
+            warnings=search_item.warnings,
+        )
+    if not search_item.matches:
+        return PublicCandidateProofStewardItem(
+            candidate_id=search_item.candidate_id,
+            snapshot_id=search_item.snapshot_id,
+            recommended_action="needs_source_discovery",
+            rationale="No strong candidate source brief was found in the scanned research brief library.",
+            warnings=search_item.warnings,
+        )
+
+    top = search_item.matches[0]
+    repair_preview: PublicCandidateProofRepairItem | None = None
+    if request.auto_preview_repair:
+        repair = _repair_public_candidate_proof_lineage(
+            repository,
+            PublicCandidateProofRepairRequest(
+                candidate_ids=[search_item.candidate_id],
+                source_brief_id=top.brief_id,
+                source_evaluation_id=top.evaluation_id,
+            ),
+        )
+        repair_preview = repair.items[0] if repair.items else None
+    warnings = list(search_item.warnings)
+    if repair_preview is not None and repair_preview.after_unresolved_reference_count > 0:
+        warnings.append("repair_preview_leaves_unresolved_refs")
+    if top.score < 0.35:
+        warnings.append("low_confidence_source_match")
+    if "candidate_specific_term_overlap" not in top.reason_codes:
+        warnings.append("specific_term_overlap_missing")
+    if "operational_brief_penalty" in top.reason_codes:
+        warnings.append("operational_source_match_requires_manual_review")
+    if "research_queue_brief_penalty" in top.reason_codes:
+        warnings.append("research_queue_source_match_requires_manual_review")
+
+    action = "attach_source_lineage" if top.score >= request.min_score else "manual_review"
+    if any(
+        warning in warnings
+        for warning in (
+            "repair_preview_leaves_unresolved_refs",
+            "low_confidence_source_match",
+            "specific_term_overlap_missing",
+            "operational_source_match_requires_manual_review",
+            "research_queue_source_match_requires_manual_review",
+        )
+    ):
+        action = "manual_review"
+    rationale = (
+        "Review the top matching research brief as candidate source lineage. "
+        f"The match scored {top.score:.2f} from term overlap"
+    )
+    if top.matched_reference_ids:
+        rationale += " plus local citation-reference overlap"
+    rationale += "."
+    return PublicCandidateProofStewardItem(
+        candidate_id=search_item.candidate_id,
+        snapshot_id=search_item.snapshot_id,
+        recommended_action=action,
+        proposed_source_brief_id=top.brief_id,
+        proposed_source_evaluation_id=top.evaluation_id,
+        confidence_score=top.score,
+        rationale=rationale,
+        matched_terms=top.matched_terms,
+        matched_reference_ids=top.matched_reference_ids,
+        repair_preview=repair_preview,
+        warnings=warnings,
+    )
+
+
+def _latest_public_candidate_snapshot(
+    repository: ResearchRepository,
+    candidate: PublicCandidateRecord,
+) -> PublicCandidateSnapshot | None:
+    if candidate.latest_snapshot_id:
+        snapshot = repository.get_public_candidate_snapshot(candidate.latest_snapshot_id)
+        if snapshot is not None:
+            return snapshot
+    snapshots = repository.list_public_candidate_snapshots(candidate_id=candidate.candidate_id, limit=1)
+    return snapshots[0] if snapshots else None
+
+
+def _therapy_idea_found(repository: ResearchRepository, therapy_idea_id: UUID | None) -> bool | None:
+    if therapy_idea_id is None:
+        return None
+    return repository.get_therapy_idea(therapy_idea_id) is not None
+
+
+def _compiled_public_candidate_trace_id(
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+    request: PublicCandidateProofCompileRequest,
+) -> UUID:
+    return _first_uuid(
+        [
+            request.metadata.get("trace_id") if isinstance(request.metadata, dict) else None,
+            _public_candidate_integrity_trace_id(candidate, snapshot),
+        ]
+    ) or uuid5(NAMESPACE_URL, f"twog:public-candidate-trace:{candidate.candidate_id}")
+
+
+def _compiled_public_candidate_citation_refs(
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+) -> list[str]:
+    payload = snapshot.payload if isinstance(snapshot.payload, dict) else {}
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    literature = payload.get("literature") if isinstance(payload.get("literature"), list) else []
+    refs: list[str] = [*snapshot.citation_refs, *candidate.evidence_refs]
+    evidence_refs = evidence.get("evidence_refs")
+    if isinstance(evidence_refs, list):
+        refs.extend(str(ref) for ref in evidence_refs if str(ref).strip())
+    refs.extend(
+        str(item.get("ref") or item.get("citation_ref") or item.get("id"))
+        for item in literature
+        if isinstance(item, dict) and (item.get("ref") or item.get("citation_ref") or item.get("id"))
+    )
+    return _dedupe_texts([_normalize_evidence_ref(ref) for ref in refs if str(ref).strip()])
+
+
+def _compiled_public_candidate_literature(
+    *,
+    repository: ResearchRepository,
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+    therapy_idea: TherapyIdeaRecord | None,
+    validation_decisions: list[ValidationDecisionRecord],
+    citation_refs: list[str],
+) -> list[dict[str, Any]]:
+    if therapy_idea is not None and citation_refs:
+        return _public_candidate_literature(
+            repository,
+            therapy_idea,
+            citation_refs,
+            validation_decisions,
+            candidate=candidate,
+            snapshot=snapshot,
+        )
+    literature = snapshot.payload.get("literature") if isinstance(snapshot.payload, dict) else None
+    if isinstance(literature, list):
+        return [dict(item) for item in literature if isinstance(item, dict)]
+    return [
+        {
+            "ref": ref,
+            "title": f"Unresolved citation {ref}",
+            "source_brief_id": str(candidate.source_brief_id) if candidate.source_brief_id else None,
+            "resolved": False,
+        }
+        for ref in citation_refs
+    ]
+
+
+def _compiled_public_candidate_run_manifest(
+    *,
+    repository: ResearchRepository,
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+    therapy_idea: TherapyIdeaRecord | None,
+    validation_decisions: list[ValidationDecisionRecord],
+    manifest_id: UUID,
+    trace_id: UUID,
+    unresolved_reference_ids: list[str],
+) -> RunManifestRecord:
+    agent_run_ids = _dedupe_uuid_refs(
+        [
+            therapy_idea.agent_run_id if therapy_idea else None,
+            therapy_idea.committee_run_id if therapy_idea else None,
+            candidate.committee_run_id,
+        ]
+    )
+    agent_refs = _agent_run_manifest_refs(repository, agent_run_ids)
+    compute_jobs = [
+        job
+        for compute_job_id in snapshot.compute_job_ids
+        for job in [repository.get_compute_job(compute_job_id)]
+        if job is not None
+    ]
+    return RunManifestRecord(
+        manifest_id=manifest_id,
+        trace_id=trace_id,
+        manifest_type="public_candidate_snapshot",
+        status="completed",
+        title=f"Public candidate proof receipt: {candidate.display_id or candidate.candidate_id}",
+        created_by="public_candidate_proof_compiler",
+        dagster_run_id=str(snapshot.metadata.get("dagster_run_id") or "") or None,
+        agent_run_ids=agent_run_ids,
+        brief_ids=_dedupe_uuid_refs([candidate.source_brief_id, therapy_idea.source_brief_id if therapy_idea else None]),
+        therapy_idea_ids=_dedupe_uuid_refs([candidate.therapy_idea_id, therapy_idea.therapy_idea_id if therapy_idea else None]),
+        validation_packet_ids=_dedupe_texts(
+            [
+                candidate.validation_packet_id or "",
+                *(decision.packet_id for decision in validation_decisions),
+            ]
+        ),
+        candidate_ids=[candidate.candidate_id],
+        compute_job_ids=snapshot.compute_job_ids,
+        artifact_ids=snapshot.artifact_ids,
+        model_profiles=agent_refs["model_profiles"],
+        actual_models=agent_refs["actual_models"],
+        prompt_keys=agent_refs["prompt_keys"],
+        method_refs=snapshot.method_refs,
+        content_hashes={"public_candidate_snapshot": snapshot.content_hash},
+        input_refs={
+            "candidate_id": candidate.candidate_id,
+            "snapshot_id": str(snapshot.snapshot_id),
+            "therapy_idea_id": str(candidate.therapy_idea_id) if candidate.therapy_idea_id else None,
+            "citation_refs": snapshot.citation_refs,
+        },
+        output_refs={
+            "candidate_id": candidate.candidate_id,
+            "snapshot_id": str(snapshot.snapshot_id),
+            "snapshot_version": snapshot.snapshot_version,
+            "public_status": snapshot.public_status,
+            "visibility": candidate.visibility,
+            "unresolved_reference_ids": unresolved_reference_ids,
+            "compute_job_statuses": {str(job.compute_job_id): job.status for job in compute_jobs},
+        },
+        created_at=snapshot.created_at,
+        updated_at=datetime.now(UTC),
+        metadata={
+            "pipeline_version": snapshot.pipeline_version,
+            "commit_sha": snapshot.commit_sha,
+            "compiler": "public_candidate_proof_compiler_v1",
+            "content_hash_preserved": True,
+        },
+    )
+
+
 def _agent_trace_id(repository: ResearchRepository, agent_run_id: UUID | None) -> UUID | None:
     if agent_run_id is None:
         return None
@@ -6797,6 +8045,21 @@ def _generate_public_candidate_snapshot(
         ]
     )
     literature = _public_candidate_literature(repository, therapy_idea, citation_refs, validation_decisions)
+    source_lineage_policy = _public_candidate_generation_source_lineage_policy(
+        repository=repository,
+        therapy_idea=therapy_idea,
+        citation_refs=citation_refs,
+        literature=literature,
+    )
+    moonshot_gate = {**moonshot_gate, "source_lineage_policy": source_lineage_policy}
+    if request.require_source_lineage and not source_lineage_policy["ready"]:
+        return PublicCandidateSnapshotResult(
+            moonshot_gate=moonshot_gate,
+            errors=[
+                "public_candidate_requires_source_lineage",
+                *[f"source_lineage:{warning}" for warning in source_lineage_policy["warnings"]],
+            ],
+        )
     agent_run_ids = _dedupe_uuid_refs([therapy_idea.agent_run_id, therapy_idea.committee_run_id])
     agent_refs = _agent_run_manifest_refs(repository, agent_run_ids)
     trace_id = _first_uuid(
@@ -6841,6 +8104,16 @@ def _generate_public_candidate_snapshot(
         [
             *(therapy_idea.evidence_refs or []),
             *(str(therapy_idea.source_program_id) for _ in [therapy_idea] if therapy_idea.source_program_id),
+            *(
+                f"research_brief:{therapy_idea.source_brief_id}"
+                for _ in [therapy_idea]
+                if therapy_idea.source_brief_id
+            ),
+            *(
+                f"research_brief_evaluation:{therapy_idea.source_evaluation_id}"
+                for _ in [therapy_idea]
+                if therapy_idea.source_evaluation_id
+            ),
             *(decision.packet_id for decision in validation_decisions),
         ]
     )
@@ -6867,6 +8140,7 @@ def _generate_public_candidate_snapshot(
             **request.metadata,
             "source": "public_candidate_snapshot_generator",
             "moonshot_gate": moonshot_gate,
+            "source_lineage_policy": source_lineage_policy,
             "trace_id": str(trace_id),
             "run_manifest_id": str(manifest_id),
         },
@@ -6903,6 +8177,7 @@ def _generate_public_candidate_snapshot(
             **request.metadata,
             "latest_snapshot_version": snapshot.snapshot_version,
             "moonshot_gate": moonshot_gate,
+            "source_lineage_policy": source_lineage_policy,
             "snapshot_source": "therapy_idea",
             "trace_id": str(trace_id),
             "run_manifest_id": str(manifest_id),
@@ -6928,6 +8203,47 @@ def _generate_public_candidate_snapshot(
         moonshot_gate=moonshot_gate,
         errors=errors,
     )
+
+
+def _public_candidate_generation_source_lineage_policy(
+    *,
+    repository: ResearchRepository,
+    therapy_idea: TherapyIdeaRecord,
+    citation_refs: list[str],
+    literature: list[dict[str, Any]],
+) -> dict[str, Any]:
+    source_brief_ids = _dedupe_uuid_refs([therapy_idea.source_brief_id])
+    if therapy_idea.source_evaluation_id is not None:
+        evaluation = repository.get_research_brief_evaluation(therapy_idea.source_evaluation_id)
+        if evaluation is not None:
+            source_brief_ids.append(evaluation.brief_id)
+    source_brief_ids.extend(_source_brief_ids_from_programs(repository, _dedupe_uuid_refs([therapy_idea.source_program_id])))
+    source_brief_ids.extend(
+        _source_brief_ids_from_agent_runs(
+            repository,
+            _dedupe_uuid_refs([therapy_idea.agent_run_id, therapy_idea.committee_run_id]),
+        )
+    )
+    source_brief_ids = _dedupe_uuid_refs(source_brief_ids)
+    resolved_literature_count = sum(
+        1 for item in literature if isinstance(item, dict) and item.get("resolved") is True
+    )
+    source_citation_counts = _public_candidate_source_citation_counts(repository, source_brief_ids)
+    warnings: list[str] = []
+    if citation_refs and not source_brief_ids and resolved_literature_count == 0:
+        warnings.append("source_lineage_missing")
+    if citation_refs and source_brief_ids and not any(count > 0 for count in source_citation_counts.values()):
+        warnings.append("source_brief_has_no_citation_map")
+    ready = not citation_refs or bool(source_brief_ids) or resolved_literature_count > 0
+    return {
+        "ready": ready,
+        "citation_ref_count": len(citation_refs),
+        "source_brief_ids": [str(value) for value in source_brief_ids],
+        "source_evaluation_id": str(therapy_idea.source_evaluation_id) if therapy_idea.source_evaluation_id else None,
+        "source_citation_counts": source_citation_counts,
+        "resolved_literature_count": resolved_literature_count,
+        "warnings": warnings,
+    }
 
 
 _PUBLIC_CANDIDATE_MOONSHOT_TERMS = (
@@ -7238,12 +8554,22 @@ def _public_candidate_literature(
     therapy_idea: TherapyIdeaRecord,
     citation_refs: list[str],
     decisions: list[ValidationDecisionRecord],
+    *,
+    candidate: PublicCandidateRecord | None = None,
+    snapshot: PublicCandidateSnapshot | None = None,
 ) -> list[dict[str, Any]]:
+    source_brief_ids = _public_candidate_source_brief_ids(repository, therapy_idea, candidate, snapshot, citation_refs)
     citation_maps: dict[UUID, dict[str, dict[str, Any]]] = {}
-    if therapy_idea.source_brief_id:
-        brief = repository.get_research_brief(therapy_idea.source_brief_id)
+    for source_brief_id in source_brief_ids:
+        brief = repository.get_research_brief(source_brief_id)
         if brief is not None:
-            citation_maps[therapy_idea.source_brief_id] = _citation_map_for_brief(brief)
+            citation_maps[source_brief_id] = _citation_map_for_brief(brief)
+    embedded_citation_maps = _public_candidate_embedded_citation_maps(
+        repository,
+        therapy_idea,
+        candidate,
+        snapshot,
+    )
     records: list[dict[str, Any]] = []
     for ref in citation_refs:
         normalized = _normalize_evidence_ref(ref)
@@ -7252,11 +8578,38 @@ def _public_candidate_literature(
         explicit = _explicit_brief_citation_ref(normalized)
         if explicit:
             source_brief_id, citation_ref = explicit
+            if source_brief_id not in citation_maps:
+                brief = repository.get_research_brief(source_brief_id)
+                if brief is not None:
+                    citation_maps[source_brief_id] = _citation_map_for_brief(brief)
             citation = citation_maps.get(source_brief_id, {}).get(citation_ref)
             normalized = citation_ref
-        elif therapy_idea.source_brief_id:
-            source_brief_id = therapy_idea.source_brief_id
-            citation = citation_maps.get(source_brief_id, {}).get(normalized)
+        else:
+            for candidate_source_brief_id in source_brief_ids:
+                candidate_citation = citation_maps.get(candidate_source_brief_id, {}).get(normalized)
+                if candidate_citation is not None:
+                    source_brief_id = candidate_source_brief_id
+                    citation = candidate_citation
+                    break
+            if citation is None:
+                for embedded_source, embedded_map in embedded_citation_maps.items():
+                    embedded_citation = embedded_map.get(normalized)
+                    if embedded_citation is not None:
+                        embedded_metadata = (
+                            embedded_citation.get("metadata")
+                            if isinstance(embedded_citation.get("metadata"), dict)
+                            else {}
+                        )
+                        citation = {
+                            **embedded_citation,
+                            "metadata": {
+                                **embedded_metadata,
+                                "embedded_source": embedded_source,
+                            },
+                        }
+                        break
+            if source_brief_id is None and source_brief_ids:
+                source_brief_id = source_brief_ids[0]
         record = _public_candidate_literature_record(
             citation_ref=normalized,
             source_brief_id=source_brief_id,
@@ -7266,6 +8619,689 @@ def _public_candidate_literature(
         )
         records.append(record)
     return records
+
+
+def _public_candidate_source_brief_ids(
+    repository: ResearchRepository,
+    therapy_idea: TherapyIdeaRecord,
+    candidate: PublicCandidateRecord | None,
+    snapshot: PublicCandidateSnapshot | None,
+    citation_refs: list[str],
+) -> list[UUID]:
+    payload = snapshot.payload if snapshot and isinstance(snapshot.payload, dict) else {}
+    reproducibility = payload.get("reproducibility") if isinstance(payload.get("reproducibility"), dict) else {}
+    values: list[Any] = [
+        therapy_idea.source_brief_id,
+        candidate.source_brief_id if candidate else None,
+        therapy_idea.metadata.get("source_brief_id") if isinstance(therapy_idea.metadata, dict) else None,
+        therapy_idea.promotion_metadata.get("source_brief_id")
+        if isinstance(therapy_idea.promotion_metadata, dict)
+        else None,
+        candidate.metadata.get("source_brief_id") if candidate and isinstance(candidate.metadata, dict) else None,
+        snapshot.metadata.get("source_brief_id") if snapshot and isinstance(snapshot.metadata, dict) else None,
+        reproducibility.get("source_brief_id"),
+    ]
+    values.extend(_values_for_key(therapy_idea.metadata, "source_brief_id"))
+    values.extend(_values_for_key(therapy_idea.promotion_metadata, "source_brief_id"))
+    if candidate is not None:
+        values.extend(_values_for_key(candidate.metadata, "source_brief_id"))
+    if snapshot is not None:
+        values.extend(_values_for_key(snapshot.metadata, "source_brief_id"))
+    values.extend(_values_for_key(reproducibility, "source_brief_id"))
+    evaluation_values: list[Any] = [
+        therapy_idea.source_evaluation_id,
+        candidate.source_evaluation_id if candidate else None,
+        therapy_idea.metadata.get("source_evaluation_id") if isinstance(therapy_idea.metadata, dict) else None,
+        therapy_idea.promotion_metadata.get("source_evaluation_id")
+        if isinstance(therapy_idea.promotion_metadata, dict)
+        else None,
+        candidate.metadata.get("source_evaluation_id") if candidate and isinstance(candidate.metadata, dict) else None,
+        snapshot.metadata.get("source_evaluation_id") if snapshot and isinstance(snapshot.metadata, dict) else None,
+        reproducibility.get("source_evaluation_id"),
+    ]
+    evaluation_values.extend(_values_for_key(therapy_idea.metadata, "source_evaluation_id"))
+    evaluation_values.extend(_values_for_key(therapy_idea.promotion_metadata, "source_evaluation_id"))
+    if candidate is not None:
+        evaluation_values.extend(_values_for_key(candidate.metadata, "source_evaluation_id"))
+    if snapshot is not None:
+        evaluation_values.extend(_values_for_key(snapshot.metadata, "source_evaluation_id"))
+    evaluation_values.extend(_values_for_key(reproducibility, "source_evaluation_id"))
+    for evaluation_id in _dedupe_uuid_refs(evaluation_values):
+        evaluation = repository.get_research_brief_evaluation(evaluation_id)
+        if evaluation is not None:
+            values.append(evaluation.brief_id)
+    program_values: list[Any] = [
+        therapy_idea.source_program_id,
+        candidate.source_program_id if candidate else None,
+        therapy_idea.metadata.get("source_program_id") if isinstance(therapy_idea.metadata, dict) else None,
+        therapy_idea.promotion_metadata.get("source_program_id")
+        if isinstance(therapy_idea.promotion_metadata, dict)
+        else None,
+        candidate.metadata.get("source_program_id") if candidate and isinstance(candidate.metadata, dict) else None,
+        snapshot.metadata.get("source_program_id") if snapshot and isinstance(snapshot.metadata, dict) else None,
+        reproducibility.get("source_program_id"),
+    ]
+    program_values.extend(_values_for_key(therapy_idea.metadata, "source_program_id"))
+    program_values.extend(_values_for_key(therapy_idea.promotion_metadata, "source_program_id"))
+    if candidate is not None:
+        program_values.extend(_values_for_key(candidate.metadata, "source_program_id"))
+    if snapshot is not None:
+        program_values.extend(_values_for_key(snapshot.metadata, "source_program_id"))
+    program_values.extend(_values_for_key(reproducibility, "source_program_id"))
+    values.extend(_source_brief_ids_from_programs(repository, _dedupe_uuid_refs(program_values)))
+    values.extend(
+        _source_brief_ids_from_agent_runs(
+            repository,
+            _public_candidate_related_agent_run_ids(repository, therapy_idea, candidate, snapshot),
+        )
+    )
+    source_refs = snapshot.source_refs if snapshot else []
+    for ref in [*citation_refs, *source_refs]:
+        values.extend(_source_brief_ids_from_ref_text(str(ref)))
+    return _dedupe_uuid_refs(values)
+
+
+def _public_candidate_agent_run_ids(
+    therapy_idea: TherapyIdeaRecord,
+    candidate: PublicCandidateRecord | None,
+    snapshot: PublicCandidateSnapshot | None,
+) -> list[UUID]:
+    payload = snapshot.payload if snapshot and isinstance(snapshot.payload, dict) else {}
+    reproducibility = payload.get("reproducibility") if isinstance(payload.get("reproducibility"), dict) else {}
+    values: list[Any] = [
+        therapy_idea.agent_run_id,
+        therapy_idea.committee_run_id,
+        candidate.committee_run_id if candidate else None,
+        therapy_idea.metadata.get("agent_run_id") if isinstance(therapy_idea.metadata, dict) else None,
+        therapy_idea.metadata.get("committee_run_id") if isinstance(therapy_idea.metadata, dict) else None,
+        candidate.metadata.get("agent_run_id") if candidate and isinstance(candidate.metadata, dict) else None,
+        candidate.metadata.get("committee_run_id") if candidate and isinstance(candidate.metadata, dict) else None,
+        snapshot.metadata.get("agent_run_id") if snapshot and isinstance(snapshot.metadata, dict) else None,
+        snapshot.metadata.get("committee_run_id") if snapshot and isinstance(snapshot.metadata, dict) else None,
+        reproducibility.get("agent_run_id"),
+        reproducibility.get("committee_run_id"),
+    ]
+    values.extend(_values_for_key(therapy_idea.metadata, "agent_run_id"))
+    values.extend(_values_for_key(therapy_idea.metadata, "committee_run_id"))
+    if candidate is not None:
+        values.extend(_values_for_key(candidate.metadata, "agent_run_id"))
+        values.extend(_values_for_key(candidate.metadata, "committee_run_id"))
+    if snapshot is not None:
+        values.extend(_values_for_key(snapshot.metadata, "agent_run_id"))
+        values.extend(_values_for_key(snapshot.metadata, "committee_run_id"))
+    values.extend(_values_for_key(reproducibility, "agent_run_id"))
+    values.extend(_values_for_key(reproducibility, "committee_run_id"))
+    return _dedupe_uuid_refs(values)
+
+
+def _public_candidate_related_agent_run_ids(
+    repository: ResearchRepository,
+    therapy_idea: TherapyIdeaRecord,
+    candidate: PublicCandidateRecord | None,
+    snapshot: PublicCandidateSnapshot | None,
+    *,
+    sibling_limit: int = 100,
+) -> list[UUID]:
+    values: list[Any] = _public_candidate_agent_run_ids(therapy_idea, candidate, snapshot)
+    dagster_run_ids: list[str] = []
+    for agent_run_id in _dedupe_uuid_refs(values):
+        run = repository.get_agent_run(agent_run_id)
+        if run is not None and run.dagster_run_id:
+            dagster_run_ids.append(run.dagster_run_id)
+        if run is not None:
+            for source in (run.input_payload, run.output_payload, run.summary, run.metadata):
+                dagster_run_ids.extend(str(value) for value in _values_for_key(source, "dagster_run_id"))
+    for dagster_run_id in _dedupe_text_values(dagster_run_ids):
+        sibling_runs = repository.list_agent_runs(dagster_run_id=dagster_run_id, limit=sibling_limit)
+        values.extend(run.agent_run_id for run in sibling_runs)
+    return _dedupe_uuid_refs(values)
+
+
+def _dedupe_text_values(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        normalized = str(value).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
+
+
+def _public_candidate_source_citation_counts(
+    repository: ResearchRepository,
+    source_brief_ids: list[UUID],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for source_brief_id in source_brief_ids:
+        brief = repository.get_research_brief(source_brief_id)
+        counts[str(source_brief_id)] = len(_citation_map_for_brief(brief)) if brief is not None else 0
+    return counts
+
+
+def _public_candidate_embedded_source_citation_counts(
+    repository: ResearchRepository,
+    therapy_idea: TherapyIdeaRecord,
+    candidate: PublicCandidateRecord | None,
+    snapshot: PublicCandidateSnapshot | None,
+) -> dict[str, int]:
+    return {
+        source: len(citation_map)
+        for source, citation_map in _public_candidate_embedded_citation_maps(
+            repository,
+            therapy_idea,
+            candidate,
+            snapshot,
+        ).items()
+    }
+
+
+def _public_candidate_embedded_citation_maps(
+    repository: ResearchRepository,
+    therapy_idea: TherapyIdeaRecord,
+    candidate: PublicCandidateRecord | None,
+    snapshot: PublicCandidateSnapshot | None,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    citation_maps: dict[str, dict[str, dict[str, Any]]] = {}
+    for agent_run_id in _public_candidate_related_agent_run_ids(repository, therapy_idea, candidate, snapshot):
+        run = repository.get_agent_run(agent_run_id)
+        if run is None:
+            continue
+        for source_name, source in (
+            ("output_payload", run.output_payload),
+            ("summary", run.summary),
+            ("metadata", run.metadata),
+            ("input_payload", run.input_payload),
+        ):
+            citation_map = _citation_map_from_value(source)
+            if citation_map:
+                citation_maps[f"agent_run:{agent_run_id}:{source_name}"] = citation_map
+    return citation_maps
+
+
+def _source_brief_ids_from_programs(
+    repository: ResearchRepository,
+    program_ids: list[UUID],
+) -> list[UUID]:
+    values: list[Any] = []
+    evaluation_values: list[Any] = []
+    for program_id in program_ids:
+        program = repository.get_research_program(program_id)
+        if program is None:
+            continue
+        refs: list[str] = []
+        refs.extend(program.source_packet_ids)
+        refs.extend(program.evidence_refs)
+        refs.extend(ref for question in program.decisive_questions for ref in question.evidence_refs)
+        refs.extend(ref for task in program.evidence_tasks for ref in task.evidence_refs)
+        for ref in refs:
+            values.extend(_source_brief_ids_from_ref_text(ref))
+        for source in _program_lineage_metadata_sources(program):
+            values.extend(_values_for_key(source, "source_brief_id"))
+            evaluation_values.extend(_values_for_key(source, "source_evaluation_id"))
+    for evaluation_id in _dedupe_uuid_refs(evaluation_values):
+        evaluation = repository.get_research_brief_evaluation(evaluation_id)
+        if evaluation is not None:
+            values.append(evaluation.brief_id)
+    return _dedupe_uuid_refs(values)
+
+
+def _source_brief_ids_from_agent_runs(
+    repository: ResearchRepository,
+    agent_run_ids: list[UUID],
+) -> list[UUID]:
+    values: list[Any] = []
+    evaluation_values: list[Any] = []
+    for agent_run_id in agent_run_ids:
+        run = repository.get_agent_run(agent_run_id)
+        if run is None:
+            continue
+        for source in (run.input_payload, run.output_payload, run.summary, run.metadata):
+            values.extend(_values_for_key(source, "source_brief_id"))
+            values.extend(_values_for_key(source, "brief_id"))
+            values.extend(_source_brief_ids_from_value(source))
+            evaluation_values.extend(_values_for_key(source, "source_evaluation_id"))
+            evaluation_values.extend(_values_for_key(source, "evaluation_id"))
+    for evaluation_id in _dedupe_uuid_refs(evaluation_values):
+        evaluation = repository.get_research_brief_evaluation(evaluation_id)
+        if evaluation is not None:
+            values.append(evaluation.brief_id)
+    return _dedupe_uuid_refs(values)
+
+
+def _program_lineage_metadata_sources(program: ResearchProgramRecord) -> list[Any]:
+    sources: list[Any] = [program.metadata]
+    sources.extend(question.metadata for question in program.decisive_questions)
+    sources.extend(task.metadata for task in program.evidence_tasks)
+    return sources
+
+
+def _source_brief_ids_from_ref_text(ref: str) -> list[UUID]:
+    values: list[UUID] = []
+    normalized = _normalize_evidence_ref(str(ref))
+    explicit = _explicit_brief_citation_ref(normalized)
+    if explicit:
+        values.append(explicit[0])
+    for explicit_ref in _explicit_refs_in_text(str(ref)):
+        explicit = _explicit_brief_citation_ref(_normalize_evidence_ref(explicit_ref))
+        if explicit:
+            values.append(explicit[0])
+    bare = re.fullmatch(
+        r"(?:research_brief|brief):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+        normalized,
+        re.IGNORECASE,
+    )
+    if bare:
+        values.append(UUID(bare.group(1)))
+    return _dedupe_uuid_refs(values)
+
+
+def _source_brief_ids_from_value(value: Any, *, max_refs: int = 50, max_depth: int = 6) -> list[UUID]:
+    values: list[UUID] = []
+
+    def visit(item: Any, depth: int) -> None:
+        if len(values) >= max_refs or depth > max_depth:
+            return
+        if isinstance(item, str):
+            values.extend(_source_brief_ids_from_ref_text(item))
+            return
+        if isinstance(item, dict):
+            for child in item.values():
+                visit(child, depth + 1)
+                if len(values) >= max_refs:
+                    return
+        elif isinstance(item, list):
+            for child in item[:50]:
+                visit(child, depth + 1)
+                if len(values) >= max_refs:
+                    return
+
+    visit(value, 0)
+    return _dedupe_uuid_refs(values)
+
+
+def _values_for_key(value: Any, key_name: str, *, max_values: int = 50, max_depth: int = 6) -> list[Any]:
+    values: list[Any] = []
+
+    def visit(item: Any, depth: int) -> None:
+        if len(values) >= max_values or depth > max_depth:
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if str(key) == key_name:
+                    values.append(child)
+                    if len(values) >= max_values:
+                        return
+                visit(child, depth + 1)
+                if len(values) >= max_values:
+                    return
+        elif isinstance(item, list):
+            for child in item[:25]:
+                visit(child, depth + 1)
+                if len(values) >= max_values:
+                    return
+
+    visit(value, 0)
+    return values
+
+
+def _public_candidate_lineage_diagnostics(
+    *,
+    repository: ResearchRepository,
+    therapy_idea: TherapyIdeaRecord | None,
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+) -> dict[str, Any]:
+    payload = snapshot.payload if isinstance(snapshot.payload, dict) else {}
+    reproducibility = payload.get("reproducibility") if isinstance(payload.get("reproducibility"), dict) else {}
+    diagnostics: dict[str, Any] = {
+        "candidate": {
+            "source_program_id": _string_or_none(candidate.source_program_id),
+            "source_brief_id": _string_or_none(candidate.source_brief_id),
+            "source_evaluation_id": _string_or_none(candidate.source_evaluation_id),
+            "committee_run_id": _string_or_none(candidate.committee_run_id),
+            "primary_compute_job_id": _string_or_none(candidate.primary_compute_job_id),
+            "metadata_keys": _compact_key_paths(candidate.metadata, prefix="metadata"),
+            "metadata_uuid_refs": _uuid_ref_paths(candidate.metadata, prefix="metadata"),
+        },
+        "snapshot": {
+            "source_ref_count": len(snapshot.source_refs),
+            "citation_ref_count": len(snapshot.citation_refs),
+            "method_ref_count": len(snapshot.method_refs),
+            "compute_job_count": len(snapshot.compute_job_ids),
+            "metadata_keys": _compact_key_paths(snapshot.metadata, prefix="metadata"),
+            "metadata_uuid_refs": _uuid_ref_paths(snapshot.metadata, prefix="metadata"),
+            "payload_keys": sorted(str(key) for key in payload.keys())[:50],
+            "reproducibility_keys": _compact_key_paths(reproducibility, prefix="reproducibility"),
+            "reproducibility_uuid_refs": _uuid_ref_paths(reproducibility, prefix="reproducibility"),
+            "durable_source_refs": _durable_source_refs(snapshot.source_refs),
+        },
+    }
+    if therapy_idea is not None:
+        program_ids = _dedupe_uuid_refs(
+            [
+                therapy_idea.source_program_id,
+                candidate.source_program_id,
+                *_values_for_key(therapy_idea.metadata, "source_program_id"),
+                *_values_for_key(therapy_idea.promotion_metadata, "source_program_id"),
+                *_values_for_key(candidate.metadata, "source_program_id"),
+                *_values_for_key(snapshot.metadata, "source_program_id"),
+                *_values_for_key(reproducibility, "source_program_id"),
+            ]
+        )
+        agent_run_ids = _dedupe_uuid_refs(
+            [
+                therapy_idea.agent_run_id,
+                therapy_idea.committee_run_id,
+                candidate.committee_run_id,
+                *_values_for_key(therapy_idea.metadata, "agent_run_id"),
+                *_values_for_key(therapy_idea.metadata, "committee_run_id"),
+                *_values_for_key(candidate.metadata, "agent_run_id"),
+                *_values_for_key(candidate.metadata, "committee_run_id"),
+                *_values_for_key(snapshot.metadata, "agent_run_id"),
+                *_values_for_key(snapshot.metadata, "committee_run_id"),
+                *_values_for_key(reproducibility, "agent_run_id"),
+                *_values_for_key(reproducibility, "committee_run_id"),
+            ]
+        )
+        related_agent_run_ids = _public_candidate_related_agent_run_ids(
+            repository,
+            therapy_idea,
+            candidate,
+            snapshot,
+        )
+        diagnostics["therapy_idea"] = {
+            "source_program_id": _string_or_none(therapy_idea.source_program_id),
+            "source_brief_id": _string_or_none(therapy_idea.source_brief_id),
+            "source_evaluation_id": _string_or_none(therapy_idea.source_evaluation_id),
+            "committee_run_id": _string_or_none(therapy_idea.committee_run_id),
+            "agent_run_id": _string_or_none(therapy_idea.agent_run_id),
+            "source_key": therapy_idea.source_key,
+            "metadata_keys": _compact_key_paths(therapy_idea.metadata, prefix="metadata"),
+            "metadata_uuid_refs": _uuid_ref_paths(therapy_idea.metadata, prefix="metadata"),
+            "promotion_metadata_keys": _compact_key_paths(
+                therapy_idea.promotion_metadata,
+                prefix="promotion_metadata",
+            ),
+            "promotion_metadata_uuid_refs": _uuid_ref_paths(
+                therapy_idea.promotion_metadata,
+                prefix="promotion_metadata",
+            ),
+        }
+        diagnostics["source_programs"] = [
+            _source_program_lineage_diagnostic(repository, program_id) for program_id in program_ids[:10]
+        ]
+        diagnostics["agent_runs"] = [
+            _agent_run_lineage_diagnostic(repository, agent_run_id) for agent_run_id in related_agent_run_ids[:10]
+        ]
+        diagnostics["direct_agent_run_ids"] = [str(agent_run_id) for agent_run_id in agent_run_ids]
+        diagnostics["related_agent_run_ids"] = [str(agent_run_id) for agent_run_id in related_agent_run_ids[:50]]
+    else:
+        diagnostics["therapy_idea"] = None
+        diagnostics["source_programs"] = []
+        diagnostics["agent_runs"] = []
+    return diagnostics
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _source_program_lineage_diagnostic(
+    repository: ResearchRepository,
+    program_id: UUID,
+) -> dict[str, Any]:
+    program = repository.get_research_program(program_id)
+    if program is None:
+        return {"program_id": str(program_id), "found": False}
+    lineage_sources = _program_lineage_metadata_sources(program)
+    return {
+        "program_id": str(program_id),
+        "found": True,
+        "source_packet_count": len(program.source_packet_ids),
+        "evidence_ref_count": len(program.evidence_refs),
+        "question_count": len(program.decisive_questions),
+        "evidence_task_count": len(program.evidence_tasks),
+        "source_brief_ids_from_program": [
+            str(brief_id) for brief_id in _source_brief_ids_from_programs(repository, [program_id])
+        ],
+        "source_packet_brief_refs": [
+            str(brief_id)
+            for ref in program.source_packet_ids
+            for brief_id in _source_brief_ids_from_ref_text(ref)
+        ][:25],
+        "metadata_keys": _compact_key_paths(program.metadata, prefix="metadata"),
+        "metadata_uuid_refs": _uuid_ref_paths(program.metadata, prefix="metadata"),
+        "nested_source_brief_ids": [
+            str(value)
+            for source in lineage_sources
+            for value in _values_for_key(source, "source_brief_id")
+            if str(value).strip()
+        ][:25],
+        "nested_source_evaluation_ids": [
+            str(value)
+            for source in lineage_sources
+            for value in _values_for_key(source, "source_evaluation_id")
+            if str(value).strip()
+        ][:25],
+    }
+
+
+def _agent_run_lineage_diagnostic(
+    repository: ResearchRepository,
+    agent_run_id: UUID,
+) -> dict[str, Any]:
+    run = repository.get_agent_run(agent_run_id)
+    if run is None:
+        return {"agent_run_id": str(agent_run_id), "found": False}
+    sources = {
+        "input_payload": run.input_payload,
+        "output_payload": run.output_payload,
+        "summary": run.summary,
+        "metadata": run.metadata,
+    }
+    return {
+        "agent_run_id": str(agent_run_id),
+        "found": True,
+        "agent_name": run.agent_name,
+        "model_profile": run.model_profile,
+        "status": str(run.status),
+        "source_brief_ids_from_run": [
+            str(brief_id) for brief_id in _source_brief_ids_from_agent_runs(repository, [agent_run_id])
+        ],
+        "input_keys": _compact_key_paths(run.input_payload, prefix="input_payload"),
+        "output_keys": _compact_key_paths(run.output_payload, prefix="output_payload"),
+        "summary_keys": _compact_key_paths(run.summary, prefix="summary"),
+        "metadata_keys": _compact_key_paths(run.metadata, prefix="metadata"),
+        "input_uuid_refs": _uuid_ref_paths(run.input_payload, prefix="input_payload"),
+        "output_uuid_refs": _uuid_ref_paths(run.output_payload, prefix="output_payload"),
+        "summary_uuid_refs": _uuid_ref_paths(run.summary, prefix="summary"),
+        "metadata_uuid_refs": _uuid_ref_paths(run.metadata, prefix="metadata"),
+        "embedded_citation_counts": {
+            source_name: len(_citation_map_from_value(source))
+            for source_name, source in sources.items()
+        },
+        "brief_evaluation_shapes": {
+            source_name: _named_value_shapes(source, "brief_evaluation")
+            for source_name, source in sources.items()
+        },
+        "citation_token_paths": {
+            source_name: _citation_token_paths(source, prefix=source_name)
+            for source_name, source in sources.items()
+        },
+        "lineage_keys": {
+            source_name: {
+                "brief_id": [str(value) for value in _values_for_key(source, "brief_id") if str(value).strip()][:25],
+                "source_brief_id": [
+                    str(value) for value in _values_for_key(source, "source_brief_id") if str(value).strip()
+                ][:25],
+                "evaluation_id": [
+                    str(value) for value in _values_for_key(source, "evaluation_id") if str(value).strip()
+                ][:25],
+                "source_evaluation_id": [
+                    str(value)
+                    for value in _values_for_key(source, "source_evaluation_id")
+                    if str(value).strip()
+                ][:25],
+            }
+            for source_name, source in sources.items()
+        },
+    }
+
+
+def _compact_key_paths(value: Any, *, prefix: str, max_paths: int = 50, max_depth: int = 4) -> list[str]:
+    paths: list[str] = []
+
+    def visit(item: Any, path: str, depth: int) -> None:
+        if len(paths) >= max_paths or depth > max_depth:
+            return
+        if isinstance(item, dict):
+            for key in sorted(item.keys(), key=str):
+                child_path = f"{path}.{key}"
+                paths.append(child_path)
+                if len(paths) >= max_paths:
+                    return
+                visit(item[key], child_path, depth + 1)
+        elif isinstance(item, list):
+            for index, child in enumerate(item[:5]):
+                child_path = f"{path}[{index}]"
+                paths.append(child_path)
+                if len(paths) >= max_paths:
+                    return
+                visit(child, child_path, depth + 1)
+
+    visit(value, prefix, 0)
+    return paths
+
+
+def _uuid_ref_paths(value: Any, *, prefix: str, max_refs: int = 50, max_depth: int = 5) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+
+    def visit(item: Any, path: str, depth: int) -> None:
+        if len(refs) >= max_refs or depth > max_depth:
+            return
+        uuid_value = _uuid_from_any(item)
+        if uuid_value is not None:
+            refs.append({"path": path, "value": str(uuid_value)})
+            return
+        if isinstance(item, dict):
+            for key in sorted(item.keys(), key=str):
+                visit(item[key], f"{path}.{key}", depth + 1)
+                if len(refs) >= max_refs:
+                    return
+        elif isinstance(item, list):
+            for index, child in enumerate(item[:25]):
+                visit(child, f"{path}[{index}]", depth + 1)
+                if len(refs) >= max_refs:
+                    return
+
+    visit(value, prefix, 0)
+    return refs
+
+
+def _named_value_shapes(
+    value: Any,
+    key_name: str,
+    *,
+    max_values: int = 10,
+    max_depth: int = 6,
+) -> list[dict[str, Any]]:
+    shapes: list[dict[str, Any]] = []
+
+    def visit(item: Any, path: str, depth: int) -> None:
+        if len(shapes) >= max_values or depth > max_depth:
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                child_path = f"{path}.{key}"
+                if str(key) == key_name:
+                    shapes.append(_value_shape(child, child_path))
+                    if len(shapes) >= max_values:
+                        return
+                visit(child, child_path, depth + 1)
+                if len(shapes) >= max_values:
+                    return
+        elif isinstance(item, list):
+            for index, child in enumerate(item[:25]):
+                visit(child, f"{path}[{index}]", depth + 1)
+                if len(shapes) >= max_values:
+                    return
+
+    visit(value, "", 0)
+    return shapes
+
+
+def _value_shape(value: Any, path: str) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return {
+            "path": path.lstrip("."),
+            "type": "dict",
+            "keys": sorted(str(key) for key in value.keys())[:50],
+        }
+    if isinstance(value, list):
+        return {
+            "path": path.lstrip("."),
+            "type": "list",
+            "count": len(value),
+            "item_types": sorted({type(item).__name__ for item in value[:25]}),
+        }
+    text = str(value)
+    return {
+        "path": path.lstrip("."),
+        "type": type(value).__name__,
+        "preview": text[:240],
+    }
+
+
+def _citation_token_paths(
+    value: Any,
+    *,
+    prefix: str,
+    max_refs: int = 50,
+    max_depth: int = 8,
+) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+
+    def visit(item: Any, path: str, depth: int) -> None:
+        if len(refs) >= max_refs or depth > max_depth:
+            return
+        if isinstance(item, str):
+            for match in _CITATION_REF_TOKEN_PATTERN.finditer(item):
+                refs.append({"path": path, "value": match.group(1).upper()})
+                if len(refs) >= max_refs:
+                    return
+        elif isinstance(item, dict):
+            citation_id = item.get("citation_id")
+            if citation_id:
+                normalized = _normalize_evidence_ref(str(citation_id))
+                if _is_citation_ref(normalized):
+                    refs.append({"path": f"{path}.citation_id", "value": normalized})
+                    if len(refs) >= max_refs:
+                        return
+            for key, child in item.items():
+                visit(child, f"{path}.{key}", depth + 1)
+                if len(refs) >= max_refs:
+                    return
+        elif isinstance(item, list):
+            for index, child in enumerate(item[:100]):
+                visit(child, f"{path}[{index}]", depth + 1)
+                if len(refs) >= max_refs:
+                    return
+
+    visit(value, prefix, 0)
+    return refs
+
+
+def _durable_source_refs(source_refs: list[str]) -> list[str]:
+    durable_refs: list[str] = []
+    for ref in source_refs:
+        normalized = _normalize_evidence_ref(ref)
+        if _explicit_brief_citation_ref(normalized) or _DURABLE_EVIDENCE_REF_PATTERN.match(ref.strip()):
+            durable_refs.append(ref)
+    return durable_refs[:25]
 
 
 def _public_candidate_literature_record(
@@ -8737,6 +10773,47 @@ def _citation_map_for_brief(brief: ResearchBriefRecord) -> dict[str, dict[str, A
         if citation_id and _is_citation_ref(citation_id):
             citation_map[citation_id] = raw
     return citation_map
+
+
+def _citation_map_from_value(
+    value: Any,
+    *,
+    max_items: int = 250,
+    max_depth: int = 8,
+) -> dict[str, dict[str, Any]]:
+    citation_map: dict[str, dict[str, Any]] = {}
+
+    def visit(item: Any, depth: int) -> None:
+        if len(citation_map) >= max_items or depth > max_depth:
+            return
+        if isinstance(item, dict):
+            citation_id = _normalize_evidence_ref(str(item.get("citation_id") or ""))
+            if citation_id and _is_citation_ref(citation_id) and _looks_like_source_citation(item):
+                citation_map.setdefault(citation_id, dict(item))
+            for child in item.values():
+                visit(child, depth + 1)
+                if len(citation_map) >= max_items:
+                    return
+        elif isinstance(item, list):
+            for child in item[:100]:
+                visit(child, depth + 1)
+                if len(citation_map) >= max_items:
+                    return
+
+    visit(value, 0)
+    return citation_map
+
+
+def _looks_like_source_citation(item: dict[str, Any]) -> bool:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    provenance = metadata.get("provenance") if isinstance(metadata.get("provenance"), dict) else {}
+    return any(
+        item.get(key)
+        for key in ("source_url", "source_key", "chunk_id", "research_object_id", "pmid", "doi")
+    ) or any(
+        provenance.get(key)
+        for key in ("source_urls", "source_keys", "chunk_ids", "research_object_ids", "dedupe_keys")
+    )
 
 
 def _normalize_evidence_ref(ref: str) -> str:

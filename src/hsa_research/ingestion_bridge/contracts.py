@@ -5438,6 +5438,7 @@ class PublicCandidateGenerateRequest(StrictBaseModel):
     include_decisions: bool = True
     include_artifacts: bool = True
     require_moonshot_grade: bool = True
+    require_source_lineage: bool = False
     min_moonshot_score: float = Field(default=0.8, ge=0.0, le=1.0)
     persist: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -5561,6 +5562,284 @@ class PublicCandidateIntegrityReportResult(StrictBaseModel):
     public_publish_ready: bool = False
     checks: list[PublicCandidateIntegrityCheck] = Field(default_factory=list)
     public_readiness_warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PublicCandidateProofCompileRequest(StrictBaseModel):
+    candidate_ids: list[str] = Field(default_factory=list, max_length=50)
+    visibility: PublicCandidateVisibility | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+    pipeline_version: str | None = Field(default=None, max_length=120)
+    commit_sha: str | None = Field(default=None, max_length=80)
+    persist: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_proof_compile_request(self) -> "PublicCandidateProofCompileRequest":
+        self.candidate_ids = _dedupe_strings(self.candidate_ids)
+        if self.pipeline_version:
+            self.pipeline_version = self.pipeline_version.strip() or None
+        if self.commit_sha:
+            self.commit_sha = self.commit_sha.strip() or None
+        return self
+
+
+class PublicCandidateProofCompileItem(StrictBaseModel):
+    candidate_id: str = Field(min_length=3, max_length=260)
+    snapshot_id: UUID | None = None
+    trace_id: UUID | None = None
+    run_manifest_id: UUID | None = None
+    therapy_idea_id: UUID | None = None
+    candidate_found: bool = False
+    latest_snapshot_found: bool = False
+    therapy_idea_found: bool | None = None
+    source_brief_ids_checked: list[UUID] = Field(default_factory=list, max_length=25)
+    source_citation_counts: dict[str, int] = Field(default_factory=dict)
+    lineage_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    manifest_found_before: bool = False
+    manifest_written: bool = False
+    candidate_updated: bool = False
+    snapshot_updated: bool = False
+    decision_event_id: UUID | None = None
+    citation_ref_count: int = Field(default=0, ge=0)
+    resolved_reference_count: int = Field(default=0, ge=0)
+    unresolved_reference_count: int = Field(default=0, ge=0)
+    unresolved_reference_ids: list[str] = Field(default_factory=list)
+    strict_export_ready_after_compile: bool = False
+    public_publish_ready_after_compile: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_proof_compile_item(self) -> "PublicCandidateProofCompileItem":
+        self.candidate_id = self.candidate_id.strip()
+        self.unresolved_reference_ids = _dedupe_strings(self.unresolved_reference_ids)
+        self.warnings = _dedupe_strings(self.warnings)
+        self.errors = _dedupe_strings(self.errors)
+        return self
+
+
+class PublicCandidateProofCompileResult(StrictBaseModel):
+    repository_type: str
+    persist: bool = False
+    candidate_count: int = 0
+    compiled_count: int = 0
+    manifest_written_count: int = 0
+    unresolved_candidate_count: int = 0
+    strict_export_ready_count: int = 0
+    public_publish_ready_count: int = 0
+    items: list[PublicCandidateProofCompileItem] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PublicCandidateProofRepairRequest(StrictBaseModel):
+    candidate_ids: list[str] = Field(default_factory=list, max_length=50)
+    visibility: PublicCandidateVisibility | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+    source_brief_id: UUID | None = None
+    source_evaluation_id: UUID | None = None
+    pipeline_version: str | None = Field(default=None, max_length=120)
+    commit_sha: str | None = Field(default=None, max_length=80)
+    persist: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_proof_repair_request(self) -> "PublicCandidateProofRepairRequest":
+        self.candidate_ids = _dedupe_strings(self.candidate_ids)
+        if self.pipeline_version:
+            self.pipeline_version = self.pipeline_version.strip() or None
+        if self.commit_sha:
+            self.commit_sha = self.commit_sha.strip() or None
+        return self
+
+
+class PublicCandidateProofRepairItem(StrictBaseModel):
+    candidate_id: str = Field(min_length=3, max_length=260)
+    snapshot_id: UUID | None = None
+    therapy_idea_id: UUID | None = None
+    candidate_found: bool = False
+    latest_snapshot_found: bool = False
+    therapy_idea_found: bool | None = None
+    current_source_brief_ids: list[UUID] = Field(default_factory=list, max_length=25)
+    proposed_source_brief_ids: list[UUID] = Field(default_factory=list, max_length=25)
+    source_citation_counts: dict[str, int] = Field(default_factory=dict)
+    current_source_refs: list[str] = Field(default_factory=list, max_length=100)
+    proposed_source_refs: list[str] = Field(default_factory=list, max_length=100)
+    citation_ref_count: int = Field(default=0, ge=0)
+    before_resolved_reference_count: int = Field(default=0, ge=0)
+    before_unresolved_reference_count: int = Field(default=0, ge=0)
+    before_unresolved_reference_ids: list[str] = Field(default_factory=list)
+    after_resolved_reference_count: int = Field(default=0, ge=0)
+    after_unresolved_reference_count: int = Field(default=0, ge=0)
+    after_unresolved_reference_ids: list[str] = Field(default_factory=list)
+    would_update: bool = False
+    candidate_updated: bool = False
+    snapshot_updated: bool = False
+    manifest_written: bool = False
+    decision_event_id: UUID | None = None
+    lineage_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_proof_repair_item(self) -> "PublicCandidateProofRepairItem":
+        self.candidate_id = self.candidate_id.strip()
+        self.current_source_refs = _dedupe_strings(self.current_source_refs)
+        self.proposed_source_refs = _dedupe_strings(self.proposed_source_refs)
+        self.before_unresolved_reference_ids = _dedupe_strings(self.before_unresolved_reference_ids)
+        self.after_unresolved_reference_ids = _dedupe_strings(self.after_unresolved_reference_ids)
+        self.warnings = _dedupe_strings(self.warnings)
+        self.errors = _dedupe_strings(self.errors)
+        return self
+
+
+class PublicCandidateProofRepairResult(StrictBaseModel):
+    repository_type: str
+    persist: bool = False
+    candidate_count: int = 0
+    repaired_count: int = 0
+    would_update_count: int = 0
+    unresolved_candidate_count: int = 0
+    items: list[PublicCandidateProofRepairItem] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PublicCandidateProofLineageSearchRequest(StrictBaseModel):
+    candidate_ids: list[str] = Field(default_factory=list, max_length=50)
+    visibility: PublicCandidateVisibility | None = None
+    query_terms: list[str] = Field(default_factory=list, max_length=50)
+    limit: int = Field(default=100, ge=1, le=500)
+    brief_limit: int = Field(default=250, ge=1, le=2000)
+    min_score: float = Field(default=0.15, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_proof_lineage_search_request(
+        self,
+    ) -> "PublicCandidateProofLineageSearchRequest":
+        self.candidate_ids = _dedupe_strings(self.candidate_ids)
+        self.query_terms = _dedupe_strings(self.query_terms)
+        return self
+
+
+class PublicCandidateProofLineageSearchMatch(StrictBaseModel):
+    brief_id: UUID
+    evaluation_id: UUID | None = None
+    topic: str = ""
+    source_key: str | None = None
+    status: str = ""
+    readiness: ResearchBriefEvaluationReadiness | None = None
+    passes_quality_bar: bool | None = None
+    citation_count: int = Field(default=0, ge=0)
+    matched_terms: list[str] = Field(default_factory=list, max_length=100)
+    matched_reference_ids: list[str] = Field(default_factory=list, max_length=100)
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason_codes: list[str] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_proof_lineage_search_match(
+        self,
+    ) -> "PublicCandidateProofLineageSearchMatch":
+        self.topic = self.topic.strip()
+        self.status = self.status.strip()
+        self.matched_terms = _dedupe_strings(self.matched_terms)
+        self.matched_reference_ids = _dedupe_strings(self.matched_reference_ids)
+        self.reason_codes = _dedupe_strings(self.reason_codes)
+        return self
+
+
+class PublicCandidateProofLineageSearchItem(StrictBaseModel):
+    candidate_id: str = Field(min_length=3, max_length=260)
+    snapshot_id: UUID | None = None
+    therapy_idea_id: UUID | None = None
+    candidate_found: bool = False
+    latest_snapshot_found: bool = False
+    therapy_idea_found: bool | None = None
+    citation_ref_count: int = Field(default=0, ge=0)
+    citation_refs: list[str] = Field(default_factory=list, max_length=100)
+    candidate_terms: list[str] = Field(default_factory=list, max_length=100)
+    current_source_brief_ids: list[UUID] = Field(default_factory=list, max_length=25)
+    matches: list[PublicCandidateProofLineageSearchMatch] = Field(default_factory=list, max_length=25)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_proof_lineage_search_item(
+        self,
+    ) -> "PublicCandidateProofLineageSearchItem":
+        self.candidate_id = self.candidate_id.strip()
+        self.citation_refs = _dedupe_strings(self.citation_refs)
+        self.candidate_terms = _dedupe_strings(self.candidate_terms)
+        self.warnings = _dedupe_strings(self.warnings)
+        self.errors = _dedupe_strings(self.errors)
+        return self
+
+
+class PublicCandidateProofLineageSearchResult(StrictBaseModel):
+    repository_type: str
+    candidate_count: int = 0
+    scanned_brief_count: int = 0
+    matched_candidate_count: int = 0
+    items: list[PublicCandidateProofLineageSearchItem] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PublicCandidateProofStewardRequest(StrictBaseModel):
+    candidate_ids: list[str] = Field(default_factory=list, max_length=50)
+    visibility: PublicCandidateVisibility | None = None
+    query_terms: list[str] = Field(default_factory=list, max_length=50)
+    limit: int = Field(default=100, ge=1, le=500)
+    brief_limit: int = Field(default=250, ge=1, le=2000)
+    min_score: float = Field(default=0.15, ge=0.0, le=1.0)
+    auto_preview_repair: bool = True
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_proof_steward_request(self) -> "PublicCandidateProofStewardRequest":
+        self.candidate_ids = _dedupe_strings(self.candidate_ids)
+        self.query_terms = _dedupe_strings(self.query_terms)
+        return self
+
+
+class PublicCandidateProofStewardItem(StrictBaseModel):
+    candidate_id: str = Field(min_length=3, max_length=260)
+    snapshot_id: UUID | None = None
+    recommended_action: Literal[
+        "attach_source_lineage",
+        "needs_source_discovery",
+        "no_action",
+        "manual_review",
+    ] = "manual_review"
+    proposed_source_brief_id: UUID | None = None
+    proposed_source_evaluation_id: UUID | None = None
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    rationale: str = Field(default="", max_length=2000)
+    matched_terms: list[str] = Field(default_factory=list, max_length=100)
+    matched_reference_ids: list[str] = Field(default_factory=list, max_length=100)
+    repair_preview: PublicCandidateProofRepairItem | None = None
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_proof_steward_item(self) -> "PublicCandidateProofStewardItem":
+        self.candidate_id = self.candidate_id.strip()
+        self.rationale = self.rationale.strip()
+        self.matched_terms = _dedupe_strings(self.matched_terms)
+        self.matched_reference_ids = _dedupe_strings(self.matched_reference_ids)
+        self.warnings = _dedupe_strings(self.warnings)
+        self.errors = _dedupe_strings(self.errors)
+        return self
+
+
+class PublicCandidateProofStewardResult(StrictBaseModel):
+    repository_type: str
+    agent_name: str = "public_candidate_proof_steward_v1"
+    review_mode: Literal["deterministic_recommend_only"] = "deterministic_recommend_only"
+    candidate_count: int = 0
+    recommendation_count: int = 0
+    items: list[PublicCandidateProofStewardItem] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
