@@ -15,6 +15,7 @@ on:
           - "public_candidate_proof_repair"
           - "public_candidate_proof_lineage_search"
           - "public_candidate_proof_steward"
+          - "research_brief_inspect"
       source:
         description: "Structured source key to run"
         required: true
@@ -201,6 +202,13 @@ jobs:
               fi
               uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-proof-steward.json
               ;;
+            research_brief_inspect)
+              if [ -z "$SOURCE_BRIEF_ID" ]; then
+                echo "::error::source_brief_id is required for research_brief_inspect."
+                exit 1
+              fi
+              uv run python .github/scripts/inspect_research_brief.py | tee /tmp/research-brief-inspect.json
+              ;;
             *)
               echo "::error::Unsupported hosted validation mode: $MODE"
               exit 1
@@ -365,6 +373,65 @@ jobs:
           if report_errors:
               lines.extend(["", "#### Report errors"])
               lines.extend(f"- `{str(error).replace('`', '')}`" for error in report_errors[:25])
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
+          PY
+        shell: bash
+
+      - name: Write research brief inspect summary
+        if: ${{ always() && inputs.mode == 'research_brief_inspect' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output_path = Path("/tmp/research-brief-inspect.json")
+          if not output_path.exists():
+              raise SystemExit("No research brief inspect output was produced.")
+
+          report = json.loads(output_path.read_text())
+          brief = report.get("brief") or {}
+          evaluation = report.get("evaluation") or {}
+          citations = brief.get("citations") or []
+          lines = [
+              "### Research brief inspect",
+              f"- Brief: `{brief.get('brief_id')}`",
+              f"- Evaluation: `{evaluation.get('evaluation_id') or 'none'}`",
+              f"- Topic: {brief.get('topic')}",
+              f"- Source: `{brief.get('source_key')}`",
+              f"- Status: `{brief.get('status')}`",
+              f"- Citations: `{brief.get('citation_count')}`",
+              f"- Findings: `{brief.get('finding_count')}`",
+              f"- Hypotheses: `{brief.get('hypothesis_count')}`",
+              f"- Quality: score=`{evaluation.get('overall_score')}`, pass=`{evaluation.get('passes_quality_bar')}`, readiness=`{evaluation.get('readiness')}`",
+              "",
+              "#### Final Brief Excerpt",
+              "```text",
+              str(brief.get("final_brief_excerpt") or "")[:3000],
+              "```",
+              "",
+              "#### Citations",
+              "| Ref | Source | Title | DOI | PMID | PMCID |",
+              "| --- | --- | --- | --- | --- | --- |",
+          ]
+          for citation in citations[:15]:
+              lines.append(
+                  "| {ref} | {source} | {title} | {doi} | {pmid} | {pmcid} |".format(
+                      ref=citation.get("citation_id") or "",
+                      source=citation.get("source_key") or "",
+                      title=str(citation.get("title") or "")[:180].replace("|", "\\|"),
+                      doi=citation.get("doi") or "",
+                      pmid=citation.get("pmid") or "",
+                      pmcid=citation.get("pmcid") or "",
+                  )
+              )
+          if evaluation:
+              lines.extend(["", "#### Evaluation Notes"])
+              for key in ("strengths", "weaknesses", "recommendations", "errors"):
+                  values = evaluation.get(key) or []
+                  if values:
+                      lines.append(f"- {key}: {str(values[0])[:500]}")
 
           Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
           PY
