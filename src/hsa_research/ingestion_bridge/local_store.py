@@ -1762,6 +1762,7 @@ class SQLiteResearchRepository(ResearchRepository):
         agent_name: str | None = None,
         status: str | None = None,
         source_key: str | None = None,
+        dagster_run_id: str | None = None,
         limit: int = 50,
     ) -> list[AgentRunRecord]:
         clauses: list[str] = []
@@ -1775,6 +1776,9 @@ class SQLiteResearchRepository(ResearchRepository):
         if source_key:
             clauses.append("source_key = ?")
             params.append(source_key)
+        if dagster_run_id:
+            clauses.append("dagster_run_id = ?")
+            params.append(dagster_run_id)
         sql = "select payload from agent_runs"
         if clauses:
             sql += " where " + " and ".join(clauses)
@@ -4481,6 +4485,8 @@ class SQLiteResearchRepository(ResearchRepository):
               on agent_runs(agent_name, status, created_at desc);
             create index if not exists agent_runs_source_idx
               on agent_runs(source_key, created_at desc);
+            create index if not exists agent_runs_dagster_run_idx
+              on agent_runs(dagster_run_id, created_at desc);
 
             create table if not exists agent_run_reviews (
               review_id text primary key,

@@ -2199,6 +2199,131 @@ def test_public_candidate_proof_compiler_uses_embedded_agent_run_citations():
     assert "source_lineage_missing" not in preview.items[0].warnings
 
 
+def test_public_candidate_proof_compiler_uses_dagster_sibling_agent_run_citations():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    candidate_id = "twog-candidate-proof-compile-dagster-sibling-citation"
+    therapy_idea_id = uuid4()
+    committee_run_id = uuid4()
+    source_agent_run_id = uuid4()
+    dagster_run_id = "dagster-sibling-proof-run"
+    snapshot_id = uuid4()
+    chunk_id = uuid4()
+    research_object_id = uuid4()
+
+    repo.create_agent_run(
+        AgentRunRecord(
+            agent_run_id=committee_run_id,
+            agent_name="therapy_committee_chair_agent",
+            model_profile="therapy_committee",
+            dagster_run_id=dagster_run_id,
+            input_payload={
+                "brief_id": None,
+                "evaluation_id": None,
+                "dagster_run_id": dagster_run_id,
+            },
+            output_payload={
+                "reports": [
+                    {
+                        "ideas": [
+                            {
+                                "rationale": "The candidate keeps C1 but lost the source citation map.",
+                                "evidence_refs": ["C1"],
+                            }
+                        ]
+                    }
+                ]
+            },
+        )
+    )
+    repo.create_agent_run(
+        AgentRunRecord(
+            agent_run_id=source_agent_run_id,
+            agent_name="research_brief_agent",
+            model_profile="sonnet_research",
+            dagster_run_id=dagster_run_id,
+            output_payload={
+                "brief_evaluation": {
+                    "citations": [
+                        {
+                            "citation_id": "C1",
+                            "chunk_id": str(chunk_id),
+                            "research_object_id": str(research_object_id),
+                            "source_key": "pubmed",
+                            "title": "Sibling agent-run source citation",
+                            "source_url": "https://example.test/dagster-sibling-c1",
+                            "metadata": {
+                                "identifiers": {"pmid": "555666"},
+                                "provenance": {
+                                    "source_keys": ["pubmed"],
+                                    "source_urls": ["https://example.test/dagster-sibling-c1"],
+                                    "titles": ["Sibling agent-run source citation"],
+                                    "research_object_ids": [str(research_object_id)],
+                                    "chunk_ids": [str(chunk_id)],
+                                    "section_labels": ["abstract"],
+                                },
+                            },
+                        }
+                    ]
+                }
+            },
+        )
+    )
+    idea = TherapyIdea(
+        title="Dagster sibling citation therapy idea",
+        hypothesis="C1 supports this public candidate.",
+        rationale="The compiler should use sibling run evidence from the same Dagster execution.",
+        candidate_therapies=["proof compiler therapy"],
+        targets=["KDR"],
+        evidence_refs=["C1"],
+        priority_score=0.91,
+    ).model_copy(update={"idea_id": therapy_idea_id})
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            agent_run_id=committee_run_id,
+            status="ready_for_promotion",
+            score=0.91,
+        )
+    )
+    repo.upsert_public_candidate(
+        PublicCandidateRecord(
+            candidate_id=candidate_id,
+            title="Dagster sibling citation public candidate",
+            visibility="draft_public",
+            public_status="investigating",
+            therapy_idea_id=therapy_idea_id,
+            latest_snapshot_id=snapshot_id,
+            evidence_refs=["C1"],
+            content_hash="hash-dagster-sibling-citation",
+        )
+    )
+    repo.upsert_public_candidate_snapshot(
+        PublicCandidateSnapshot(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate_id,
+            snapshot_version=1,
+            content_hash="hash-dagster-sibling-citation",
+            title="Dagster sibling citation public candidate",
+            public_status="investigating",
+            citation_refs=["C1"],
+            payload={"literature": [{"ref": "C1", "title": "Prior unresolved C1", "resolved": False}]},
+        )
+    )
+
+    preview = service.compile_public_candidate_proofs(
+        PublicCandidateProofCompileRequest(candidate_ids=[candidate_id])
+    )
+
+    embedded_source = f"agent_run:{source_agent_run_id}:output_payload"
+    assert preview.items[0].source_brief_ids_checked == []
+    assert preview.items[0].source_citation_counts == {embedded_source: 1}
+    assert preview.items[0].resolved_reference_count == 1
+    assert preview.items[0].unresolved_reference_ids == []
+    assert "source_lineage_missing" not in preview.items[0].warnings
+    assert str(source_agent_run_id) in preview.items[0].lineage_diagnostics["related_agent_run_ids"]
+
+
 def test_public_candidate_integrity_report_flags_public_readiness_gaps():
     repo = InMemoryResearchRepository()
     service = HSAResearchService(repo)

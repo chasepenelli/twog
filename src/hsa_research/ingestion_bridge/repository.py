@@ -278,6 +278,7 @@ class ResearchRepository(Protocol):
         agent_name: str | None = None,
         status: str | None = None,
         source_key: str | None = None,
+        dagster_run_id: str | None = None,
         limit: int = 50,
     ) -> list[AgentRunRecord]:
         """Return recent agent runs by durable filters."""
@@ -1346,6 +1347,7 @@ class InMemoryResearchRepository:
         agent_name: str | None = None,
         status: str | None = None,
         source_key: str | None = None,
+        dagster_run_id: str | None = None,
         limit: int = 50,
     ) -> list[AgentRunRecord]:
         runs = list(self.agent_runs.values())
@@ -1355,6 +1357,8 @@ class InMemoryResearchRepository:
             runs = [run for run in runs if str(run.status) == status]
         if source_key:
             runs = [run for run in runs if run.source_key == source_key]
+        if dagster_run_id:
+            runs = [run for run in runs if run.dagster_run_id == dagster_run_id]
         runs.sort(key=lambda run: run.started_at, reverse=True)
         return runs[:limit]
 

@@ -5696,12 +5696,14 @@ class HSAResearchService:
         agent_name: str | None = None,
         status: str | None = None,
         source_key: str | None = None,
+        dagster_run_id: str | None = None,
         limit: int = 50,
     ) -> list[AgentRunRecord]:
         return self.repository.list_agent_runs(
             agent_name=agent_name,
             status=status,
             source_key=source_key,
+            dagster_run_id=dagster_run_id,
             limit=limit,
         )
 
@@ -7800,7 +7802,7 @@ def _public_candidate_source_brief_ids(
     values.extend(
         _source_brief_ids_from_agent_runs(
             repository,
-            _public_candidate_agent_run_ids(therapy_idea, candidate, snapshot),
+            _public_candidate_related_agent_run_ids(repository, therapy_idea, candidate, snapshot),
         )
     )
     source_refs = snapshot.source_refs if snapshot else []
@@ -7842,6 +7844,38 @@ def _public_candidate_agent_run_ids(
     return _dedupe_uuid_refs(values)
 
 
+def _public_candidate_related_agent_run_ids(
+    repository: ResearchRepository,
+    therapy_idea: TherapyIdeaRecord,
+    candidate: PublicCandidateRecord | None,
+    snapshot: PublicCandidateSnapshot | None,
+    *,
+    sibling_limit: int = 100,
+) -> list[UUID]:
+    values: list[Any] = _public_candidate_agent_run_ids(therapy_idea, candidate, snapshot)
+    dagster_run_ids: list[str] = []
+    for agent_run_id in _dedupe_uuid_refs(values):
+        run = repository.get_agent_run(agent_run_id)
+        if run is not None and run.dagster_run_id:
+            dagster_run_ids.append(run.dagster_run_id)
+    for dagster_run_id in _dedupe_text_values(dagster_run_ids):
+        sibling_runs = repository.list_agent_runs(dagster_run_id=dagster_run_id, limit=sibling_limit)
+        values.extend(run.agent_run_id for run in sibling_runs)
+    return _dedupe_uuid_refs(values)
+
+
+def _dedupe_text_values(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        normalized = str(value).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
+
+
 def _public_candidate_source_citation_counts(
     repository: ResearchRepository,
     source_brief_ids: list[UUID],
@@ -7877,7 +7911,7 @@ def _public_candidate_embedded_citation_maps(
     snapshot: PublicCandidateSnapshot | None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     citation_maps: dict[str, dict[str, dict[str, Any]]] = {}
-    for agent_run_id in _public_candidate_agent_run_ids(therapy_idea, candidate, snapshot):
+    for agent_run_id in _public_candidate_related_agent_run_ids(repository, therapy_idea, candidate, snapshot):
         run = repository.get_agent_run(agent_run_id)
         if run is None:
             continue
@@ -8078,6 +8112,12 @@ def _public_candidate_lineage_diagnostics(
                 *_values_for_key(reproducibility, "committee_run_id"),
             ]
         )
+        related_agent_run_ids = _public_candidate_related_agent_run_ids(
+            repository,
+            therapy_idea,
+            candidate,
+            snapshot,
+        )
         diagnostics["therapy_idea"] = {
             "source_program_id": _string_or_none(therapy_idea.source_program_id),
             "source_brief_id": _string_or_none(therapy_idea.source_brief_id),
@@ -8100,8 +8140,10 @@ def _public_candidate_lineage_diagnostics(
             _source_program_lineage_diagnostic(repository, program_id) for program_id in program_ids[:10]
         ]
         diagnostics["agent_runs"] = [
-            _agent_run_lineage_diagnostic(repository, agent_run_id) for agent_run_id in agent_run_ids[:10]
+            _agent_run_lineage_diagnostic(repository, agent_run_id) for agent_run_id in related_agent_run_ids[:10]
         ]
+        diagnostics["direct_agent_run_ids"] = [str(agent_run_id) for agent_run_id in agent_run_ids]
+        diagnostics["related_agent_run_ids"] = [str(agent_run_id) for agent_run_id in related_agent_run_ids[:50]]
     else:
         diagnostics["therapy_idea"] = None
         diagnostics["source_programs"] = []
