@@ -7858,6 +7858,9 @@ def _public_candidate_related_agent_run_ids(
         run = repository.get_agent_run(agent_run_id)
         if run is not None and run.dagster_run_id:
             dagster_run_ids.append(run.dagster_run_id)
+        if run is not None:
+            for source in (run.input_payload, run.output_payload, run.summary, run.metadata):
+                dagster_run_ids.extend(str(value) for value in _values_for_key(source, "dagster_run_id"))
     for dagster_run_id in _dedupe_text_values(dagster_run_ids):
         sibling_runs = repository.list_agent_runs(dagster_run_id=dagster_run_id, limit=sibling_limit)
         values.extend(run.agent_run_id for run in sibling_runs)

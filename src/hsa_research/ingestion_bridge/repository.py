@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import re
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from .contracts import (
@@ -67,6 +67,24 @@ from .contracts import (
 
 
 _KEYWORD_PATTERN = re.compile(r"[a-z0-9]+(?:[._/-][a-z0-9]+)*")
+
+
+def _value_contains_text(value: Any, needle: str, *, max_depth: int = 8) -> bool:
+    if not needle:
+        return False
+
+    def visit(item: Any, depth: int) -> bool:
+        if depth > max_depth:
+            return False
+        if isinstance(item, str):
+            return needle in item
+        if isinstance(item, dict):
+            return any(visit(child, depth + 1) for child in item.values())
+        if isinstance(item, list):
+            return any(visit(child, depth + 1) for child in item)
+        return False
+
+    return visit(value, 0)
 
 
 class ResearchRepository(Protocol):
@@ -1358,7 +1376,12 @@ class InMemoryResearchRepository:
         if source_key:
             runs = [run for run in runs if run.source_key == source_key]
         if dagster_run_id:
-            runs = [run for run in runs if run.dagster_run_id == dagster_run_id]
+            runs = [
+                run
+                for run in runs
+                if run.dagster_run_id == dagster_run_id
+                or _value_contains_text(run.model_dump(mode="json"), dagster_run_id)
+            ]
         runs.sort(key=lambda run: run.started_at, reverse=True)
         return runs[:limit]
 

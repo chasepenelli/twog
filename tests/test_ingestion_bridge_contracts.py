@@ -2216,7 +2216,6 @@ def test_public_candidate_proof_compiler_uses_dagster_sibling_agent_run_citation
             agent_run_id=committee_run_id,
             agent_name="therapy_committee_chair_agent",
             model_profile="therapy_committee",
-            dagster_run_id=dagster_run_id,
             input_payload={
                 "brief_id": None,
                 "evaluation_id": None,
@@ -2241,7 +2240,7 @@ def test_public_candidate_proof_compiler_uses_dagster_sibling_agent_run_citation
             agent_run_id=source_agent_run_id,
             agent_name="research_brief_agent",
             model_profile="sonnet_research",
-            dagster_run_id=dagster_run_id,
+            input_payload={"dagster_run_id": dagster_run_id},
             output_payload={
                 "brief_evaluation": {
                     "citations": [

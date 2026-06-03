@@ -1673,8 +1673,8 @@ class PostgresResearchRepository(ResearchRepository):
             clauses.append("source_key = %s")
             params.append(source_key)
         if dagster_run_id:
-            clauses.append("dagster_run_id = %s")
-            params.append(dagster_run_id)
+            clauses.append("(dagster_run_id = %s or payload::text like %s)")
+            params.extend([dagster_run_id, f"%{dagster_run_id}%"])
         sql = "select payload from agent_runs"
         if clauses:
             sql += " where " + " and ".join(clauses)
