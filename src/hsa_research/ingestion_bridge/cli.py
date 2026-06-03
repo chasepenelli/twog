@@ -48,7 +48,9 @@ from .contracts import (
     PublicCandidateIntegrityReportRequest,
     PublicCandidateLibraryRequest,
     PublicCandidateProofCompileRequest,
+    PublicCandidateProofLineageSearchRequest,
     PublicCandidateProofRepairRequest,
+    PublicCandidateProofStewardRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
     ResearchBriefOperatorDocRequest,
@@ -899,6 +901,81 @@ def main() -> None:
         "--apply",
         action="store_true",
         help="Persist explicit source lineage repair and rerun proof compile",
+    )
+
+    public_candidate_proof_lineage_search = subparsers.add_parser(
+        "public-candidate-proof-lineage-search",
+        help="Search research briefs/evaluations for likely public candidate proof lineage sources",
+    )
+    public_candidate_proof_lineage_search.add_argument(
+        "--candidate-id",
+        action="append",
+        default=[],
+        help="Candidate ID to search; repeatable",
+    )
+    public_candidate_proof_lineage_search.add_argument(
+        "--visibility",
+        default=None,
+        help="Optional visibility sample filter",
+    )
+    public_candidate_proof_lineage_search.add_argument(
+        "--query-term",
+        action="append",
+        default=[],
+        help="Additional term to bias source matching; repeatable",
+    )
+    public_candidate_proof_lineage_search.add_argument("--limit", type=int, default=100, help="Maximum candidates")
+    public_candidate_proof_lineage_search.add_argument(
+        "--brief-limit",
+        type=int,
+        default=250,
+        help="Maximum recent research briefs to scan",
+    )
+    public_candidate_proof_lineage_search.add_argument(
+        "--min-score",
+        type=float,
+        default=0.15,
+        help="Minimum match score to return",
+    )
+
+    public_candidate_proof_steward = subparsers.add_parser(
+        "public-candidate-proof-steward",
+        help="Recommend proof-lineage repair actions without mutating public candidate records",
+    )
+    public_candidate_proof_steward.add_argument(
+        "--candidate-id",
+        action="append",
+        default=[],
+        help="Candidate ID to review; repeatable",
+    )
+    public_candidate_proof_steward.add_argument(
+        "--visibility",
+        default=None,
+        help="Optional visibility sample filter",
+    )
+    public_candidate_proof_steward.add_argument(
+        "--query-term",
+        action="append",
+        default=[],
+        help="Additional term to bias source matching; repeatable",
+    )
+    public_candidate_proof_steward.add_argument("--limit", type=int, default=100, help="Maximum candidates")
+    public_candidate_proof_steward.add_argument(
+        "--brief-limit",
+        type=int,
+        default=250,
+        help="Maximum recent research briefs to scan",
+    )
+    public_candidate_proof_steward.add_argument(
+        "--min-score",
+        type=float,
+        default=0.15,
+        help="Minimum match score to consider",
+    )
+    public_candidate_proof_steward.add_argument(
+        "--no-preview-repair",
+        action="store_true",
+        help="Skip deterministic repair preview in the steward recommendation",
     )
 
     hypothesis_promotion = subparsers.add_parser(
@@ -2905,6 +2982,29 @@ def main() -> None:
                 pipeline_version=args.pipeline_version,
                 commit_sha=args.commit_sha,
                 persist=args.apply,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "public-candidate-proof-lineage-search":
+        output = HSAResearchService(repo).search_public_candidate_proof_lineage(
+            PublicCandidateProofLineageSearchRequest(
+                candidate_ids=args.candidate_id,
+                visibility=args.visibility,
+                query_terms=args.query_term,
+                limit=args.limit,
+                brief_limit=args.brief_limit,
+                min_score=args.min_score,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "public-candidate-proof-steward":
+        output = HSAResearchService(repo).review_public_candidate_proof_steward(
+            PublicCandidateProofStewardRequest(
+                candidate_ids=args.candidate_id,
+                visibility=args.visibility,
+                query_terms=args.query_term,
+                limit=args.limit,
+                brief_limit=args.brief_limit,
+                min_score=args.min_score,
+                auto_preview_repair=not args.no_preview_repair,
             )
         ).model_dump(mode="json")
     elif args.command == "hypothesis-promotion-report":

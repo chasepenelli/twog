@@ -87,9 +87,16 @@ from .contracts import (
     PublicCandidateProofCompileItem,
     PublicCandidateProofCompileRequest,
     PublicCandidateProofCompileResult,
+    PublicCandidateProofLineageSearchItem,
+    PublicCandidateProofLineageSearchMatch,
+    PublicCandidateProofLineageSearchRequest,
+    PublicCandidateProofLineageSearchResult,
     PublicCandidateProofRepairItem,
     PublicCandidateProofRepairRequest,
     PublicCandidateProofRepairResult,
+    PublicCandidateProofStewardItem,
+    PublicCandidateProofStewardRequest,
+    PublicCandidateProofStewardResult,
     PublicCandidateRecord,
     PublicCandidateSnapshot,
     PublicCandidateSnapshotResult,
@@ -1559,6 +1566,24 @@ class HSAResearchService:
         return _repair_public_candidate_proof_lineage(
             self.repository,
             request or PublicCandidateProofRepairRequest(),
+        )
+
+    def search_public_candidate_proof_lineage(
+        self,
+        request: PublicCandidateProofLineageSearchRequest | None = None,
+    ) -> PublicCandidateProofLineageSearchResult:
+        return _search_public_candidate_proof_lineage(
+            self.repository,
+            request or PublicCandidateProofLineageSearchRequest(),
+        )
+
+    def review_public_candidate_proof_steward(
+        self,
+        request: PublicCandidateProofStewardRequest | None = None,
+    ) -> PublicCandidateProofStewardResult:
+        return _review_public_candidate_proof_steward(
+            self.repository,
+            request or PublicCandidateProofStewardRequest(),
         )
 
     def build_evidence_ref_repair_report(
@@ -6908,6 +6933,375 @@ def _public_candidate_with_repaired_source_lineage(
     )
 
 
+def _search_public_candidate_proof_lineage(
+    repository: ResearchRepository,
+    request: PublicCandidateProofLineageSearchRequest,
+) -> PublicCandidateProofLineageSearchResult:
+    if request.candidate_ids:
+        candidate_ids = list(request.candidate_ids)
+    else:
+        candidate_ids = [
+            candidate.candidate_id
+            for candidate in repository.list_public_candidates(
+                PublicCandidateLibraryRequest(visibility=request.visibility, limit=request.limit)
+            )
+        ]
+
+    briefs = repository.list_research_briefs(limit=request.brief_limit)
+    items: list[PublicCandidateProofLineageSearchItem] = []
+    errors: list[str] = []
+    for candidate_id in candidate_ids[: request.limit]:
+        try:
+            items.append(_search_public_candidate_proof_lineage_item(repository, candidate_id, briefs, request))
+        except Exception as exc:
+            errors.append(f"{candidate_id}: {exc}")
+            items.append(
+                PublicCandidateProofLineageSearchItem(
+                    candidate_id=candidate_id,
+                    errors=[f"proof_lineage_search_failed:{exc}"],
+                )
+            )
+
+    return PublicCandidateProofLineageSearchResult(
+        repository_type=type(repository).__name__,
+        candidate_count=len(candidate_ids[: request.limit]),
+        scanned_brief_count=len(briefs),
+        matched_candidate_count=sum(1 for item in items if item.matches),
+        items=items,
+        errors=errors,
+    )
+
+
+def _search_public_candidate_proof_lineage_item(
+    repository: ResearchRepository,
+    candidate_id: str,
+    briefs: list[ResearchBriefRecord],
+    request: PublicCandidateProofLineageSearchRequest,
+) -> PublicCandidateProofLineageSearchItem:
+    candidate = repository.get_public_candidate(candidate_id)
+    if candidate is None:
+        return PublicCandidateProofLineageSearchItem(candidate_id=candidate_id, errors=["public_candidate_missing"])
+
+    snapshot = _latest_public_candidate_snapshot(repository, candidate)
+    if snapshot is None:
+        return PublicCandidateProofLineageSearchItem(
+            candidate_id=candidate_id,
+            therapy_idea_id=candidate.therapy_idea_id,
+            candidate_found=True,
+            therapy_idea_found=_therapy_idea_found(repository, candidate.therapy_idea_id),
+            errors=["latest_snapshot_missing"],
+        )
+
+    therapy_idea = repository.get_therapy_idea(candidate.therapy_idea_id) if candidate.therapy_idea_id else None
+    therapy_idea_found = _therapy_idea_found(repository, candidate.therapy_idea_id)
+    citation_refs = _compiled_public_candidate_citation_refs(candidate, snapshot)
+    current_source_brief_ids = (
+        _public_candidate_source_brief_ids(repository, therapy_idea, candidate, snapshot, citation_refs)
+        if therapy_idea is not None
+        else _dedupe_uuid_refs([candidate.source_brief_id])
+    )
+    candidate_terms = _public_candidate_lineage_search_terms(
+        candidate=candidate,
+        snapshot=snapshot,
+        therapy_idea=therapy_idea,
+        extra_terms=request.query_terms,
+    )
+
+    matches: list[PublicCandidateProofLineageSearchMatch] = []
+    for brief in briefs:
+        match = _score_public_candidate_lineage_brief_match(
+            repository=repository,
+            brief=brief,
+            candidate_terms=candidate_terms,
+            citation_refs=citation_refs,
+        )
+        if match is not None and match.score >= request.min_score:
+            matches.append(match)
+    matches.sort(key=lambda match: (match.score, match.citation_count, match.topic), reverse=True)
+
+    warnings: list[str] = []
+    if not current_source_brief_ids:
+        warnings.append("current_source_lineage_missing")
+    if citation_refs and not matches:
+        warnings.append("no_candidate_source_match_found")
+
+    return PublicCandidateProofLineageSearchItem(
+        candidate_id=candidate.candidate_id,
+        snapshot_id=snapshot.snapshot_id,
+        therapy_idea_id=candidate.therapy_idea_id,
+        candidate_found=True,
+        latest_snapshot_found=True,
+        therapy_idea_found=therapy_idea_found,
+        citation_ref_count=len(citation_refs),
+        citation_refs=citation_refs,
+        candidate_terms=candidate_terms,
+        current_source_brief_ids=current_source_brief_ids,
+        matches=matches[:25],
+        warnings=warnings,
+    )
+
+
+_PUBLIC_CANDIDATE_LINEAGE_STOPWORDS = {
+    "about",
+    "after",
+    "against",
+    "around",
+    "because",
+    "brief",
+    "candidate",
+    "cancer",
+    "canine",
+    "could",
+    "data",
+    "disease",
+    "evidence",
+    "from",
+    "hemangiosarcoma",
+    "human",
+    "idea",
+    "lineage",
+    "public",
+    "record",
+    "repair",
+    "research",
+    "source",
+    "strategy",
+    "support",
+    "therapy",
+    "this",
+    "tumor",
+    "with",
+}
+
+
+def _public_candidate_lineage_search_terms(
+    *,
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot,
+    therapy_idea: TherapyIdeaRecord | None,
+    extra_terms: list[str],
+) -> list[str]:
+    phrases: list[str] = [
+        candidate.title,
+        candidate.summary,
+        candidate.rationale_md,
+        snapshot.title,
+        *candidate.targets,
+        *candidate.biomarkers,
+        *candidate.candidate_therapies,
+        *extra_terms,
+    ]
+    if therapy_idea is not None:
+        phrases.extend(
+            [
+                therapy_idea.idea.title,
+                therapy_idea.idea.hypothesis,
+                therapy_idea.idea.rationale,
+                therapy_idea.idea.mechanism or "",
+                therapy_idea.topic,
+                *therapy_idea.targets,
+                *therapy_idea.biomarkers,
+                *therapy_idea.candidate_therapies,
+                *therapy_idea.idea.targets,
+                *therapy_idea.idea.biomarkers,
+                *therapy_idea.idea.candidate_therapies,
+            ]
+        )
+    payload = snapshot.payload if isinstance(snapshot.payload, dict) else {}
+    for key in ("targets", "biomarkers", "candidate_therapies", "therapy_family"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            phrases.extend(str(item) for item in value)
+        elif value:
+            phrases.append(str(value))
+
+    terms: list[str] = []
+    for phrase in phrases:
+        text = str(phrase).strip()
+        if not text:
+            continue
+        if len(text) <= 80 and len(text.split()) <= 5:
+            terms.append(text)
+        terms.extend(
+            token
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", text)
+            if token.lower() not in _PUBLIC_CANDIDATE_LINEAGE_STOPWORDS
+        )
+    return _dedupe_texts(terms)[:100]
+
+
+def _score_public_candidate_lineage_brief_match(
+    *,
+    repository: ResearchRepository,
+    brief: ResearchBriefRecord,
+    candidate_terms: list[str],
+    citation_refs: list[str],
+) -> PublicCandidateProofLineageSearchMatch | None:
+    haystack = _research_brief_lineage_search_text(brief)
+    haystack_lower = haystack.lower()
+    matched_terms = [term for term in candidate_terms if term.lower() in haystack_lower]
+    citation_map = _citation_map_for_brief(brief)
+    matched_refs = [ref for ref in citation_refs if _normalize_evidence_ref(ref) in citation_map]
+    if not matched_terms and not matched_refs:
+        return None
+
+    evaluation = _latest_research_brief_evaluation(repository, brief)
+    score = min(0.7, len(matched_terms) * 0.08)
+    if matched_terms:
+        score += min(0.2, len(matched_refs) * 0.025)
+    else:
+        score += min(0.08, len(matched_refs) * 0.01)
+    reason_codes: list[str] = []
+    if matched_terms:
+        reason_codes.append("candidate_term_overlap")
+    if matched_refs:
+        reason_codes.append("local_citation_ref_overlap")
+    if evaluation is not None:
+        if evaluation.passes_quality_bar:
+            score += 0.05
+            reason_codes.append("brief_evaluation_passes_quality_bar")
+        if evaluation.readiness in {"ready_for_hypothesis_review", "ready_for_validation"}:
+            score += 0.05
+            reason_codes.append(f"brief_evaluation_{evaluation.readiness}")
+    if brief.status == "completed":
+        score += 0.03
+        reason_codes.append("brief_completed")
+
+    return PublicCandidateProofLineageSearchMatch(
+        brief_id=brief.brief_id,
+        evaluation_id=evaluation.evaluation_id if evaluation else None,
+        topic=brief.topic,
+        source_key=brief.source_key,
+        status=brief.status,
+        readiness=evaluation.readiness if evaluation else None,
+        passes_quality_bar=evaluation.passes_quality_bar if evaluation else None,
+        citation_count=len(citation_map),
+        matched_terms=matched_terms[:100],
+        matched_reference_ids=matched_refs[:100],
+        score=min(1.0, round(score, 4)),
+        reason_codes=reason_codes,
+    )
+
+
+def _research_brief_lineage_search_text(brief: ResearchBriefRecord) -> str:
+    parts = [brief.topic, brief.disease_scope, brief.final_brief]
+    if isinstance(brief.result_payload, dict):
+        parts.append(json.dumps(brief.result_payload, sort_keys=True, default=str))
+    if isinstance(brief.metadata, dict):
+        parts.append(json.dumps(brief.metadata, sort_keys=True, default=str))
+    return "\n".join(str(part) for part in parts if str(part).strip())
+
+
+def _review_public_candidate_proof_steward(
+    repository: ResearchRepository,
+    request: PublicCandidateProofStewardRequest,
+) -> PublicCandidateProofStewardResult:
+    search = _search_public_candidate_proof_lineage(
+        repository,
+        PublicCandidateProofLineageSearchRequest(
+            candidate_ids=request.candidate_ids,
+            visibility=request.visibility,
+            query_terms=request.query_terms,
+            limit=request.limit,
+            brief_limit=request.brief_limit,
+            min_score=request.min_score,
+        ),
+    )
+    items: list[PublicCandidateProofStewardItem] = []
+    errors: list[str] = list(search.errors)
+    for search_item in search.items:
+        try:
+            items.append(_proof_steward_item_from_search(repository, search_item, request))
+        except Exception as exc:
+            errors.append(f"{search_item.candidate_id}: {exc}")
+            items.append(
+                PublicCandidateProofStewardItem(
+                    candidate_id=search_item.candidate_id,
+                    errors=[f"proof_steward_failed:{exc}"],
+                )
+            )
+    return PublicCandidateProofStewardResult(
+        repository_type=type(repository).__name__,
+        candidate_count=search.candidate_count,
+        recommendation_count=sum(1 for item in items if item.recommended_action == "attach_source_lineage"),
+        items=items,
+        errors=errors,
+    )
+
+
+def _proof_steward_item_from_search(
+    repository: ResearchRepository,
+    search_item: PublicCandidateProofLineageSearchItem,
+    request: PublicCandidateProofStewardRequest,
+) -> PublicCandidateProofStewardItem:
+    if search_item.errors:
+        return PublicCandidateProofStewardItem(
+            candidate_id=search_item.candidate_id,
+            snapshot_id=search_item.snapshot_id,
+            recommended_action="manual_review",
+            rationale="The steward could not inspect this candidate cleanly.",
+            warnings=search_item.warnings,
+            errors=search_item.errors,
+        )
+    if search_item.current_source_brief_ids:
+        return PublicCandidateProofStewardItem(
+            candidate_id=search_item.candidate_id,
+            snapshot_id=search_item.snapshot_id,
+            recommended_action="no_action",
+            confidence_score=1.0,
+            rationale="The candidate already has durable source brief lineage.",
+            warnings=search_item.warnings,
+        )
+    if not search_item.matches:
+        return PublicCandidateProofStewardItem(
+            candidate_id=search_item.candidate_id,
+            snapshot_id=search_item.snapshot_id,
+            recommended_action="needs_source_discovery",
+            rationale="No strong candidate source brief was found in the scanned research brief library.",
+            warnings=search_item.warnings,
+        )
+
+    top = search_item.matches[0]
+    repair_preview: PublicCandidateProofRepairItem | None = None
+    if request.auto_preview_repair:
+        repair = _repair_public_candidate_proof_lineage(
+            repository,
+            PublicCandidateProofRepairRequest(
+                candidate_ids=[search_item.candidate_id],
+                source_brief_id=top.brief_id,
+                source_evaluation_id=top.evaluation_id,
+            ),
+        )
+        repair_preview = repair.items[0] if repair.items else None
+    warnings = list(search_item.warnings)
+    if repair_preview is not None and repair_preview.after_unresolved_reference_count > 0:
+        warnings.append("repair_preview_leaves_unresolved_refs")
+    if top.score < 0.35:
+        warnings.append("low_confidence_source_match")
+
+    action = "attach_source_lineage" if top.score >= request.min_score else "manual_review"
+    rationale = (
+        "Attach the top matching research brief as candidate source lineage. "
+        f"The match scored {top.score:.2f} from term overlap"
+    )
+    if top.matched_reference_ids:
+        rationale += " plus local citation-reference overlap"
+    rationale += "."
+    return PublicCandidateProofStewardItem(
+        candidate_id=search_item.candidate_id,
+        snapshot_id=search_item.snapshot_id,
+        recommended_action=action,
+        proposed_source_brief_id=top.brief_id,
+        proposed_source_evaluation_id=top.evaluation_id,
+        confidence_score=top.score,
+        rationale=rationale,
+        matched_terms=top.matched_terms,
+        matched_reference_ids=top.matched_reference_ids,
+        repair_preview=repair_preview,
+        warnings=warnings,
+    )
+
+
 def _latest_public_candidate_snapshot(
     repository: ResearchRepository,
     candidate: PublicCandidateRecord,
@@ -7512,6 +7906,21 @@ def _generate_public_candidate_snapshot(
         ]
     )
     literature = _public_candidate_literature(repository, therapy_idea, citation_refs, validation_decisions)
+    source_lineage_policy = _public_candidate_generation_source_lineage_policy(
+        repository=repository,
+        therapy_idea=therapy_idea,
+        citation_refs=citation_refs,
+        literature=literature,
+    )
+    moonshot_gate = {**moonshot_gate, "source_lineage_policy": source_lineage_policy}
+    if request.require_source_lineage and not source_lineage_policy["ready"]:
+        return PublicCandidateSnapshotResult(
+            moonshot_gate=moonshot_gate,
+            errors=[
+                "public_candidate_requires_source_lineage",
+                *[f"source_lineage:{warning}" for warning in source_lineage_policy["warnings"]],
+            ],
+        )
     agent_run_ids = _dedupe_uuid_refs([therapy_idea.agent_run_id, therapy_idea.committee_run_id])
     agent_refs = _agent_run_manifest_refs(repository, agent_run_ids)
     trace_id = _first_uuid(
@@ -7556,6 +7965,16 @@ def _generate_public_candidate_snapshot(
         [
             *(therapy_idea.evidence_refs or []),
             *(str(therapy_idea.source_program_id) for _ in [therapy_idea] if therapy_idea.source_program_id),
+            *(
+                f"research_brief:{therapy_idea.source_brief_id}"
+                for _ in [therapy_idea]
+                if therapy_idea.source_brief_id
+            ),
+            *(
+                f"research_brief_evaluation:{therapy_idea.source_evaluation_id}"
+                for _ in [therapy_idea]
+                if therapy_idea.source_evaluation_id
+            ),
             *(decision.packet_id for decision in validation_decisions),
         ]
     )
@@ -7582,6 +8001,7 @@ def _generate_public_candidate_snapshot(
             **request.metadata,
             "source": "public_candidate_snapshot_generator",
             "moonshot_gate": moonshot_gate,
+            "source_lineage_policy": source_lineage_policy,
             "trace_id": str(trace_id),
             "run_manifest_id": str(manifest_id),
         },
@@ -7618,6 +8038,7 @@ def _generate_public_candidate_snapshot(
             **request.metadata,
             "latest_snapshot_version": snapshot.snapshot_version,
             "moonshot_gate": moonshot_gate,
+            "source_lineage_policy": source_lineage_policy,
             "snapshot_source": "therapy_idea",
             "trace_id": str(trace_id),
             "run_manifest_id": str(manifest_id),
@@ -7643,6 +8064,47 @@ def _generate_public_candidate_snapshot(
         moonshot_gate=moonshot_gate,
         errors=errors,
     )
+
+
+def _public_candidate_generation_source_lineage_policy(
+    *,
+    repository: ResearchRepository,
+    therapy_idea: TherapyIdeaRecord,
+    citation_refs: list[str],
+    literature: list[dict[str, Any]],
+) -> dict[str, Any]:
+    source_brief_ids = _dedupe_uuid_refs([therapy_idea.source_brief_id])
+    if therapy_idea.source_evaluation_id is not None:
+        evaluation = repository.get_research_brief_evaluation(therapy_idea.source_evaluation_id)
+        if evaluation is not None:
+            source_brief_ids.append(evaluation.brief_id)
+    source_brief_ids.extend(_source_brief_ids_from_programs(repository, _dedupe_uuid_refs([therapy_idea.source_program_id])))
+    source_brief_ids.extend(
+        _source_brief_ids_from_agent_runs(
+            repository,
+            _dedupe_uuid_refs([therapy_idea.agent_run_id, therapy_idea.committee_run_id]),
+        )
+    )
+    source_brief_ids = _dedupe_uuid_refs(source_brief_ids)
+    resolved_literature_count = sum(
+        1 for item in literature if isinstance(item, dict) and item.get("resolved") is True
+    )
+    source_citation_counts = _public_candidate_source_citation_counts(repository, source_brief_ids)
+    warnings: list[str] = []
+    if citation_refs and not source_brief_ids and resolved_literature_count == 0:
+        warnings.append("source_lineage_missing")
+    if citation_refs and source_brief_ids and not any(count > 0 for count in source_citation_counts.values()):
+        warnings.append("source_brief_has_no_citation_map")
+    ready = not citation_refs or bool(source_brief_ids) or resolved_literature_count > 0
+    return {
+        "ready": ready,
+        "citation_ref_count": len(citation_refs),
+        "source_brief_ids": [str(value) for value in source_brief_ids],
+        "source_evaluation_id": str(therapy_idea.source_evaluation_id) if therapy_idea.source_evaluation_id else None,
+        "source_citation_counts": source_citation_counts,
+        "resolved_literature_count": resolved_literature_count,
+        "warnings": warnings,
+    }
 
 
 _PUBLIC_CANDIDATE_MOONSHOT_TERMS = (

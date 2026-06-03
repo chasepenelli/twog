@@ -99,7 +99,9 @@ from hsa_research.ingestion_bridge.contracts import (
     PublicCandidateIntegrityReportRequest,
     PublicCandidateLibraryRequest,
     PublicCandidateProofCompileRequest,
+    PublicCandidateProofLineageSearchRequest,
     PublicCandidateProofRepairRequest,
+    PublicCandidateProofStewardRequest,
     PublicCandidateRecord,
     PublicCandidateSnapshot,
     RawSourceRecord,
@@ -1867,6 +1869,61 @@ def test_public_candidate_proof_repair_persists_source_evaluation_and_compiles()
     assert events[-1].event_id == item.decision_event_id
 
 
+def test_public_candidate_proof_lineage_search_finds_likely_source_brief():
+    repo = InMemoryResearchRepository()
+    ids = _seed_candidate_for_proof_repair(repo)
+    repo.upsert_research_brief(
+        ResearchBriefRecord(
+            brief_id=uuid4(),
+            topic="Unrelated macrophage immunology",
+            final_brief="This brief discusses unrelated immune context without the candidate mechanism.",
+            result_payload={"citations": [{"citation_id": "C1", "title": "Generic local label collision"}]},
+            citation_count=1,
+        )
+    )
+    service = HSAResearchService(repo)
+
+    report = service.search_public_candidate_proof_lineage(
+        PublicCandidateProofLineageSearchRequest(
+            candidate_ids=[ids["candidate_id"]],
+            brief_limit=50,
+            min_score=0.01,
+        )
+    )
+
+    item = report.items[0]
+    assert report.matched_candidate_count == 1
+    assert item.current_source_brief_ids == []
+    assert item.matches[0].brief_id == ids["brief_id"]
+    assert item.matches[0].evaluation_id == ids["evaluation_id"]
+    assert "candidate_term_overlap" in item.matches[0].reason_codes
+    assert item.matches[0].matched_reference_ids == ["C1", "C2"]
+
+
+def test_public_candidate_proof_steward_recommends_repair_without_mutation():
+    repo = InMemoryResearchRepository()
+    ids = _seed_candidate_for_proof_repair(repo)
+    service = HSAResearchService(repo)
+
+    report = service.review_public_candidate_proof_steward(
+        PublicCandidateProofStewardRequest(
+            candidate_ids=[ids["candidate_id"]],
+            brief_limit=50,
+            min_score=0.01,
+        )
+    )
+
+    item = report.items[0]
+    assert report.agent_name == "public_candidate_proof_steward_v1"
+    assert report.review_mode == "deterministic_recommend_only"
+    assert item.recommended_action == "attach_source_lineage"
+    assert item.proposed_source_brief_id == ids["brief_id"]
+    assert item.proposed_source_evaluation_id == ids["evaluation_id"]
+    assert item.repair_preview is not None
+    assert item.repair_preview.after_unresolved_reference_count == 0
+    assert repo.get_public_candidate(ids["candidate_id"]).source_brief_id is None
+
+
 def test_public_candidate_proof_compiler_uses_candidate_source_brief_for_citations():
     repo = InMemoryResearchRepository()
     service = HSAResearchService(repo)
@@ -2703,6 +2760,21 @@ def test_public_candidate_generation_weights_frontier_modalities_over_convention
     assert frontier["frontier_modality_weight"] == 0.9
     assert "mrna_personalized_vaccine" in frontier["matched_modalities"]
     assert result.moonshot_gate["weighted_score"] >= 0.8
+    assert result.moonshot_gate["source_lineage_policy"]["ready"] is False
+    assert "source_lineage_missing" in result.moonshot_gate["source_lineage_policy"]["warnings"]
+
+    blocked = service.generate_public_candidate_snapshot(
+        PublicCandidateGenerateRequest(
+            therapy_idea_id=idea.idea_id,
+            visibility="draft_public",
+            persist=False,
+            require_source_lineage=True,
+        )
+    )
+
+    assert blocked.candidate is None
+    assert "public_candidate_requires_source_lineage" in blocked.errors
+    assert "source_lineage:source_lineage_missing" in blocked.errors
 
 
 def test_validation_decision_report_promotes_broader_program_for_weak_specific_claim(tmp_path):
