@@ -7045,32 +7045,113 @@ _PUBLIC_CANDIDATE_LINEAGE_STOPWORDS = {
     "about",
     "after",
     "against",
+    "also",
+    "analysis",
+    "another",
     "around",
+    "back",
     "because",
     "brief",
     "candidate",
     "cancer",
     "canine",
+    "case",
+    "claim",
+    "claims",
+    "clinical",
+    "cohort",
+    "context",
     "could",
     "data",
     "disease",
+    "dog",
+    "dogs",
     "evidence",
+    "find",
+    "finding",
+    "follow",
+    "for",
     "from",
+    "generate",
+    "group",
     "hemangiosarcoma",
     "human",
     "idea",
+    "into",
     "lineage",
+    "logic",
+    "mechanism",
+    "more",
+    "next",
+    "note",
+    "notes",
+    "patient",
+    "patients",
     "public",
     "record",
     "repair",
     "research",
+    "review",
+    "shared",
+    "show",
+    "shows",
     "source",
+    "status",
     "strategy",
+    "study",
+    "supporting",
     "support",
+    "supports",
     "therapy",
+    "the",
     "this",
+    "three",
     "tumor",
+    "tumors",
+    "using",
+    "validation",
+    "will",
     "with",
+}
+
+_PUBLIC_CANDIDATE_LINEAGE_SPECIFIC_TERMS = {
+    "adc",
+    "car-t",
+    "doxorubicin",
+    "egfr",
+    "fidocure",
+    "kdr",
+    "mtor",
+    "mtorc1",
+    "pik3ca",
+    "ps6k1",
+    "rapamycin",
+    "sirna",
+    "sirolimus",
+    "tp53",
+    "vegfr",
+    "vegfr2",
+    "vim",
+}
+
+_PUBLIC_CANDIDATE_LINEAGE_OPERATIONAL_PHRASES = {
+    "citation dedupe",
+    "citation repair",
+    "duplicate citation",
+    "duplicate citations",
+    "integrity report",
+    "manifest repair",
+    "public candidate integrity",
+    "repair duplicate",
+    "run manifest",
+    "source health",
+    "source-health",
+}
+
+_PUBLIC_CANDIDATE_LINEAGE_RESEARCH_QUEUE_PHRASES = {
+    "follow up research gap",
+    "research lead:",
+    "review research lead",
 }
 
 
@@ -7130,6 +7211,31 @@ def _public_candidate_lineage_search_terms(
     return _dedupe_texts(terms)[:100]
 
 
+def _public_candidate_lineage_term_is_specific(term: str) -> bool:
+    stripped = term.strip()
+    lowered = stripped.lower()
+    if lowered in _PUBLIC_CANDIDATE_LINEAGE_SPECIFIC_TERMS:
+        return True
+    if any(char.isdigit() for char in stripped):
+        return True
+    if "-" in stripped and len(stripped) >= 4:
+        return True
+    if stripped.isupper() and 3 <= len(stripped) <= 12:
+        return True
+    if any(char.isupper() for char in stripped[1:]) and len(stripped) <= 16:
+        return True
+    return False
+
+
+def _public_candidate_lineage_operational_reason_codes(haystack_lower: str) -> list[str]:
+    reason_codes: list[str] = []
+    if any(phrase in haystack_lower for phrase in _PUBLIC_CANDIDATE_LINEAGE_OPERATIONAL_PHRASES):
+        reason_codes.append("operational_brief_penalty")
+    if any(phrase in haystack_lower for phrase in _PUBLIC_CANDIDATE_LINEAGE_RESEARCH_QUEUE_PHRASES):
+        reason_codes.append("research_queue_brief_penalty")
+    return reason_codes
+
+
 def _score_public_candidate_lineage_brief_match(
     *,
     repository: ResearchRepository,
@@ -7140,20 +7246,29 @@ def _score_public_candidate_lineage_brief_match(
     haystack = _research_brief_lineage_search_text(brief)
     haystack_lower = haystack.lower()
     matched_terms = [term for term in candidate_terms if term.lower() in haystack_lower]
+    specific_matched_terms = [
+        term for term in matched_terms if _public_candidate_lineage_term_is_specific(term)
+    ]
+    generic_matched_terms = [
+        term for term in matched_terms if not _public_candidate_lineage_term_is_specific(term)
+    ]
     citation_map = _citation_map_for_brief(brief)
     matched_refs = [ref for ref in citation_refs if _normalize_evidence_ref(ref) in citation_map]
     if not matched_terms and not matched_refs:
         return None
 
     evaluation = _latest_research_brief_evaluation(repository, brief)
-    score = min(0.7, len(matched_terms) * 0.08)
+    score = min(0.5, len(specific_matched_terms) * 0.12)
+    score += min(0.16, len(generic_matched_terms) * 0.025)
     if matched_terms:
-        score += min(0.2, len(matched_refs) * 0.025)
+        score += min(0.1, len(matched_refs) * 0.015)
     else:
-        score += min(0.08, len(matched_refs) * 0.01)
+        score += min(0.04, len(matched_refs) * 0.006)
     reason_codes: list[str] = []
-    if matched_terms:
-        reason_codes.append("candidate_term_overlap")
+    if specific_matched_terms:
+        reason_codes.append("candidate_specific_term_overlap")
+    if generic_matched_terms:
+        reason_codes.append("candidate_generic_term_overlap")
     if matched_refs:
         reason_codes.append("local_citation_ref_overlap")
     if evaluation is not None:
@@ -7166,6 +7281,13 @@ def _score_public_candidate_lineage_brief_match(
     if brief.status == "completed":
         score += 0.03
         reason_codes.append("brief_completed")
+    operational_reason_codes = _public_candidate_lineage_operational_reason_codes(haystack_lower)
+    if operational_reason_codes:
+        score -= 0.2
+        reason_codes.extend(operational_reason_codes)
+    if matched_refs and not specific_matched_terms:
+        score -= 0.08
+        reason_codes.append("citation_overlap_without_specific_terms")
 
     return PublicCandidateProofLineageSearchMatch(
         brief_id=brief.brief_id,
@@ -7178,7 +7300,7 @@ def _score_public_candidate_lineage_brief_match(
         citation_count=len(citation_map),
         matched_terms=matched_terms[:100],
         matched_reference_ids=matched_refs[:100],
-        score=min(1.0, round(score, 4)),
+        score=max(0.0, min(1.0, round(score, 4))),
         reason_codes=reason_codes,
     )
 
@@ -7278,10 +7400,27 @@ def _proof_steward_item_from_search(
         warnings.append("repair_preview_leaves_unresolved_refs")
     if top.score < 0.35:
         warnings.append("low_confidence_source_match")
+    if "candidate_specific_term_overlap" not in top.reason_codes:
+        warnings.append("specific_term_overlap_missing")
+    if "operational_brief_penalty" in top.reason_codes:
+        warnings.append("operational_source_match_requires_manual_review")
+    if "research_queue_brief_penalty" in top.reason_codes:
+        warnings.append("research_queue_source_match_requires_manual_review")
 
     action = "attach_source_lineage" if top.score >= request.min_score else "manual_review"
+    if any(
+        warning in warnings
+        for warning in (
+            "repair_preview_leaves_unresolved_refs",
+            "low_confidence_source_match",
+            "specific_term_overlap_missing",
+            "operational_source_match_requires_manual_review",
+            "research_queue_source_match_requires_manual_review",
+        )
+    ):
+        action = "manual_review"
     rationale = (
-        "Attach the top matching research brief as candidate source lineage. "
+        "Review the top matching research brief as candidate source lineage. "
         f"The match scored {top.score:.2f} from term overlap"
     )
     if top.matched_reference_ids:

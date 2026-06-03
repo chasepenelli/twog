@@ -1701,8 +1701,8 @@ def _seed_candidate_for_proof_repair(repo: InMemoryResearchRepository) -> dict[s
     repo.upsert_research_brief(
         ResearchBriefRecord(
             brief_id=brief_id,
-            topic="Citation proof repair",
-            final_brief="C1 and C2 support explicit public proof lineage.",
+            topic="KDR proof source brief",
+            final_brief="C1 and C2 support a KDR-focused candidate proof lineage.",
             result_payload={
                 "citations": [
                     {
@@ -1732,7 +1732,7 @@ def _seed_candidate_for_proof_repair(repo: InMemoryResearchRepository) -> dict[s
         ResearchBriefEvaluationRecord(
             evaluation_id=evaluation_id,
             brief_id=brief_id,
-            topic="Citation proof repair",
+            topic="KDR proof source brief",
             overall_score=0.92,
             passes_quality_bar=True,
             readiness="ready_for_hypothesis_review",
@@ -1896,7 +1896,7 @@ def test_public_candidate_proof_lineage_search_finds_likely_source_brief():
     assert item.current_source_brief_ids == []
     assert item.matches[0].brief_id == ids["brief_id"]
     assert item.matches[0].evaluation_id == ids["evaluation_id"]
-    assert "candidate_term_overlap" in item.matches[0].reason_codes
+    assert "candidate_specific_term_overlap" in item.matches[0].reason_codes
     assert item.matches[0].matched_reference_ids == ["C1", "C2"]
 
 
@@ -1922,6 +1922,43 @@ def test_public_candidate_proof_steward_recommends_repair_without_mutation():
     assert item.repair_preview is not None
     assert item.repair_preview.after_unresolved_reference_count == 0
     assert repo.get_public_candidate(ids["candidate_id"]).source_brief_id is None
+
+
+def test_public_candidate_proof_steward_manual_review_for_operational_match():
+    repo = InMemoryResearchRepository()
+    ids = _seed_candidate_for_proof_repair(repo)
+    repo.upsert_research_brief(
+        ResearchBriefRecord(
+            brief_id=ids["brief_id"],
+            topic="Source health gap review for KDR candidate citation repair",
+            final_brief="KDR C1 and C2 appear in an operational source health and citation repair note.",
+            result_payload={
+                "citations": [
+                    {"citation_id": "C1", "title": "Operational collision one"},
+                    {"citation_id": "C2", "title": "Operational collision two"},
+                ]
+            },
+            citation_count=2,
+            status="completed",
+        )
+    )
+    service = HSAResearchService(repo)
+
+    report = service.review_public_candidate_proof_steward(
+        PublicCandidateProofStewardRequest(
+            candidate_ids=[ids["candidate_id"]],
+            brief_limit=50,
+            min_score=0.01,
+        )
+    )
+
+    item = report.items[0]
+    assert item.proposed_source_brief_id == ids["brief_id"]
+    assert item.repair_preview is not None
+    assert item.repair_preview.after_unresolved_reference_count == 0
+    assert item.recommended_action == "manual_review"
+    assert "operational_source_match_requires_manual_review" in item.warnings
+    assert report.recommendation_count == 0
 
 
 def test_public_candidate_proof_compiler_uses_candidate_source_brief_for_citations():
