@@ -56,6 +56,11 @@ on:
         description: "Minimum proof lineage discovery score to return"
         required: false
         default: "0.15"
+      apply:
+        description: "Apply supported write-capable validation modes"
+        required: false
+        type: boolean
+        default: false
       limit:
         description: "Maximum records per active query"
         required: true
@@ -80,6 +85,7 @@ jobs:
       QUERY_TERMS: ${{ inputs.query_terms }}
       BRIEF_LIMIT: ${{ inputs.brief_limit }}
       MIN_SCORE: ${{ inputs.min_score }}
+      APPLY: ${{ inputs.apply }}
       LIMIT: ${{ inputs.limit }}
 
     steps:
@@ -161,6 +167,9 @@ jobs:
               fi
               if [ -n "$COMMIT_SHA" ]; then
                 args+=(--commit-sha "$COMMIT_SHA")
+              fi
+              if [ "$APPLY" = "true" ]; then
+                args+=(--apply)
               fi
               uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-proof-repair.json
               ;;
