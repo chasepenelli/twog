@@ -8185,6 +8185,18 @@ def _agent_run_lineage_diagnostic(
         "output_uuid_refs": _uuid_ref_paths(run.output_payload, prefix="output_payload"),
         "summary_uuid_refs": _uuid_ref_paths(run.summary, prefix="summary"),
         "metadata_uuid_refs": _uuid_ref_paths(run.metadata, prefix="metadata"),
+        "embedded_citation_counts": {
+            source_name: len(_citation_map_from_value(source))
+            for source_name, source in sources.items()
+        },
+        "brief_evaluation_shapes": {
+            source_name: _named_value_shapes(source, "brief_evaluation")
+            for source_name, source in sources.items()
+        },
+        "citation_token_paths": {
+            source_name: _citation_token_paths(source, prefix=source_name)
+            for source_name, source in sources.items()
+        },
         "lineage_keys": {
             source_name: {
                 "brief_id": [str(value) for value in _values_for_key(source, "brief_id") if str(value).strip()][:25],
@@ -8247,6 +8259,99 @@ def _uuid_ref_paths(value: Any, *, prefix: str, max_refs: int = 50, max_depth: i
                     return
         elif isinstance(item, list):
             for index, child in enumerate(item[:25]):
+                visit(child, f"{path}[{index}]", depth + 1)
+                if len(refs) >= max_refs:
+                    return
+
+    visit(value, prefix, 0)
+    return refs
+
+
+def _named_value_shapes(
+    value: Any,
+    key_name: str,
+    *,
+    max_values: int = 10,
+    max_depth: int = 6,
+) -> list[dict[str, Any]]:
+    shapes: list[dict[str, Any]] = []
+
+    def visit(item: Any, path: str, depth: int) -> None:
+        if len(shapes) >= max_values or depth > max_depth:
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                child_path = f"{path}.{key}"
+                if str(key) == key_name:
+                    shapes.append(_value_shape(child, child_path))
+                    if len(shapes) >= max_values:
+                        return
+                visit(child, child_path, depth + 1)
+                if len(shapes) >= max_values:
+                    return
+        elif isinstance(item, list):
+            for index, child in enumerate(item[:25]):
+                visit(child, f"{path}[{index}]", depth + 1)
+                if len(shapes) >= max_values:
+                    return
+
+    visit(value, "", 0)
+    return shapes
+
+
+def _value_shape(value: Any, path: str) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return {
+            "path": path.lstrip("."),
+            "type": "dict",
+            "keys": sorted(str(key) for key in value.keys())[:50],
+        }
+    if isinstance(value, list):
+        return {
+            "path": path.lstrip("."),
+            "type": "list",
+            "count": len(value),
+            "item_types": sorted({type(item).__name__ for item in value[:25]}),
+        }
+    text = str(value)
+    return {
+        "path": path.lstrip("."),
+        "type": type(value).__name__,
+        "preview": text[:240],
+    }
+
+
+def _citation_token_paths(
+    value: Any,
+    *,
+    prefix: str,
+    max_refs: int = 50,
+    max_depth: int = 8,
+) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+
+    def visit(item: Any, path: str, depth: int) -> None:
+        if len(refs) >= max_refs or depth > max_depth:
+            return
+        if isinstance(item, str):
+            for match in _CITATION_REF_TOKEN_PATTERN.finditer(item):
+                refs.append({"path": path, "value": match.group(1).upper()})
+                if len(refs) >= max_refs:
+                    return
+        elif isinstance(item, dict):
+            citation_id = item.get("citation_id")
+            if citation_id:
+                normalized = _normalize_evidence_ref(str(citation_id))
+                if _is_citation_ref(normalized):
+                    refs.append({"path": f"{path}.citation_id", "value": normalized})
+                    if len(refs) >= max_refs:
+                        return
+            for key, child in item.items():
+                visit(child, f"{path}.{key}", depth + 1)
+                if len(refs) >= max_refs:
+                    return
+        elif isinstance(item, list):
+            for index, child in enumerate(item[:100]):
                 visit(child, f"{path}[{index}]", depth + 1)
                 if len(refs) >= max_refs:
                     return
