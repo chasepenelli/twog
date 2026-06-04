@@ -87,6 +87,9 @@ from .contracts import (
     PublicCandidateProofCompileItem,
     PublicCandidateProofCompileRequest,
     PublicCandidateProofCompileResult,
+    PublicCandidatePublishItem,
+    PublicCandidatePublishRequest,
+    PublicCandidatePublishResult,
     PublicCandidateProofLineageSearchItem,
     PublicCandidateProofLineageSearchMatch,
     PublicCandidateProofLineageSearchRequest,
@@ -1557,6 +1560,15 @@ class HSAResearchService:
         return _compile_public_candidate_proofs(
             self.repository,
             request or PublicCandidateProofCompileRequest(),
+        )
+
+    def publish_public_candidates(
+        self,
+        request: PublicCandidatePublishRequest | None = None,
+    ) -> PublicCandidatePublishResult:
+        return _publish_public_candidates(
+            self.repository,
+            request or PublicCandidatePublishRequest(),
         )
 
     def repair_public_candidate_proof_lineage(
@@ -6442,6 +6454,163 @@ def _compile_public_candidate_proofs(
         items=items,
         errors=errors,
     )
+
+
+def _publish_public_candidates(
+    repository: ResearchRepository,
+    request: PublicCandidatePublishRequest,
+) -> PublicCandidatePublishResult:
+    if request.candidate_ids:
+        candidate_ids = list(request.candidate_ids)
+    else:
+        candidate_ids = [
+            candidate.candidate_id
+            for candidate in repository.list_public_candidates(
+                PublicCandidateLibraryRequest(visibility=request.visibility, limit=request.limit)
+            )
+        ]
+
+    items: list[PublicCandidatePublishItem] = []
+    errors: list[str] = []
+    for candidate_id in candidate_ids[: request.limit]:
+        try:
+            items.append(_publish_public_candidate(repository, candidate_id, request))
+        except Exception as exc:
+            errors.append(f"{candidate_id}: {exc}")
+            items.append(
+                PublicCandidatePublishItem(
+                    candidate_id=candidate_id,
+                    blocked_reasons=[f"publish_failed:{exc}"],
+                )
+            )
+
+    return PublicCandidatePublishResult(
+        repository_type=type(repository).__name__,
+        dry_run=request.dry_run,
+        candidate_count=len(candidate_ids[: request.limit]),
+        publish_ready_count=sum(1 for item in items if item.publish_ready),
+        published_count=sum(1 for item in items if item.published),
+        blocked_count=sum(1 for item in items if item.blocked_reasons),
+        already_public_count=sum(1 for item in items if item.already_public),
+        items=items,
+        errors=errors,
+    )
+
+
+def _publish_public_candidate(
+    repository: ResearchRepository,
+    candidate_id: str,
+    request: PublicCandidatePublishRequest,
+) -> PublicCandidatePublishItem:
+    candidate = repository.get_public_candidate(candidate_id)
+    integrity_report = _build_public_candidate_integrity_report(
+        repository,
+        PublicCandidateIntegrityReportRequest(candidate_ids=[candidate_id], limit=1),
+    )
+    check = integrity_report.checks[0] if integrity_report.checks else None
+
+    if candidate is None or check is None:
+        return PublicCandidatePublishItem(
+            candidate_id=candidate_id,
+            candidate_found=False,
+            blocked_reasons=["public_candidate_missing"],
+        )
+
+    snapshot = _latest_public_candidate_snapshot(repository, candidate)
+    prior_visibility = candidate.visibility
+    already_public = prior_visibility == "public"
+    blocked_reasons: list[str] = []
+    warnings: list[str] = []
+
+    if already_public:
+        warnings.append("already_public")
+    elif request.require_source_visibility and prior_visibility != request.require_source_visibility:
+        blocked_reasons.append(f"source_visibility_not_{request.require_source_visibility}:{prior_visibility}")
+
+    if request.require_strict_export_ready and not check.strict_export_ready:
+        blocked_reasons.append("strict_export_not_ready")
+    blocked_reasons.extend(f"integrity_problem:{problem}" for problem in check.problems)
+    blocking_warnings = _public_candidate_publish_blocking_warnings(check.public_readiness_warnings)
+    blocked_reasons.extend(f"readiness_warning:{warning}" for warning in blocking_warnings)
+    allowed_warnings = [
+        warning for warning in check.public_readiness_warnings if warning not in blocking_warnings
+    ]
+    warnings.extend(allowed_warnings)
+
+    publish_ready = bool(not already_public and not blocked_reasons)
+    event_id: UUID | None = None
+    published = False
+    if publish_ready and not request.dry_run:
+        now = datetime.now(UTC)
+        publish_metadata = {
+            "published_at": now.isoformat(),
+            "actor": request.actor,
+            "prior_visibility": prior_visibility,
+            "new_visibility": "public",
+            "strict_export_ready": check.strict_export_ready,
+            "run_manifest_id": str(check.run_manifest_id) if check.run_manifest_id else None,
+            "trace_id": str(check.trace_id) if check.trace_id else None,
+        }
+        updated_candidate = candidate.model_copy(
+            update={
+                "visibility": "public",
+                "updated_at": now,
+                "metadata": {
+                    **candidate.metadata,
+                    **request.metadata,
+                    "public_publish": publish_metadata,
+                },
+            }
+        )
+        repository.upsert_public_candidate(updated_candidate)
+        event_id = uuid5(
+            NAMESPACE_URL,
+            f"twog:public-candidate-event:{candidate.candidate_id}:"
+            f"{check.latest_snapshot_id or candidate.latest_snapshot_id}:visibility-public",
+        )
+        repository.append_public_candidate_decision_event(
+            PublicCandidateDecisionEvent(
+                event_id=event_id,
+                trace_id=check.trace_id,
+                candidate_id=candidate.candidate_id,
+                action="visibility_changed",
+                rationale_md=request.rationale_md,
+                actor=request.actor,
+                prior_status=candidate.public_status,
+                new_status=candidate.public_status,
+                related_snapshot_id=check.latest_snapshot_id or candidate.latest_snapshot_id,
+                metadata={
+                    **request.metadata,
+                    **publish_metadata,
+                    "dry_run": False,
+                    "allowed_warnings": allowed_warnings,
+                },
+            )
+        )
+        published = True
+
+    return PublicCandidatePublishItem(
+        candidate_id=candidate.candidate_id,
+        candidate_found=True,
+        prior_visibility=prior_visibility,
+        new_visibility="public" if publish_ready else prior_visibility,
+        public_status=check.public_status,
+        latest_snapshot_id=check.latest_snapshot_id or (snapshot.snapshot_id if snapshot else None),
+        trace_id=check.trace_id,
+        run_manifest_id=check.run_manifest_id,
+        strict_export_ready=check.strict_export_ready,
+        publish_ready=publish_ready,
+        published=published,
+        already_public=already_public,
+        decision_event_id=event_id,
+        blocked_reasons=blocked_reasons,
+        warnings=warnings,
+    )
+
+
+def _public_candidate_publish_blocking_warnings(warnings: list[str]) -> list[str]:
+    allowed = {"candidate_visibility_draft_public"}
+    return [warning for warning in warnings if warning not in allowed]
 
 
 def _compile_public_candidate_proof(

@@ -6698,6 +6698,7 @@ select {
 .home-shell .home-section-grid,
 .home-shell .home-principle-grid,
 .home-shell .proof-point-grid,
+.home-shell .frontier-lane-grid,
 .home-shell .validation-path-list {
   margin-inline: auto !important;
   max-width: var(--home-max) !important;
@@ -6754,12 +6755,14 @@ select {
 }
 
 .home-shell .home-thesis-section,
+.home-shell .home-frontier-section,
 .home-shell .home-validation-section {
   background: var(--paper-warm) !important;
 }
 
 .home-shell .home-principle-grid,
 .home-shell .proof-point-grid,
+.home-shell .frontier-lane-grid,
 .home-shell .validation-path-list {
   display: grid !important;
   gap: 0 !important;
@@ -6775,8 +6778,13 @@ select {
   grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
 }
 
+.home-shell .frontier-lane-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+}
+
 .home-shell .home-principle,
 .home-shell .proof-point,
+.home-shell .frontier-lane,
 .home-shell .validation-path-step,
 .home-shell .home-process-step {
   background: var(--white) !important;
@@ -6789,8 +6797,31 @@ select {
 
 .home-shell .home-principle + .home-principle,
 .home-shell .proof-point + .proof-point,
+.home-shell .frontier-lane + .frontier-lane,
 .home-shell .validation-path-step + .validation-path-step {
   border-left: 0 !important;
+}
+
+.home-shell .frontier-lane {
+  min-height: 10.5rem !important;
+}
+
+.home-shell .frontier-lane span {
+  color: var(--accent-ink) !important;
+  display: block !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.78rem !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.02em !important;
+  margin-bottom: 0.8rem !important;
+  text-transform: uppercase !important;
+}
+
+.home-shell .frontier-lane p {
+  color: var(--muted-ink) !important;
+  font-size: 0.95rem !important;
+  line-height: 1.55 !important;
+  margin: 0 !important;
 }
 
 .home-shell .home-principle span,
@@ -6882,12 +6913,14 @@ select {
 
   .home-shell .home-principle-grid,
   .home-shell .proof-point-grid,
+  .home-shell .frontier-lane-grid,
   .home-shell .validation-path-list {
     grid-template-columns: 1fr !important;
   }
 
   .home-shell .home-principle + .home-principle,
   .home-shell .proof-point + .proof-point,
+  .home-shell .frontier-lane + .frontier-lane,
   .home-shell .validation-path-step + .validation-path-step {
     border-left: 1px solid var(--line-strong) !important;
     border-top: 0 !important;
