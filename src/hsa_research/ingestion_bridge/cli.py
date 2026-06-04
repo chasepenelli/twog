@@ -49,6 +49,7 @@ from .contracts import (
     PublicCandidateLibraryRequest,
     PublicCandidateProofCompileRequest,
     PublicCandidateProofLineageSearchRequest,
+    PublicCandidatePublishRequest,
     PublicCandidateProofRepairRequest,
     PublicCandidateProofStewardRequest,
     ResearchBriefEvaluationRequest,
@@ -867,6 +868,39 @@ def main() -> None:
         "--apply",
         action="store_true",
         help="Persist compiled candidate, snapshot, manifest, and decision receipt",
+    )
+
+    public_candidate_publish = subparsers.add_parser(
+        "public-candidate-publish",
+        help="Preview or apply guarded promotion from draft-public to public visibility",
+    )
+    public_candidate_publish.add_argument(
+        "--candidate-id",
+        action="append",
+        default=[],
+        help="Candidate ID to publish; repeatable",
+    )
+    public_candidate_publish.add_argument(
+        "--visibility",
+        default="draft_public",
+        help="Optional visibility sample filter when candidate IDs are omitted",
+    )
+    public_candidate_publish.add_argument("--limit", type=int, default=100, help="Maximum sampled records")
+    public_candidate_publish.add_argument(
+        "--allow-any-source-visibility",
+        action="store_true",
+        help="Do not require current visibility to be draft_public before publishing",
+    )
+    public_candidate_publish.add_argument("--actor", default="public_candidate_publish_operator")
+    public_candidate_publish.add_argument(
+        "--rationale",
+        default="Published after strict export readiness checks passed.",
+        help="Decision-log rationale for an applied publish",
+    )
+    public_candidate_publish.add_argument(
+        "--apply",
+        action="store_true",
+        help="Persist visibility=public and append a decision receipt",
     )
 
     public_candidate_proof_repair = subparsers.add_parser(
@@ -2969,6 +3003,18 @@ def main() -> None:
                 pipeline_version=args.pipeline_version,
                 commit_sha=args.commit_sha,
                 persist=args.apply,
+            )
+        ).model_dump(mode="json")
+    elif args.command == "public-candidate-publish":
+        output = HSAResearchService(repo).publish_public_candidates(
+            PublicCandidatePublishRequest(
+                candidate_ids=args.candidate_id,
+                visibility=args.visibility,
+                limit=args.limit,
+                dry_run=not args.apply,
+                require_source_visibility=None if args.allow_any_source_visibility else "draft_public",
+                actor=args.actor,
+                rationale_md=args.rationale,
             )
         ).model_dump(mode="json")
     elif args.command == "public-candidate-proof-repair":

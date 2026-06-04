@@ -303,6 +303,7 @@ PublicCandidateDecisionAction = Literal[
     "archived",
     "annotated",
     "status_changed",
+    "visibility_changed",
     "snapshot_generated",
 ]
 
@@ -5630,6 +5631,66 @@ class PublicCandidateProofCompileResult(StrictBaseModel):
     strict_export_ready_count: int = 0
     public_publish_ready_count: int = 0
     items: list[PublicCandidateProofCompileItem] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PublicCandidatePublishRequest(StrictBaseModel):
+    candidate_ids: list[str] = Field(default_factory=list, max_length=50)
+    visibility: PublicCandidateVisibility | None = "draft_public"
+    limit: int = Field(default=100, ge=1, le=500)
+    dry_run: bool = True
+    require_strict_export_ready: bool = True
+    require_source_visibility: PublicCandidateVisibility | None = "draft_public"
+    actor: str = Field(default="public_candidate_publish_operator", max_length=200)
+    rationale_md: str = Field(
+        default="Published after strict export readiness checks passed.",
+        max_length=4000,
+    )
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_publish_request(self) -> "PublicCandidatePublishRequest":
+        self.candidate_ids = _dedupe_strings(self.candidate_ids)
+        self.actor = self.actor.strip() or "public_candidate_publish_operator"
+        self.rationale_md = self.rationale_md.strip() or "Published after strict export readiness checks passed."
+        return self
+
+
+class PublicCandidatePublishItem(StrictBaseModel):
+    candidate_id: str = Field(min_length=3, max_length=260)
+    candidate_found: bool = False
+    prior_visibility: PublicCandidateVisibility | None = None
+    new_visibility: PublicCandidateVisibility | None = None
+    public_status: PublicCandidateStatus | None = None
+    latest_snapshot_id: UUID | None = None
+    trace_id: UUID | None = None
+    run_manifest_id: UUID | None = None
+    strict_export_ready: bool = False
+    publish_ready: bool = False
+    published: bool = False
+    already_public: bool = False
+    decision_event_id: UUID | None = None
+    blocked_reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def normalize_public_candidate_publish_item(self) -> "PublicCandidatePublishItem":
+        self.candidate_id = self.candidate_id.strip()
+        self.blocked_reasons = _dedupe_strings(self.blocked_reasons)
+        self.warnings = _dedupe_strings(self.warnings)
+        return self
+
+
+class PublicCandidatePublishResult(StrictBaseModel):
+    repository_type: str
+    dry_run: bool = True
+    candidate_count: int = 0
+    publish_ready_count: int = 0
+    published_count: int = 0
+    blocked_count: int = 0
+    already_public_count: int = 0
+    items: list[PublicCandidatePublishItem] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

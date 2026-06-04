@@ -32,6 +32,14 @@ const PROOF_POINTS = [
   ['Next Test', 'The readout that would actually change confidence.'],
 ] as const;
 
+const FRONTIER_LANES = [
+  ['mRNA vaccines', 'personalized neoantigen strategies for tumor-specific immune pressure'],
+  ['Cell therapies', 'engineered immune-cell concepts when a target and delivery path are credible'],
+  ['ADCs', 'surface-marker targeting with payload logic and safety constraints attached'],
+  ['Peptide PROTACs', 'stapled or cell-penetrant peptides that can degrade survival machinery'],
+  ['Targeted molecules', 'mutation-selective or synthetic-lethal approaches with measurable biomarkers'],
+] as const;
+
 const VALIDATION_PATH = [
   ['Proof record', 'Inspectable thesis, evidence, methods, status, and decision history.'],
   ['ProofCapsule', 'Structured outside work that can be reviewed without mutating the public record.'],
@@ -108,7 +116,41 @@ export default function Home() {
               infrastructure for overlooked disease areas where evidence exists but
               decision infrastructure does not.
             </p>
+            <p>
+              The near-term mission is direct: find therapy paths worth testing for
+              hemangiosarcoma, preserve the proof around why they matter, and move the
+              best candidates toward collaborators who can pressure-test them.
+            </p>
           </div>
+        </div>
+      </section>
+
+      <section className="home-section home-frontier-section" data-marker="MOONSHOT LANE / FRONTIER THERAPIES">
+        <div className="home-section-grid">
+          <div className="home-section-header">
+            <p className="section-kicker">Moonshot lane</p>
+            <h2>The system is biased toward frontier therapy ideas, not incremental noise.</h2>
+          </div>
+          <div className="home-section-copy">
+            <p>
+              TWOG now weights frontier modality fit heavily when deciding what deserves
+              the public candidate layer. Conventional evidence still matters, but it
+              should not trap an underfunded disease inside yesterday&apos;s playbook.
+            </p>
+            <p>
+              The point is not to hype every speculative lead. It is to force big ideas
+              into a stricter shape: mechanism, evidence, biomarkers, risks, readouts,
+              failure criteria, and the next experiment that would change confidence.
+            </p>
+          </div>
+        </div>
+        <div className="frontier-lane-grid">
+          {FRONTIER_LANES.map(([label, text]) => (
+            <article className="frontier-lane" key={label}>
+              <span>{label}</span>
+              <p>{text}</p>
+            </article>
+          ))}
         </div>
       </section>
 

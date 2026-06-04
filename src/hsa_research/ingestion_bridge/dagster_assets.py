@@ -38,6 +38,7 @@ from .contracts import (
     PublicCandidateGenerateRequest,
     PublicCandidateIntegrityReportRequest,
     PublicCandidateProofCompileRequest,
+    PublicCandidatePublishRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
     ResearchBriefQualityReportRequest,
@@ -369,6 +370,19 @@ _PUBLIC_CANDIDATE_PROOF_COMPILE_TABLE_COLUMNS = (
     "public_publish_ready_after_compile",
     "warnings",
     "errors",
+)
+_PUBLIC_CANDIDATE_PUBLISH_TABLE_COLUMNS = (
+    "candidate_id",
+    "prior_visibility",
+    "new_visibility",
+    "public_status",
+    "strict_export_ready",
+    "publish_ready",
+    "published",
+    "already_public",
+    "decision_event_id",
+    "blocked_reasons",
+    "warnings",
 )
 _HYPOTHESIS_PROMOTION_TABLE_COLUMNS = (
     "candidate_id",
@@ -1567,6 +1581,39 @@ if dg is not None:
             "public_publish_ready_count": dg.MetadataValue.int(int(report.get("public_publish_ready_count") or 0)),
             "errors": dg.MetadataValue.json(report.get("errors", [])),
             "items": _metadata_table(rows, _PUBLIC_CANDIDATE_PROOF_COMPILE_TABLE_COLUMNS),
+        }
+
+    def _public_candidate_publish_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        items = report.get("items") if isinstance(report.get("items"), Sequence) else []
+        rows = []
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            rows.append(
+                {
+                    "candidate_id": item.get("candidate_id"),
+                    "prior_visibility": item.get("prior_visibility"),
+                    "new_visibility": item.get("new_visibility"),
+                    "public_status": item.get("public_status"),
+                    "strict_export_ready": item.get("strict_export_ready"),
+                    "publish_ready": item.get("publish_ready"),
+                    "published": item.get("published"),
+                    "already_public": item.get("already_public"),
+                    "decision_event_id": item.get("decision_event_id"),
+                    "blocked_reasons": ", ".join(item.get("blocked_reasons") or []),
+                    "warnings": ", ".join(item.get("warnings") or []),
+                }
+            )
+        return {
+            "repository_type": dg.MetadataValue.text(str(report.get("repository_type") or "")),
+            "dry_run": dg.MetadataValue.bool(bool(report.get("dry_run"))),
+            "candidate_count": dg.MetadataValue.int(int(report.get("candidate_count") or 0)),
+            "publish_ready_count": dg.MetadataValue.int(int(report.get("publish_ready_count") or 0)),
+            "published_count": dg.MetadataValue.int(int(report.get("published_count") or 0)),
+            "blocked_count": dg.MetadataValue.int(int(report.get("blocked_count") or 0)),
+            "already_public_count": dg.MetadataValue.int(int(report.get("already_public_count") or 0)),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "items": _metadata_table(rows, _PUBLIC_CANDIDATE_PUBLISH_TABLE_COLUMNS),
         }
 
     def _hypothesis_promotion_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -4620,6 +4667,76 @@ if dg is not None:
             )
         ).model_dump(mode="json")
         return dg.MaterializeResult(value=report, metadata=_public_candidate_proof_compile_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "candidate_ids": dg.Field(
+                str,
+                default_value="",
+                description="Comma-separated public candidate IDs to publish.",
+            ),
+            "visibility": dg.Field(
+                str,
+                default_value="draft_public",
+                description="Visibility sample filter when candidate IDs are omitted.",
+            ),
+            "limit": dg.Field(int, default_value=100),
+            "dry_run": dg.Field(
+                bool,
+                default_value=True,
+                description="Preview by default. Set false to persist visibility=public.",
+            ),
+            "require_source_visibility": dg.Field(
+                str,
+                default_value="draft_public",
+                description="Required current visibility before publish; set empty to disable.",
+            ),
+            "actor": dg.Field(str, default_value="public_candidate_publish_operator"),
+            "rationale": dg.Field(
+                str,
+                default_value="Published after strict export readiness checks passed.",
+                description="Decision-log rationale for live publish.",
+            ),
+            "fail_on_blocked": dg.Field(
+                bool,
+                default_value=False,
+                description="Fail when no checked candidate is publish-ready or when blockers are present.",
+            ),
+        },
+    )
+    def public_candidate_publish_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Guarded public visibility promotion for already-compiled candidate records."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        require_source_visibility = str(config.get("require_source_visibility") or "").strip() or None
+        report = HSAResearchService(repository).publish_public_candidates(
+            PublicCandidatePublishRequest(
+                candidate_ids=_csv_values(config.get("candidate_ids")),
+                visibility=config.get("visibility") or None,
+                limit=config.get("limit", 100),
+                dry_run=bool(config.get("dry_run", True)),
+                require_source_visibility=require_source_visibility,
+                actor=config.get("actor") or "public_candidate_publish_operator",
+                rationale_md=config.get("rationale") or "Published after strict export readiness checks passed.",
+                metadata={"dagster_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        metadata = _public_candidate_publish_metadata(report)
+        if config.get("fail_on_blocked", False) and (
+            int(report.get("publish_ready_count") or 0) == 0 or int(report.get("blocked_count") or 0) > 0
+        ):
+            raise dg.Failure(
+                description=f"Public candidate publish gate blocked: {json.dumps(report, sort_keys=True, default=str)}",
+                metadata=metadata,
+            )
+        return dg.MaterializeResult(value=report, metadata=metadata)
 
     @dg.asset(
         group_name="ai_research",
@@ -8464,6 +8581,7 @@ if dg is not None:
         public_candidate_snapshot_report,
         public_candidate_integrity_report,
         public_candidate_proof_compile_report,
+        public_candidate_publish_report,
         hypothesis_promotion_report,
         validation_packet_report,
         validation_decision_report,
@@ -8680,6 +8798,10 @@ if dg is not None:
     public_candidate_proof_compile_job = dg.define_asset_job(
         "public_candidate_proof_compile_job",
         selection=dg.AssetSelection.assets(public_candidate_proof_compile_report),
+    )
+    public_candidate_publish_job = dg.define_asset_job(
+        "public_candidate_publish_job",
+        selection=dg.AssetSelection.assets(public_candidate_publish_report),
     )
     hypothesis_promotion_job = dg.define_asset_job(
         "hypothesis_promotion_job",
@@ -9123,6 +9245,7 @@ if dg is not None:
             public_candidate_snapshot_job,
             public_candidate_integrity_job,
             public_candidate_proof_compile_job,
+            public_candidate_publish_job,
             hypothesis_promotion_job,
             validation_packet_job,
             validation_decision_job,
@@ -9248,6 +9371,7 @@ else:
     public_candidate_snapshot_job = None
     public_candidate_integrity_job = None
     public_candidate_proof_compile_job = None
+    public_candidate_publish_job = None
     hypothesis_promotion_job = None
     validation_packet_job = None
     validation_decision_job = None

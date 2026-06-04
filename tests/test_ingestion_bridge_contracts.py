@@ -100,6 +100,7 @@ from hsa_research.ingestion_bridge.contracts import (
     PublicCandidateLibraryRequest,
     PublicCandidateProofCompileRequest,
     PublicCandidateProofLineageSearchRequest,
+    PublicCandidatePublishRequest,
     PublicCandidateProofRepairRequest,
     PublicCandidateProofStewardRequest,
     PublicCandidateRecord,
@@ -1528,6 +1529,164 @@ def test_public_candidate_integrity_report_flags_missing_source_and_manifest():
     assert ready.candidates_with_unverifiable_commit == [candidate_id]
     assert ready.candidates_ready_for_strict_export == [candidate_id]
     assert ready.candidates_ready_for_public_publish == []
+
+
+def test_public_candidate_publish_previews_then_applies_visibility_change():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    candidate_id = "twog-candidate-publish-ready"
+    therapy_idea_id = uuid4()
+    snapshot_id = uuid4()
+    trace_id = uuid4()
+    manifest_id = uuid4()
+
+    idea = TherapyIdea(
+        title="Publish-ready therapy idea",
+        hypothesis="A candidate with durable proof receipts can be published.",
+        rationale="Used to test guarded public candidate visibility promotion.",
+        candidate_therapies=["frontier therapy"],
+        targets=["KDR"],
+        evidence_refs=["C1"],
+        priority_score=0.9,
+    ).model_copy(update={"idea_id": therapy_idea_id})
+    repo.upsert_therapy_idea(TherapyIdeaRecord(idea=idea, status="ready_for_promotion", score=0.9))
+    candidate = PublicCandidateRecord(
+        candidate_id=candidate_id,
+        trace_id=trace_id,
+        title="Publish-ready candidate",
+        public_status="investigating",
+        visibility="draft_public",
+        therapy_idea_id=therapy_idea_id,
+        latest_snapshot_id=snapshot_id,
+        content_hash="hash-publish-ready",
+    )
+    snapshot = PublicCandidateSnapshot(
+        snapshot_id=snapshot_id,
+        trace_id=trace_id,
+        candidate_id=candidate_id,
+        snapshot_version=1,
+        content_hash="hash-publish-ready",
+        title="Publish-ready candidate",
+        public_status="investigating",
+        commit_sha="abc123",
+        metadata={"run_manifest_id": str(manifest_id), "trace_id": str(trace_id)},
+        payload={
+            "literature": [{"ref": "C1", "title": "Resolved source", "resolved": True}],
+            "reproducibility": {
+                "run_manifest_id": str(manifest_id),
+                "trace_id": str(trace_id),
+                "commit_sha": "abc123",
+            },
+        },
+    )
+    repo.upsert_public_candidate(candidate)
+    repo.upsert_public_candidate_snapshot(snapshot)
+    repo.upsert_run_manifest(
+        RunManifestRecord(
+            manifest_id=manifest_id,
+            trace_id=trace_id,
+            manifest_type="public_candidate_snapshot",
+            status="completed",
+            candidate_ids=[candidate_id],
+            therapy_idea_ids=[therapy_idea_id],
+        )
+    )
+
+    preview = service.publish_public_candidates(PublicCandidatePublishRequest(candidate_ids=[candidate_id]))
+
+    assert preview.dry_run is True
+    assert preview.publish_ready_count == 1
+    assert preview.published_count == 0
+    assert preview.blocked_count == 0
+    assert preview.items[0].publish_ready is True
+    assert preview.items[0].warnings == ["candidate_visibility_draft_public"]
+    assert repo.get_public_candidate(candidate_id).visibility == "draft_public"
+    assert repo.list_public_candidate_decision_events(candidate_id=candidate_id) == []
+
+    applied = service.publish_public_candidates(
+        PublicCandidatePublishRequest(
+            candidate_ids=[candidate_id],
+            dry_run=False,
+            actor="test_operator",
+            rationale_md="Publish after test readiness gate.",
+        )
+    )
+
+    assert applied.dry_run is False
+    assert applied.publish_ready_count == 1
+    assert applied.published_count == 1
+    assert applied.items[0].published is True
+    assert applied.items[0].decision_event_id is not None
+    stored = repo.get_public_candidate(candidate_id)
+    assert stored.visibility == "public"
+    assert stored.metadata["public_publish"]["actor"] == "test_operator"
+    events = repo.list_public_candidate_decision_events(candidate_id=candidate_id)
+    assert len(events) == 1
+    assert events[0].action == "visibility_changed"
+    assert events[0].actor == "test_operator"
+    assert events[0].rationale_md == "Publish after test readiness gate."
+
+    ready = service.build_public_candidate_integrity_report(
+        PublicCandidateIntegrityReportRequest(candidate_ids=[candidate_id])
+    )
+    assert ready.public_publish_ready is True
+    assert ready.checks[0].visibility == "public"
+
+
+def test_public_candidate_publish_blocks_non_ready_candidate():
+    repo = InMemoryResearchRepository()
+    service = HSAResearchService(repo)
+    candidate_id = "twog-candidate-publish-blocked"
+    snapshot_id = uuid4()
+    trace_id = uuid4()
+    manifest_id = uuid4()
+    candidate = PublicCandidateRecord(
+        candidate_id=candidate_id,
+        trace_id=trace_id,
+        title="Blocked candidate",
+        public_status="draft",
+        visibility="draft_public",
+        latest_snapshot_id=snapshot_id,
+        content_hash="hash-blocked",
+    )
+    snapshot = PublicCandidateSnapshot(
+        snapshot_id=snapshot_id,
+        trace_id=trace_id,
+        candidate_id=candidate_id,
+        snapshot_version=1,
+        content_hash="hash-blocked",
+        title="Blocked candidate",
+        public_status="draft",
+        metadata={"run_manifest_id": str(manifest_id), "trace_id": str(trace_id)},
+        payload={
+            "literature": [{"ref": "C9", "title": "Unresolved source", "resolved": False}],
+            "reproducibility": {"run_manifest_id": str(manifest_id), "trace_id": str(trace_id)},
+        },
+    )
+    repo.upsert_public_candidate(candidate)
+    repo.upsert_public_candidate_snapshot(snapshot)
+    repo.upsert_run_manifest(
+        RunManifestRecord(
+            manifest_id=manifest_id,
+            trace_id=trace_id,
+            manifest_type="public_candidate_snapshot",
+            status="completed",
+            candidate_ids=[candidate_id],
+        )
+    )
+
+    result = service.publish_public_candidates(
+        PublicCandidatePublishRequest(candidate_ids=[candidate_id], dry_run=False)
+    )
+
+    assert result.published_count == 0
+    assert result.blocked_count == 1
+    assert result.items[0].publish_ready is False
+    assert "readiness_warning:public_status_draft" in result.items[0].blocked_reasons
+    assert "readiness_warning:unresolved_references:1" in result.items[0].blocked_reasons
+    assert "readiness_warning:commit_unverifiable:missing" in result.items[0].blocked_reasons
+    assert repo.get_public_candidate(candidate_id).visibility == "draft_public"
+    assert repo.list_public_candidate_decision_events(candidate_id=candidate_id) == []
 
 
 def test_public_candidate_proof_compiler_repairs_manifest_and_resolves_citations():
@@ -24436,6 +24595,7 @@ def test_dagster_exposes_source_followup_jobs():
     assert dagster_asset_module.pubmed_identifier_repair_job is not None
     assert dagster_asset_module.validation_gap_source_ingest_job is not None
     assert dagster_asset_module.research_followup_resolver_job is not None
+    assert dagster_asset_module.public_candidate_publish_job is not None
     assert dagster_asset_module.validation_autopilot_hourly_schedule is not None
     assert dagster_asset_module.validation_autopilot_hourly_schedule.cron_schedule == "0 * * * *"
 

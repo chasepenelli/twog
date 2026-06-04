@@ -12,6 +12,7 @@ on:
           - "structured_source"
           - "public_candidate_integrity"
           - "public_candidate_proof_compile"
+          - "public_candidate_publish"
           - "public_candidate_proof_repair"
           - "public_candidate_proof_lineage_search"
           - "public_candidate_proof_steward"
@@ -147,6 +148,19 @@ jobs:
                 args+=(--commit-sha "$COMMIT_SHA")
               fi
               uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-proof-compile.json
+              ;;
+            public_candidate_publish)
+              args=(public-candidate-publish --limit "$LIMIT")
+              if [ -n "$CANDIDATE_ID" ]; then
+                args+=(--candidate-id "$CANDIDATE_ID")
+              fi
+              if [ -n "$VISIBILITY" ]; then
+                args+=(--visibility "$VISIBILITY")
+              fi
+              if [ "$APPLY" = "true" ]; then
+                args+=(--apply)
+              fi
+              uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-publish.json
               ;;
             public_candidate_proof_repair)
               args=(public-candidate-proof-repair --limit "$LIMIT")
