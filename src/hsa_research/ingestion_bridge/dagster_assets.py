@@ -37,6 +37,8 @@ from .contracts import (
     PubMedIdentifierRepairRequest,
     PublicCandidateGenerateRequest,
     PublicCandidateIntegrityReportRequest,
+    PublicCandidateProofCompileRequest,
+    PublicCandidatePublishRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
     ResearchBriefQualityReportRequest,
@@ -341,14 +343,46 @@ _PUBLIC_CANDIDATE_GATE_TABLE_COLUMNS = (
 )
 _PUBLIC_CANDIDATE_INTEGRITY_TABLE_COLUMNS = (
     "candidate_id",
+    "visibility",
+    "public_status",
     "candidate_found",
     "therapy_idea_found",
     "latest_snapshot_found",
     "trace_id",
     "run_manifest_id",
     "run_manifest_found",
+    "unresolved_reference_count",
     "strict_export_ready",
+    "public_publish_ready",
     "problems",
+    "public_readiness_warnings",
+)
+_PUBLIC_CANDIDATE_PROOF_COMPILE_TABLE_COLUMNS = (
+    "candidate_id",
+    "snapshot_id",
+    "trace_id",
+    "run_manifest_id",
+    "manifest_found_before",
+    "manifest_written",
+    "resolved_reference_count",
+    "unresolved_reference_count",
+    "strict_export_ready_after_compile",
+    "public_publish_ready_after_compile",
+    "warnings",
+    "errors",
+)
+_PUBLIC_CANDIDATE_PUBLISH_TABLE_COLUMNS = (
+    "candidate_id",
+    "prior_visibility",
+    "new_visibility",
+    "public_status",
+    "strict_export_ready",
+    "publish_ready",
+    "published",
+    "already_public",
+    "decision_event_id",
+    "blocked_reasons",
+    "warnings",
 )
 _HYPOTHESIS_PROMOTION_TABLE_COLUMNS = (
     "candidate_id",
@@ -1472,19 +1506,25 @@ if dg is not None:
             rows.append(
                 {
                     "candidate_id": check.get("candidate_id"),
+                    "visibility": check.get("visibility"),
+                    "public_status": check.get("public_status"),
                     "candidate_found": check.get("candidate_found"),
                     "therapy_idea_found": check.get("therapy_idea_found"),
                     "latest_snapshot_found": check.get("latest_snapshot_found"),
                     "trace_id": check.get("trace_id"),
                     "run_manifest_id": check.get("run_manifest_id"),
                     "run_manifest_found": check.get("run_manifest_found"),
+                    "unresolved_reference_count": check.get("unresolved_reference_count"),
                     "strict_export_ready": check.get("strict_export_ready"),
+                    "public_publish_ready": check.get("public_publish_ready"),
                     "problems": ", ".join(check.get("problems") or []),
+                    "public_readiness_warnings": ", ".join(check.get("public_readiness_warnings") or []),
                 }
             )
         return {
             "repository_type": dg.MetadataValue.text(str(report.get("repository_type") or "")),
             "strict_export_ready": dg.MetadataValue.bool(bool(report.get("strict_export_ready"))),
+            "public_publish_ready": dg.MetadataValue.bool(bool(report.get("public_publish_ready"))),
             "candidate_sample_count": dg.MetadataValue.int(int(report.get("candidate_sample_count") or 0)),
             "snapshot_sample_count": dg.MetadataValue.int(int(report.get("snapshot_sample_count") or 0)),
             "therapy_idea_sample_count": dg.MetadataValue.int(int(report.get("therapy_idea_sample_count") or 0)),
@@ -1494,7 +1534,86 @@ if dg is not None:
             "candidates_missing_manifest_receipt": dg.MetadataValue.json(
                 report.get("candidates_missing_manifest_receipt", [])
             ),
+            "draft_public_candidate_ids": dg.MetadataValue.json(report.get("draft_public_candidate_ids", [])),
+            "candidates_with_unresolved_references": dg.MetadataValue.json(
+                report.get("candidates_with_unresolved_references", [])
+            ),
+            "candidates_with_unverifiable_commit": dg.MetadataValue.json(
+                report.get("candidates_with_unverifiable_commit", [])
+            ),
+            "candidates_ready_for_public_publish": dg.MetadataValue.json(
+                report.get("candidates_ready_for_public_publish", [])
+            ),
+            "public_readiness_warnings": dg.MetadataValue.json(report.get("public_readiness_warnings", [])),
             "checks": _metadata_table(rows, _PUBLIC_CANDIDATE_INTEGRITY_TABLE_COLUMNS),
+        }
+
+    def _public_candidate_proof_compile_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        items = report.get("items") if isinstance(report.get("items"), Sequence) else []
+        rows = []
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            rows.append(
+                {
+                    "candidate_id": item.get("candidate_id"),
+                    "snapshot_id": item.get("snapshot_id"),
+                    "trace_id": item.get("trace_id"),
+                    "run_manifest_id": item.get("run_manifest_id"),
+                    "manifest_found_before": item.get("manifest_found_before"),
+                    "manifest_written": item.get("manifest_written"),
+                    "resolved_reference_count": item.get("resolved_reference_count"),
+                    "unresolved_reference_count": item.get("unresolved_reference_count"),
+                    "strict_export_ready_after_compile": item.get("strict_export_ready_after_compile"),
+                    "public_publish_ready_after_compile": item.get("public_publish_ready_after_compile"),
+                    "warnings": ", ".join(item.get("warnings") or []),
+                    "errors": ", ".join(item.get("errors") or []),
+                }
+            )
+        return {
+            "repository_type": dg.MetadataValue.text(str(report.get("repository_type") or "")),
+            "persist": dg.MetadataValue.bool(bool(report.get("persist"))),
+            "candidate_count": dg.MetadataValue.int(int(report.get("candidate_count") or 0)),
+            "compiled_count": dg.MetadataValue.int(int(report.get("compiled_count") or 0)),
+            "manifest_written_count": dg.MetadataValue.int(int(report.get("manifest_written_count") or 0)),
+            "unresolved_candidate_count": dg.MetadataValue.int(int(report.get("unresolved_candidate_count") or 0)),
+            "strict_export_ready_count": dg.MetadataValue.int(int(report.get("strict_export_ready_count") or 0)),
+            "public_publish_ready_count": dg.MetadataValue.int(int(report.get("public_publish_ready_count") or 0)),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "items": _metadata_table(rows, _PUBLIC_CANDIDATE_PROOF_COMPILE_TABLE_COLUMNS),
+        }
+
+    def _public_candidate_publish_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        items = report.get("items") if isinstance(report.get("items"), Sequence) else []
+        rows = []
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            rows.append(
+                {
+                    "candidate_id": item.get("candidate_id"),
+                    "prior_visibility": item.get("prior_visibility"),
+                    "new_visibility": item.get("new_visibility"),
+                    "public_status": item.get("public_status"),
+                    "strict_export_ready": item.get("strict_export_ready"),
+                    "publish_ready": item.get("publish_ready"),
+                    "published": item.get("published"),
+                    "already_public": item.get("already_public"),
+                    "decision_event_id": item.get("decision_event_id"),
+                    "blocked_reasons": ", ".join(item.get("blocked_reasons") or []),
+                    "warnings": ", ".join(item.get("warnings") or []),
+                }
+            )
+        return {
+            "repository_type": dg.MetadataValue.text(str(report.get("repository_type") or "")),
+            "dry_run": dg.MetadataValue.bool(bool(report.get("dry_run"))),
+            "candidate_count": dg.MetadataValue.int(int(report.get("candidate_count") or 0)),
+            "publish_ready_count": dg.MetadataValue.int(int(report.get("publish_ready_count") or 0)),
+            "published_count": dg.MetadataValue.int(int(report.get("published_count") or 0)),
+            "blocked_count": dg.MetadataValue.int(int(report.get("blocked_count") or 0)),
+            "already_public_count": dg.MetadataValue.int(int(report.get("already_public_count") or 0)),
+            "errors": dg.MetadataValue.json(report.get("errors", [])),
+            "items": _metadata_table(rows, _PUBLIC_CANDIDATE_PUBLISH_TABLE_COLUMNS),
         }
 
     def _hypothesis_promotion_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -4504,6 +4623,117 @@ if dg is not None:
             }
             raise dg.Failure(
                 description=f"Public candidate integrity check failed: {json.dumps(reason, sort_keys=True, default=str)}",
+                metadata=metadata,
+            )
+        return dg.MaterializeResult(value=report, metadata=metadata)
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "candidate_ids": dg.Field(
+                str,
+                default_value="",
+                description="Comma-separated public candidate IDs to compile.",
+            ),
+            "visibility": dg.Field(str, is_required=False),
+            "limit": dg.Field(int, default_value=100),
+            "pipeline_version": dg.Field(str, is_required=False),
+            "commit_sha": dg.Field(str, is_required=False),
+            "persist": dg.Field(
+                bool,
+                default_value=False,
+                description="Persist compiled candidate, snapshot, manifest, and decision receipt.",
+            ),
+        },
+    )
+    def public_candidate_proof_compile_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Compile public candidate proof receipts with writes disabled by default."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        report = HSAResearchService(repository).compile_public_candidate_proofs(
+            PublicCandidateProofCompileRequest(
+                candidate_ids=_csv_values(config.get("candidate_ids")),
+                visibility=config.get("visibility"),
+                limit=config.get("limit", 100),
+                pipeline_version=config.get("pipeline_version"),
+                commit_sha=config.get("commit_sha"),
+                persist=bool(config.get("persist", False)),
+            )
+        ).model_dump(mode="json")
+        return dg.MaterializeResult(value=report, metadata=_public_candidate_proof_compile_metadata(report))
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
+            "candidate_ids": dg.Field(
+                str,
+                default_value="",
+                description="Comma-separated public candidate IDs to publish.",
+            ),
+            "visibility": dg.Field(
+                str,
+                default_value="draft_public",
+                description="Visibility sample filter when candidate IDs are omitted.",
+            ),
+            "limit": dg.Field(int, default_value=100),
+            "dry_run": dg.Field(
+                bool,
+                default_value=True,
+                description="Preview by default. Set false to persist visibility=public.",
+            ),
+            "require_source_visibility": dg.Field(
+                str,
+                default_value="draft_public",
+                description="Required current visibility before publish; set empty to disable.",
+            ),
+            "actor": dg.Field(str, default_value="public_candidate_publish_operator"),
+            "rationale": dg.Field(
+                str,
+                default_value="Published after strict export readiness checks passed.",
+                description="Decision-log rationale for live publish.",
+            ),
+            "fail_on_blocked": dg.Field(
+                bool,
+                default_value=False,
+                description="Fail when no checked candidate is publish-ready or when blockers are present.",
+            ),
+        },
+    )
+    def public_candidate_publish_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Guarded public visibility promotion for already-compiled candidate records."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        repository = research_repository.build_repository()
+        require_source_visibility = str(config.get("require_source_visibility") or "").strip() or None
+        report = HSAResearchService(repository).publish_public_candidates(
+            PublicCandidatePublishRequest(
+                candidate_ids=_csv_values(config.get("candidate_ids")),
+                visibility=config.get("visibility") or None,
+                limit=config.get("limit", 100),
+                dry_run=bool(config.get("dry_run", True)),
+                require_source_visibility=require_source_visibility,
+                actor=config.get("actor") or "public_candidate_publish_operator",
+                rationale_md=config.get("rationale") or "Published after strict export readiness checks passed.",
+                metadata={"dagster_run_id": context.run_id},
+            )
+        ).model_dump(mode="json")
+        metadata = _public_candidate_publish_metadata(report)
+        if config.get("fail_on_blocked", False) and (
+            int(report.get("publish_ready_count") or 0) == 0 or int(report.get("blocked_count") or 0) > 0
+        ):
+            raise dg.Failure(
+                description=f"Public candidate publish gate blocked: {json.dumps(report, sort_keys=True, default=str)}",
                 metadata=metadata,
             )
         return dg.MaterializeResult(value=report, metadata=metadata)
@@ -8350,6 +8580,8 @@ if dg is not None:
         therapy_idea_library_report,
         public_candidate_snapshot_report,
         public_candidate_integrity_report,
+        public_candidate_proof_compile_report,
+        public_candidate_publish_report,
         hypothesis_promotion_report,
         validation_packet_report,
         validation_decision_report,
@@ -8562,6 +8794,14 @@ if dg is not None:
     public_candidate_integrity_job = dg.define_asset_job(
         "public_candidate_integrity_job",
         selection=dg.AssetSelection.assets(public_candidate_integrity_report),
+    )
+    public_candidate_proof_compile_job = dg.define_asset_job(
+        "public_candidate_proof_compile_job",
+        selection=dg.AssetSelection.assets(public_candidate_proof_compile_report),
+    )
+    public_candidate_publish_job = dg.define_asset_job(
+        "public_candidate_publish_job",
+        selection=dg.AssetSelection.assets(public_candidate_publish_report),
     )
     hypothesis_promotion_job = dg.define_asset_job(
         "hypothesis_promotion_job",
@@ -9004,6 +9244,8 @@ if dg is not None:
             therapy_idea_library_job,
             public_candidate_snapshot_job,
             public_candidate_integrity_job,
+            public_candidate_proof_compile_job,
+            public_candidate_publish_job,
             hypothesis_promotion_job,
             validation_packet_job,
             validation_decision_job,
@@ -9128,6 +9370,8 @@ else:
     therapy_idea_library_job = None
     public_candidate_snapshot_job = None
     public_candidate_integrity_job = None
+    public_candidate_proof_compile_job = None
+    public_candidate_publish_job = None
     hypothesis_promotion_job = None
     validation_packet_job = None
     validation_decision_job = None

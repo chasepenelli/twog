@@ -63,6 +63,7 @@ The preferred automated path is:
    `HSA_DATABASE_URL`.
 2. Store a Dagster+ token from a user with Editor, Admin, or Organization Admin
    permissions as the GitHub Actions secret `DAGSTER_PLUS_ENV_API_TOKEN`.
+   This token is used for hosted environment-variable sync.
 3. Store the OpenRouter key as the GitHub Actions secret `OPENROUTER_API_KEY`
    if hosted model-review comparison should run.
 4. Store the TwitterAPI.io key as the GitHub Actions secret `TWITTERAPI_IO_KEY`
@@ -163,6 +164,21 @@ GitHub secret directly and runs a small structured-source pipeline against Neon.
 Use the manual GitHub Actions workflow `Launch Dagster Smoke Job` to launch a
 hosted Dagster+ smoke job from Actions.
 
+The production deploy workflow currently updates the `twog` code location.
+If that location is registered but remains `LOADING`, do not route around it by
+launching against an older loaded location. Repair the Dagster Cloud deployment
+first by restoring the agent heartbeat or converting/recreating the deployment
+as Serverless in Dagster Cloud. The smoke launcher fails before launch when the
+requested location is not `LOADED`, and it prints repository/location
+diagnostics for the requested job.
+
+The smoke launcher uses `DAGSTER_CLOUD_API_TOKEN` for Dagster run control
+(`job launch`, run status, event diagnostics, and termination). It falls back to
+`DAGSTER_PLUS_ENV_API_TOKEN` only when the deploy/run token is absent. Keep
+`DAGSTER_PLUS_ENV_API_TOKEN` for environment sync and `DAGSTER_CLOUD_API_TOKEN`
+for deployment/run control; a read-capable env token may list jobs but still
+return `UnauthorizedError` on `launchRun`.
+
 The local `dagster-cloud` CLI currently exposes `dagster-cloud job launch
 --wait`, but the installed 1.13.2 implementation has no wait timeout. It polls
 until Dagster+ returns `SUCCESS`, `FAILURE`, or `CANCELED`, so a hosted run that
@@ -189,6 +205,15 @@ DAGSTER_CLOUD_TERMINATE_POLICY_ON_TIMEOUT=SAFE_TERMINATE
 The workflow also exposes a `timeout_seconds` dispatch input so long-running
 jobs can be tested without changing the file. For the full-text lane, prefer a
 shorter manual timeout while hardening the hosted path.
+
+If the launch step returns `PipelineNotFoundError`, the selected job is not
+deployed in the selected code location. Merge/deploy the branch that defines the
+job, or choose the loaded location/repository that owns it. If the launch step
+or deploy workflow returns `DagsterUserCodeUnreachableError` or
+`No Dagster Cloud agent is actively heartbeating`, the Dagster Cloud deployment
+is currently agent-backed and has no active agent. GitHub Actions cannot repair
+that by changing job inputs; the Dagster Cloud deployment/agent configuration
+must be fixed first.
 
 Use `x_topic_monitor_review_job` for a bounded TwitterAPI.io topic-monitoring
 review run. It requires `TWITTERAPI_IO_KEY` and attempts OpenRouter review by

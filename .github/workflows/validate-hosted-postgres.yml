@@ -3,10 +3,65 @@ name: Validate Hosted Postgres
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "Hosted validation mode"
+        required: true
+        type: choice
+        default: "structured_source"
+        options:
+          - "structured_source"
+          - "public_candidate_integrity"
+          - "public_candidate_proof_compile"
+          - "public_candidate_publish"
+          - "public_candidate_proof_repair"
+          - "public_candidate_proof_lineage_search"
+          - "public_candidate_proof_steward"
+          - "research_brief_inspect"
       source:
         description: "Structured source key to run"
         required: true
         default: "pubchem"
+      candidate_id:
+        description: "Optional public candidate ID for candidate validation modes"
+        required: false
+        default: ""
+      visibility:
+        description: "Optional public candidate visibility filter"
+        required: false
+        default: ""
+      pipeline_version:
+        description: "Optional pipeline version to attach during proof compile preview"
+        required: false
+        default: "hosted-proof-compile-preview"
+      commit_sha:
+        description: "Optional commit SHA to attach during proof compile preview"
+        required: false
+        default: ""
+      source_brief_id:
+        description: "Optional source brief ID for public candidate proof repair preview"
+        required: false
+        default: ""
+      source_evaluation_id:
+        description: "Optional source evaluation ID for public candidate proof repair preview"
+        required: false
+        default: ""
+      query_terms:
+        description: "Optional comma-separated search terms for proof lineage discovery"
+        required: false
+        default: ""
+      brief_limit:
+        description: "Maximum recent research briefs to scan for proof lineage discovery"
+        required: false
+        default: "250"
+      min_score:
+        description: "Minimum proof lineage discovery score to return"
+        required: false
+        default: "0.15"
+      apply:
+        description: "Apply supported write-capable validation modes"
+        required: false
+        type: boolean
+        default: false
       limit:
         description: "Maximum records per active query"
         required: true
@@ -20,7 +75,18 @@ jobs:
       HSA_STORAGE_BACKEND: "postgres"
       HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
       HSA_CONTACT_EMAIL: "poppa@bradyandgraffiti.com"
+      MODE: ${{ inputs.mode }}
       SOURCE: ${{ inputs.source }}
+      CANDIDATE_ID: ${{ inputs.candidate_id }}
+      VISIBILITY: ${{ inputs.visibility }}
+      PIPELINE_VERSION: ${{ inputs.pipeline_version }}
+      COMMIT_SHA: ${{ inputs.commit_sha }}
+      SOURCE_BRIEF_ID: ${{ inputs.source_brief_id }}
+      SOURCE_EVALUATION_ID: ${{ inputs.source_evaluation_id }}
+      QUERY_TERMS: ${{ inputs.query_terms }}
+      BRIEF_LIMIT: ${{ inputs.brief_limit }}
+      MIN_SCORE: ${{ inputs.min_score }}
+      APPLY: ${{ inputs.apply }}
       LIMIT: ${{ inputs.limit }}
 
     steps:
@@ -46,11 +112,502 @@ jobs:
       - name: Install project dependencies
         run: uv sync
 
-      - name: Run structured source pipeline against hosted Postgres
+      - name: Run hosted validation against Postgres
         run: |
-          uv run python -m hsa_research.ingestion_bridge.cli structured-pipeline \
-            --source "$SOURCE" \
-            --limit "$LIMIT" \
-            --extract-limit 50 \
-            --curate-limit 50
+          set -euo pipefail
+          case "$MODE" in
+            structured_source)
+              uv run python -m hsa_research.ingestion_bridge.cli structured-pipeline \
+                --source "$SOURCE" \
+                --limit "$LIMIT" \
+                --extract-limit 50 \
+                --curate-limit 50
+              ;;
+            public_candidate_integrity)
+              args=(public-candidate-integrity --limit "$LIMIT")
+              if [ -n "$CANDIDATE_ID" ]; then
+                args+=(--candidate-id "$CANDIDATE_ID")
+              fi
+              if [ -n "$VISIBILITY" ]; then
+                args+=(--visibility "$VISIBILITY")
+              fi
+              uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-integrity.json
+              ;;
+            public_candidate_proof_compile)
+              args=(public-candidate-proof-compile --limit "$LIMIT")
+              if [ -n "$CANDIDATE_ID" ]; then
+                args+=(--candidate-id "$CANDIDATE_ID")
+              fi
+              if [ -n "$VISIBILITY" ]; then
+                args+=(--visibility "$VISIBILITY")
+              fi
+              if [ -n "$PIPELINE_VERSION" ]; then
+                args+=(--pipeline-version "$PIPELINE_VERSION")
+              fi
+              if [ -n "$COMMIT_SHA" ]; then
+                args+=(--commit-sha "$COMMIT_SHA")
+              fi
+              uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-proof-compile.json
+              ;;
+            public_candidate_publish)
+              args=(public-candidate-publish --limit "$LIMIT")
+              if [ -n "$CANDIDATE_ID" ]; then
+                args+=(--candidate-id "$CANDIDATE_ID")
+              fi
+              if [ -n "$VISIBILITY" ]; then
+                args+=(--visibility "$VISIBILITY")
+              fi
+              if [ "$APPLY" = "true" ]; then
+                args+=(--apply)
+              fi
+              uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-publish.json
+              ;;
+            public_candidate_proof_repair)
+              args=(public-candidate-proof-repair --limit "$LIMIT")
+              if [ -n "$CANDIDATE_ID" ]; then
+                args+=(--candidate-id "$CANDIDATE_ID")
+              fi
+              if [ -n "$VISIBILITY" ]; then
+                args+=(--visibility "$VISIBILITY")
+              fi
+              if [ -n "$SOURCE_BRIEF_ID" ]; then
+                args+=(--source-brief-id "$SOURCE_BRIEF_ID")
+              fi
+              if [ -n "$SOURCE_EVALUATION_ID" ]; then
+                args+=(--source-evaluation-id "$SOURCE_EVALUATION_ID")
+              fi
+              if [ -n "$PIPELINE_VERSION" ]; then
+                args+=(--pipeline-version "$PIPELINE_VERSION")
+              fi
+              if [ -n "$COMMIT_SHA" ]; then
+                args+=(--commit-sha "$COMMIT_SHA")
+              fi
+              if [ "$APPLY" = "true" ]; then
+                args+=(--apply)
+              fi
+              uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-proof-repair.json
+              ;;
+            public_candidate_proof_lineage_search)
+              args=(public-candidate-proof-lineage-search --limit "$LIMIT" --brief-limit "$BRIEF_LIMIT" --min-score "$MIN_SCORE")
+              if [ -n "$CANDIDATE_ID" ]; then
+                args+=(--candidate-id "$CANDIDATE_ID")
+              fi
+              if [ -n "$VISIBILITY" ]; then
+                args+=(--visibility "$VISIBILITY")
+              fi
+              if [ -n "$QUERY_TERMS" ]; then
+                IFS=',' read -ra terms <<< "$QUERY_TERMS"
+                for term in "${terms[@]}"; do
+                  trimmed="$(echo "$term" | xargs)"
+                  if [ -n "$trimmed" ]; then
+                    args+=(--query-term "$trimmed")
+                  fi
+                done
+              fi
+              uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-proof-lineage-search.json
+              ;;
+            public_candidate_proof_steward)
+              args=(public-candidate-proof-steward --limit "$LIMIT" --brief-limit "$BRIEF_LIMIT" --min-score "$MIN_SCORE")
+              if [ -n "$CANDIDATE_ID" ]; then
+                args+=(--candidate-id "$CANDIDATE_ID")
+              fi
+              if [ -n "$VISIBILITY" ]; then
+                args+=(--visibility "$VISIBILITY")
+              fi
+              if [ -n "$QUERY_TERMS" ]; then
+                IFS=',' read -ra terms <<< "$QUERY_TERMS"
+                for term in "${terms[@]}"; do
+                  trimmed="$(echo "$term" | xargs)"
+                  if [ -n "$trimmed" ]; then
+                    args+=(--query-term "$trimmed")
+                  fi
+                done
+              fi
+              uv run python -m hsa_research.ingestion_bridge.cli "${args[@]}" | tee /tmp/public-candidate-proof-steward.json
+              ;;
+            research_brief_inspect)
+              if [ -z "$SOURCE_BRIEF_ID" ]; then
+                echo "::error::source_brief_id is required for research_brief_inspect."
+                exit 1
+              fi
+              uv run python .github/scripts/inspect_research_brief.py | tee /tmp/research-brief-inspect.json
+              ;;
+            *)
+              echo "::error::Unsupported hosted validation mode: $MODE"
+              exit 1
+              ;;
+          esac
+        shell: bash
+
+      - name: Write public candidate integrity summary
+        if: ${{ always() && inputs.mode == 'public_candidate_integrity' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output_path = Path("/tmp/public-candidate-integrity.json")
+          if not output_path.exists():
+              raise SystemExit("No public candidate integrity output was produced.")
+
+          report = json.loads(output_path.read_text())
+          checks = report.get("checks") or []
+          lines = [
+              "### Public candidate integrity",
+              f"- Repository type: `{report.get('repository_type')}`",
+              f"- Checked candidates: `{report.get('checked_candidate_count')}`",
+              f"- Strict export ready: `{report.get('strict_export_ready')}`",
+              f"- Public publish ready: `{report.get('public_publish_ready')}`",
+              f"- Ready for strict export: `{len(report.get('candidates_ready_for_strict_export') or [])}`",
+              f"- Ready for public publish: `{len(report.get('candidates_ready_for_public_publish') or [])}`",
+              f"- Draft-public candidates: `{len(report.get('draft_public_candidate_ids') or [])}`",
+              f"- Candidates with unresolved refs: `{len(report.get('candidates_with_unresolved_references') or [])}`",
+              f"- Candidates with unverifiable commit: `{len(report.get('candidates_with_unverifiable_commit') or [])}`",
+              "",
+              "| Candidate | Export | Publish | Visibility | Status | Warnings | Problems |",
+              "| --- | --- | --- | --- | --- | --- | --- |",
+          ]
+          for check in checks[:25]:
+              warnings = ", ".join(check.get("public_readiness_warnings") or [])
+              problems = ", ".join(check.get("problems") or [])
+              lines.append(
+                  "| {candidate} | {export} | {publish} | {visibility} | {status} | {warnings} | {problems} |".format(
+                      candidate=check.get("candidate_id") or "",
+                      export=check.get("strict_export_ready"),
+                      publish=check.get("public_publish_ready"),
+                      visibility=check.get("visibility") or "",
+                      status=check.get("public_status") or "",
+                      warnings=warnings.replace("|", "\\|"),
+                      problems=problems.replace("|", "\\|"),
+                  )
+              )
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
+          PY
+        shell: bash
+
+      - name: Write public candidate proof lineage search summary
+        if: ${{ always() && inputs.mode == 'public_candidate_proof_lineage_search' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output_path = Path("/tmp/public-candidate-proof-lineage-search.json")
+          if not output_path.exists():
+              raise SystemExit("No public candidate proof lineage search output was produced.")
+
+          report = json.loads(output_path.read_text())
+          items = report.get("items") or []
+          lines = [
+              "### Public candidate proof lineage search",
+              f"- Repository type: `{report.get('repository_type')}`",
+              f"- Candidate count: `{report.get('candidate_count')}`",
+              f"- Scanned briefs: `{report.get('scanned_brief_count')}`",
+              f"- Matched candidates: `{report.get('matched_candidate_count')}`",
+              "",
+              "| Candidate | Snapshot | Current briefs | Citation refs | Top brief | Evaluation | Score | Terms | Refs | Reasons | Warnings | Errors |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+          ]
+          for item in items[:25]:
+              matches = item.get("matches") or []
+              top = matches[0] if matches else {}
+              terms = ", ".join(top.get("matched_terms") or [])
+              refs = ", ".join(top.get("matched_reference_ids") or [])
+              reasons = ", ".join(top.get("reason_codes") or [])
+              warnings = ", ".join(item.get("warnings") or [])
+              errors = ", ".join(item.get("errors") or [])
+              current_briefs = ", ".join(item.get("current_source_brief_ids") or [])
+              lines.append(
+                  "| {candidate} | {snapshot} | {current_briefs} | {citation_refs} | {brief} | {evaluation} | {score} | {terms} | {refs} | {reasons} | {warnings} | {errors} |".format(
+                      candidate=item.get("candidate_id") or "",
+                      snapshot=item.get("snapshot_id") or "",
+                      current_briefs=current_briefs,
+                      citation_refs=item.get("citation_ref_count"),
+                      brief=top.get("brief_id") or "",
+                      evaluation=top.get("evaluation_id") or "",
+                      score=top.get("score") if top else "",
+                      terms=terms.replace("|", "\\|"),
+                      refs=refs.replace("|", "\\|"),
+                      reasons=reasons.replace("|", "\\|"),
+                      warnings=warnings.replace("|", "\\|"),
+                      errors=errors.replace("|", "\\|"),
+                  )
+              )
+
+          report_errors = report.get("errors") or []
+          if report_errors:
+              lines.extend(["", "#### Report errors"])
+              lines.extend(f"- `{str(error).replace('`', '')}`" for error in report_errors[:25])
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
+          PY
+        shell: bash
+
+      - name: Write public candidate proof steward summary
+        if: ${{ always() && inputs.mode == 'public_candidate_proof_steward' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output_path = Path("/tmp/public-candidate-proof-steward.json")
+          if not output_path.exists():
+              raise SystemExit("No public candidate proof steward output was produced.")
+
+          report = json.loads(output_path.read_text())
+          items = report.get("items") or []
+          lines = [
+              "### Public candidate proof steward",
+              f"- Repository type: `{report.get('repository_type')}`",
+              f"- Agent: `{report.get('agent_name')}`",
+              f"- Mode: `{report.get('review_mode')}`",
+              f"- Candidate count: `{report.get('candidate_count')}`",
+              f"- Recommendations: `{report.get('recommendation_count')}`",
+              "",
+              "| Candidate | Action | Source brief | Evaluation | Confidence | Repair unresolved | Terms | Refs | Warnings | Errors |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+          ]
+          for item in items[:25]:
+              repair = item.get("repair_preview") or {}
+              terms = ", ".join(item.get("matched_terms") or [])
+              refs = ", ".join(item.get("matched_reference_ids") or [])
+              warnings = ", ".join(item.get("warnings") or [])
+              errors = ", ".join(item.get("errors") or [])
+              lines.append(
+                  "| {candidate} | {action} | {brief} | {evaluation} | {confidence} | {unresolved} | {terms} | {refs} | {warnings} | {errors} |".format(
+                      candidate=item.get("candidate_id") or "",
+                      action=item.get("recommended_action") or "",
+                      brief=item.get("proposed_source_brief_id") or "",
+                      evaluation=item.get("proposed_source_evaluation_id") or "",
+                      confidence=item.get("confidence_score"),
+                      unresolved=repair.get("after_unresolved_reference_count", ""),
+                      terms=terms.replace("|", "\\|"),
+                      refs=refs.replace("|", "\\|"),
+                      warnings=warnings.replace("|", "\\|"),
+                      errors=errors.replace("|", "\\|"),
+                  )
+              )
+
+          report_errors = report.get("errors") or []
+          if report_errors:
+              lines.extend(["", "#### Report errors"])
+              lines.extend(f"- `{str(error).replace('`', '')}`" for error in report_errors[:25])
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
+          PY
+        shell: bash
+
+      - name: Write research brief inspect summary
+        if: ${{ always() && inputs.mode == 'research_brief_inspect' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output_path = Path("/tmp/research-brief-inspect.json")
+          if not output_path.exists():
+              raise SystemExit("No research brief inspect output was produced.")
+
+          report = json.loads(output_path.read_text())
+          brief = report.get("brief") or {}
+          evaluation = report.get("evaluation") or {}
+          citations = brief.get("citations") or []
+          lines = [
+              "### Research brief inspect",
+              f"- Brief: `{brief.get('brief_id')}`",
+              f"- Evaluation: `{evaluation.get('evaluation_id') or 'none'}`",
+              f"- Topic: {brief.get('topic')}",
+              f"- Source: `{brief.get('source_key')}`",
+              f"- Status: `{brief.get('status')}`",
+              f"- Citations: `{brief.get('citation_count')}`",
+              f"- Findings: `{brief.get('finding_count')}`",
+              f"- Hypotheses: `{brief.get('hypothesis_count')}`",
+              f"- Quality: score=`{evaluation.get('overall_score')}`, pass=`{evaluation.get('passes_quality_bar')}`, readiness=`{evaluation.get('readiness')}`",
+              "",
+              "#### Final Brief Excerpt",
+              "```text",
+              str(brief.get("final_brief_excerpt") or "")[:3000],
+              "```",
+              "",
+              "#### Citations",
+              "| Ref | Source | Title | DOI | PMID | PMCID |",
+              "| --- | --- | --- | --- | --- | --- |",
+          ]
+          for citation in citations[:15]:
+              lines.append(
+                  "| {ref} | {source} | {title} | {doi} | {pmid} | {pmcid} |".format(
+                      ref=citation.get("citation_id") or "",
+                      source=citation.get("source_key") or "",
+                      title=str(citation.get("title") or "")[:180].replace("|", "\\|"),
+                      doi=citation.get("doi") or "",
+                      pmid=citation.get("pmid") or "",
+                      pmcid=citation.get("pmcid") or "",
+                  )
+              )
+          if evaluation:
+              lines.extend(["", "#### Evaluation Notes"])
+              for key in ("strengths", "weaknesses", "recommendations", "errors"):
+                  values = evaluation.get(key) or []
+                  if values:
+                      lines.append(f"- {key}: {str(values[0])[:500]}")
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
+          PY
+        shell: bash
+
+      - name: Write public candidate proof repair summary
+        if: ${{ always() && inputs.mode == 'public_candidate_proof_repair' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output_path = Path("/tmp/public-candidate-proof-repair.json")
+          if not output_path.exists():
+              raise SystemExit("No public candidate proof repair output was produced.")
+
+          report = json.loads(output_path.read_text())
+          items = report.get("items") or []
+          lines = [
+              "### Public candidate proof repair",
+              f"- Repository type: `{report.get('repository_type')}`",
+              f"- Persisted writes: `{report.get('persist')}`",
+              f"- Candidate count: `{report.get('candidate_count')}`",
+              f"- Would update count: `{report.get('would_update_count')}`",
+              f"- Repaired count: `{report.get('repaired_count')}`",
+              f"- Candidates still unresolved: `{report.get('unresolved_candidate_count')}`",
+              "",
+              "| Candidate | Snapshot | Current briefs | Proposed briefs | Citation maps | Refs | Before unresolved | After unresolved | Would update | Warnings | Errors |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+          ]
+          for item in items[:25]:
+              warnings = ", ".join(item.get("warnings") or [])
+              errors = ", ".join(item.get("errors") or [])
+              current_briefs = ", ".join(item.get("current_source_brief_ids") or [])
+              proposed_briefs = ", ".join(item.get("proposed_source_brief_ids") or [])
+              citation_maps = ", ".join(
+                  f"{brief_id}:{count}" for brief_id, count in (item.get("source_citation_counts") or {}).items()
+              )
+              before_unresolved = ", ".join(item.get("before_unresolved_reference_ids") or [])
+              after_unresolved = ", ".join(item.get("after_unresolved_reference_ids") or [])
+              lines.append(
+                  "| {candidate} | {snapshot} | {current_briefs} | {proposed_briefs} | {citation_maps} | {refs} | {before_unresolved} | {after_unresolved} | {would_update} | {warnings} | {errors} |".format(
+                      candidate=item.get("candidate_id") or "",
+                      snapshot=item.get("snapshot_id") or "",
+                      current_briefs=current_briefs,
+                      proposed_briefs=proposed_briefs,
+                      citation_maps=citation_maps,
+                      refs=item.get("citation_ref_count"),
+                      before_unresolved=before_unresolved.replace("|", "\\|"),
+                      after_unresolved=after_unresolved.replace("|", "\\|"),
+                      would_update=item.get("would_update"),
+                      warnings=warnings.replace("|", "\\|"),
+                      errors=errors.replace("|", "\\|"),
+                  )
+              )
+
+          report_errors = report.get("errors") or []
+          if report_errors:
+              lines.extend(["", "#### Report errors"])
+              lines.extend(f"- `{str(error).replace('`', '')}`" for error in report_errors[:25])
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
+          PY
+        shell: bash
+
+      - name: Write public candidate proof compile summary
+        if: ${{ always() && inputs.mode == 'public_candidate_proof_compile' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output_path = Path("/tmp/public-candidate-proof-compile.json")
+          if not output_path.exists():
+              raise SystemExit("No public candidate proof compile output was produced.")
+
+          report = json.loads(output_path.read_text())
+          items = report.get("items") or []
+          lines = [
+              "### Public candidate proof compile",
+              f"- Repository type: `{report.get('repository_type')}`",
+              f"- Persisted writes: `{report.get('persist')}`",
+              f"- Candidate count: `{report.get('candidate_count')}`",
+              f"- Compiled count: `{report.get('compiled_count')}`",
+              f"- Manifest written count: `{report.get('manifest_written_count')}`",
+              f"- Candidates with unresolved refs: `{report.get('unresolved_candidate_count')}`",
+              f"- Strict export ready: `{report.get('strict_export_ready_count')}`",
+              f"- Public publish ready: `{report.get('public_publish_ready_count')}`",
+              "",
+              "| Candidate | Snapshot | Source briefs | Citation maps | Manifest before | Refs | Resolved | Unresolved | Strict export | Public publish | Warnings | Errors |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+          ]
+          for item in items[:25]:
+              warnings = ", ".join(item.get("warnings") or [])
+              errors = ", ".join(item.get("errors") or [])
+              source_briefs = ", ".join(item.get("source_brief_ids_checked") or [])
+              citation_maps = ", ".join(
+                  f"{brief_id}:{count}" for brief_id, count in (item.get("source_citation_counts") or {}).items()
+              )
+              lines.append(
+                  "| {candidate} | {snapshot} | {source_briefs} | {citation_maps} | {manifest_before} | {refs} | {resolved} | {unresolved} | {strict_export} | {public_publish} | {warnings} | {errors} |".format(
+                      candidate=item.get("candidate_id") or "",
+                      snapshot=item.get("snapshot_id") or "",
+                      source_briefs=source_briefs,
+                      citation_maps=citation_maps,
+                      manifest_before=item.get("manifest_found_before"),
+                      refs=item.get("citation_ref_count"),
+                      resolved=item.get("resolved_reference_count"),
+                      unresolved=item.get("unresolved_reference_count"),
+                      strict_export=item.get("strict_export_ready_after_compile"),
+                      public_publish=item.get("public_publish_ready_after_compile"),
+                      warnings=warnings.replace("|", "\\|"),
+                      errors=errors.replace("|", "\\|"),
+                  )
+              )
+
+          if items:
+              lines.extend(["", "#### Lineage diagnostics"])
+              for item in items[:10]:
+                  diagnostics = item.get("lineage_diagnostics") or {}
+                  lines.append(f"- `{item.get('candidate_id') or ''}`")
+                  for section_name in ("candidate", "therapy_idea", "snapshot"):
+                      section = diagnostics.get(section_name)
+                      if not isinstance(section, dict):
+                          lines.append(f"  - `{section_name}`: none")
+                          continue
+                      direct_ids = {
+                          key: value
+                          for key, value in section.items()
+                          if key.endswith("_id") and value
+                      }
+                      keys = section.get("metadata_keys") or section.get("reproducibility_keys") or []
+                      uuid_refs = section.get("metadata_uuid_refs") or section.get("reproducibility_uuid_refs") or []
+                      lines.append(
+                          "  - `{section}` ids=`{ids}` keys=`{keys}` uuid_refs=`{uuid_refs}`".format(
+                              section=section_name,
+                              ids=json.dumps(direct_ids, sort_keys=True),
+                              keys=", ".join(str(key) for key in keys[:12]),
+                              uuid_refs=json.dumps(uuid_refs[:8], sort_keys=True),
+                          )
+                      )
+                  snapshot = diagnostics.get("snapshot") if isinstance(diagnostics.get("snapshot"), dict) else {}
+                  durable_refs = snapshot.get("durable_source_refs") if isinstance(snapshot, dict) else []
+                  if durable_refs:
+                      lines.append(f"  - `snapshot.durable_source_refs`: `{json.dumps(durable_refs[:8])}`")
+
+          report_errors = report.get("errors") or []
+          if report_errors:
+              lines.extend(["", "#### Report errors"])
+              lines.extend(f"- `{str(error).replace('`', '')}`" for error in report_errors[:25])
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
+          PY
         shell: bash

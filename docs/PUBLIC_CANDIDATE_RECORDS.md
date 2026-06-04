@@ -137,6 +137,15 @@ The generator infers status conservatively:
 
 Operators can override `public_status` at generation time.
 
+## Integrity Checks
+
+The public candidate integrity report separates two gates:
+
+- `strict_export_ready`: the snapshot can be exported from system records. It has a candidate row, latest snapshot, trace ID, run manifest receipt, and source therapy idea when one is expected.
+- `public_publish_ready`: the snapshot is ready to show as an external proof record. It must also be `visibility="public"`, carry a content hash, avoid local or missing commit SHAs, and have no unresolved literature references.
+
+This split is deliberate. A `draft_public` candidate can be valid enough for static export and local review while still being blocked from public publishing. The report surfaces those blockers as `public_readiness_warnings`, with rollups for draft-public records, unresolved references, and unverifiable commits.
+
 ## Design Notes
 
 This is intentionally local-first and metadata-first. The large object-storage/IPFS layer can come later. The current system records artifact handles and URIs without forcing an object-storage decision yet.
