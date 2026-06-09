@@ -1,0 +1,44 @@
+name: python-tests
+
+# Runs the ingestion-bridge research test suite (502 tests) on every push/PR.
+# The suite was split from one 967KB file into per-domain modules under tests/;
+# see scripts/split_contract_tests.py. Worker-image tests live in build-md-worker.yml.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # Native build deps for pyBigWig (libcurl + zlib); other deps ship wheels.
+      - name: System deps
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev zlib1g-dev
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-xdist
+
+      - name: Test (parallel) + coverage floor
+        # pythonpath=src comes from pyproject [tool.pytest.ini_options].
+        # Floor is set just below current 77% to catch real regressions, not noise.
+        run: |
+          python -m pytest tests/ -p no:cacheprovider \
+            --ignore=tests/test_runpod_md_worker.py \
+            -n auto -q \
+            --cov=hsa_research.ingestion_bridge \
+            --cov-report=term-missing:skip-covered \
+            --cov-fail-under=75
