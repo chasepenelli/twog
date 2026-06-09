@@ -49,7 +49,9 @@ approval is the write gate.* No phase weakens it. P4 specifically must not.
 **Deliverables**
 - Commit `CURRENT_STATE.md` + this `ROADMAP.md` to `origin/main`.
 - Back up the unpushed June-4 frontend work (`~/Documents/Codex/.../twog-system-tightening`).
-- Confirm Dagster+ and Neon are paused/scaled-to-zero when idle (CURRENT_STATE §7).
+- Confirm Dagster+ schedules are the ones you want enabled and Neon usage cost is as expected
+  (CURRENT_STATE §7). Both are kept — they run the ingestion heartbeat; the goal is "right
+  cadence at a modest, known cost," not zero.
 - Split the 502-test megatest into per-area files (CURRENT_STATE §6) — needs a working venv to
   verify green before/after.
 - Begin `service.py` decoupling **step 1 only**: map its public surface and callers

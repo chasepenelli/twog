@@ -161,21 +161,26 @@ zero coverage loss. (`test_runpod_md_worker.py`, 211 lines, is already fine.)
 
 ## 7. Costs & idle footprint
 
-**Good news — idle CI is free:** all 9 GitHub workflows are `workflow_dispatch` or `push`
-triggered. **No `schedule:`/cron anywhere**, so nothing bills automatically from GitHub.
+**GitHub Actions adds no idle cost:** all workflows are `workflow_dispatch`/`push` triggered —
+nothing bills automatically from GitHub. (The new `python-tests.yml` runs only on push/PR.)
 
-**Recurring-cost surface (needs dashboard access to confirm — check these):**
+**The accepted recurring cost is the ingestion heartbeat, by design.** Dagster defines ~10+
+real schedules (`dagster_assets.py:8809+`): weekly structured-source pipeline, daily literature
+corpus, daily source-followup ingests (PubMed, Crossref, PMC OA, ClinicalTrials, Unpaywall).
+When enabled on the hosted tier, that's continuous automated data intake running while no one's
+at the keyboard — the "data keeps flowing during absences" property we want, not waste.
 
-| Service | Refs in repo | Idle cost | Action |
-|---|---|---|---|
-| **Dagster+** (hosted) | 646 | **Bills while a deployment is live** | ⚠️ Check Dagster+ deployment status; run Dagster locally or pause the hosted deployment. Biggest likely idle cost. |
-| **Neon** Postgres | 104 | Low on autoscale/free tier; an always-on branch can bill | Check project; let it scale to zero. Local SQLite path already exists for offline work. |
-| **Vercel** (twog.bio) | — | Hobby tier ≈ free | Likely fine; confirm tier. |
-| **RunPod** GPU | 114 | **Zero when nothing is launched** (pay-per-use) | No action; this is the right model for compute expeditions. |
-| **OpenRouter / OpenAI / Anthropic** | 119 / 20 / 11 | Zero idle (pay-per-call) | No action. |
+| Service | Model | Decision |
+|---|---|---|
+| **Dagster+** (hosted) | **Monthly subscription (fixed)** | **KEEP.** Runs the ingestion heartbeat unattended. Justified by the real multi-source ingestion DAG. Verify the schedules you want are enabled and the run cadence/cost is acceptable. |
+| **Neon** Postgres | Usage-based, **currently very low** | **KEEP.** Scales with the corpus; needed for this project. Local SQLite path still exists for offline dev. |
+| **Vercel** (twog.bio) | Hobby ≈ free | Keep; confirm tier. |
+| **RunPod** GPU | Pay-per-use, **$0 idle** | Right model for compute expeditions (Phase 3). |
+| **OpenRouter / OpenAI / Anthropic** | Pay-per-call, $0 idle | No action. |
 
-**Target idle cost: ~$0/month when not actively working.** The two things
-to verify on a dashboard are Dagster+ and Neon.
+**Honest idle cost = Dagster+ monthly + low Neon usage** — a deliberate, modest spend that buys
+an always-running research pipeline. The dashboard check is "are the right schedules on and is
+the cost what I expect," not "how do I get to $0."
 
 ---
 
@@ -184,11 +189,13 @@ to verify on a dashboard are Dagster+ and Neon.
 This is a long-running project worked in bursts between other work, not a continuous sprint.
 Design for **survivability across absences**, not throughput:
 
-- **Idle should cost ~nothing** (§7) so a 2-month gap is free.
+- **Idle cost is small and deliberate** (§7): Dagster+ monthly + low Neon usage, buying an
+  always-running ingestion pipeline. A 2-month gap keeps accreting data rather than going dark.
 - **Re-entry should take one evening** — this document is step one of that.
-- **One cheap heartbeat** (later): a single weekly job — pull new HSA/angiosarcoma literature →
-  triage → propose claims to the review queue → after your approval, update public pages. The
-  approval tap is the part worth showing up for; everything around it is automatic.
+- **The heartbeat already exists** as Dagster schedules (§7): daily literature + source-followup
+  ingest, weekly structured-source pipeline. The work to add is the *approval tap* — surface
+  what the heartbeat brought in so you can review/promote it when you next sit down. That tap is
+  the part worth showing up for; the ingestion around it is already automatic.
 - **Compute as expeditions, not platform:** a few times a year, take one validation question,
   rent one GPU box (the `md_smoke` worker), run it approval-gated, land the artifact, shut it
   down. Infrastructure earns its way one expedition at a time. Distribution/checkpointing only
@@ -200,7 +207,8 @@ Design for **survivability across absences**, not throughput:
 
 1. **Push or back up the unpushed June 4 frontend work** in `~/Documents/Codex/...` — it's the
    only copy (§1). Highest urgency: it's unbacked-up.
-2. **Check Dagster+ and Neon dashboards** (§7); pause/downgrade to hit ~$0 idle.
+2. **Check Dagster+ schedules are the ones you want enabled** (§7), and that the run cadence +
+   Neon usage cost match expectations. (Keep both — they run the ingestion heartbeat.)
 3. **Commit this document** to `origin/main` so the map survives.
 4. **Split the test file** (§6) — safe, mechanical, makes everything afterward less scary.
 5. **Begin `service.py` decoupling** step 1 (§5) — map its surface. Do not move files yet.
