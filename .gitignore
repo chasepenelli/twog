@@ -212,3 +212,5 @@ __marimo__/
 .streamlit/secrets.toml
 .vercel
 .env*.local
+
+.venv/
