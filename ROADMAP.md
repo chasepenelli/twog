@@ -113,21 +113,22 @@ candidate's evidence updates — all logged in the ledger, no manual JSON shuffl
 **Goal:** real scientific payloads behind the existing expert gate. Build the **lane pattern**,
 then turn on the first real lane the bio dept asks for.
 
-**What exists:** one expert-gated lane (MD-smoke: ligand prep + optional Vina docking, OpenMM MD
-intentionally skipped). The build/test/publish worker-image CI works.
+**What exists (2026-06-09):** the RunPod execution provider + smoke worker were **removed**
+(never worked). What remains is the provider *seam* (`compute_runners.py`: a `ComputeRunner`
+protocol + `register_compute_runner()` registry) and the provider-agnostic machinery around it —
+the expert gate, validation queue, proof-capsule model, and compute-job ledger, all green-tested.
+No provider is registered, so `get_compute_runner()` blocks submission safely.
 
 **Deliverables**
-- **Generalize the compute lane** into a pluggable contract: `{lane_key, container_image,
-  input_packet_schema, expert_gate, expected_outputs, result_parser}`. The MD-smoke lane becomes
-  the first instance of the pattern, not a special case.
-- **Each new lane ships with:** its own expert review packet + gate (reuse the MD gate
-  machinery), a `result_parser` that feeds Phase-2's auto-capsule step, and a CI smoke test like
-  `build-md-worker.yml`.
-- **Candidate first lanes (decide with bio dept):** finish OpenMM MD (worker is prepped right up
-  to it) · docking-at-scale · Boltz/cofolding. Build the *pattern* now; commit to a payload when
-  they tell us.
-- **NVIDIA compute integration:** add their GPU environment as a compute provider alongside
-  RunPod (the runner abstraction already isolates submit/poll/cancel — add a sibling adapter).
+- **First: register a working provider** behind the seam — a rebuilt worker or a different tool
+  (Modal / E2B / NVIDIA GPU env). Implement `ComputeRunner.submit/poll/cancel` and
+  `register_compute_runner("<kind>", factory)`. The gate already runs before the provider.
+- **Generalize the lane** into a pluggable contract: `{lane_key, input_packet_schema,
+  expert_gate, expected_outputs, result_parser}`. Each new lane reuses the MD gate machinery, a
+  `result_parser` feeding Phase-2's auto-capsule step, and a CI smoke test.
+- **Candidate first payloads (decide with bio dept):** OpenMM MD · docking-at-scale ·
+  Boltz/cofolding. Build the *pattern* now; commit to a payload when they tell us.
+- **NVIDIA compute:** their GPU env is one provider implementation of the seam.
 
 **Exit criteria:** a second compute lane runs end-to-end behind its own expert gate and produces
 a proof capsule via the same Phase-2 path — proving the pattern, not just one worker.

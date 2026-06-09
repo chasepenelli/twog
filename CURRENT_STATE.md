@@ -175,7 +175,7 @@ at the keyboard — the "data keeps flowing during absences" property we want, n
 | **Dagster+** (hosted) | **Monthly subscription (fixed)** | **KEEP.** Runs the ingestion heartbeat unattended. Justified by the real multi-source ingestion DAG. Verify the schedules you want are enabled and the run cadence/cost is acceptable. |
 | **Neon** Postgres | Usage-based, **currently very low** | **KEEP.** Scales with the corpus; needed for this project. Local SQLite path still exists for offline dev. |
 | **Vercel** (twog.bio) | Hobby ≈ free | Keep; confirm tier. |
-| **RunPod** GPU | Pay-per-use, **$0 idle** | Right model for compute expeditions (Phase 3). |
+| **RunPod** GPU | **REMOVED** (never worked) | Execution layer deleted 2026-06-09. Compute is now a provider *seam* (`compute_runners.py`) awaiting a rebuilt/different tool — ROADMAP P3. $0 idle. |
 | **OpenRouter / OpenAI / Anthropic** | Pay-per-call, $0 idle | No action. |
 
 **Honest idle cost = Dagster+ monthly + low Neon usage** — a deliberate, modest spend that buys

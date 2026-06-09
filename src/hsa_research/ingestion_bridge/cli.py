@@ -2015,7 +2015,7 @@ def main() -> None:
         help="Generate the MD expert review packet for a compute job",
     )
     md_expert_packet.add_argument("--compute-job-id", required=True, help="Compute job ID to package")
-    md_expert_packet.add_argument("--endpoint-id", default="cbf4ffekmo36t9")
+    md_expert_packet.add_argument("--endpoint-id", default="twog-md-default")
     md_expert_packet.add_argument("--endpoint-name", default="hsa-md-validation")
     md_expert_packet.add_argument("--template-name", default="hsa-md-openmm")
     md_expert_packet.add_argument("--no-persist", action="store_true", help="Render without persisting the packet")

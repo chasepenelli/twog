@@ -4195,7 +4195,7 @@ class MDExpertReviewPacketRecord(StrictBaseModel):
     packet_hash: str = Field(min_length=16, max_length=128)
     compute_job_id: UUID | None = None
     queue_item_id: UUID | None = None
-    endpoint_id: str = "cbf4ffekmo36t9"
+    endpoint_id: str = "twog-md-default"
     endpoint_name: str = "hsa-md-validation"
     template_name: str = "hsa-md-openmm"
     input_packet: MDInputPacket

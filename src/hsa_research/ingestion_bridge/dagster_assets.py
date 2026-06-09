@@ -5591,7 +5591,7 @@ if dg is not None:
         group_name="ai_research",
         config_schema={
             "compute_job_id": dg.Field(str, description="Compute job ID to package for MD expert review."),
-            "endpoint_id": dg.Field(str, default_value="cbf4ffekmo36t9"),
+            "endpoint_id": dg.Field(str, default_value="twog-md-default"),
             "endpoint_name": dg.Field(str, default_value="hsa-md-validation"),
             "template_name": dg.Field(str, default_value="hsa-md-openmm"),
             "persist": dg.Field(bool, default_value=True),

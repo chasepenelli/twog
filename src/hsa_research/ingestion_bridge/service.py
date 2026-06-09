@@ -251,7 +251,7 @@ from .agent_performance import (
 from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
 from .claim_extractor import extract_claims_for_chunks
-from .compute_runners import ComputeRunnerConfigError, ComputeRunnerRequestError, RunPodComputeRunner
+from .compute_runners import ComputeRunnerConfigError, ComputeRunnerRequestError, get_compute_runner
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, build_embedding_provider, select_embedding_model_from_coverage
 from .evidence_fit import assess_research_followup_ingest_evidence_fit
 from .evidence_gap_resolver import (
@@ -2904,7 +2904,7 @@ class HSAResearchService:
         self,
         compute_job_id: UUID,
         *,
-        endpoint_id: str = "cbf4ffekmo36t9",
+        endpoint_id: str = "twog-md-default",
         endpoint_name: str = "hsa-md-validation",
         template_name: str = "hsa-md-openmm",
         worker_error_history: list[dict[str, Any]] | None = None,
@@ -3127,7 +3127,7 @@ class HSAResearchService:
                 )
                 return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         try:
-            submission = RunPodComputeRunner.from_env().submit(record)
+            submission = get_compute_runner(record).submit(record)
         except (ComputeRunnerConfigError, ComputeRunnerRequestError) as exc:
             updated = self.repository.update_compute_job(
                 compute_job_id,
@@ -3156,7 +3156,7 @@ class HSAResearchService:
             input_packet = _md_input_packet_from_compute_job(record)
         except Exception as exc:
             return f"md_input_packet_invalid: {exc}", {}
-        endpoint_id = os.getenv("HSA_RUNPOD_ENDPOINT_ID", "cbf4ffekmo36t9").strip() or "cbf4ffekmo36t9"
+        endpoint_id = os.getenv("HSA_RUNPOD_ENDPOINT_ID", "twog-md-default").strip() or "twog-md-default"
         packet_hash = _md_expert_packet_hash(
             input_packet,
             endpoint_id=endpoint_id,
@@ -3202,7 +3202,7 @@ class HSAResearchService:
             )
             return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         try:
-            status = RunPodComputeRunner.from_env().poll(record)
+            status = get_compute_runner(record).poll(record)
         except (ComputeRunnerConfigError, ComputeRunnerRequestError) as exc:
             updated = self.repository.update_compute_job(
                 compute_job_id,
@@ -3244,7 +3244,7 @@ class HSAResearchService:
             )
             return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         try:
-            cancellation = RunPodComputeRunner.from_env().cancel(record)
+            cancellation = get_compute_runner(record).cancel(record)
         except (ComputeRunnerConfigError, ComputeRunnerRequestError) as exc:
             updated = self.repository.update_compute_job(
                 compute_job_id,

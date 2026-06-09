@@ -671,7 +671,7 @@ def run_validation_autopilot_tool(
 
 def create_md_expert_review_packet_tool(
     compute_job_id: str,
-    endpoint_id: str = "cbf4ffekmo36t9",
+    endpoint_id: str = "twog-md-default",
     endpoint_name: str = "hsa-md-validation",
     template_name: str = "hsa-md-openmm",
     persist: bool = True,
@@ -2074,7 +2074,7 @@ if mcp is not None:
     @mcp.tool()
     def create_md_expert_review_packet(
         compute_job_id: str,
-        endpoint_id: str = "cbf4ffekmo36t9",
+        endpoint_id: str = "twog-md-default",
         endpoint_name: str = "hsa-md-validation",
         template_name: str = "hsa-md-openmm",
         persist: bool = True,

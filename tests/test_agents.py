@@ -1065,32 +1065,31 @@ def test_md_expert_agent_deterministic_review_persists_agent_approval(tmp_path, 
     assert approvals[0].reviewer_type == "md_expert_agent"
     assert repo.get_md_expert_review_packet(packet.packet_id).status == "approved"
 
-    requests_seen = []
+    # RunPod was removed; a fake provider registered through the seam proves the agent
+    # approval lets the gated job reach the provider (see compute_runners.get_compute_runner).
+    class _FakeRunner:
+        def submit(self, record):
+            return {
+                "status": "submitted",
+                "external_run_id": "fake-md-agent-run",
+                "runpod_job_id": "fake-md-agent-run",
+                "output_payload": {"provider": "fake"},
+                "metadata": {"provider": "fake"},
+            }
 
-    class FakeResponse:
-        def __enter__(self):
-            return self
+        def poll(self, record):  # pragma: no cover - not exercised here
+            return {"status": "completed", "output_payload": {}, "last_error": None, "metadata": {}}
 
-        def __exit__(self, exc_type, exc, tb):
-            return False
+        def cancel(self, record):  # pragma: no cover - not exercised here
+            return {"status": "cancelled", "output_payload": {}, "metadata": {}}
 
-        def read(self):
-            return json.dumps({"id": "rp-md-agent-approved", "status": "IN_QUEUE"}).encode("utf-8")
-
-    def fake_urlopen(request, timeout=60):
-        requests_seen.append(json.loads(request.data.decode("utf-8")) if request.data else {})
-        return FakeResponse()
-
-    monkeypatch.setenv("RUNPOD_API_KEY", "temp-test-key")
-    monkeypatch.setenv("HSA_RUNPOD_ENDPOINT_ID", "cbf4ffekmo36t9")
-    monkeypatch.setattr(compute_runners.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setitem(compute_runners._PROVIDERS, "runpod", lambda: _FakeRunner())
     submitted = service.submit_compute_job(created.compute_job_id, dry_run=False)
     assert submitted is not None
     assert submitted.status == "submitted"
-    assert submitted.runpod_job_id == "rp-md-agent-approved"
+    assert submitted.runpod_job_id == "fake-md-agent-run"
     assert submitted.metadata["md_expert_approval_id"] == str(result.approval_record.approval_id)
     assert submitted.metadata["md_expert_reviewer_type"] == "md_expert_agent"
-    assert requests_seen[-1]["input"]["compound_smiles"] == "CCO"
 
 
 def test_md_expert_agent_openrouter_review_persists_agent_approval(tmp_path, monkeypatch):
