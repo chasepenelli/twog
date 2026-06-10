@@ -81,6 +81,16 @@ checkout manifest already bundles method refs, open questions, evidence-bundle h
 **Exit criteria:** you can take a real HSA candidate, mark it validation-ready, and produce a
 checkout manifest a stranger could understand without a call.
 
+**✅ Implemented 2026-06-09:** `CandidateValidationReadiness` gate +
+`HSAResearchService.assess_candidate_validation_readiness()` (6 criteria: stable snapshot hash,
+a validation_ready decision, no blockers, advanced public_status, non-empty evidence bundle,
+enumerable open questions). Result persists on `PublicCandidateRecord.validation_ready*` (blob,
+no migration) + a `validation_ready_assessed` audit event. Open questions auto-derive from the
+decision's decisive_questions + evidence_tasks. Checkout manifest building takes
+`require_validation_ready` and auto-fills the snapshot hash + open questions from the gate.
+Snapshot `content_hash` confirmed stable across regeneration (test-locked). 503 tests green.
+Deferred to Phase 4: a queryable index column for browse-by-ready.
+
 ---
 
 ## Phase 2 — Close the loop end-to-end (you as the only user)

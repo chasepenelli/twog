@@ -673,3 +673,167 @@ def test_local_claim_extractor_creates_structured_chembl_claims(tmp_path):
     assert claims[0].evidence_level == "in_vitro"
     assert claims[0].metadata["context_key"] == "chembl_target_bioactivity"
     assert "pChEMBL 7.22" in claims[0].statement
+
+
+# --- Phase 1: validation-ready candidate gate + stable snapshot hash ---
+
+def _seed_validation_ready_candidate(repo, candidate_id="vr-candidate", *, ready=True):
+    """Seed a candidate + snapshot + (optionally validation_ready) decision."""
+    snapshot = PublicCandidateSnapshot(
+        candidate_id=candidate_id,
+        content_hash="a" * 40,
+        title="Vimentin peptide strategy",
+        public_status="evidence_supported",
+        snapshot_version=1,
+    )
+    repo.upsert_public_candidate_snapshot(snapshot)
+    repo.upsert_public_candidate(
+        PublicCandidateRecord(
+            candidate_id=candidate_id,
+            title="Vimentin peptide strategy",
+            public_status="evidence_supported" if ready else "proposed",
+            evidence_refs=["PMID:123"] if ready else [],
+            content_hash="a" * 40,
+            latest_snapshot_id=snapshot.snapshot_id,
+        )
+    )
+    decision = ValidationDecisionPacket(
+        decision_id=f"validation_decision:{candidate_id}",
+        packet_id=f"validation_packet:{candidate_id}",
+        candidate_id=candidate_id,
+        source_type="therapy_idea",
+        source_id=candidate_id,
+        title="Public candidate decision",
+        outcome="promote_broader_program",
+        confidence=0.72,
+        validation_ready=ready,
+        specific_claim_viability="uncertain",
+        broader_program_signal="strong",
+        rationale="The broader VIM peptide program has enough signal for external validation.",
+        recommended_downstream_action="Create an inspectable candidate record; validation recommend-only.",
+        decisive_questions=["Does VIM expression enrich in canine HSA cohorts?"],
+        evidence_tasks=["Attach processed omics readout and assay strategy."],
+        evidence_summary={"evidence_refs": ["PMID:123"]},
+    )
+    repo.upsert_validation_decision(ValidationDecisionRecord.from_decision(decision))
+    return candidate_id
+
+
+def test_validation_ready_gate_passes_and_persists(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "vr-ready.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate_id = _seed_validation_ready_candidate(repo, ready=True)
+
+    readiness = service.assess_candidate_validation_readiness(candidate_id)
+    assert readiness is not None
+    assert readiness.ready is True
+    assert readiness.blockers == []
+    assert readiness.snapshot_hash == "a" * 40
+    # open questions derived from the decision's decisive questions + evidence tasks
+    assert "Does VIM expression enrich in canine HSA cohorts?" in readiness.open_questions
+    assert "Attach processed omics readout and assay strategy." in readiness.open_questions
+
+    # persisted onto the candidate
+    persisted = repo.get_public_candidate(candidate_id)
+    assert persisted.validation_ready is True
+    assert persisted.validation_ready_at is not None
+    assert persisted.validation_ready_snapshot_hash == "a" * 40
+    assert persisted.validation_ready_open_questions == readiness.open_questions
+
+    # audit event appended
+    events = repo.list_public_candidate_decision_events(candidate_id=candidate_id)
+    assert any(event.action == "validation_ready_assessed" for event in events)
+
+
+def test_validation_ready_gate_blocks_unready_candidate(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "vr-blocked.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate_id = _seed_validation_ready_candidate(repo, ready=False)
+
+    readiness = service.assess_candidate_validation_readiness(candidate_id)
+    assert readiness is not None
+    assert readiness.ready is False
+    assert "no_validation_ready_decision" in readiness.blockers
+    assert "missing_evidence_bundle" in readiness.blockers
+
+    persisted = repo.get_public_candidate(candidate_id)
+    assert persisted.validation_ready is False
+    assert persisted.validation_ready_at is None
+    assert persisted.validation_ready_blockers
+
+
+def test_validation_ready_gate_returns_none_for_missing_candidate(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "vr-missing.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    assert service.assess_candidate_validation_readiness("does-not-exist") is None
+
+
+def test_checkout_manifest_requires_validation_ready(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "vr-checkout.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate_id = _seed_validation_ready_candidate(repo, ready=True)
+
+    # unready: gate not yet assessed -> checkout blocked
+    blocked = service.build_research_workspace_checkout_manifest(
+        ResearchWorkspaceCheckoutManifestRequest(
+            candidate_id=candidate_id,
+            require_validation_ready=True,
+            persist_to_workspace=False,
+        )
+    )
+    assert any("candidate_not_validation_ready" in error for error in blocked.errors)
+
+    # assess -> ready, then checkout succeeds and auto-fills snapshot hash + open questions
+    service.assess_candidate_validation_readiness(candidate_id)
+    allowed = service.build_research_workspace_checkout_manifest(
+        ResearchWorkspaceCheckoutManifestRequest(
+            candidate_id=candidate_id,
+            require_validation_ready=True,
+            persist_to_workspace=False,
+        )
+    )
+    assert not any("candidate_not_validation_ready" in error for error in allowed.errors)
+    assert allowed.manifest is not None
+    assert allowed.manifest.candidate_snapshot_hash == "a" * 40
+    assert "Does VIM expression enrich in canine HSA cohorts?" in allowed.manifest.open_questions
+
+
+def test_public_candidate_snapshot_content_hash_is_stable_across_regeneration(tmp_path):
+    """The snapshot content_hash must be reproducible for identical inputs — the proof-capsule
+    chain (workspace.candidate_snapshot_hash) depends on it not drifting."""
+    repo = SQLiteResearchRepository(tmp_path / "vr-hash-stable.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    idea = TherapyIdea(
+        title="Vimentin peptide blockade strategy",
+        hypothesis="A vimentin-directed peptide may disrupt vascular HSA invasion programs.",
+        rationale="VIM sits at a plausible tumor ecology interface and needs inspectable validation.",
+        candidate_therapies=["vimentin-targeting peptide"],
+        targets=["VIM"],
+        biomarkers=["VIM expression"],
+        evidence_refs=["PMID:123", "PMID:456"],
+        evidence_strength="medium",
+        risks=["direct canine peptide evidence remains sparse"],
+        next_experiments=["Run processed omics VIM expression readout."],
+        priority_score=0.82,
+    )
+    repo.upsert_therapy_idea(
+        TherapyIdeaRecord(
+            idea=idea,
+            source_brief_id=uuid4(),
+            topic="VIM peptide program",
+            status="ready_for_promotion",
+            score=0.82,
+        )
+    )
+    request = PublicCandidateGenerateRequest(
+        therapy_idea_id=idea.idea_id,
+        require_moonshot_grade=False,
+        pipeline_version="test-v1",
+        commit_sha="abc123",
+    )
+    first = service.generate_public_candidate_snapshot(request)
+    second = service.generate_public_candidate_snapshot(request)
+    assert first.snapshot is not None and second.snapshot is not None
+    # version increments, but the content hash is identical for identical inputs
+    assert first.snapshot.content_hash == second.snapshot.content_hash
+    assert len(first.snapshot.content_hash) == 64  # sha256 hex

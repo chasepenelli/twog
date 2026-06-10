@@ -84,6 +84,7 @@ from .contracts import (
     PublicCandidateIntegrityReportResult,
     PublicCandidateLibraryRequest,
     PublicCandidateLibraryResult,
+    CandidateValidationReadiness,
     PublicCandidateRecord,
     PublicCandidateSnapshot,
     PublicCandidateSnapshotResult,
@@ -1349,6 +1350,62 @@ class HSAResearchService:
         request: PublicCandidateGenerateRequest,
     ) -> PublicCandidateSnapshotResult:
         return _generate_public_candidate_snapshot(self.repository, request)
+
+    def assess_candidate_validation_readiness(
+        self,
+        candidate_id: str,
+        *,
+        persist: bool = True,
+    ) -> CandidateValidationReadiness | None:
+        """Assess whether a candidate may be checked out for external validation.
+
+        Returns None if the candidate does not exist. When ``persist`` is True the result
+        is written onto the candidate record (validation_ready* fields) and an audit
+        ``validation_ready_assessed`` decision event is appended.
+        """
+        candidate = self.repository.get_public_candidate(candidate_id)
+        if candidate is None:
+            return None
+        snapshots = self.repository.list_public_candidate_snapshots(candidate_id=candidate_id, limit=1)
+        snapshot = snapshots[0] if snapshots else None
+        decisions = self.repository.list_validation_decisions(candidate_id=candidate_id, limit=25)
+        readiness = _assess_candidate_validation_readiness(candidate, snapshot, decisions)
+        if persist:
+            updated = candidate.model_copy(
+                update={
+                    "validation_ready": readiness.ready,
+                    "validation_ready_at": readiness.assessed_at if readiness.ready else None,
+                    "validation_ready_snapshot_hash": readiness.snapshot_hash,
+                    "validation_ready_decision_ids": readiness.validation_decision_ids,
+                    "validation_ready_open_questions": readiness.open_questions,
+                    "validation_ready_blockers": readiness.blockers,
+                    "updated_at": readiness.assessed_at,
+                }
+            )
+            self.repository.upsert_public_candidate(updated)
+            self.repository.append_public_candidate_decision_event(
+                PublicCandidateDecisionEvent(
+                    candidate_id=candidate_id,
+                    trace_id=candidate.trace_id,
+                    action="validation_ready_assessed",
+                    actor="twog_system",
+                    new_status=candidate.public_status,
+                    related_snapshot_id=readiness.snapshot_id,
+                    rationale_md=(
+                        "Validation-ready gate passed; candidate is eligible for external checkout."
+                        if readiness.ready
+                        else "Validation-ready gate blocked: " + ", ".join(readiness.blockers)
+                    ),
+                    metadata={
+                        "ready": readiness.ready,
+                        "reasons": readiness.reasons,
+                        "blockers": readiness.blockers,
+                        "open_questions": readiness.open_questions,
+                        "snapshot_hash": readiness.snapshot_hash,
+                    },
+                )
+            )
+        return readiness
 
     def get_public_candidate(self, candidate_id: str) -> PublicCandidateRecord | None:
         return self.repository.get_public_candidate(candidate_id)
@@ -6960,6 +7017,86 @@ def _public_candidate_moonshot_gate(
         "reasons": reasons,
         "blockers": blockers,
     }
+
+
+def _candidate_validation_open_questions(
+    decisions: list[ValidationDecisionRecord],
+) -> list[str]:
+    """Open questions a checked-out collaborator should resolve, derived from the
+    candidate's validation decisions (decisive questions + evidence tasks)."""
+    questions: list[str] = []
+    for decision in decisions:
+        packet = decision.decision
+        questions.extend(packet.decisive_questions)
+        questions.extend(packet.evidence_tasks)
+    return _dedupe_texts(questions)[:50]
+
+
+def _assess_candidate_validation_readiness(
+    candidate: PublicCandidateRecord,
+    snapshot: PublicCandidateSnapshot | None,
+    decisions: list[ValidationDecisionRecord],
+) -> CandidateValidationReadiness:
+    """Validation-ready gate: may this candidate be checked out for external validation?
+
+    Ready only when every criterion passes (no blockers):
+      1. a stable snapshot content hash exists,
+      2. at least one validation decision is validation_ready,
+      3. the latest validation decision carries no blocking_reasons,
+      4. public_status is evidence_supported or compute_supported,
+      5. the evidence bundle (evidence_refs) is non-empty,
+      6. open questions for the collaborator can be enumerated.
+    """
+    reasons: list[str] = []
+    blockers: list[str] = []
+
+    snapshot_hash = (snapshot.content_hash if snapshot else None) or candidate.content_hash
+    snapshot_id = snapshot.snapshot_id if snapshot else candidate.latest_snapshot_id
+    if snapshot_hash:
+        reasons.append("snapshot_hash_present")
+    else:
+        blockers.append("missing_snapshot_hash")
+
+    ready_decisions = [decision for decision in decisions if decision.validation_ready]
+    if ready_decisions:
+        reasons.append(f"validation_ready_decisions:{len(ready_decisions)}")
+    else:
+        blockers.append("no_validation_ready_decision")
+
+    latest = decisions[0] if decisions else None
+    if latest is not None and latest.decision.blocking_reasons:
+        blockers.append("latest_decision_blocked:" + ",".join(latest.decision.blocking_reasons[:4]))
+    elif latest is not None:
+        reasons.append("latest_decision_unblocked")
+
+    if candidate.public_status in {"evidence_supported", "compute_supported"}:
+        reasons.append(f"public_status:{candidate.public_status}")
+    else:
+        blockers.append(f"public_status_not_ready:{candidate.public_status}")
+
+    if candidate.evidence_refs:
+        reasons.append(f"evidence_refs:{len(candidate.evidence_refs)}")
+    else:
+        blockers.append("missing_evidence_bundle")
+
+    open_questions = _candidate_validation_open_questions(decisions)
+    if open_questions:
+        reasons.append(f"open_questions:{len(open_questions)}")
+    else:
+        blockers.append("no_open_questions_enumerated")
+
+    return CandidateValidationReadiness(
+        candidate_id=candidate.candidate_id,
+        ready=not blockers,
+        public_status=candidate.public_status,
+        snapshot_id=snapshot_id,
+        snapshot_hash=snapshot_hash,
+        validation_decision_ids=[decision.decision_id for decision in ready_decisions],
+        open_questions=open_questions,
+        evidence_refs=list(candidate.evidence_refs),
+        reasons=reasons,
+        blockers=blockers,
+    )
 
 
 def _public_candidate_gate_text(record: TherapyIdeaRecord) -> str:

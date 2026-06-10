@@ -304,6 +304,7 @@ PublicCandidateDecisionAction = Literal[
     "annotated",
     "status_changed",
     "snapshot_generated",
+    "validation_ready_assessed",
 ]
 
 ResearchWorkspaceProvider = Literal[
@@ -4902,6 +4903,8 @@ class ResearchWorkspaceCheckoutManifestRequest(StrictBaseModel):
     installed_skill_refs: list[str] = Field(default_factory=list, max_length=100)
     recommended_source_refs: list[str] = Field(default_factory=list, max_length=100)
     persist_to_workspace: bool = True
+    # When True, the manifest only builds if the candidate's validation-ready gate has passed.
+    require_validation_ready: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -5340,6 +5343,14 @@ class PublicCandidateRecord(StrictBaseModel):
     priority_score: float = Field(default=0.5, ge=0.0, le=1.0)
     content_hash: str | None = Field(default=None, max_length=128)
     latest_snapshot_id: UUID | None = None
+    # Validation-ready gate (Phase 1): persisted result of the last readiness assessment.
+    # A candidate is checkout-ready for external validation only when validation_ready is True.
+    validation_ready: bool = False
+    validation_ready_at: datetime | None = None
+    validation_ready_snapshot_hash: str | None = Field(default=None, max_length=128)
+    validation_ready_decision_ids: list[str] = Field(default_factory=list, max_length=50)
+    validation_ready_open_questions: list[str] = Field(default_factory=list, max_length=50)
+    validation_ready_blockers: list[str] = Field(default_factory=list, max_length=50)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -5422,6 +5433,33 @@ class PublicCandidateSnapshot(StrictBaseModel):
             self.pipeline_version = self.pipeline_version.strip() or None
         if self.commit_sha:
             self.commit_sha = self.commit_sha.strip() or None
+        return self
+
+
+class CandidateValidationReadiness(StrictBaseModel):
+    """Result of the validation-ready gate — whether a candidate may be checked out
+    by an external collaborator for validation. ``ready`` is True only when every
+    criterion passed (no blockers). See HSAResearchService.assess_candidate_validation_readiness.
+    """
+
+    candidate_id: str = Field(min_length=3, max_length=260)
+    ready: bool = False
+    gate: str = "validation_ready_v1"
+    public_status: PublicCandidateStatus | None = None
+    snapshot_id: UUID | None = None
+    snapshot_hash: str | None = Field(default=None, max_length=128)
+    validation_decision_ids: list[str] = Field(default_factory=list, max_length=50)
+    open_questions: list[str] = Field(default_factory=list, max_length=50)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=100)
+    reasons: list[str] = Field(default_factory=list, max_length=50)
+    blockers: list[str] = Field(default_factory=list, max_length=50)
+    assessed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def normalize_candidate_validation_readiness(self) -> "CandidateValidationReadiness":
+        self.candidate_id = self.candidate_id.strip()
+        self.open_questions = _dedupe_strings(self.open_questions)
+        self.evidence_refs = _dedupe_strings(self.evidence_refs)
         return self
 
 

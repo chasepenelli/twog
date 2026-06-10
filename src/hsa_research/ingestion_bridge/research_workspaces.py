@@ -502,10 +502,25 @@ def build_research_workspace_checkout_manifest(
         errors.append("candidate_id is required when workspace_id cannot be resolved.")
         candidate_id = "missing-candidate"
 
-    work_packet_id = request.work_packet_id or (workspace.work_packet_id if workspace else None)
-    candidate_snapshot_hash = request.candidate_snapshot_hash or (
-        workspace.candidate_snapshot_hash if workspace else None
+    candidate = (
+        repository.get_public_candidate(candidate_id)
+        if candidate_id and candidate_id != "missing-candidate"
+        else None
     )
+    if request.require_validation_ready:
+        if candidate is None:
+            errors.append(f"candidate_not_found_for_validation_ready:{candidate_id}")
+        elif not candidate.validation_ready:
+            blocker_detail = ",".join(candidate.validation_ready_blockers[:6]) or "not_assessed"
+            errors.append(f"candidate_not_validation_ready:{blocker_detail}")
+
+    work_packet_id = request.work_packet_id or (workspace.work_packet_id if workspace else None)
+    candidate_snapshot_hash = (
+        request.candidate_snapshot_hash
+        or (workspace.candidate_snapshot_hash if workspace else None)
+        or (candidate.validation_ready_snapshot_hash or candidate.content_hash if candidate else None)
+    )
+    open_questions = request.open_questions or (candidate.validation_ready_open_questions if candidate else [])
     evidence_bundle_hash = request.evidence_bundle_hash or (workspace.evidence_bundle_hash if workspace else None)
     git_repo = request.git_repo or (workspace.git_repo if workspace else None)
     git_ref = request.git_ref or (workspace.git_ref if workspace else None)
@@ -539,7 +554,7 @@ def build_research_workspace_checkout_manifest(
         "candidate_snapshot_hash": candidate_snapshot_hash,
         "evidence_bundle_hash": evidence_bundle_hash,
         "method_refs": method_refs,
-        "open_questions": request.open_questions,
+        "open_questions": open_questions,
         "allowed_task_types": allowed_task_types,
         "expected_outputs": expected_outputs,
         "artifact_refs": request.artifact_refs,
@@ -562,7 +577,7 @@ def build_research_workspace_checkout_manifest(
         candidate_snapshot_hash=candidate_snapshot_hash,
         evidence_bundle_hash=evidence_bundle_hash,
         method_refs=method_refs,
-        open_questions=request.open_questions,
+        open_questions=open_questions,
         allowed_task_types=allowed_task_types,
         expected_outputs=expected_outputs,
         artifact_refs=request.artifact_refs,
