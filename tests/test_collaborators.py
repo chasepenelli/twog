@@ -14,6 +14,11 @@ from tests._helpers import (  # noqa: F401
 )
 from tests.test_candidates import _seed_validation_ready_candidate
 
+import pytest
+
+from hsa_research.ingestion_bridge.contracts import ResearchWorkspaceRecord
+from hsa_research.ingestion_bridge.service import CollaboratorAccessError, WorkspaceLeaseError
+
 
 # ---- 4.1 principal model ----------------------------------------------------------------------
 def test_register_collaborator_role_scopes(tmp_path):
@@ -99,3 +104,109 @@ def test_accept_sets_first_class_reviewed_by(tmp_path):
     accepted = service.accept_proof_capsule(capsule_id, reviewer="chase")
     assert accepted.reviewed_by == "chase"  # first-class field, not just metadata
     assert accepted.metadata["reviewed_by"] == "chase"  # back-compat metadata still set
+
+
+# ---- 4.3 workspace leasing --------------------------------------------------------------------
+def _bare_workspace(repo, candidate_id="vr-lease"):
+    return repo.upsert_research_workspace(
+        ResearchWorkspaceRecord(candidate_id=candidate_id, provider="manual", status="ready")
+    )
+
+
+def test_lease_acquire_conflict_steal_release(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "lease.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    service.register_collaborator(principal="vet1", name="Dr Vet", role="collaborator")
+    service.register_collaborator(principal="vet2", name="Dr Two", role="collaborator")
+    ws = _bare_workspace(repo)
+
+    leased = service.lease_workspace(ws.workspace_id, "vet1", ttl_seconds=3600)
+    assert leased.leased_by == "vet1" and service.workspace_lease_active(leased)
+    assert leased.gate_policy == "external_collaborator"  # collaborator hold re-gates the workspace
+
+    # another principal cannot take an active lease...
+    with pytest.raises(WorkspaceLeaseError):
+        service.lease_workspace(ws.workspace_id, "vet2")
+    # ...unless stealing
+    stolen = service.lease_workspace(ws.workspace_id, "vet2", steal=True)
+    assert stolen.leased_by == "vet2"
+
+    # the non-holder cannot release without force
+    with pytest.raises(WorkspaceLeaseError):
+        service.release_workspace(ws.workspace_id, "vet1")
+    released = service.release_workspace(ws.workspace_id, "vet2")
+    assert released.leased_by is None and released.status == "ready"
+
+
+def test_expired_lease_is_reacquirable(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "lease2.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    service.register_collaborator(principal="vet1", name="Dr Vet", role="collaborator")
+    service.register_collaborator(principal="vet2", name="Dr Two", role="collaborator")
+    ws = _bare_workspace(repo)
+    expired = service.lease_workspace(ws.workspace_id, "vet1", ttl_seconds=-1)  # already expired
+    assert not service.workspace_lease_active(expired)
+    # expired lease -> another principal can acquire without stealing
+    reacquired = service.lease_workspace(ws.workspace_id, "vet2")
+    assert reacquired.leased_by == "vet2"
+
+
+def test_revoked_principal_cannot_lease(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "lease3.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    collab = service.register_collaborator(principal="vet1", name="Dr Vet", role="collaborator")
+    service.revoke_collaborator(collab.collaborator_id)
+    ws = _bare_workspace(repo)
+    with pytest.raises(CollaboratorAccessError):
+        service.lease_workspace(ws.workspace_id, "vet1")
+
+
+# ---- 4.4 write-gate enforcement ---------------------------------------------------------------
+def test_collaborator_cannot_accept_or_promote_operator_can(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "gate.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    service.register_collaborator(principal="vet1", name="Dr Vet", role="collaborator")
+    service.register_collaborator(principal="chase", name="Chase", role="operator")
+    candidate_id = _seed_validation_ready_candidate(repo, candidate_id="vr-gate", ready=True)
+    item = _docking_queue_item(repo)
+    flow = service.run_compute_validation_flow(
+        candidate_id, item.queue_item_id, runner_kind="mock", submitted_by="vet1"
+    )
+    capsule_id = UUID(flow["capsule_id"])
+
+    # collaborator is blocked at the write gate
+    with pytest.raises(CollaboratorAccessError):
+        service.accept_proof_capsule(capsule_id, reviewer="vet1")
+    # operator passes
+    accepted = service.accept_proof_capsule(capsule_id, reviewer="chase")
+    assert accepted.status == "accepted_for_evidence_review"
+
+    with pytest.raises(CollaboratorAccessError):
+        service.promote_proof_capsule_to_candidate(capsule_id, reviewer="vet1")
+    promotion = service.promote_proof_capsule_to_candidate(capsule_id, reviewer="chase")
+    assert promotion["promoted"] is True, promotion
+
+
+def test_revoked_principal_cannot_run_compute(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "gate3.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    collab = service.register_collaborator(principal="vet1", name="Dr Vet", role="collaborator")
+    service.revoke_collaborator(collab.collaborator_id)
+    candidate_id = _seed_validation_ready_candidate(repo, candidate_id="vr-gate3", ready=True)
+    item = _docking_queue_item(repo)
+    with pytest.raises(CollaboratorAccessError):
+        service.run_compute_validation_flow(
+            candidate_id, item.queue_item_id, runner_kind="mock", submitted_by="vet1"
+        )
+
+
+def test_unregistered_actor_still_allowed_backcompat(tmp_path):
+    # the solo-operator model: an unregistered reviewer string is trusted by default
+    repo = SQLiteResearchRepository(tmp_path / "gate2.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate_id = _seed_validation_ready_candidate(repo, candidate_id="vr-gate2", ready=True)
+    item = _docking_queue_item(repo)
+    flow = service.run_compute_validation_flow(candidate_id, item.queue_item_id, runner_kind="mock")
+    capsule_id = UUID(flow["capsule_id"])
+    assert service.accept_proof_capsule(capsule_id, reviewer="twog_operator").status == "accepted_for_evidence_review"
+    assert service.promote_proof_capsule_to_candidate(capsule_id, reviewer="twog_operator")["promoted"] is True

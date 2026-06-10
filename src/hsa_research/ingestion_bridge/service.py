@@ -1076,6 +1076,14 @@ def _float_or_zero(value: Any) -> float:
     return _float_or_none(value) or 0.0
 
 
+class CollaboratorAccessError(RuntimeError):
+    """Phase 4: a registered principal attempted an action outside its granted scopes."""
+
+
+class WorkspaceLeaseError(RuntimeError):
+    """Phase 4: a workspace lease could not be acquired/released (held by another principal)."""
+
+
 class HSAResearchService:
     """Typed use-case service for research actions."""
 
@@ -1691,6 +1699,90 @@ class HSAResearchService:
             return None
         return self.repository.upsert_collaborator(record.model_copy(update={"status": "revoked"}))
 
+    def _authorize(self, principal: str | None, scope: str) -> None:
+        """Enforce the Phase 4 access layer at a write-gate point. A REGISTERED principal must be
+        active and hold the scope; an unregistered/legacy actor (e.g. "twog_operator") is allowed —
+        default-trust preserves the solo-operator model. Raises CollaboratorAccessError on denial.
+        Opting a principal into the collaborator registry is what constrains them."""
+        record = self.resolve_principal(principal)
+        if record is None:
+            return  # unregistered/legacy actor — trusted by default
+        if not record.has_scope(scope):  # type: ignore[arg-type]
+            raise CollaboratorAccessError(
+                f"principal '{record.principal}' (role={record.role}, status={record.status}) "
+                f"is not authorized for '{scope}'"
+            )
+
+    # --- Phase 4.3: workspace leasing (checkout/handoff) ------------------------------------------
+    def workspace_lease_active(self, workspace: ResearchWorkspaceRecord) -> bool:
+        """True iff the workspace currently holds an unexpired lease."""
+        return bool(
+            workspace.leased_by
+            and workspace.lease_expires_at
+            and workspace.lease_expires_at > datetime.now(UTC)
+        )
+
+    def lease_workspace(
+        self,
+        workspace_id: UUID,
+        principal: str,
+        *,
+        ttl_seconds: int = 3600,
+        steal: bool = False,
+    ) -> ResearchWorkspaceRecord | None:
+        """Acquire (or renew) a lease on a workspace for a principal — the checkout/handoff model
+        ("resume a 40% session"). Requires the lease_workspace scope. Raises WorkspaceLeaseError if
+        another principal holds an unexpired lease (unless steal=True). When a non-operator
+        collaborator leases, the workspace gate_policy flips to external_collaborator (its capsules
+        then require an operator's accept/promote). Returns None if the workspace does not exist."""
+        self._authorize(principal, "lease_workspace")
+        ws = self.repository.get_research_workspace(workspace_id)
+        if ws is None:
+            return None
+        if self.workspace_lease_active(ws) and ws.leased_by != principal and not steal:
+            raise WorkspaceLeaseError(
+                f"workspace {workspace_id} is leased by '{ws.leased_by}' until "
+                f"{ws.lease_expires_at.isoformat()}"
+            )
+        holder = self.resolve_principal(principal)
+        gate_policy = (
+            "external_collaborator" if holder is not None and holder.role != "operator" else ws.gate_policy
+        )
+        updated = ws.model_copy(
+            update={
+                "leased_by": principal,
+                "lease_expires_at": datetime.now(UTC) + timedelta(seconds=ttl_seconds),
+                "status": "active",
+                "gate_policy": gate_policy,
+            }
+        )
+        return self.repository.upsert_research_workspace(updated)
+
+    def release_workspace(
+        self,
+        workspace_id: UUID,
+        principal: str,
+        *,
+        force: bool = False,
+    ) -> ResearchWorkspaceRecord | None:
+        """Release a lease. The holder (or force=True) may release. Raises WorkspaceLeaseError if a
+        different principal holds it and force is not set. Returns None if the workspace is absent."""
+        ws = self.repository.get_research_workspace(workspace_id)
+        if ws is None:
+            return None
+        if ws.leased_by and ws.leased_by != principal and not force:
+            raise WorkspaceLeaseError(
+                f"workspace {workspace_id} is held by '{ws.leased_by}', not '{principal}'"
+            )
+        updated = ws.model_copy(
+            update={
+                "leased_by": None,
+                "lease_expires_at": None,
+                "status": "ready" if ws.status == "active" else ws.status,
+            }
+        )
+        return self.repository.upsert_research_workspace(updated)
+
     def submit_proof_capsule(
         self,
         request: ProofCapsuleSubmitRequest,
@@ -1746,6 +1838,7 @@ class HSAResearchService:
         note: str | None = None,
     ) -> ProofCapsuleRecord | None:
         """Operator accepts a submitted capsule, advancing it toward promotion."""
+        self._authorize(reviewer, "accept_capsule")  # Phase 4 write gate — operator scope only
         allowed_accept = {
             "accepted_for_evidence_review",
             "accepted_for_validation_queue",
@@ -1770,6 +1863,7 @@ class HSAResearchService:
         note: str | None = None,
     ) -> ProofCapsuleRecord | None:
         """Operator rejects a capsule (from any non-terminal state)."""
+        self._authorize(reviewer, "accept_capsule")  # Phase 4 write gate — operator scope only
         return self._transition_proof_capsule(
             capsule_id,
             "rejected",
@@ -1887,6 +1981,7 @@ class HSAResearchService:
         chosen provider — default the in-process mock), and on completion auto-build a proof
         capsule. Returns a result dict with every intermediate state + errors. Does not auto-accept
         or auto-promote the capsule (those remain operator-gated)."""
+        self._authorize(submitted_by, "submit_compute")  # Phase 4: registered principals need the scope
         result: dict[str, Any] = {"candidate_id": candidate_id, "errors": []}
 
         ws = self.ensure_internal_workspace_for_candidate(candidate_id)
@@ -1954,6 +2049,7 @@ class HSAResearchService:
         archive the capsule, and re-assess the validation-ready gate. Evidence is added LAST so a
         snapshot regeneration cannot overwrite it. Returns a result dict (never raises for normal
         precondition failures)."""
+        self._authorize(reviewer, "promote_candidate")  # Phase 4 write gate — operator scope only
         result: dict[str, Any] = {"capsule_id": str(capsule_id), "promoted": False, "errors": []}
         capsule = self.repository.get_proof_capsule(capsule_id)
         if capsule is None:
