@@ -39,6 +39,7 @@ from .contracts import (
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
     ResearchProgramRecord,
+    CollaboratorRecord,
     ProofCapsuleRecord,
     ResearchWorkspaceRecord,
     ResearchBriefEvaluationRecord,
@@ -407,6 +408,24 @@ class ResearchRepository(Protocol):
     ) -> list[ResearchWorkspaceRecord]:
         """Return persisted research workspaces by durable filters."""
 
+    def upsert_collaborator(self, record: CollaboratorRecord) -> CollaboratorRecord:
+        """Persist a trusted-collaborator principal (Phase 4 access layer)."""
+
+    def get_collaborator(self, collaborator_id: UUID) -> CollaboratorRecord | None:
+        """Return a persisted collaborator by id."""
+
+    def get_collaborator_by_principal(self, principal: str) -> CollaboratorRecord | None:
+        """Return a persisted collaborator by its stable principal slug."""
+
+    def list_collaborators(
+        self,
+        *,
+        role: str | None = None,
+        status: str | None = None,
+        limit: int | None = 100,
+    ) -> list[CollaboratorRecord]:
+        """Return persisted collaborators by durable filters."""
+
     def upsert_proof_capsule(self, record: ProofCapsuleRecord) -> ProofCapsuleRecord:
         """Persist a structured workspace check-in artifact."""
 
@@ -763,6 +782,7 @@ class InMemoryResearchRepository:
         self.therapy_ideas: dict[UUID, TherapyIdeaRecord] = {}
         self.research_programs: dict[UUID, ResearchProgramRecord] = {}
         self.research_workspaces: dict[UUID, ResearchWorkspaceRecord] = {}
+        self.collaborators: dict[UUID, CollaboratorRecord] = {}
         self.proof_capsules: dict[UUID, ProofCapsuleRecord] = {}
         self.validation_decisions: dict[str, ValidationDecisionRecord] = {}
         self.public_candidates: dict[str, PublicCandidateRecord] = {}
@@ -1617,6 +1637,43 @@ class InMemoryResearchRepository:
                 if record.expires_at is None or record.expires_at > now
             ]
         records.sort(key=lambda record: record.updated_at, reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def upsert_collaborator(self, record: CollaboratorRecord) -> CollaboratorRecord:
+        existing = self.collaborators.get(record.collaborator_id)
+        if existing:
+            record = record.model_copy(
+                update={
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **record.metadata},
+                }
+            )
+        self.collaborators[record.collaborator_id] = record
+        return record
+
+    def get_collaborator(self, collaborator_id: UUID) -> CollaboratorRecord | None:
+        return self.collaborators.get(collaborator_id)
+
+    def get_collaborator_by_principal(self, principal: str) -> CollaboratorRecord | None:
+        principal = principal.strip()
+        matches = [c for c in self.collaborators.values() if c.principal == principal]
+        matches.sort(key=lambda c: c.updated_at, reverse=True)
+        return matches[0] if matches else None
+
+    def list_collaborators(
+        self,
+        *,
+        role: str | None = None,
+        status: str | None = None,
+        limit: int | None = 100,
+    ) -> list[CollaboratorRecord]:
+        records = list(self.collaborators.values())
+        if role:
+            records = [c for c in records if c.role == role]
+        if status:
+            records = [c for c in records if c.status == status]
+        records.sort(key=lambda c: c.updated_at, reverse=True)
         return records[:limit] if limit is not None else records
 
     def upsert_proof_capsule(self, record: ProofCapsuleRecord) -> ProofCapsuleRecord:

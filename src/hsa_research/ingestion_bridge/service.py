@@ -150,6 +150,7 @@ from .contracts import (
     OmicsLocusSignalRequest,
     OmicsLocusSignalResult,
     OmicsReadoutRequest,
+    CollaboratorRecord,
     OmicsReadoutResult,
     ProofCapsuleLibraryRequest,
     ProofCapsuleRecord,
@@ -1640,6 +1641,56 @@ class HSAResearchService:
             workspaces=records,
         )
 
+    # --- Phase 4: trusted-collaborator principals -------------------------------------------------
+    def register_collaborator(
+        self,
+        *,
+        principal: str,
+        name: str,
+        role: str = "collaborator",
+        contact: str | None = None,
+        scopes: list[str] | None = None,
+        note: str | None = None,
+    ) -> CollaboratorRecord:
+        """Register (or update) a trusted principal. Re-registering an existing principal updates
+        it in place (same collaborator_id), so this is idempotent on the principal slug."""
+        existing = self.repository.get_collaborator_by_principal(principal.strip())
+        record = CollaboratorRecord(
+            collaborator_id=existing.collaborator_id if existing else uuid4(),
+            principal=principal,
+            name=name,
+            role=role,  # type: ignore[arg-type]
+            contact=contact,
+            scopes=scopes or [],  # type: ignore[arg-type]
+            note=note,
+        )
+        return self.repository.upsert_collaborator(record)
+
+    def get_collaborator(self, collaborator_id: UUID) -> CollaboratorRecord | None:
+        return self.repository.get_collaborator(collaborator_id)
+
+    def resolve_principal(self, principal: str | None) -> CollaboratorRecord | None:
+        """Look up an active principal by its slug (None / unknown -> None)."""
+        if not principal:
+            return None
+        return self.repository.get_collaborator_by_principal(principal.strip())
+
+    def list_collaborators(
+        self,
+        *,
+        role: str | None = None,
+        status: str | None = None,
+        limit: int | None = 100,
+    ) -> list[CollaboratorRecord]:
+        return self.repository.list_collaborators(role=role, status=status, limit=limit)
+
+    def revoke_collaborator(self, collaborator_id: UUID) -> CollaboratorRecord | None:
+        """Revoke a principal's access (status -> revoked); has_scope() then returns False."""
+        record = self.repository.get_collaborator(collaborator_id)
+        if record is None:
+            return None
+        return self.repository.upsert_collaborator(record.model_copy(update={"status": "revoked"}))
+
     def submit_proof_capsule(
         self,
         request: ProofCapsuleSubmitRequest,
@@ -1673,6 +1724,7 @@ class HSAResearchService:
         updated = capsule.model_copy(
             update={
                 "status": new_status,
+                "reviewed_by": reviewer,  # Phase 4: first-class write-gate stamp
                 "updated_at": now,
                 "metadata": {
                     **capsule.metadata,
@@ -1790,6 +1842,7 @@ class HSAResearchService:
             producer=ProofCapsuleProducer(
                 producer_type="agent", name="twog_compute", agent_name="compute_loop"
             ),
+            submitted_by=job.submitted_by,  # Phase 4: carry the job's actor onto the capsule
             target=ProofCapsuleTarget(
                 section=job.validation_type or "compute", method_ref=str(job.compute_job_id)
             ),
@@ -1826,6 +1879,7 @@ class HSAResearchService:
         runner_kind: str = "mock",
         compute_profile: str = "cpu",
         approved_by: str = "twog_operator",
+        submitted_by: str | None = None,
         auto_build_capsule: bool = True,
     ) -> dict[str, Any]:
         """The one tracked flow (ROADMAP P2): ensure the candidate is validation-ready and has an
@@ -1849,6 +1903,7 @@ class HSAResearchService:
             runner_kind=runner_kind,
             compute_profile=compute_profile,
             approved_by=approved_by,
+            submitted_by=submitted_by or approved_by,  # Phase 4: actor provenance on the job
         )
         if job is None:
             result["errors"].append(f"queue_item_not_found:{queue_item_id}")
@@ -3275,6 +3330,7 @@ class HSAResearchService:
         compute_profile: str = "gpu",
         approved_by: str | None = None,
         approval_note: str | None = None,
+        submitted_by: str | None = None,
         dagster_run_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         force_new: bool = False,
@@ -3331,6 +3387,7 @@ class HSAResearchService:
             cost_actual_usd=existing.cost_actual_usd if existing else None,
             approved_by=approved_by or item.approved_by,
             approval_note=approval_note or item.approval_note,
+            submitted_by=submitted_by or (existing.submitted_by if existing else None),  # Phase 4 provenance
             submitted_at=existing.submitted_at if existing else None,
             started_at=existing.started_at if existing else None,
             completed_at=existing.completed_at if existing else None,

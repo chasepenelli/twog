@@ -37,6 +37,7 @@ from .contracts import (
     PublicCandidateRecord,
     PublicCandidateSnapshot,
     RawSourceRecord,
+    CollaboratorRecord,
     ResearchChunkSearchRequest,
     ResearchChunkSearchResult,
     ResearchProgramRecord,
@@ -2272,6 +2273,80 @@ class PostgresResearchRepository(ResearchRepository):
             params.append(limit)
         return [ResearchWorkspaceRecord.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
 
+    def upsert_collaborator(self, record: CollaboratorRecord) -> CollaboratorRecord:
+        existing = self.get_collaborator(record.collaborator_id)
+        if existing:
+            record = record.model_copy(
+                update={
+                    "created_at": existing.created_at,
+                    "updated_at": datetime.now(UTC),
+                    "metadata": {**existing.metadata, **record.metadata},
+                }
+            )
+        payload = record.model_dump(mode="json")
+        self._execute(
+            """
+            insert into collaborators (
+              collaborator_id, principal, role, status, created_at, updated_at, payload
+            )
+            values (%s, %s, %s, %s, %s, %s, %s)
+            on conflict(collaborator_id) do update set
+              principal = excluded.principal,
+              role = excluded.role,
+              status = excluded.status,
+              updated_at = excluded.updated_at,
+              payload = excluded.payload
+            """,
+            (
+                str(record.collaborator_id),
+                record.principal,
+                record.role,
+                record.status,
+                record.created_at,
+                record.updated_at,
+                self._json(payload),
+            ),
+        )
+        return record
+
+    def get_collaborator(self, collaborator_id: UUID) -> CollaboratorRecord | None:
+        row = self._fetchone(
+            "select payload from collaborators where collaborator_id = %s",
+            (str(collaborator_id),),
+        )
+        return CollaboratorRecord.model_validate(_payload(row)) if row is not None else None
+
+    def get_collaborator_by_principal(self, principal: str) -> CollaboratorRecord | None:
+        row = self._fetchone(
+            "select payload from collaborators where principal = %s order by updated_at desc limit 1",
+            (principal.strip(),),
+        )
+        return CollaboratorRecord.model_validate(_payload(row)) if row is not None else None
+
+    def list_collaborators(
+        self,
+        *,
+        role: str | None = None,
+        status: str | None = None,
+        limit: int | None = 100,
+    ) -> list[CollaboratorRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if role:
+            clauses.append("role = %s")
+            params.append(role)
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        sql = "select payload from collaborators"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by updated_at desc"
+        if limit is not None:
+            sql += " limit %s"
+            params.append(limit)
+        return [CollaboratorRecord.model_validate(_payload(row)) for row in self._fetchall(sql, params)]
+
     def upsert_proof_capsule(self, record: ProofCapsuleRecord) -> ProofCapsuleRecord:
         existing = self.get_proof_capsule(record.capsule_id)
         if existing:
@@ -4419,6 +4494,20 @@ class PostgresResearchRepository(ResearchRepository):
               on research_workspaces(provider, status, updated_at desc);
             create index if not exists research_workspaces_skill_idx
               on research_workspaces(skill_profile, updated_at desc);
+
+            create table if not exists collaborators (
+              collaborator_id text primary key,
+              principal text not null,
+              role text not null,
+              status text not null,
+              payload jsonb not null,
+              created_at timestamptz not null default now(),
+              updated_at timestamptz not null default now()
+            );
+            create index if not exists collaborators_principal_idx
+              on collaborators(principal, updated_at desc);
+            create index if not exists collaborators_role_status_idx
+              on collaborators(role, status, updated_at desc);
 
             create table if not exists proof_capsules (
               capsule_id text primary key,

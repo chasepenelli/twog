@@ -82,6 +82,7 @@ def submit_proof_capsule(
         packet_type=request.packet_type,
         requested_action=request.requested_action,
         producer=request.producer,
+        submitted_by=request.submitted_by,  # Phase 4: actor provenance (excluded from content_hash)
         target=request.target,
         summary=request.summary,
         payload=request.payload,

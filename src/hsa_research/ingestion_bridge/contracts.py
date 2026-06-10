@@ -335,6 +335,32 @@ ResearchWorkspaceStatus = Literal[
 # keep the gate at submission (set up for Phase 4). Per-origin, carried on the workspace.
 ResearchWorkspaceGatePolicy = Literal["trusted_operator", "external_collaborator"]
 
+# Phase 4 — trusted-collaborator access layer. A principal (operator or external collaborator) acts
+# on the loop; the operator approval stays the write gate. Scopes are the granular capabilities a
+# principal holds; an operator holds all, a collaborator may run the middle (lease/compute/capsule)
+# but NOT the write-gate actions (accept/promote).
+CollaboratorRole = Literal["operator", "collaborator"]
+CollaboratorStatus = Literal["active", "revoked"]
+CollaboratorScope = Literal[
+    "lease_workspace",
+    "submit_compute",
+    "submit_capsule",
+    "accept_capsule",  # write gate — operator only
+    "promote_candidate",  # write gate — operator only
+]
+COLLABORATOR_SCOPES: tuple[CollaboratorScope, ...] = (
+    "lease_workspace",
+    "submit_compute",
+    "submit_capsule",
+)
+OPERATOR_SCOPES: tuple[CollaboratorScope, ...] = COLLABORATOR_SCOPES + ("accept_capsule", "promote_candidate")
+
+
+def default_scopes_for_role(role: CollaboratorRole) -> list[CollaboratorScope]:
+    """The default capability set for a role. Operators hold the write-gate scopes; collaborators
+    run the middle of the loop only (lease -> compute -> capsule), never accept/promote."""
+    return list(OPERATOR_SCOPES if role == "operator" else COLLABORATOR_SCOPES)
+
 ResearchWorkspaceSkillProfile = Literal[
     "core",
     "literature_and_citation",
@@ -4106,6 +4132,9 @@ class ComputeJobRecord(StrictBaseModel):
     cost_actual_usd: float | None = Field(default=None, ge=0.0)
     approved_by: str | None = Field(default=None, max_length=200)
     approval_note: str | None = Field(default=None, max_length=1000)
+    # Phase 4: the principal (operator/collaborator) who initiated this job — provenance for the
+    # audit trail. Distinct from approved_by (who authorized it before submission).
+    submitted_by: str | None = Field(default=None, max_length=200)
     submitted_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -4774,6 +4803,44 @@ class ValidationDecisionReportResult(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class CollaboratorRecord(StrictBaseModel):
+    """A trusted principal who acts on the validation loop (Phase 4). `principal` is the stable
+    actor string stamped onto compute jobs, capsules, and decision events for provenance. Roles
+    confer scopes; the operator-approval write gate (accept/promote) is operator-only."""
+
+    collaborator_id: UUID = Field(default_factory=uuid4)
+    principal: str = Field(min_length=2, max_length=120)  # stable slug/login, e.g. "j.doe"
+    name: str = Field(min_length=1, max_length=260)
+    contact: str | None = Field(default=None, max_length=500)
+    role: CollaboratorRole = "collaborator"
+    scopes: list[CollaboratorScope] = Field(default_factory=list)
+    status: CollaboratorStatus = "active"
+    note: str | None = Field(default=None, max_length=1000)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_collaborator_record(self) -> "CollaboratorRecord":
+        self.principal = self.principal.strip()
+        self.name = self.name.strip()
+        self.contact = self.contact.strip() if self.contact else None
+        self.note = self.note.strip() if self.note else None
+        if not self.principal:
+            raise ValueError("collaborator principal must be non-empty")
+        # default scopes from role; never let a collaborator silently hold write-gate scopes
+        scopes = self.scopes or default_scopes_for_role(self.role)
+        if self.role != "operator":
+            scopes = [s for s in scopes if s in COLLABORATOR_SCOPES]
+        # dedupe, stable order
+        self.scopes = [s for s in OPERATOR_SCOPES if s in set(scopes)]
+        return self
+
+    def has_scope(self, scope: CollaboratorScope) -> bool:
+        """True iff this principal is active and holds the scope."""
+        return self.status == "active" and scope in self.scopes
+
+
 class ResearchWorkspaceRecord(StrictBaseModel):
     workspace_id: UUID = Field(default_factory=uuid4)
     work_packet_id: str | None = Field(default=None, max_length=260)
@@ -5124,6 +5191,7 @@ class ProofCapsuleSubmitRequest(StrictBaseModel):
     packet_type: ProofCapsulePacketType
     requested_action: ProofCapsuleRequestedAction
     producer: ProofCapsuleProducer = Field(default_factory=ProofCapsuleProducer)
+    submitted_by: str | None = Field(default=None, max_length=200)  # Phase 4: actor provenance
     target: ProofCapsuleTarget
     summary: ProofCapsuleSummary
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -5159,6 +5227,10 @@ class ProofCapsuleRecord(StrictBaseModel):
     requested_action: ProofCapsuleRequestedAction
     status: ProofCapsuleStatus = "submitted"
     producer: ProofCapsuleProducer = Field(default_factory=ProofCapsuleProducer)
+    # Phase 4: first-class principal provenance (was metadata-only). submitted_by = who produced the
+    # capsule; reviewed_by = the operator who accepted/rejected it (the write-gate stamp).
+    submitted_by: str | None = Field(default=None, max_length=200)
+    reviewed_by: str | None = Field(default=None, max_length=200)
     target: ProofCapsuleTarget
     summary: ProofCapsuleSummary
     payload: dict[str, Any] = Field(default_factory=dict)
