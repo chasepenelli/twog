@@ -967,3 +967,71 @@ def test_compute_validation_loop_end_to_end(tmp_path):
         event.action == "evidence_added" and event.related_capsule_id == capsule_id
         for event in events
     )
+
+
+# --- Phase 3a: pluggable lane registry + omics-lane pluggability proof ---
+
+def test_lane_registry_md_gated_omics_ungated():
+    from hsa_research.ingestion_bridge.lanes import available_lanes, get_lane
+
+    assert "md" in available_lanes()
+    assert "omics" in available_lanes()
+    assert get_lane("md") is not None and get_lane("md").gate is not None  # MD is expert-gated
+    assert get_lane("omics") is not None and get_lane("omics").gate is None  # omics is ungated (CPU)
+    assert get_lane("omics").compute_profile == "cpu"
+    assert get_lane("nonexistent") is None
+
+
+def test_omics_lane_runs_through_the_same_loop(tmp_path):
+    """Pluggability proof: a non-MD, CPU, ungated lane traverses the SAME compute->capsule->
+    promotion loop as MD, via the lane registry dispatch — and the capsule carries the lane's
+    directional signal. If this passes, the LaneSpec abstraction holds for more than docking/MD."""
+    repo = SQLiteResearchRepository(tmp_path / "p3a-omics.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate_id = _seed_validation_ready_candidate(repo, candidate_id="vr-omics", ready=True)
+
+    # an OMICS validation queue item (different lane from docking/MD)
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="TME deconvolution of PIK3CA-mutant canine HSA",
+            task_type="omics",
+            title="Immunosuppression signature in the PIK3CA-mutant subset",
+            objective="Does the PIK3CA-mutant HSA subset carry an immunosuppressive TME signature?",
+            rationale="The cheapest-first crux for the IL-12-relief arm.",
+            validation_request=ValidationRequest(
+                validation_type="omics",
+                target_name="PIK3CA-mutant HSA TME",
+                candidate_name="LNP-mRNA-IL12 program",
+                objective="Score Treg/M2-TAM enrichment in mutant vs WT HSA.",
+                require_approval=True,
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma and human angiosarcoma",
+                    species=["canine", "human"],
+                    model_system="Public canine HSA omics with explicit provenance.",
+                    assay_type="bulk RNA-seq TME deconvolution",
+                    readout="immune-cell composition by mutation stratum",
+                    endpoint="differential composition",
+                ),
+            ),
+        )
+    )
+
+    # the SAME flow as MD/docking — no MD expert packet needed (omics lane is ungated)
+    flow = service.run_compute_validation_flow(candidate_id, item.queue_item_id, runner_kind="mock")
+    assert flow["errors"] == [], flow
+    assert flow["compute_job_status"] == "completed"
+    assert "capsule_id" in flow, flow
+
+    capsule = repo.get_proof_capsule(UUID(flow["capsule_id"]))
+    assert capsule.packet_type == "compute_artifact"
+    # the lane's directional signal rode into the capsule (honest mock => neutral)
+    assert capsule.payload["signal"] == "neutral"
+    assert capsule.payload["validation_type"] == "omics"
+
+    # and it promotes the same way
+    service.accept_proof_capsule(capsule.capsule_id, reviewer="chase")
+    promotion = service.promote_proof_capsule_to_candidate(capsule.capsule_id, reviewer="chase")
+    assert promotion["promoted"] is True

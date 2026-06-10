@@ -259,6 +259,7 @@ from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
 from .claim_extractor import extract_claims_for_chunks
 from .compute_runners import ComputeRunnerConfigError, ComputeRunnerRequestError, get_compute_runner
+from .lanes import LaneSpec, get_lane, register_lane
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, build_embedding_provider, select_embedding_model_from_coverage
 from .evidence_fit import assess_research_followup_ingest_evidence_fit
 from .evidence_gap_resolver import (
@@ -1801,6 +1802,10 @@ class HSAResearchService:
                 "compute_job_id": str(job.compute_job_id),
                 "validation_type": job.validation_type,
                 "metrics": out.get("metrics") or {},
+                # Directional evidence (the lane's parse_result signal): supports/neutral/refutes
+                # the candidate's claim, with confidence. Flows into candidate evidence via promotion.
+                "signal": out.get("signal") or "neutral",
+                "confidence": out.get("confidence"),
                 "output_payload": out,
             },
             artifacts=artifacts,
@@ -3543,8 +3548,9 @@ class HSAResearchService:
             )
             return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         gate_metadata: dict[str, Any] = {}
-        if record.validation_type == "md":
-            gate_error, gate_metadata = self._md_live_submit_gate(record)
+        lane = get_lane(record.validation_type)
+        if lane is not None and lane.gate is not None:
+            gate_error, gate_metadata = lane.gate(self, record)
             if gate_error:
                 updated = self.repository.update_compute_job(
                     compute_job_id,
@@ -13872,3 +13878,29 @@ def reset_service_for_tests() -> None:
 
     global _SERVICE
     _SERVICE = None
+
+
+# --- Compute lane registry (ROADMAP P3 / PHASE3_PLAN 3a) -------------------------------------
+# MD is the first instance of the pluggable lane pattern, not a special case: its expert gate is
+# registered as the lane's gate, and submit_compute_job dispatches the gate by lane (above) rather
+# than a hardcoded `validation_type == "md"`. New lanes register the same way.
+register_lane(
+    LaneSpec(
+        lane_key="md_smoke",
+        validation_type="md",
+        gate=lambda service, record: service._md_live_submit_gate(record),
+        compute_profile="gpu",
+        supports_checkpointing=True,
+        description="Molecular dynamics / docking smoke — expert-gated (packet hash + approval).",
+    )
+)
+register_lane(
+    LaneSpec(
+        lane_key="omics_review",
+        validation_type="omics",
+        gate=None,  # ungated: CPU TME-deconvolution review; rigor lives in parse_result + promotion
+        compute_profile="cpu",
+        supports_checkpointing=False,
+        description="Omics TME-deconvolution review (the PIK3CA-mutant immunosuppression crux).",
+    )
+)

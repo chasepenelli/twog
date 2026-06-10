@@ -89,6 +89,9 @@ class MockComputeRunner:
                 "limitations": ["Mock provider output; not scientifically meaningful."],
                 "source_refs": [],
                 "metrics": {"mock": True},
+                # Honest mock: no real computation, so the directional signal is neutral/low-confidence.
+                "signal": "neutral",
+                "confidence": 0.0,
             },
             "metadata": {"provider": "mock"},
         }
