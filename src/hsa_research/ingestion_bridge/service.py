@@ -13908,3 +13908,13 @@ register_lane(
         description="Omics TME-deconvolution review (the PIK3CA-mutant immunosuppression crux).",
     )
 )
+register_lane(
+    LaneSpec(
+        lane_key="gnina_docking",
+        validation_type="docking",
+        gate=None,  # v1 ungated; light input gate is a follow-on (a single dock is cheap)
+        compute_profile="gpu",
+        supports_checkpointing=False,  # one dock is atomic; a screen (fan-out) checkpoints per-ligand
+        description="gnina CNN docking on GPU — engagement check (e.g. mTOR inhibitor vs MTOR).",
+    )
+)

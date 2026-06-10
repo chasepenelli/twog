@@ -116,20 +116,24 @@ class MockComputeRunner:
 register_compute_runner("mock", lambda: MockComputeRunner())
 
 
-def _extract_omics_config(record: ComputeJobRecord) -> dict[str, Any] | None:
-    """Find the omics-review config on a compute job (it rides with the validation request)."""
+def _extract_lane_config(record: ComputeJobRecord, key: str) -> dict[str, Any] | None:
+    """Find a lane's config on a compute job (it rides with the validation request under `key`)."""
     payload = record.input_payload if isinstance(record.input_payload, dict) else {}
     candidates = [
-        payload.get("omics_review"),
-        (payload.get("validation_request") or {}).get("metadata", {}).get("omics_review")
+        payload.get(key),
+        (payload.get("validation_request") or {}).get("metadata", {}).get(key)
         if isinstance(payload.get("validation_request"), dict)
         else None,
-        record.metadata.get("omics_review") if isinstance(record.metadata, dict) else None,
+        record.metadata.get(key) if isinstance(record.metadata, dict) else None,
     ]
     for cfg in candidates:
         if isinstance(cfg, dict):
             return cfg
     return None
+
+
+def _extract_omics_config(record: ComputeJobRecord) -> dict[str, Any] | None:
+    return _extract_lane_config(record, "omics_review")
 
 
 class LocalOmicsComputeRunner:
@@ -215,10 +219,27 @@ def _call_modal_omics(config: dict[str, Any]) -> dict[str, Any]:
         return run_omics_review_remote.remote(config)
 
 
+def _call_modal_gnina(config: dict[str, Any]) -> dict[str, Any]:
+    """Run gnina docking on Modal cloud GPU (lazy import; ephemeral run). Mockable in tests."""
+    from .modal_app import app, run_gnina_remote
+
+    with app.run():
+        return run_gnina_remote.remote(config)
+
+
+# validation_type -> (config key, the _call_modal_* function NAME). The name is resolved against
+# the module globals at CALL TIME (not captured here) so tests can monkeypatch the call, and so a
+# bug can't silently bind the real cloud call.
+_MODAL_LANES: dict[str, tuple[str, str]] = {
+    "omics": ("omics_review", "_call_modal_omics"),
+    "docking": ("docking", "_call_modal_gnina"),
+}
+
+
 class ModalComputeRunner:
-    """Modal cloud provider (runner_kind="modal"). v1 handles the omics-review CPU lane; GPU lanes
-    (gnina/Boltz) plug in the same way as gpu=... Modal functions. The modal SDK is imported
-    lazily (via _call_modal_omics) so twog never hard-depends on it."""
+    """Modal cloud provider (runner_kind="modal"). Dispatches by validation_type: omics -> CPU
+    analysis, docking -> gnina on GPU. New lanes register in _MODAL_LANES. The modal SDK is imported
+    lazily (via the per-lane _call_modal_* fns) so twog never hard-depends on it."""
 
     def submit(self, record: ComputeJobRecord) -> dict[str, Any]:
         run_id = f"modal:{record.compute_job_id}"
@@ -232,16 +253,20 @@ class ModalComputeRunner:
                 "metadata": {"provider": "modal"},
             }
 
-        if record.validation_type != "omics":
+        lane = _MODAL_LANES.get(record.validation_type or "")
+        if lane is None:
             raise ComputeRunnerConfigError(
-                f"modal runner v1 handles validation_type='omics' only, got '{record.validation_type}'."
+                f"modal runner has no lane for validation_type='{record.validation_type}' "
+                f"(have: {sorted(_MODAL_LANES)})."
             )
-        config = _extract_omics_config(record)
+        config_key, call_name = lane
+        config = _extract_lane_config(record, config_key)
         if config is None:
-            return _fail("modal_omics_config_missing")
+            return _fail(f"modal_{record.validation_type}_config_missing")
+        call = globals()[call_name]  # resolve at call time -> monkeypatch-able; never auto-binds real cloud
         try:
-            result = _call_modal_omics(config)
-        except Exception as exc:  # network/auth/import/remote errors surface as a blocked-style failure
+            result = call(config)
+        except Exception as exc:  # network/auth/import/remote errors surface as a failed job
             return _fail("modal_run_failed", {"detail": str(exc)[:500]})
         return {
             "status": "completed",

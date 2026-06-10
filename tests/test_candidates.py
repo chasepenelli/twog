@@ -1207,3 +1207,48 @@ def test_modal_adapter_runs_omics_through_the_loop(tmp_path, monkeypatch):
     assert capsule.payload["output_payload"]["provider"] == "modal"
     service.accept_proof_capsule(capsule.capsule_id, reviewer="chase")
     assert service.promote_proof_capsule_to_candidate(capsule.capsule_id, reviewer="chase")["promoted"]
+
+
+def test_gnina_docking_lane_runs_through_the_loop(tmp_path, monkeypatch):
+    """The GPU docking lane (gnina) runs through the SAME loop on runner_kind='modal'. The GPU
+    cloud call is mocked here (no GPU spend, CI-safe); the real run is the ask-first verification."""
+    import hsa_research.ingestion_bridge.compute_runners as cr
+
+    canned = {
+        "findings": "gnina docked mTOR inhibitor into MTOR: best affinity -8.5 kcal/mol. Signal: supports.",
+        "signal": "supports",
+        "confidence": 0.62,
+        "source_refs": ["RCSB:MTOR"],
+        "limitations": ["docking is an estimate"],
+        "metrics": {"method": "gnina_cnn", "best_affinity_kcal_mol": -8.5},
+    }
+    monkeypatch.setattr(cr, "_call_modal_gnina", lambda config: canned)
+
+    repo = SQLiteResearchRepository(tmp_path / "p3b-gnina.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate_id = _seed_validation_ready_candidate(repo, candidate_id="vr-gnina", ready=True)
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(), task_id=uuid4(), brief_id=uuid4(),
+            topic="Dock mTOR inhibitor against MTOR", task_type="docking",
+            title="gnina dock: mTORC1-selective inhibitor vs MTOR",
+            objective="Does the inhibitor engage canine MTOR?",
+            rationale="The mTOR-engagement crux (docking arm).",
+            validation_request=ValidationRequest(
+                validation_type="docking", target_name="MTOR", candidate_name="mTORC1-selective inhibitor",
+                objective="Dock the inhibitor against MTOR.", require_approval=True,
+                metadata={"docking": {"target": "MTOR", "ligand_smiles": "CCO", "source_refs": ["RCSB:MTOR"]}},
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma", species=["canine"],
+                    model_system="MTOR structure", assay_type="in silico docking",
+                    readout="binding affinity", endpoint="computational plausibility",
+                ),
+            ),
+        )
+    )
+    flow = service.run_compute_validation_flow(candidate_id, item.queue_item_id, runner_kind="modal")
+    assert flow["errors"] == [], flow
+    assert flow["compute_job_status"] == "completed"
+    capsule = repo.get_proof_capsule(UUID(flow["capsule_id"]))
+    assert capsule.payload["signal"] == "supports"
+    assert capsule.payload["validation_type"] == "docking"

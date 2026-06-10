@@ -61,6 +61,60 @@ if modal is not None:
             source_refs=config.get("source_refs"),
         )
 
+    # --- GPU docking lane (gnina) ---------------------------------------------------------------
+    # SCAFFOLD: the parse/signal logic (docking.py) is real + tested; the gnina invocation here is
+    # best-effort and MUST be verified on the first real GPU run — the binding box, ligand prep, and
+    # gnina image tag are the parts to confirm. gnina runs on a modest GPU (T4 is enough for a smoke).
+    _DOCKING_MODULE = Path(__file__).resolve().parent / "docking.py"
+    gnina_image = (
+        modal.Image.from_registry("gnina/gnina:latest")  # gnina binary + CUDA
+        .pip_install("rdkit")  # SMILES -> 3D SDF ligand prep (avoids the old PDB-intermediate failure)
+        .add_local_file(str(_DOCKING_MODULE), "/root/docking.py")
+    )
+
+    @app.function(image=gnina_image, gpu="T4", timeout=1800)
+    def run_gnina_remote(config: dict[str, Any]) -> dict[str, Any]:
+        """Remote gnina docking on GPU. config: receptor_pdb, ligand_smiles, target, ligand_name,
+        and box params (center_x/y/z, size_x/y/z) OR autobox_ligand_pdb for the search box."""
+        import os
+        import subprocess
+        import sys
+        import tempfile
+
+        sys.path.insert(0, "/root")
+        from docking import build_docking_result, parse_gnina_output
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+
+        workdir = tempfile.mkdtemp()
+        receptor = os.path.join(workdir, "receptor.pdb")
+        with open(receptor, "w") as fh:
+            fh.write(config["receptor_pdb"])
+        # ligand prep: SMILES -> 3D SDF with bond orders preserved (RDKit), not a PDB intermediate
+        mol = Chem.AddHs(Chem.MolFromSmiles(config["ligand_smiles"]))
+        AllChem.EmbedMolecule(mol, randomSeed=0xF00D)
+        AllChem.MMFFOptimizeMolecule(mol)
+        ligand = os.path.join(workdir, "ligand.sdf")
+        writer = Chem.SDWriter(ligand)
+        writer.write(mol)
+        writer.close()
+        cmd = ["gnina", "-r", receptor, "-l", ligand, "-o", os.path.join(workdir, "out.sdf"), "--seed", "0"]
+        if all(k in config for k in ("center_x", "center_y", "center_z")):
+            cmd += ["--center_x", str(config["center_x"]), "--center_y", str(config["center_y"]),
+                    "--center_z", str(config["center_z"]),
+                    "--size_x", str(config.get("size_x", 20)), "--size_y", str(config.get("size_y", 20)),
+                    "--size_z", str(config.get("size_z", 20))]
+        else:
+            cmd += ["--autobox_ligand", receptor]  # fallback (whole-receptor box) — refine for real runs
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1500)
+        modes = parse_gnina_output(proc.stdout)
+        return build_docking_result(
+            modes,
+            target=config.get("target", "target"),
+            ligand=config.get("ligand_name", config.get("ligand_smiles", "ligand")),
+            source_refs=config.get("source_refs"),
+        )
+
     @app.local_entrypoint()
     def main() -> None:
         """Tiny smoke: a fixture where the PIK3CA-mutant stratum IS immunosuppressed -> 'supports'."""
