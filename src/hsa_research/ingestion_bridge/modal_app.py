@@ -73,7 +73,7 @@ if modal is not None:
         .add_local_file(str(_DOCKING_MODULE), "/root/docking.py")
     )
 
-    @app.function(image=gnina_image, gpu="T4", timeout=1800)
+    @app.function(image=gnina_image, gpu="A100", timeout=1800)
     def run_gnina_remote(config: dict[str, Any]) -> dict[str, Any]:
         """Remote gnina docking on GPU. config: receptor_pdb, ligand_smiles, target, ligand_name,
         and box params (center_x/y/z, size_x/y/z) OR autobox_ligand_pdb for the search box."""
@@ -107,14 +107,32 @@ if modal is not None:
                     "--size_z", str(config.get("size_z", 20))]
         else:
             cmd += ["--autobox_ligand", receptor]  # fallback (whole-receptor box) — refine for real runs
+        out_sdf = os.path.join(workdir, "out.sdf")
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1500)
         modes = parse_gnina_output(proc.stdout)
-        return build_docking_result(
+        result = build_docking_result(
             modes,
             target=config.get("target", "target"),
             ligand=config.get("ligand_name", config.get("ligand_smiles", "ligand")),
             source_refs=config.get("source_refs"),
         )
+        # raw artifacts so the parser can be verified against ground truth + poses inspected
+        try:
+            poses_sdf = open(out_sdf).read()
+        except OSError:
+            poses_sdf = ""
+        result["raw_stdout"] = proc.stdout[-6000:]
+        result["poses_sdf"] = poses_sdf
+        # native-redock validation: heavy-atom RMSD of best docked pose vs the crystal ligand
+        if config.get("reference_pdb_block"):
+            try:
+                ref = Chem.MolFromPDBBlock(config["reference_pdb_block"], removeHs=True)
+                ref = AllChem.AssignBondOrdersFromTemplate(Chem.MolFromSmiles(config["ligand_smiles"]), ref)
+                docked = next(iter(Chem.SDMolSupplier(out_sdf, removeHs=True)))  # best pose (mode 1)
+                result["metrics"]["pose_rmsd_to_crystal"] = round(AllChem.GetBestRMS(docked, ref), 3)
+            except Exception as exc:  # RMSD is best-effort; never fail the dock on it
+                result["metrics"]["pose_rmsd_error"] = str(exc)[:200]
+        return result
 
     @app.local_entrypoint()
     def dock() -> None:
@@ -136,6 +154,43 @@ if modal is not None:
         print(f"signal={result['signal']} confidence={result['confidence']}")
         print(result["findings"])
         print("best affinity (kcal/mol):", result.get("metrics", {}).get("best_affinity_kcal_mol"))
+
+    @app.local_entrypoint()
+    def dock_pi3k() -> None:
+        """gnina GPU dock (A100): test the converged v3 thesis on BOTH targets IN PARALLEL —
+        (1) alpelisib redocked into PI3Kα/4JPS = gold-standard native redock + on-target validation;
+        (2) alpelisib into VEGFR2/3VO3 = SPECIFICITY CONTROL (alpelisib is PI3Kα-selective, so it
+        should bind PI3Kα strongly and VEGFR2 weakly). Receptors prepped locally.
+        Run: python -m modal run src/hsa_research/ingestion_bridge/modal_app.py::dock_pi3k"""
+        ALPELISIB = "Cc1c(sc(n1)NC(=O)N2CCC[C@H]2C(=O)N)c3ccnc(c3)C(C)(C)C(F)(F)F"
+        targets = {
+            "PI3Kα/4JPS (on-target, native redock)": {
+                "receptor_pdb": Path("/tmp/4JPS_receptor.pdb").read_text(),
+                "ligand_smiles": ALPELISIB, "ligand_name": "alpelisib (1LT, native)",
+                "target": "PI3Kα / p110α (PDB 4JPS)",
+                "center_x": -1.32, "center_y": -9.51, "center_z": 16.95,
+                "size_x": 18, "size_y": 18, "size_z": 21,
+                "reference_pdb_block": Path("/tmp/4JPS_ligand.pdb").read_text(),  # crystal -> RMSD
+                "source_refs": ["PDB:4JPS"],
+            },
+            "VEGFR2/3VO3 (off-target specificity control)": {
+                "receptor_pdb": Path("/tmp/3VO3_receptor.pdb").read_text(),
+                "ligand_smiles": ALPELISIB, "ligand_name": "alpelisib (off-target probe)",
+                "target": "VEGFR2 / KDR (PDB 3VO3)",
+                "center_x": 25.61, "center_y": -27.71, "center_z": -13.53,
+                "size_x": 22, "size_y": 22, "size_z": 22,
+                "source_refs": ["PDB:3VO3", "alpelisib specificity control"],
+            },
+        }
+        calls = {label: run_gnina_remote.spawn(cfg) for label, cfg in targets.items()}
+        for label, call in calls.items():
+            r = call.get(); m = r.get("metrics", {})
+            print(f"\n=== {label} ===")
+            print(f"  signal={r['signal']} confidence={r['confidence']}")
+            print(f"  recommended pose affinity={m.get('best_affinity_kcal_mol')} kcal/mol | "
+                  f"best Vina={m.get('best_vina_affinity_kcal_mol')} kcal/mol")
+            print(f"  CNN pose score={m.get('best_cnn_pose_score')} | CNN affinity(pK)={m.get('best_cnn_affinity')}")
+            print(f"  pose_rmsd_to_crystal={m.get('pose_rmsd_to_crystal')} A (err={m.get('pose_rmsd_error')})")
 
     @app.local_entrypoint()
     def main() -> None:
