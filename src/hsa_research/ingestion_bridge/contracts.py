@@ -598,7 +598,7 @@ ValidationRequestQueueStatus = Literal[
     "archived",
 ]
 
-ComputeRunnerKind = Literal["runpod", "local", "dagster", "external", "mock"]
+ComputeRunnerKind = Literal["runpod", "local", "dagster", "external", "mock", "modal"]
 ComputeProfile = Literal["cpu", "gpu", "gpu_a10", "gpu_l4", "gpu_a100", "gpu_h100", "unknown"]
 ComputeJobStatus = Literal[
     "needs_approval",

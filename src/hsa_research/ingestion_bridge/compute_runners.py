@@ -196,3 +196,66 @@ class LocalOmicsComputeRunner:
 
 
 register_compute_runner("local", lambda: LocalOmicsComputeRunner())
+
+
+def _call_modal_omics(config: dict[str, Any]) -> dict[str, Any]:
+    """Run the omics analysis on Modal cloud CPU (imports modal + the app lazily, ephemeral run).
+
+    Isolated so tests can monkeypatch it — the adapter logic is verified without billing Modal;
+    the real cloud execution is verified by running modal_app.py / the flow with runner_kind="modal".
+    """
+    from .modal_app import app, run_omics_review_remote
+
+    with app.run():
+        return run_omics_review_remote.remote(config)
+
+
+class ModalComputeRunner:
+    """Modal cloud provider (runner_kind="modal"). v1 handles the omics-review CPU lane; GPU lanes
+    (gnina/Boltz) plug in the same way as gpu=... Modal functions. The modal SDK is imported
+    lazily (via _call_modal_omics) so twog never hard-depends on it."""
+
+    def submit(self, record: ComputeJobRecord) -> dict[str, Any]:
+        run_id = f"modal:{record.compute_job_id}"
+
+        def _fail(error: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+            return {
+                "status": "failed",
+                "external_run_id": run_id,
+                "runpod_job_id": run_id,
+                "output_payload": {"provider": "modal", "error": error, **(extra or {})},
+                "metadata": {"provider": "modal"},
+            }
+
+        if record.validation_type != "omics":
+            raise ComputeRunnerConfigError(
+                f"modal runner v1 handles validation_type='omics' only, got '{record.validation_type}'."
+            )
+        config = _extract_omics_config(record)
+        if config is None:
+            return _fail("modal_omics_config_missing")
+        try:
+            result = _call_modal_omics(config)
+        except Exception as exc:  # network/auth/import/remote errors surface as a blocked-style failure
+            return _fail("modal_run_failed", {"detail": str(exc)[:500]})
+        return {
+            "status": "completed",
+            "external_run_id": run_id,
+            "runpod_job_id": run_id,
+            "output_payload": {"provider": "modal", **result},
+            "metadata": {"provider": "modal"},
+        }
+
+    def poll(self, record: ComputeJobRecord) -> dict[str, Any]:
+        return {
+            "status": "completed",
+            "output_payload": record.output_payload or {"provider": "modal"},
+            "last_error": None,
+            "metadata": {"provider": "modal"},
+        }
+
+    def cancel(self, record: ComputeJobRecord) -> dict[str, Any]:
+        return {"status": "cancelled", "output_payload": {}, "metadata": {"provider": "modal"}}
+
+
+register_compute_runner("modal", lambda: ModalComputeRunner())

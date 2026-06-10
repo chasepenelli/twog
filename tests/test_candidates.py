@@ -1177,3 +1177,33 @@ def test_omics_lane_surfaces_the_real_data_seam_honestly(tmp_path):
     assert "capsule_id" not in flow  # no fake capsule from un-run analysis
     job = repo.get_compute_job(UUID(flow["compute_job_id"]))
     assert job.output_payload["error"] == "real_data_pull_not_wired"
+
+
+def test_modal_adapter_runs_omics_through_the_loop(tmp_path, monkeypatch):
+    """The Modal provider runs the omics lane through the SAME loop. The cloud call is mocked here
+    (no billing, CI stays modal-free); the real Modal execution is verified by running modal_app.py."""
+    import hsa_research.ingestion_bridge.compute_runners as cr
+
+    canned = {
+        "findings": "Modal omics run: mutant immunosuppressed.",
+        "signal": "supports",
+        "confidence": 0.66,
+        "source_refs": ["PRJNA562916", "GSE225599"],
+        "limitations": ["mocked modal call in test"],
+        "metrics": {"method": "ssgsea_meanz", "n_mutant": 5, "n_wt": 5},
+    }
+    monkeypatch.setattr(cr, "_call_modal_omics", lambda config: canned)
+
+    repo = SQLiteResearchRepository(tmp_path / "p3b-modal.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate_id = _seed_validation_ready_candidate(repo, candidate_id="vr-modal", ready=True)
+    item = _omics_queue_item(repo, inline_data=True)
+
+    flow = service.run_compute_validation_flow(candidate_id, item.queue_item_id, runner_kind="modal")
+    assert flow["errors"] == [], flow
+    assert flow["compute_job_status"] == "completed"
+    capsule = repo.get_proof_capsule(UUID(flow["capsule_id"]))
+    assert capsule.payload["signal"] == "supports"
+    assert capsule.payload["output_payload"]["provider"] == "modal"
+    service.accept_proof_capsule(capsule.capsule_id, reviewer="chase")
+    assert service.promote_proof_capsule_to_candidate(capsule.capsule_id, reviewer="chase")["promoted"]
