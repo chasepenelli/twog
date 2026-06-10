@@ -1,0 +1,86 @@
+{
+  "findings": "PIK3CA-mutant (n=5) vs WT (n=9) HSA: immunosuppression signatures are not higher in the mutant stratum (0/4 significant at q<0.05). Signal: neutral.",
+  "signal": "neutral",
+  "confidence": 0.121,
+  "source_refs": [
+    "PMC7067513 (Megquier 2019)",
+    "GSE95183",
+    "Ensembl r104 CanFam3.1"
+  ],
+  "limitations": [
+    "single bulk RNA-seq cohort; deconvolution by mean-z marker scoring (coarser than CIBERSORTx)",
+    "power adequate for a first pass; replication still recommended",
+    "RNA-seq:WES sample matching must be verified in the source data"
+  ],
+  "metrics": {
+    "method": "ssgsea_meanz",
+    "test": "mann_whitney_bh",
+    "direction_hypothesis": "immunosuppression_higher_in_mutant",
+    "n_mutant": 5,
+    "n_wt": 9,
+    "underpowered": false,
+    "signatures_used": {
+      "Treg": [
+        "FOXP3",
+        "CTLA4",
+        "IL2RA",
+        "IKZF2"
+      ],
+      "M2_TAM": [
+        "CD163",
+        "MRC1",
+        "MSR1",
+        "CSF1R"
+      ],
+      "immunosuppressive_cytokines": [
+        "IL10",
+        "TGFB1",
+        "CCL2"
+      ],
+      "PIK3CA_immune_program": [
+        "IL6",
+        "CXCL8",
+        "CCL2"
+      ]
+    },
+    "per_signature": {
+      "Treg": {
+        "u": 20.0,
+        "p": 0.7388826803635273,
+        "auc": 0.4444444444444444,
+        "n1": 5,
+        "n2": 9,
+        "z": -0.3333333333333333,
+        "q": 0.7388826803635273
+      },
+      "M2_TAM": {
+        "u": 12.0,
+        "p": 0.16151331846754213,
+        "auc": 0.26666666666666666,
+        "n1": 5,
+        "n2": 9,
+        "z": -1.4,
+        "q": 0.51414859736966
+      },
+      "immunosuppressive_cytokines": {
+        "u": 14.0,
+        "p": 0.25707429868483,
+        "auc": 0.3111111111111111,
+        "n1": 5,
+        "n2": 9,
+        "z": -1.1333333333333333,
+        "q": 0.51414859736966
+      },
+      "PIK3CA_immune_program": {
+        "u": 19.0,
+        "p": 0.6407383818025407,
+        "auc": 0.4222222222222222,
+        "n1": 5,
+        "n2": 9,
+        "z": -0.4666666666666667,
+        "q": 0.7388826803635273
+      }
+    },
+    "significant_higher": []
+  }
+}

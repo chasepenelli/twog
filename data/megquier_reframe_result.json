@@ -1,0 +1,100 @@
+{
+  "findings": "PIK3CA-mutant (n=5) vs WT (n=9) HSA: immunosuppression signatures are not higher in the mutant stratum (0/5 significant at q<0.05). Signal: neutral.",
+  "signal": "neutral",
+  "confidence": 0.149,
+  "source_refs": [
+    "PMC7067513",
+    "GSE95183",
+    "Ensembl r104"
+  ],
+  "limitations": [
+    "single bulk RNA-seq cohort; deconvolution by mean-z marker scoring (coarser than CIBERSORTx)",
+    "power adequate for a first pass; replication still recommended",
+    "RNA-seq:WES sample matching must be verified in the source data"
+  ],
+  "metrics": {
+    "method": "ssgsea_meanz",
+    "test": "mann_whitney_bh",
+    "direction_hypothesis": "effector_higher_in_mutant",
+    "n_mutant": 5,
+    "n_wt": 9,
+    "underpowered": false,
+    "signatures_used": {
+      "Cytotoxic_effector": [
+        "CD8A",
+        "PRF1",
+        "GZMK",
+        "GZMA"
+      ],
+      "IFNgamma_response": [
+        "IFNG",
+        "CXCL10"
+      ],
+      "Th1_Teff": [
+        "TBX21",
+        "IFNG",
+        "CD3E"
+      ],
+      "Checkpoint_exhaustion": [
+        "PDCD1",
+        "LAG3",
+        "CTLA4",
+        "CD274"
+      ],
+      "M2_TAM_suppression": [
+        "CD163",
+        "MRC1",
+        "MSR1",
+        "CSF1R"
+      ]
+    },
+    "per_signature": {
+      "Cytotoxic_effector": {
+        "u": 15.0,
+        "p": 0.31731050786291415,
+        "auc": 0.3333333333333333,
+        "n1": 5,
+        "n2": 9,
+        "z": -1.0,
+        "q": 0.46335514926959664
+      },
+      "IFNgamma_response": {
+        "u": 11.0,
+        "p": 0.12519374558181373,
+        "auc": 0.24444444444444444,
+        "n1": 5,
+        "n2": 9,
+        "z": -1.5333333333333334,
+        "q": 0.40378329616885533
+      },
+      "Th1_Teff": {
+        "u": 17.0,
+        "p": 0.46335514926959664,
+        "auc": 0.37777777777777777,
+        "n1": 5,
+        "n2": 9,
+        "z": -0.7333333333333333,
+        "q": 0.46335514926959664
+      },
+      "Checkpoint_exhaustion": {
+        "u": 16.0,
+        "p": 0.3861246742838138,
+        "auc": 0.35555555555555557,
+        "n1": 5,
+        "n2": 9,
+        "z": -0.8666666666666667,
+        "q": 0.46335514926959664
+      },
+      "M2_TAM_suppression": {
+        "u": 12.0,
+        "p": 0.16151331846754213,
+        "auc": 0.26666666666666666,
+        "n1": 5,
+        "n2": 9,
+        "z": -1.4,
+        "q": 0.40378329616885533
+      }
+    },
+    "significant_higher": []
+  }
+}
