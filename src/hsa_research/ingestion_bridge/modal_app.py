@@ -19,6 +19,7 @@ importable locally for Modal to ship it).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 try:
@@ -28,17 +29,24 @@ except ImportError:  # modal is an optional dep — the rest of twog never impor
 
 
 if modal is not None:
+    # Ship ONLY the self-contained omics_review module (numpy-only) as a flat top-level module —
+    # importing it through the hsa_research package would drag in contracts/pydantic/etc., which the
+    # slim image doesn't have. The engine has zero twog dependencies, so this is clean and minimal.
+    _OMICS_MODULE = Path(__file__).resolve().parent / "omics_review.py"
     image = (
         modal.Image.debian_slim()
         .pip_install("numpy>=1.26,<3")
-        .add_local_python_source("hsa_research")
+        .add_local_file(str(_OMICS_MODULE), "/root/omics_review.py")
     )
     app = modal.App("twog-compute")
 
     @app.function(image=image, cpu=1.0, timeout=900)
     def run_omics_review_remote(config: dict[str, Any]) -> dict[str, Any]:
         """Remote omics-review: runs the real analysis engine on Modal CPU."""
-        from hsa_research.ingestion_bridge.omics_review import load_omics_dataset, run_omics_review
+        import sys
+
+        sys.path.insert(0, "/root")
+        from omics_review import load_omics_dataset, run_omics_review
 
         expression = config.get("expression")
         strata = config.get("strata")
