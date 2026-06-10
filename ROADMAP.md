@@ -116,6 +116,18 @@ as one tracked flow (today it's manual workflow_dispatch steps).
 behind the expert gate, its result becomes a proof capsule, you review and approve it, and the
 candidate's evidence updates — all logged in the ledger, no manual JSON shuffling.
 
+**✅ Implemented 2026-06-09:** the full loop is proven solo with a **mock provider** (no GPU).
+`run_compute_validation_flow(candidate_id, queue_item_id)` composes:
+`ensure_internal_workspace_for_candidate` (manual workspace + checkout manifest, reusing the P1
+gate) → compute job **bound** to the workspace (snapshot/manifest hashes copied, never re-derived)
+→ submit via the registered provider → `build_proof_capsule_from_completed_compute_job`
+(packet_type=compute_artifact). Then operator-gated `accept_proof_capsule` →
+`promote_proof_capsule_to_candidate` (merge evidence → regenerate snapshot → re-assess the P1
+gate). New: 4 ComputeJobRecord binding fields, `related_capsule_id` on the decision event, a
+`MockComputeRunner` registered for `runner_kind="mock"`. The old `runner_kind != "runpod"` submit
+guards were removed — `get_compute_runner()` is now the single provider gate. 507 tests green.
+Phase 3 (pluggable lanes + a real provider) is the next pass.
+
 ---
 
 ## Phase 3 — Graduate the compute (smoke → science) — parallel with P2

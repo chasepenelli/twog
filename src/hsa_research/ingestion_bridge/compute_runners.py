@@ -68,3 +68,41 @@ def get_compute_runner(record: ComputeJobRecord) -> ComputeRunner:
             "ComputeRunner and register it via register_compute_runner() — see ROADMAP.md P3."
         )
     return factory()
+
+
+class MockComputeRunner:
+    """Deterministic in-process provider for proving the Phase-2 loop without any GPU.
+
+    Selected explicitly via runner_kind="mock". submit() returns a 'completed' result whose
+    output_payload conforms to the compute-artifact shape the capsule builder reads. It does NOT
+    run any real computation — never use it for scientific results."""
+
+    def submit(self, record: ComputeJobRecord) -> dict[str, Any]:
+        run_id = f"mock:{record.compute_job_id}"
+        return {
+            "status": "completed",
+            "external_run_id": run_id,
+            "runpod_job_id": run_id,
+            "output_payload": {
+                "provider": "mock",
+                "findings": f"Mock compute completed for '{record.title}' ({record.validation_type or 'compute'}).",
+                "limitations": ["Mock provider output; not scientifically meaningful."],
+                "source_refs": [],
+                "metrics": {"mock": True},
+            },
+            "metadata": {"provider": "mock"},
+        }
+
+    def poll(self, record: ComputeJobRecord) -> dict[str, Any]:
+        return {
+            "status": "completed",
+            "output_payload": record.output_payload or {"provider": "mock"},
+            "last_error": None,
+            "metadata": {"provider": "mock"},
+        }
+
+    def cancel(self, record: ComputeJobRecord) -> dict[str, Any]:
+        return {"status": "cancelled", "output_payload": {}, "metadata": {"provider": "mock"}}
+
+
+register_compute_runner("mock", lambda: MockComputeRunner())

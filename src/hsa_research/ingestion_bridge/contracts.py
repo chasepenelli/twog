@@ -4071,6 +4071,13 @@ class ComputeJobRecord(StrictBaseModel):
     runner_kind: ComputeRunnerKind = "runpod"
     compute_profile: ComputeProfile = "gpu"
     validation_type: str | None = Field(default=None, max_length=100)
+    # Workspace/candidate binding (Phase 2): lets a completed job auto-build a proof capsule that
+    # passes submit_proof_capsule validation. Copied from the internal workspace (single source of
+    # truth) when the job is created — never re-derived (avoids snapshot-hash drift).
+    workspace_id: UUID | None = None
+    candidate_id: str | None = Field(default=None, max_length=260)
+    candidate_snapshot_hash: str | None = Field(default=None, max_length=160)
+    checkout_manifest_hash: str | None = Field(default=None, max_length=160)
     title: str = Field(min_length=1, max_length=500)
     objective: str = Field(min_length=1, max_length=2000)
     container_image: str | None = Field(default=None, max_length=500)
@@ -4106,6 +4113,12 @@ class ComputeJobRecord(StrictBaseModel):
             self.dagster_run_id = self.dagster_run_id.strip() or None
         if self.runpod_job_id:
             self.runpod_job_id = self.runpod_job_id.strip() or None
+        if self.candidate_id:
+            self.candidate_id = self.candidate_id.strip() or None
+        if self.candidate_snapshot_hash:
+            self.candidate_snapshot_hash = self.candidate_snapshot_hash.strip() or None
+        if self.checkout_manifest_hash:
+            self.checkout_manifest_hash = self.checkout_manifest_hash.strip() or None
         self.entrypoint = _normalized_unique_strings(self.entrypoint)
         self.expected_outputs = _normalized_unique_strings(self.expected_outputs)
         return self
@@ -5387,6 +5400,7 @@ class PublicCandidateDecisionEvent(StrictBaseModel):
     related_agent_run_id: UUID | None = None
     related_compute_job_id: UUID | None = None
     related_validation_decision_id: str | None = Field(default=None, max_length=280)
+    related_capsule_id: UUID | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")

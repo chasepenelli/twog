@@ -837,3 +837,133 @@ def test_public_candidate_snapshot_content_hash_is_stable_across_regeneration(tm
     # version increments, but the content hash is identical for identical inputs
     assert first.snapshot.content_hash == second.snapshot.content_hash
     assert len(first.snapshot.content_hash) == 64  # sha256 hex
+
+
+# --- Phase 2: compute -> capsule -> promotion loop ---
+
+def test_ensure_internal_workspace_for_validation_ready_candidate(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "p2-ws.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate_id = _seed_validation_ready_candidate(repo, candidate_id="vr-ws", ready=True)
+
+    result = service.ensure_internal_workspace_for_candidate(candidate_id)
+    assert result.persisted is True
+    assert result.workspace is not None
+    assert result.workspace.candidate_id == candidate_id
+    assert result.workspace.candidate_snapshot_hash == "a" * 40
+    assert result.workspace.checkout_manifest_hash
+    assert "compute_artifact" in result.workspace.checkout_manifest["allowed_task_types"]
+
+
+def test_ensure_internal_workspace_blocks_unready_candidate(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "p2-ws-blocked.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate_id = _seed_validation_ready_candidate(repo, candidate_id="vr-ws-blocked", ready=False)
+
+    result = service.ensure_internal_workspace_for_candidate(candidate_id)
+    assert result.persisted is False
+    assert any("candidate_not_validation_ready" in error for error in result.errors)
+    # no manual workspace was created
+    assert repo.list_research_workspaces(candidate_id=candidate_id, provider="manual") == []
+
+
+def test_proof_capsule_accept_and_reject_transitions(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "p2-capsule-status.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+
+    def _capsule():
+        return repo.upsert_proof_capsule(
+            ProofCapsuleRecord(
+                workspace_id=uuid4(),
+                checkout_manifest_hash="hash1234abcd",
+                candidate_id="cand-x",
+                packet_type="compute_artifact",
+                requested_action="evidence_review",
+                target=ProofCapsuleTarget(section="compute"),
+                summary=ProofCapsuleSummary(
+                    title="Test capsule",
+                    finding="A finding worth reviewing",
+                    why_it_matters="It matters for the candidate",
+                    limitations=["not independently validated"],
+                ),
+                content_hash="contenthash123456",
+            )
+        )
+
+    accepted = service.accept_proof_capsule(_capsule().capsule_id, reviewer="unit-test")
+    assert accepted.status == "accepted_for_evidence_review"
+    assert accepted.metadata["reviewed_by"] == "unit-test"
+
+    rejected = service.reject_proof_capsule(_capsule().capsule_id, reviewer="unit-test")
+    assert rejected.status == "rejected"
+
+    # an already-archived capsule is not transitioned by accept
+    archived = _capsule().model_copy(update={"status": "archived"})
+    repo.upsert_proof_capsule(archived)
+    unchanged = service.accept_proof_capsule(archived.capsule_id, reviewer="unit-test")
+    assert unchanged.status == "archived"
+
+
+def test_compute_validation_loop_end_to_end(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "p2-e2e.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate_id = _seed_validation_ready_candidate(repo, candidate_id="vr-e2e", ready=True)
+
+    # a docking validation queue item (non-MD => skips the expert gate)
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(),
+            task_id=uuid4(),
+            brief_id=uuid4(),
+            topic="Dock candidate against KDR",
+            task_type="docking",
+            title="Dock candidate against KDR",
+            objective="Run a mock docking compute for the loop.",
+            rationale="Prove the compute->capsule->promotion loop with a mock provider.",
+            validation_request=ValidationRequest(
+                validation_type="docking",
+                target_name="KDR",
+                candidate_name="candidate",
+                objective="Dock candidate against KDR.",
+                require_approval=True,
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma and human angiosarcoma",
+                    species=["canine", "human"],
+                    model_system="Computational structure model with explicit provenance.",
+                    assay_type="in silico structural validation",
+                    readout="binding plausibility and failure modes",
+                    endpoint="computational plausibility",
+                ),
+            ),
+        )
+    )
+
+    # the one tracked flow, with the in-process mock provider (no GPU)
+    flow = service.run_compute_validation_flow(candidate_id, item.queue_item_id, runner_kind="mock")
+    assert flow["errors"] == [], flow
+    assert flow["compute_job_status"] == "completed"
+    assert "capsule_id" in flow, flow
+    capsule_id = UUID(flow["capsule_id"])
+    capsule = repo.get_proof_capsule(capsule_id)
+    assert capsule is not None
+    assert capsule.packet_type == "compute_artifact"
+    assert capsule.status == "submitted"
+
+    # operator accepts, then promotes (the write gate)
+    accepted = service.accept_proof_capsule(capsule_id, reviewer="unit-test")
+    assert accepted.status == "accepted_for_evidence_review"
+
+    candidate_before = repo.get_public_candidate(candidate_id)
+    promotion = service.promote_proof_capsule_to_candidate(capsule_id, reviewer="unit-test")
+    assert promotion["promoted"] is True, promotion
+
+    candidate_after = repo.get_public_candidate(candidate_id)
+    assert len(candidate_after.evidence_refs) > len(candidate_before.evidence_refs)
+    assert any(ref.startswith("proof_capsule:") for ref in candidate_after.evidence_refs)
+    assert repo.get_proof_capsule(capsule_id).status == "archived"
+
+    events = repo.list_public_candidate_decision_events(candidate_id=candidate_id)
+    assert any(
+        event.action == "evidence_added" and event.related_capsule_id == capsule_id
+        for event in events
+    )

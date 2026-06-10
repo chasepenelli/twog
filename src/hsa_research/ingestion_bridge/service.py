@@ -152,9 +152,15 @@ from .contracts import (
     OmicsReadoutRequest,
     OmicsReadoutResult,
     ProofCapsuleLibraryRequest,
+    ProofCapsuleRecord,
     ProofCapsuleLibraryResult,
+    ProofCapsuleArtifactRef,
+    ProofCapsuleProducer,
+    ProofCapsuleSourceRef,
     ProofCapsuleSubmitRequest,
     ProofCapsuleSubmitResult,
+    ProofCapsuleSummary,
+    ProofCapsuleTarget,
     ResearchProgramBoardRequest,
     ResearchProgramBoardResult,
     ResearchProgramEvidenceTask,
@@ -1513,6 +1519,63 @@ class HSAResearchService:
     ) -> ResearchWorkspaceCheckoutManifestResult:
         return build_research_workspace_checkout_manifest(self.repository, request)
 
+    def ensure_internal_workspace_for_candidate(
+        self,
+        candidate_id: str,
+        *,
+        work_packet_id: str | None = None,
+        reuse_existing: bool = True,
+    ) -> ResearchWorkspaceCheckoutManifestResult:
+        """Provision (or reuse) a credential-free internal workspace for a validation-ready
+        candidate and persist its checkout manifest, so a compute job run "inside" it can later
+        produce a proof capsule that passes submit_proof_capsule validation. The solo loop thus
+        uses the same workspace+manifest mechanism an external collaborator will (ROADMAP P2/P4).
+
+        Returns a checkout-manifest result whose .workspace carries candidate_id +
+        checkout_manifest_hash + candidate_snapshot_hash, and whose manifest's allowed_task_types
+        include "compute_artifact". If the candidate is missing or not validation-ready, returns a
+        result with errors and no persisted workspace (no workspace is created).
+        """
+        readiness = self.assess_candidate_validation_readiness(candidate_id, persist=True)
+        if readiness is None or not readiness.ready:
+            # Surface the standard "not validation ready" error via the manifest builder; this does
+            # not create or persist a workspace (persist is gated on no-errors).
+            return self.build_research_workspace_checkout_manifest(
+                ResearchWorkspaceCheckoutManifestRequest(
+                    candidate_id=candidate_id,
+                    work_packet_id=work_packet_id,
+                    require_validation_ready=True,
+                    persist_to_workspace=False,
+                )
+            )
+        workspace: ResearchWorkspaceRecord | None = None
+        if reuse_existing:
+            existing = self.repository.list_research_workspaces(
+                candidate_id=candidate_id,
+                provider="manual",
+                statuses=["ready", "active"],
+                limit=1,
+            )
+            workspace = existing[0] if existing else None
+        if workspace is None:
+            workspace = self.repository.upsert_research_workspace(
+                ResearchWorkspaceRecord(
+                    candidate_id=candidate_id,
+                    work_packet_id=work_packet_id,
+                    provider="manual",
+                    status="ready",
+                    metadata={"internal_origin": "compute_loop"},
+                )
+            )
+        return self.build_research_workspace_checkout_manifest(
+            ResearchWorkspaceCheckoutManifestRequest(
+                workspace_id=workspace.workspace_id,
+                work_packet_id=work_packet_id,
+                require_validation_ready=True,
+                persist_to_workspace=True,
+            )
+        )
+
     def get_research_workspace(self, workspace_id: UUID) -> ResearchWorkspaceRecord | None:
         return self.repository.get_research_workspace(workspace_id)
 
@@ -1584,6 +1647,330 @@ class HSAResearchService:
         request: ProofCapsuleLibraryRequest | None = None,
     ) -> ProofCapsuleLibraryResult:
         return build_proof_capsule_library(self.repository, request or ProofCapsuleLibraryRequest())
+
+    def _transition_proof_capsule(
+        self,
+        capsule_id: UUID,
+        new_status: str,
+        *,
+        reviewer: str,
+        note: str | None,
+        allowed_from: set[str],
+    ) -> ProofCapsuleRecord | None:
+        """Operator-gated capsule status transition (the write gate). Returns the capsule
+        unchanged (not persisted) if its current status is not a permitted source state, or
+        None if the capsule does not exist."""
+        capsule = self.repository.get_proof_capsule(capsule_id)
+        if capsule is None:
+            return None
+        if capsule.status not in allowed_from:
+            return capsule
+        now = datetime.now(UTC)
+        updated = capsule.model_copy(
+            update={
+                "status": new_status,
+                "updated_at": now,
+                "metadata": {
+                    **capsule.metadata,
+                    "reviewed_by": reviewer,
+                    "review_note": note,
+                    "status_transition": f"{capsule.status}->{new_status}",
+                    "reviewed_at": now.isoformat(),
+                },
+            }
+        )
+        return self.repository.upsert_proof_capsule(updated)
+
+    def accept_proof_capsule(
+        self,
+        capsule_id: UUID,
+        *,
+        reviewer: str,
+        accepted_status: str = "accepted_for_evidence_review",
+        note: str | None = None,
+    ) -> ProofCapsuleRecord | None:
+        """Operator accepts a submitted capsule, advancing it toward promotion."""
+        allowed_accept = {
+            "accepted_for_evidence_review",
+            "accepted_for_validation_queue",
+            "accepted_for_compute_review",
+            "needs_more_information",
+        }
+        if accepted_status not in allowed_accept:
+            raise ValueError(f"invalid accepted_status: {accepted_status}")
+        return self._transition_proof_capsule(
+            capsule_id,
+            accepted_status,
+            reviewer=reviewer,
+            note=note,
+            allowed_from={"submitted", "needs_more_information"},
+        )
+
+    def reject_proof_capsule(
+        self,
+        capsule_id: UUID,
+        *,
+        reviewer: str,
+        note: str | None = None,
+    ) -> ProofCapsuleRecord | None:
+        """Operator rejects a capsule (from any non-terminal state)."""
+        return self._transition_proof_capsule(
+            capsule_id,
+            "rejected",
+            reviewer=reviewer,
+            note=note,
+            allowed_from={
+                "submitted",
+                "needs_more_information",
+                "accepted_for_evidence_review",
+                "accepted_for_validation_queue",
+                "accepted_for_compute_review",
+            },
+        )
+
+    def build_proof_capsule_from_completed_compute_job(
+        self,
+        compute_job_id: UUID,
+        *,
+        requested_action: str = "docking_or_md_review",
+        dry_run: bool = True,
+    ) -> ProofCapsuleSubmitResult | None:
+        """Turn a completed compute job into a compute_artifact proof capsule. Reads the job's
+        output_payload (findings / limitations / source_refs / metrics) and its workspace binding,
+        then calls submit_proof_capsule (which validates against the workspace). Returns None if
+        the job does not exist; an unaccepted result with errors if the job is not completed or
+        lacks workspace binding. With dry_run=True the capsule is validated but not persisted."""
+        job = self.repository.get_compute_job(compute_job_id)
+        if job is None:
+            return None
+        errors: list[str] = []
+        if job.status != "completed":
+            errors.append(f"compute_job_not_completed:{job.status}")
+        if not (job.workspace_id and job.candidate_id and job.checkout_manifest_hash):
+            errors.append("compute_job_missing_workspace_binding")
+        if errors:
+            return ProofCapsuleSubmitResult(accepted=False, persisted=False, errors=errors)
+
+        out = job.output_payload if isinstance(job.output_payload, dict) else {}
+
+        def _min3(text: str, fallback: str) -> str:
+            text = (text or "").strip()
+            return text if len(text) >= 3 else fallback
+
+        finding = _min3(
+            str(out.get("findings") or ""),
+            f"Compute job '{job.title}' completed ({job.validation_type or 'compute'}).",
+        )
+        limitations = [str(item) for item in (out.get("limitations") or []) if str(item).strip()] or [
+            "Computational result; not independently validated."
+        ]
+        source_refs = [
+            ProofCapsuleSourceRef(**ref) if isinstance(ref, dict) else ProofCapsuleSourceRef(source_id=str(ref))
+            for ref in (out.get("source_refs") or [])
+        ]
+        artifacts = [
+            ProofCapsuleArtifactRef(
+                artifact_uri=f"compute_job/{job.compute_job_id}/artifact/{artifact_id}",
+                artifact_type=job.validation_type or "compute_artifact",
+                description=f"Artifact from compute job {job.title}",
+            )
+            for artifact_id in job.artifact_ids
+        ]
+        request = ProofCapsuleSubmitRequest(
+            workspace_id=job.workspace_id,
+            checkout_manifest_hash=job.checkout_manifest_hash,
+            candidate_id=job.candidate_id,
+            candidate_snapshot_hash=job.candidate_snapshot_hash,
+            packet_type="compute_artifact",
+            requested_action=requested_action,  # type: ignore[arg-type]
+            producer=ProofCapsuleProducer(
+                producer_type="agent", name="twog_compute", agent_name="compute_loop"
+            ),
+            target=ProofCapsuleTarget(
+                section=job.validation_type or "compute", method_ref=str(job.compute_job_id)
+            ),
+            summary=ProofCapsuleSummary(
+                title=_min3(job.title, "Compute result")[:300],
+                finding=finding[:2000],
+                why_it_matters=_min3(
+                    job.objective, "Adds computational evidence to the candidate."
+                )[:2000],
+                limitations=limitations[:25],
+            ),
+            payload={
+                "compute_job_id": str(job.compute_job_id),
+                "validation_type": job.validation_type,
+                "metrics": out.get("metrics") or {},
+                "output_payload": out,
+            },
+            artifacts=artifacts,
+            source_refs=source_refs,
+            metadata={"origin": "compute_loop", "compute_job_id": str(job.compute_job_id)},
+            persist=not dry_run,
+        )
+        return self.submit_proof_capsule(request)
+
+    def run_compute_validation_flow(
+        self,
+        candidate_id: str,
+        queue_item_id: UUID,
+        *,
+        runner_kind: str = "mock",
+        compute_profile: str = "cpu",
+        approved_by: str = "twog_operator",
+        auto_build_capsule: bool = True,
+    ) -> dict[str, Any]:
+        """The one tracked flow (ROADMAP P2): ensure the candidate is validation-ready and has an
+        internal workspace, create a compute job bound to that workspace, submit it (via the
+        chosen provider — default the in-process mock), and on completion auto-build a proof
+        capsule. Returns a result dict with every intermediate state + errors. Does not auto-accept
+        or auto-promote the capsule (those remain operator-gated)."""
+        result: dict[str, Any] = {"candidate_id": candidate_id, "errors": []}
+
+        ws = self.ensure_internal_workspace_for_candidate(candidate_id)
+        if not ws.persisted or ws.errors or ws.workspace is None:
+            result["errors"].append("internal_workspace_not_ready")
+            result["workspace_errors"] = ws.errors
+            return result
+        workspace = ws.workspace
+        result["workspace_id"] = str(workspace.workspace_id)
+
+        job = self.create_compute_job_from_validation_queue_item(
+            queue_item_id,
+            runner_kind=runner_kind,
+            compute_profile=compute_profile,
+            approved_by=approved_by,
+        )
+        if job is None:
+            result["errors"].append(f"queue_item_not_found:{queue_item_id}")
+            return result
+
+        # Bind the job to the workspace (single source of truth for the capsule hashes).
+        bound = job.model_copy(
+            update={
+                "workspace_id": workspace.workspace_id,
+                "candidate_id": candidate_id,
+                "candidate_snapshot_hash": workspace.candidate_snapshot_hash,
+                "checkout_manifest_hash": workspace.checkout_manifest_hash,
+            }
+        )
+        self.repository.upsert_compute_job(bound)
+        result["compute_job_id"] = str(bound.compute_job_id)
+        result["trace_id"] = str(bound.trace_id) if bound.trace_id else None
+
+        submitted = self.submit_compute_job(bound.compute_job_id, dry_run=False)
+        if submitted is None:
+            result["errors"].append("compute_submit_failed")
+            return result
+        result["compute_job_status"] = submitted.status
+        if submitted.status == "blocked":
+            result["errors"].append(f"compute_blocked:{submitted.last_error}")
+            return result
+
+        if auto_build_capsule and submitted.status == "completed":
+            capsule_result = self.build_proof_capsule_from_completed_compute_job(
+                submitted.compute_job_id, dry_run=False
+            )
+            if capsule_result is None or not capsule_result.accepted:
+                result["errors"].append("capsule_build_failed")
+                result["capsule_errors"] = capsule_result.errors if capsule_result else ["no_result"]
+            elif capsule_result.capsule is not None:
+                result["capsule_id"] = str(capsule_result.capsule.capsule_id)
+                result["capsule_status"] = capsule_result.capsule.status
+        return result
+
+    def promote_proof_capsule_to_candidate(
+        self,
+        capsule_id: UUID,
+        *,
+        reviewer: str = "twog_operator",
+    ) -> dict[str, Any]:
+        """Promote an accepted capsule's evidence onto its candidate: regenerate the snapshot,
+        grow the candidate's evidence_refs + artifact_ids, log an evidence_added decision event,
+        archive the capsule, and re-assess the validation-ready gate. Evidence is added LAST so a
+        snapshot regeneration cannot overwrite it. Returns a result dict (never raises for normal
+        precondition failures)."""
+        result: dict[str, Any] = {"capsule_id": str(capsule_id), "promoted": False, "errors": []}
+        capsule = self.repository.get_proof_capsule(capsule_id)
+        if capsule is None:
+            result["errors"].append("capsule_not_found")
+            return result
+        if capsule.status not in {"accepted_for_evidence_review", "accepted_for_validation_queue"}:
+            result["errors"].append(f"capsule_not_accepted:{capsule.status}")
+            return result
+        candidate = self.repository.get_public_candidate(capsule.candidate_id)
+        if candidate is None:
+            result["errors"].append(f"candidate_not_found:{capsule.candidate_id}")
+            return result
+
+        job: ComputeJobRecord | None = None
+        job_ref = capsule.payload.get("compute_job_id") if isinstance(capsule.payload, dict) else None
+        if job_ref:
+            try:
+                job = self.repository.get_compute_job(UUID(str(job_ref)))
+            except (ValueError, TypeError):
+                job = None
+
+        # Regenerate the snapshot first (best-effort; needs a source therapy idea) so new artifacts
+        # surface, then reload the candidate to keep the fresh snapshot linkage.
+        if candidate.therapy_idea_id:
+            self.generate_public_candidate_snapshot(
+                PublicCandidateGenerateRequest(candidate_id=candidate.candidate_id)
+            )
+            candidate = self.repository.get_public_candidate(capsule.candidate_id) or candidate
+
+        new_refs = [*candidate.evidence_refs, f"proof_capsule:{capsule.capsule_id}"]
+        for source in capsule.source_refs:
+            ref = (
+                (f"PMID:{source.pmid}" if source.pmid else None)
+                or (f"DOI:{source.doi}" if source.doi else None)
+                or source.source_id
+                or source.url
+            )
+            if ref:
+                new_refs.append(ref)
+        new_artifacts = [*candidate.artifact_ids, *(job.artifact_ids if job else [])]
+        updated = candidate.model_copy(
+            update={
+                "evidence_refs": _dedupe_texts(new_refs)[:100],
+                "artifact_ids": _dedupe_uuid_list(new_artifacts),
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self.repository.upsert_public_candidate(updated)
+
+        self.repository.append_public_candidate_decision_event(
+            PublicCandidateDecisionEvent(
+                candidate_id=updated.candidate_id,
+                trace_id=updated.trace_id,
+                action="evidence_added",
+                actor=reviewer,
+                related_capsule_id=capsule.capsule_id,
+                related_snapshot_id=updated.latest_snapshot_id,
+                related_compute_job_id=(job.compute_job_id if job else None),
+                rationale_md=f"Promoted proof capsule {capsule.capsule_id} onto candidate evidence.",
+                metadata={"capsule_id": str(capsule.capsule_id)},
+            )
+        )
+        self._transition_proof_capsule(
+            capsule_id,
+            "archived",
+            reviewer=reviewer,
+            note="promoted_to_candidate",
+            allowed_from={"accepted_for_evidence_review", "accepted_for_validation_queue"},
+        )
+        readiness = self.assess_candidate_validation_readiness(updated.candidate_id, persist=True)
+        result.update(
+            {
+                "promoted": True,
+                "candidate_id": updated.candidate_id,
+                "evidence_ref_count": len(updated.evidence_refs),
+                "artifact_count": len(updated.artifact_ids),
+                "snapshot_id": str(updated.latest_snapshot_id) if updated.latest_snapshot_id else None,
+                "readiness_ready": readiness.ready if readiness else None,
+            }
+        )
+        return result
 
     def build_public_candidate_integrity_report(
         self,
@@ -3155,18 +3542,6 @@ class HSAResearchService:
                 },
             )
             return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
-        if record.runner_kind != "runpod":
-            updated = self.repository.update_compute_job(
-                compute_job_id,
-                status="blocked",
-                dagster_run_id=dagster_run_id,
-                last_error=f"{record.runner_kind}_runner_not_configured",
-                metadata={
-                    "submission_mode": "live",
-                    "blocked_reason": f"{record.runner_kind}_runner_not_configured",
-                },
-            )
-            return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         gate_metadata: dict[str, Any] = {}
         if record.validation_type == "md":
             gate_error, gate_metadata = self._md_live_submit_gate(record)
@@ -3249,15 +3624,6 @@ class HSAResearchService:
         record = self.repository.get_compute_job(compute_job_id)
         if record is None:
             return None
-        if record.runner_kind != "runpod":
-            updated = self.repository.update_compute_job(
-                compute_job_id,
-                status="blocked",
-                dagster_run_id=dagster_run_id,
-                last_error=f"{record.runner_kind}_runner_not_configured",
-                metadata={"poll_blocked_at": datetime.now(UTC).isoformat()},
-            )
-            return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         try:
             status = get_compute_runner(record).poll(record)
         except (ComputeRunnerConfigError, ComputeRunnerRequestError) as exc:
@@ -3291,15 +3657,6 @@ class HSAResearchService:
         record = self.repository.get_compute_job(compute_job_id)
         if record is None:
             return None
-        if record.runner_kind != "runpod":
-            updated = self.repository.update_compute_job(
-                compute_job_id,
-                status="blocked",
-                dagster_run_id=dagster_run_id,
-                last_error=f"{record.runner_kind}_runner_not_configured",
-                metadata={"cancel_blocked_at": datetime.now(UTC).isoformat()},
-            )
-            return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         try:
             cancellation = get_compute_runner(record).cancel(record)
         except (ComputeRunnerConfigError, ComputeRunnerRequestError) as exc:
