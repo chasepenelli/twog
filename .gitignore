@@ -214,3 +214,6 @@ __marimo__/
 .env*.local
 
 .venv/
+
+# Large public-data matrices (re-downloaded by scripts/run_megquier_crux.py)
+data/*.gz

@@ -1,0 +1,287 @@
+{
+  "source": "Megquier 2019 (PMC7067513) Supplementary Tables S4+S5",
+  "expression_source": "GSE95183 (public FPKM matrix, columns = RNA-seq IDs)",
+  "cohort": {
+    "HSA_22": {
+      "pik3ca": "wt",
+      "tp53": "mutant",
+      "mutated_examined_genes": [
+        "TP53"
+      ],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "DHSA-1002"
+      ],
+      "biosamples": [
+        "SAMN12659341",
+        "SAMN06368879"
+      ]
+    },
+    "HSA_17": {
+      "pik3ca": "wt",
+      "tp53": "mutant",
+      "mutated_examined_genes": [
+        "ARPC1A",
+        "TP53"
+      ],
+      "has_public_expression": false,
+      "rnaseq_ids_public": [],
+      "biosamples": [
+        "SAMN12659342"
+      ]
+    },
+    "HSA_18": {
+      "pik3ca": "mutant",
+      "tp53": "wt",
+      "mutated_examined_genes": [
+        "PIK3CA",
+        "RASA1"
+      ],
+      "has_public_expression": false,
+      "rnaseq_ids_public": [],
+      "biosamples": [
+        "SAMN12659343"
+      ]
+    },
+    "HSA_13": {
+      "pik3ca": "wt",
+      "tp53": "mutant",
+      "mutated_examined_genes": [
+        "TP53"
+      ],
+      "has_public_expression": false,
+      "rnaseq_ids_public": [],
+      "biosamples": [
+        "SAMN12659345"
+      ]
+    },
+    "HSA_35": {
+      "pik3ca": "wt",
+      "tp53": "mutant",
+      "mutated_examined_genes": [
+        "ORC1",
+        "TP53"
+      ],
+      "has_public_expression": false,
+      "rnaseq_ids_public": [],
+      "biosamples": [
+        "SAMN12659347"
+      ]
+    },
+    "HSA_36": {
+      "pik3ca": "mutant",
+      "tp53": "wt",
+      "mutated_examined_genes": [
+        "ARPC1A",
+        "PIK3CA"
+      ],
+      "has_public_expression": false,
+      "rnaseq_ids_public": [],
+      "biosamples": [
+        "SAMN12659352"
+      ]
+    },
+    "HSA_6": {
+      "pik3ca": "wt",
+      "tp53": "wt",
+      "mutated_examined_genes": [],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "CHAD-G4"
+      ],
+      "biosamples": [
+        "SAMN06368908"
+      ]
+    },
+    "HSA_4": {
+      "pik3ca": "mutant",
+      "tp53": "mutant",
+      "mutated_examined_genes": [
+        "PIK3CA",
+        "TP53"
+      ],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "DHSA-0502"
+      ],
+      "biosamples": [
+        "SAMN06368903"
+      ]
+    },
+    "HSA_7": {
+      "pik3ca": "wt",
+      "tp53": "wt",
+      "mutated_examined_genes": [],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "DHSA-0602"
+      ],
+      "biosamples": [
+        "SAMN06368901"
+      ]
+    },
+    "HSA_11": {
+      "pik3ca": "mutant",
+      "tp53": "mutant",
+      "mutated_examined_genes": [
+        "PIK3CA",
+        "TP53"
+      ],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "DHSA-0804"
+      ],
+      "biosamples": [
+        "SAMN06368893"
+      ]
+    },
+    "HSA_20": {
+      "pik3ca": "wt",
+      "tp53": "mutant",
+      "mutated_examined_genes": [
+        "TP53"
+      ],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "DHSA-0904"
+      ],
+      "biosamples": [
+        "SAMN06368890"
+      ]
+    },
+    "HSA_21": {
+      "pik3ca": "wt",
+      "tp53": "mutant",
+      "mutated_examined_genes": [
+        "ORC1",
+        "PIK3R1",
+        "TP53"
+      ],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "DHSA-0905"
+      ],
+      "biosamples": [
+        "SAMN06368889"
+      ]
+    },
+    "HSA_19": {
+      "pik3ca": "wt",
+      "tp53": "mutant",
+      "mutated_examined_genes": [
+        "TP53"
+      ],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "DHSA-0906"
+      ],
+      "biosamples": [
+        "SAMN06368888"
+      ]
+    },
+    "HSA_24": {
+      "pik3ca": "wt",
+      "tp53": "mutant",
+      "mutated_examined_genes": [
+        "TP53"
+      ],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "DHSA-0909"
+      ],
+      "biosamples": [
+        "SAMN06368886"
+      ]
+    },
+    "HSA_1": {
+      "pik3ca": "wt",
+      "tp53": "mutant",
+      "mutated_examined_genes": [
+        "TP53"
+      ],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "DHSA-1008"
+      ],
+      "biosamples": [
+        "SAMN06368884"
+      ]
+    },
+    "HSA_29": {
+      "pik3ca": "mutant",
+      "tp53": "wt",
+      "mutated_examined_genes": [
+        "PIK3CA"
+      ],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "DHSA-1010"
+      ],
+      "biosamples": [
+        "SAMN06368882"
+      ]
+    },
+    "HSA_26": {
+      "pik3ca": "wt",
+      "tp53": "wt",
+      "mutated_examined_genes": [],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "DHSA-1103"
+      ],
+      "biosamples": [
+        "SAMN06368847"
+      ]
+    },
+    "HSA_27": {
+      "pik3ca": "mutant",
+      "tp53": "wt",
+      "mutated_examined_genes": [
+        "PIK3CA"
+      ],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "DHSA-1106"
+      ],
+      "biosamples": [
+        "SAMN06368846"
+      ]
+    },
+    "HSA_28": {
+      "pik3ca": "mutant",
+      "tp53": "wt",
+      "mutated_examined_genes": [
+        "PIK3CA",
+        "RASA1"
+      ],
+      "has_public_expression": true,
+      "rnaseq_ids_public": [
+        "DHSA-1109"
+      ],
+      "biosamples": [
+        "SAMN06368856"
+      ]
+    }
+  },
+  "crux_strata_pik3ca_public": {
+    "DHSA-1002": "wt",
+    "CHAD-G4": "wt",
+    "DHSA-0502": "mutant",
+    "DHSA-0602": "wt",
+    "DHSA-0804": "mutant",
+    "DHSA-0904": "wt",
+    "DHSA-0905": "wt",
+    "DHSA-0906": "wt",
+    "DHSA-0909": "wt",
+    "DHSA-1008": "wt",
+    "DHSA-1010": "mutant",
+    "DHSA-1103": "wt",
+    "DHSA-1106": "mutant",
+    "DHSA-1109": "mutant"
+  },
+  "counts": {
+    "pik3ca_mutant_public": 5,
+    "pik3ca_wt_public": 9,
+    "total_exome_matched_rnaseq": 19
+  }
+}
