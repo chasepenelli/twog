@@ -114,3 +114,85 @@ class MockComputeRunner:
 
 
 register_compute_runner("mock", lambda: MockComputeRunner())
+
+
+def _extract_omics_config(record: ComputeJobRecord) -> dict[str, Any] | None:
+    """Find the omics-review config on a compute job (it rides with the validation request)."""
+    payload = record.input_payload if isinstance(record.input_payload, dict) else {}
+    candidates = [
+        payload.get("omics_review"),
+        (payload.get("validation_request") or {}).get("metadata", {}).get("omics_review")
+        if isinstance(payload.get("validation_request"), dict)
+        else None,
+        record.metadata.get("omics_review") if isinstance(record.metadata, dict) else None,
+    ]
+    for cfg in candidates:
+        if isinstance(cfg, dict):
+            return cfg
+    return None
+
+
+class LocalOmicsComputeRunner:
+    """In-process CPU provider for the omics-review lane (runner_kind="local"). Runs the real
+    analysis engine (omics_review.run_omics_review) on the job's provided expression+strata. The
+    multi-GB SRA pull is a separate deploy-time seam (omics_review.load_omics_dataset)."""
+
+    def submit(self, record: ComputeJobRecord) -> dict[str, Any]:
+        from .omics_review import load_omics_dataset, run_omics_review
+
+        run_id = f"local:{record.compute_job_id}"
+        if record.validation_type != "omics":
+            raise ComputeRunnerConfigError(
+                f"local runner only handles validation_type='omics', got '{record.validation_type}'."
+            )
+        config = _extract_omics_config(record)
+
+        def _fail(error: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+            return {
+                "status": "failed",
+                "external_run_id": run_id,
+                "runpod_job_id": run_id,
+                "output_payload": {"provider": "local_omics", "error": error, **(extra or {})},
+                "metadata": {"provider": "local_omics"},
+            }
+
+        if config is None:
+            return _fail("omics_review_config_missing")
+        expression = config.get("expression")
+        strata = config.get("strata")
+        if not expression or not strata:
+            # No inline data → the real SRA pull is the deploy-time seam; surface it clearly.
+            try:
+                expression, strata = load_omics_dataset(config.get("datasets") or [])
+            except NotImplementedError as exc:
+                return _fail("real_data_pull_not_wired", {"detail": str(exc), "datasets": config.get("datasets")})
+
+        result = run_omics_review(
+            expression=expression,
+            strata=strata,
+            signatures=config.get("signatures"),
+            direction_hypothesis=config.get("direction_hypothesis", "immunosuppression_higher_in_mutant"),
+            min_n_per_stratum=int(config.get("min_n_per_stratum", 5)),
+            source_refs=config.get("source_refs"),
+        )
+        return {
+            "status": "completed",
+            "external_run_id": run_id,
+            "runpod_job_id": run_id,
+            "output_payload": {"provider": "local_omics", **result},
+            "metadata": {"provider": "local_omics"},
+        }
+
+    def poll(self, record: ComputeJobRecord) -> dict[str, Any]:
+        return {
+            "status": "completed",
+            "output_payload": record.output_payload or {"provider": "local_omics"},
+            "last_error": None,
+            "metadata": {"provider": "local_omics"},
+        }
+
+    def cancel(self, record: ComputeJobRecord) -> dict[str, Any]:
+        return {"status": "cancelled", "output_payload": {}, "metadata": {"provider": "local_omics"}}
+
+
+register_compute_runner("local", lambda: LocalOmicsComputeRunner())

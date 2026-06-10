@@ -1099,3 +1099,81 @@ def test_internal_workspace_carries_trusted_operator_gate_policy(tmp_path):
     )
     flow = service.run_compute_validation_flow(candidate_id, item.queue_item_id, runner_kind="mock")
     assert flow["gate_policy"] == "trusted_operator"
+
+
+# --- Phase 3b: the omics-crux lane runs the REAL analysis (local CPU provider) ---
+
+def _omics_fixture_expression(mut, wt, hi=3.0, lo=1.0):
+    from hsa_research.ingestion_bridge.omics_review import DEFAULT_IMMUNOSUPPRESSION_SIGNATURES
+    genes = sorted({g for sig in DEFAULT_IMMUNOSUPPRESSION_SIGNATURES.values() for g in sig})
+    expr = {s: {g: hi for g in genes} for s in mut}
+    expr.update({s: {g: lo for g in genes} for s in wt})
+    return expr
+
+
+def _omics_queue_item(repo, *, inline_data=True):
+    mut = [f"m{i}" for i in range(5)]
+    wt = [f"w{i}" for i in range(5)]
+    omics_cfg = {"source_refs": ["PRJNA562916", "GSE225599"], "datasets": ["PRJNA562916"]}
+    if inline_data:
+        omics_cfg["expression"] = _omics_fixture_expression(mut, wt)
+        omics_cfg["strata"] = {**{s: "mutant" for s in mut}, **{s: "wt" for s in wt}}
+    return repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(), task_id=uuid4(), brief_id=uuid4(),
+            topic="PIK3CA-mutant immunosuppression crux", task_type="omics",
+            title="TME deconvolution of PIK3CA-mutant canine HSA",
+            objective="Does the PIK3CA-mutant subset carry an immunosuppressive TME signature?",
+            rationale="The cheapest-first crux for the IL-12-relief arm.",
+            validation_request=ValidationRequest(
+                validation_type="omics", target_name="PIK3CA-mutant HSA TME",
+                candidate_name="LNP-mRNA-IL12 program",
+                objective="Score immunosuppression markers, mutant vs WT.",
+                require_approval=True,
+                metadata={"omics_review": omics_cfg},
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma and human angiosarcoma",
+                    species=["canine", "human"], model_system="public canine HSA omics",
+                    assay_type="bulk RNA-seq TME deconvolution",
+                    readout="immune composition by mutation stratum", endpoint="differential composition",
+                ),
+            ),
+        )
+    )
+
+
+def test_omics_crux_lane_runs_real_analysis_through_the_loop(tmp_path):
+    """The omics-crux lane runs the REAL analysis engine via the local CPU provider, end-to-end:
+    fixture where mutant tumors ARE immunosuppressed -> 'supports' signal -> capsule -> promotion."""
+    repo = SQLiteResearchRepository(tmp_path / "p3b-omics.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate_id = _seed_validation_ready_candidate(repo, candidate_id="vr-omics-real", ready=True)
+    item = _omics_queue_item(repo, inline_data=True)
+
+    flow = service.run_compute_validation_flow(candidate_id, item.queue_item_id, runner_kind="local")
+    assert flow["errors"] == [], flow
+    assert flow["compute_job_status"] == "completed"
+    capsule = repo.get_proof_capsule(UUID(flow["capsule_id"]))
+    # the REAL engine produced a directional signal (not the mock's neutral)
+    assert capsule.payload["signal"] == "supports"
+    assert capsule.payload["confidence"] > 0.0
+    assert capsule.payload["validation_type"] == "omics"
+    assert capsule.payload["metrics"]["method"] == "ssgsea_meanz"
+
+    service.accept_proof_capsule(capsule.capsule_id, reviewer="chase")
+    assert service.promote_proof_capsule_to_candidate(capsule.capsule_id, reviewer="chase")["promoted"]
+
+
+def test_omics_lane_surfaces_the_real_data_seam_honestly(tmp_path):
+    """With no inline expression, the lane doesn't fake a result — it fails clearly, pointing at
+    the deploy-time SRA-pull seam (load_omics_dataset)."""
+    repo = SQLiteResearchRepository(tmp_path / "p3b-omics-seam.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate_id = _seed_validation_ready_candidate(repo, candidate_id="vr-omics-seam", ready=True)
+    item = _omics_queue_item(repo, inline_data=False)
+
+    flow = service.run_compute_validation_flow(candidate_id, item.queue_item_id, runner_kind="local")
+    assert flow["compute_job_status"] == "failed"
+    assert "capsule_id" not in flow  # no fake capsule from un-run analysis
+    job = repo.get_compute_job(UUID(flow["compute_job_id"]))
+    assert job.output_payload["error"] == "real_data_pull_not_wired"
