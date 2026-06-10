@@ -67,7 +67,8 @@ if modal is not None:
     # gnina image tag are the parts to confirm. gnina runs on a modest GPU (T4 is enough for a smoke).
     _DOCKING_MODULE = Path(__file__).resolve().parent / "docking.py"
     gnina_image = (
-        modal.Image.from_registry("gnina/gnina:latest")  # gnina binary + CUDA
+        # gnina image lacks a Modal-compatible Python -> add_python so Modal can install its client + rdkit
+        modal.Image.from_registry("gnina/gnina:v1.3.1", add_python="3.11")  # gnina binary + CUDA (pinned)
         .pip_install("rdkit")  # SMILES -> 3D SDF ligand prep (avoids the old PDB-intermediate failure)
         .add_local_file(str(_DOCKING_MODULE), "/root/docking.py")
     )
@@ -114,6 +115,27 @@ if modal is not None:
             ligand=config.get("ligand_name", config.get("ligand_smiles", "ligand")),
             source_refs=config.get("source_refs"),
         )
+
+    @app.local_entrypoint()
+    def dock() -> None:
+        """First real gnina GPU smoke: redock VEGFR2/KDR native ligand 0KF (PDB 3VO3) — gold-standard
+        validation (does gnina recover a strong affinity for the known binder?). The receptor is
+        prepped locally (protein-only 3VO3) at /tmp/3VO3_receptor.pdb.
+        Run: python -m modal run src/hsa_research/ingestion_bridge/modal_app.py::dock"""
+        result = run_gnina_remote.remote(
+            {
+                "receptor_pdb": Path("/tmp/3VO3_receptor.pdb").read_text(),
+                "ligand_smiles": "Cc1cc(n(n1)C)C(=O)Nc2cccc(c2)Oc3ccc4nc(cn4n3)NC(=O)C5CC5",
+                "ligand_name": "0KF (native VEGFR2 inhibitor)",
+                "target": "VEGFR2/KDR (PDB 3VO3)",
+                "center_x": 25.61, "center_y": -27.71, "center_z": -13.53,
+                "size_x": 22, "size_y": 22, "size_z": 22,
+                "source_refs": ["PDB:3VO3"],
+            }
+        )
+        print(f"signal={result['signal']} confidence={result['confidence']}")
+        print(result["findings"])
+        print("best affinity (kcal/mol):", result.get("metrics", {}).get("best_affinity_kcal_mol"))
 
     @app.local_entrypoint()
     def main() -> None:
