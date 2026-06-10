@@ -200,15 +200,83 @@ def run_omics_review(
     }
 
 
-def load_omics_dataset(accessions: list[str]) -> tuple[dict[str, dict[str, float]], dict[str, str]]:
-    """SEAM (deploy-time, 3b): pull real expression + mutation strata from SRA/GEO.
+def parse_expression_matrix(text: str, *, genes_in_rows: bool = True) -> dict[str, dict[str, float]]:
+    """Parse a processed expression matrix (TSV/CSV) into {sample -> {gene -> value}}.
 
-    Not wired in-repo — fetching multi-GB SRA (e.g. PRJNA562916) + the Ammons reference (GSE225599)
-    must run where there's network + disk (your machine / a CPU instance), via pysradb/GEOparse.
-    The engine above runs on the returned (expression, strata); tests feed fixtures directly.
+    Default layout = genes in rows: first column is the gene id, the header row is sample ids
+    (the standard GEO FPKM/counts matrix shape, e.g. GSE95183_fpkms_hemangiosarcoma.txt).
     """
+    rows = [ln for ln in text.replace("\r\n", "\n").split("\n") if ln.strip()]
+    if not rows:
+        return {}
+    sep = "\t" if "\t" in rows[0] else ","
+    header = rows[0].split(sep)
+    expression: dict[str, dict[str, float]] = {}
+    if genes_in_rows:
+        samples = [s.strip() for s in header[1:]]
+        for s in samples:
+            expression[s] = {}
+        for line in rows[1:]:
+            parts = line.split(sep)
+            gene = parts[0].strip()
+            for s, raw in zip(samples, parts[1:]):
+                try:
+                    expression[s][gene] = float(raw)
+                except (ValueError, IndexError):
+                    continue
+    else:  # samples in rows, genes in header
+        genes = [g.strip() for g in header[1:]]
+        for line in rows[1:]:
+            parts = line.split(sep)
+            sample = parts[0].strip()
+            expression[sample] = {}
+            for g, raw in zip(genes, parts[1:]):
+                try:
+                    expression[sample][g] = float(raw)
+                except (ValueError, IndexError):
+                    continue
+    return expression
+
+
+def parse_strata_table(text: str, *, mutant_values: tuple[str, ...] = ("mutant", "mut", "1", "true", "yes")) -> dict[str, str]:
+    """Parse a 2-column (sample, status) CSV/TSV into {sample -> "mutant"|"wt"}."""
+    rows = [ln for ln in text.replace("\r\n", "\n").split("\n") if ln.strip()]
+    strata: dict[str, str] = {}
+    for i, line in enumerate(rows):
+        sep = "\t" if "\t" in line else ","
+        parts = [p.strip() for p in line.split(sep)]
+        if len(parts) < 2:
+            continue
+        if i == 0 and parts[1].lower() in {"status", "pik3ca", "pik3ca_status", "mutation"}:
+            continue  # header
+        strata[parts[0]] = "mutant" if parts[1].lower() in mutant_values else "wt"
+    return strata
+
+
+def load_omics_dataset(
+    accessions: list[str],
+    *,
+    matrix_path: str | None = None,
+    strata_path: str | None = None,
+) -> tuple[dict[str, dict[str, float]], dict[str, str]]:
+    """Load real expression + mutation strata.
+
+    If ``matrix_path`` + ``strata_path`` are given (a processed matrix from an alignment pipeline,
+    or a fetched GEO FPKM matrix like GSE95183), they are parsed and returned — this path is real
+    and tested. Otherwise we raise with the VERIFIED guidance, because the headline crux dataset
+    (Megquier PRJNA562916) has NO processed matrix: its RNA-seq is raw SRA reads (needs an
+    align+quantify pipeline) and its PIK3CA/TP53 genotypes live in a supplementary PDF (Table S1).
+    """
+    if matrix_path and strata_path:
+        with open(matrix_path, encoding="utf-8") as fh:
+            expression = parse_expression_matrix(fh.read())
+        with open(strata_path, encoding="utf-8") as fh:
+            strata = parse_strata_table(fh.read())
+        return expression, strata
     raise NotImplementedError(
-        "Real omics data pull is not wired in-repo. Provide `expression`+`strata` inline (the engine "
-        "runs on them), or implement this loader with pysradb/GEOparse for "
-        f"{accessions} where network+disk are available. See docs/DATA_SOURCES.md."
+        f"No processed matrix for {accessions}. Megquier (PRJNA562916) is raw SRA reads + a "
+        "PDF genotype table (Table S1) — that needs an align+quantify pipeline + PDF parse "
+        "(a real bioinformatics step, run where there's network+compute). Once you have them, pass "
+        "matrix_path+strata_path (this loader parses them). GSE95183 is a fetchable canine-HSA FPKM "
+        "matrix but a DIFFERENT cohort with no PIK3CA genotypes — do not conflate. See DATA_SOURCES.md."
     )

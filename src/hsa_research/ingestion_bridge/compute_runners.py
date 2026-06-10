@@ -161,10 +161,15 @@ class LocalOmicsComputeRunner:
         expression = config.get("expression")
         strata = config.get("strata")
         if not expression or not strata:
-            # No inline data → the real SRA pull is the deploy-time seam; surface it clearly.
+            # No inline data → load from a real matrix+strata file if provided, else surface the
+            # honest gap (Megquier raw-SRA needs an alignment pipeline + PDF genotype parse).
             try:
-                expression, strata = load_omics_dataset(config.get("datasets") or [])
-            except NotImplementedError as exc:
+                expression, strata = load_omics_dataset(
+                    config.get("datasets") or [],
+                    matrix_path=config.get("matrix_path"),
+                    strata_path=config.get("strata_path"),
+                )
+            except (NotImplementedError, OSError) as exc:
                 return _fail("real_data_pull_not_wired", {"detail": str(exc), "datasets": config.get("datasets")})
 
         result = run_omics_review(
