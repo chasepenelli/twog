@@ -135,6 +135,12 @@ Phase 3 (pluggable lanes + a real provider) is the next pass.
 **Goal:** real scientific payloads behind the existing expert gate. Build the **lane pattern**,
 then turn on the first real lane the bio dept asks for.
 
+> **Detailed buildable plan: `docs/PHASE3_PLAN.md`** — splits into **3a** (in-repo lane
+> abstraction + generalized gate + `parse_result` + autonomy policy + pipeline/checkpoint
+> affordances + a CPU lane proving pluggability, all mock-provider testable) and **3b** (register
+> Modal as a real provider; build the **ADMET → gnina → Boltz-2** cascade on GPU). Pressure-tested
+> design + verified provider/lane picks from `docs/FRONTIER_SCAN.md`.
+
 **What exists (2026-06-09):** the RunPod execution provider + smoke worker were **removed**
 (never worked). What remains is the provider *seam* (`compute_runners.py`: a `ComputeRunner`
 protocol + `register_compute_runner()` registry) and the provider-agnostic machinery around it —
