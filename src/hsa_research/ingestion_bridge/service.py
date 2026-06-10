@@ -1565,6 +1565,9 @@ class HSAResearchService:
                     work_packet_id=work_packet_id,
                     provider="manual",
                     status="ready",
+                    # solo/internal origin: autonomous through compute to the promotion write-gate.
+                    # Phase 4 will create external_collaborator workspaces that re-gate at submission.
+                    gate_policy="trusted_operator",
                     metadata={"internal_origin": "compute_loop"},
                 )
             )
@@ -1839,6 +1842,7 @@ class HSAResearchService:
             return result
         workspace = ws.workspace
         result["workspace_id"] = str(workspace.workspace_id)
+        result["gate_policy"] = workspace.gate_policy  # trusted_operator => autonomous to the write-gate
 
         job = self.create_compute_job_from_validation_queue_item(
             queue_item_id,
@@ -6724,7 +6728,7 @@ def _agent_run_manifest_refs(repository: ResearchRepository, agent_run_ids: list
 def _manifest_status_from_compute_status(status: str) -> str:
     if status in {"completed", "failed", "cancelled", "blocked"}:
         return status
-    if status in {"needs_approval", "approved", "queued", "submitted", "running"}:
+    if status in {"needs_approval", "approved", "queued", "submitted", "running", "paused"}:
         return "running"
     return "unknown"
 

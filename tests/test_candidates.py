@@ -1035,3 +1035,67 @@ def test_omics_lane_runs_through_the_same_loop(tmp_path):
     service.accept_proof_capsule(capsule.capsule_id, reviewer="chase")
     promotion = service.promote_proof_capsule_to_candidate(capsule.capsule_id, reviewer="chase")
     assert promotion["promoted"] is True
+
+
+# --- Phase 3a: autonomy policy + checkpoint/pipeline affordance fields ---
+
+def test_compute_job_checkpoint_and_pipeline_fields_round_trip(tmp_path):
+    """The pipeline/checkpoint affordance fields persist (blob-backed, no migration) so the
+    deferred ComputePipeline + checkpoint/resume model land without rework."""
+    repo = SQLiteResearchRepository(tmp_path / "p3a-affordances.sqlite3", seed=False)
+    parent = uuid4()
+    chk = uuid4()
+    job = repo.upsert_compute_job(
+        ComputeJobRecord(
+            status="paused",
+            runner_kind="mock",
+            validation_type="md",
+            title="paused MD run",
+            objective="resumable long run",
+            parent_compute_job_id=parent,
+            progress_fraction=0.4,
+            checkpoint_artifact_id=chk,
+            checkpoint_uri="s3://twog-checkpoints/job.chk",
+            resume_from_checkpoint=True,
+        )
+    )
+    fetched = repo.get_compute_job(job.compute_job_id)
+    assert fetched.status == "paused"
+    assert fetched.parent_compute_job_id == parent
+    assert fetched.progress_fraction == 0.4
+    assert fetched.checkpoint_artifact_id == chk
+    assert fetched.checkpoint_uri == "s3://twog-checkpoints/job.chk"
+    assert fetched.resume_from_checkpoint is True
+
+
+def test_internal_workspace_carries_trusted_operator_gate_policy(tmp_path):
+    """Solo/internal runs are autonomous to the promotion write-gate; the policy is carried on the
+    workspace so Phase 4 can create external_collaborator workspaces that re-gate at submission."""
+    repo = SQLiteResearchRepository(tmp_path / "p3a-gatepolicy.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    candidate_id = _seed_validation_ready_candidate(repo, candidate_id="vr-gatepolicy", ready=True)
+
+    ws = service.ensure_internal_workspace_for_candidate(candidate_id)
+    assert ws.workspace.gate_policy == "trusted_operator"
+    # lease fields exist and default empty (the "check it back out" handoff model)
+    assert ws.workspace.leased_by is None
+    assert ws.workspace.lease_expires_at is None
+
+    item = repo.upsert_validation_request_queue_item(
+        ValidationRequestQueueItem(
+            plan_id=uuid4(), task_id=uuid4(), brief_id=uuid4(),
+            topic="gate-policy flow", task_type="omics",
+            title="omics run", objective="check gate_policy surfaces in the flow",
+            rationale="affordance test",
+            validation_request=ValidationRequest(
+                validation_type="omics", target_name="x", candidate_name="y",
+                objective="run", require_approval=True,
+                assay_context=ValidationAssayContext(
+                    disease_context="canine hemangiosarcoma", species=["canine"],
+                    model_system="m", assay_type="a", readout="r", endpoint="e",
+                ),
+            ),
+        )
+    )
+    flow = service.run_compute_validation_flow(candidate_id, item.queue_item_id, runner_kind="mock")
+    assert flow["gate_policy"] == "trusted_operator"

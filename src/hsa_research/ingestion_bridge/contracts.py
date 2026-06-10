@@ -330,6 +330,11 @@ ResearchWorkspaceStatus = Literal[
     "archived",
 ]
 
+# Autonomy policy (Phase 3a): who must approve, and when. trusted_operator runs are autonomous
+# through compute to a single end-review (the promotion write-gate); external_collaborator runs
+# keep the gate at submission (set up for Phase 4). Per-origin, carried on the workspace.
+ResearchWorkspaceGatePolicy = Literal["trusted_operator", "external_collaborator"]
+
 ResearchWorkspaceSkillProfile = Literal[
     "core",
     "literature_and_citation",
@@ -601,6 +606,7 @@ ComputeJobStatus = Literal[
     "queued",
     "submitted",
     "running",
+    "paused",  # checkpointed mid-run; resumable from checkpoint_artifact_id/checkpoint_uri
     "completed",
     "failed",
     "cancelled",
@@ -4078,6 +4084,13 @@ class ComputeJobRecord(StrictBaseModel):
     candidate_id: str | None = Field(default=None, max_length=260)
     candidate_snapshot_hash: str | None = Field(default=None, max_length=160)
     checkout_manifest_hash: str | None = Field(default=None, max_length=160)
+    # Pipeline + checkpoint affordances (Phase 3a): fields the deferred ComputePipeline and the
+    # checkpoint/resume + lease-handoff model will read — see PHASE3_PLAN / OMICS_CRUX_LANE.
+    parent_compute_job_id: UUID | None = None  # multi-stage lineage (dock -> MD); enables provenance
+    progress_fraction: float | None = Field(default=None, ge=0.0, le=1.0)  # e.g. 0.4 = 40% done
+    checkpoint_artifact_id: UUID | None = None  # the durable restart artifact for resume
+    checkpoint_uri: str | None = Field(default=None, max_length=1000)  # where the provider writes checkpoints
+    resume_from_checkpoint: bool = False  # the next submit should continue from the checkpoint
     title: str = Field(min_length=1, max_length=500)
     objective: str = Field(min_length=1, max_length=2000)
     container_image: str | None = Field(default=None, max_length=500)
@@ -4119,6 +4132,8 @@ class ComputeJobRecord(StrictBaseModel):
             self.candidate_snapshot_hash = self.candidate_snapshot_hash.strip() or None
         if self.checkout_manifest_hash:
             self.checkout_manifest_hash = self.checkout_manifest_hash.strip() or None
+        if self.checkpoint_uri:
+            self.checkpoint_uri = self.checkpoint_uri.strip() or None
         self.entrypoint = _normalized_unique_strings(self.entrypoint)
         self.expected_outputs = _normalized_unique_strings(self.expected_outputs)
         return self
@@ -4787,6 +4802,12 @@ class ResearchWorkspaceRecord(StrictBaseModel):
     recommended_source_refs: list[str] = Field(default_factory=list, max_length=100)
     status: ResearchWorkspaceStatus = "requested"
     expires_at: datetime | None = None
+    # Autonomy + lease/handoff affordances (Phase 3a): gate_policy drives autonomous-vs-gated
+    # advancement; leased_by/lease_expires_at let a paused, checkpointed pipeline be checked back
+    # out by the same or a different person (the "resume a 40% session" model).
+    gate_policy: ResearchWorkspaceGatePolicy = "trusted_operator"
+    leased_by: str | None = Field(default=None, max_length=200)
+    lease_expires_at: datetime | None = None
     submitted_proof_capsule_id: UUID | None = None
     errors: list[str] = Field(default_factory=list, max_length=25)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

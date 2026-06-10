@@ -36,6 +36,11 @@ class ComputeRunner(Protocol):
     submit(record) -> {status, external_run_id, runpod_job_id?, output_payload, metadata}
     poll(record)   -> {status, output_payload, last_error, metadata}
     cancel(record) -> {status, output_payload, metadata}
+
+    Checkpointing (Phase 3a affordance): for long lanes (record.checkpoint_uri set), a provider
+    should periodically write restart state to record.checkpoint_uri (durable storage, not the
+    ephemeral GPU disk) and may report record.progress_fraction; on resume (record.resume_from_
+    checkpoint) it continues from that checkpoint. submit/poll may return status "paused".
     """
 
     def submit(self, record: ComputeJobRecord) -> dict[str, Any]: ...

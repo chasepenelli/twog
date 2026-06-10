@@ -81,6 +81,16 @@ REINVENT4 (generative front-end) to later lanes.
 
 ---
 
+## ✅ 3a COMPLETE (2026-06-10) — all 7 increments green
+
+Lane registry (`lanes.py`) with MD as the first instance; `submit_compute_job` dispatches the gate
+via `get_lane()`; `parse_result` directional signal flows into the capsule; the **omics lane proves
+pluggability** end-to-end through the same loop; autonomy policy (`gate_policy` on the workspace,
+live in the flow) + checkpoint/pipeline affordance fields (`parent_compute_job_id`,
+`progress_fraction`, `checkpoint_artifact_id`, `checkpoint_uri`, `resume_from_checkpoint`, a
+`paused` status; workspace `leased_by`/`lease_expires_at`) are in place. 511 tests green. The
+ComputePipeline orchestrator + real checkpoint *implementation* remain deferred (affordances baked).
+
 ## Build sequence (3a — strangler, each increment ships green)
 
 1. **`LaneSpec` + registry.** `register_lane`/`get_lane`. Register **MD as the first instance**,
