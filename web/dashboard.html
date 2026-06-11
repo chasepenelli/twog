@@ -4,25 +4,28 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>twog — research state</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root{--bg:#fff;--soft:#fafafa;--ink:#0a0a0a;--muted:#6b7280;--line:#e7e7e7;
     --accent:#1a4cff;--green:#0a8f3c;--amber:#b4690e;--max:1240px}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);
-    font-family:system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
-  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+    font-family:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace}
   .wrap{max-width:var(--max);margin:0 auto;padding:0 28px}
   a{color:inherit;text-decoration:none}
   ::selection{background:var(--accent);color:#fff}
   nav{position:sticky;top:0;z-index:30;background:rgba(255,255,255,.85);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
   .nav{display:flex;align-items:center;justify-content:space-between;height:62px}
-  .brand{font-weight:800;letter-spacing:-.03em;font-size:18px}
+  .brand{font-weight:700;letter-spacing:-.03em;font-size:18px}
   .brand b{color:var(--accent)}
   .navlinks a{font-size:14px;color:var(--muted);margin-left:24px}
   .navlinks a:hover{color:var(--ink)}
 
   .head{padding:40px 0 8px}
-  .head h1{font-size:34px;letter-spacing:-.03em;margin:0;font-weight:840}
+  .head h1{font-size:34px;letter-spacing:-.03em;margin:0;font-weight:700}
   .head .meta{display:flex;gap:14px;align-items:center;margin-top:10px;color:var(--muted);font-size:13px}
   .live{display:inline-flex;align-items:center;gap:7px;color:var(--green);font-weight:600}
   .ldot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 1.8s infinite}
@@ -32,7 +35,7 @@
   @media(max-width:860px){.tiles{grid-template-columns:repeat(2,1fr)}}
   .tile{border:1px solid var(--line);border-radius:13px;padding:20px}
   .tile .k{font-size:12px;color:var(--muted);letter-spacing:.04em}
-  .tile .v{font-size:38px;font-weight:850;letter-spacing:-.03em;line-height:1;margin-top:12px}
+  .tile .v{font-size:38px;font-weight:700;letter-spacing:-.03em;line-height:1;margin-top:12px}
   .tile .d{font-size:12.5px;color:var(--muted);margin-top:10px}
 
   section{padding:30px 0}
