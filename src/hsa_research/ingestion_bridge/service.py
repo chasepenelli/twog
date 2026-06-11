@@ -1658,10 +1658,12 @@ class HSAResearchService:
         role: str = "collaborator",
         contact: str | None = None,
         scopes: list[str] | None = None,
+        public_key: str | None = None,
         note: str | None = None,
     ) -> CollaboratorRecord:
         """Register (or update) a trusted principal. Re-registering an existing principal updates
-        it in place (same collaborator_id), so this is idempotent on the principal slug."""
+        it in place (same collaborator_id), so this is idempotent on the principal slug. An optional
+        Ed25519 public_key (hex) lets anyone verify capsules this principal signs."""
         existing = self.repository.get_collaborator_by_principal(principal.strip())
         record = CollaboratorRecord(
             collaborator_id=existing.collaborator_id if existing else uuid4(),
@@ -1670,6 +1672,7 @@ class HSAResearchService:
             role=role,  # type: ignore[arg-type]
             contact=contact,
             scopes=scopes or [],  # type: ignore[arg-type]
+            public_key=public_key or (existing.public_key if existing else None),
             note=note,
         )
         return self.repository.upsert_collaborator(record)
@@ -1808,6 +1811,55 @@ class HSAResearchService:
         request: ProofCapsuleSubmitRequest,
     ) -> ProofCapsuleSubmitResult:
         return submit_proof_capsule(self.repository, request)
+
+    # --- Cryptographic provenance: tamper-evident lineage + signatures --------------------------
+    def sign_capsule_content(self, content_hash: str, private_key_hex: str) -> str:
+        """Sign a capsule content_hash with a principal's Ed25519 private key. The key never leaves
+        the caller; the result goes on the submit request as `signature`."""
+        from . import provenance
+
+        return provenance.sign(content_hash, private_key_hex)
+
+    def verify_capsule_provenance(self, capsule: ProofCapsuleRecord) -> dict[str, Any]:
+        """Verify a capsule's authorship: is it signed, and does the signature validate against the
+        submitter's registered public key? Anyone can run this. Integrity, not validity."""
+        from . import provenance
+
+        signer = self.resolve_principal(capsule.submitted_by) if capsule.submitted_by else None
+        valid = bool(
+            capsule.signature
+            and signer is not None
+            and signer.public_key
+            and provenance.verify(capsule.content_hash, capsule.signature, signer.public_key)
+        )
+        return {
+            "capsule_id": str(capsule.capsule_id),
+            "content_hash": capsule.content_hash,
+            "signed": bool(capsule.signature),
+            "signature_valid": valid,
+            "signer": capsule.submitted_by,
+            "lineage_index": capsule.lineage_index,
+            "parent_content_hash": capsule.parent_content_hash,
+        }
+
+    def verify_capsule_lineage(self, capsules: list[ProofCapsuleRecord]) -> dict[str, Any]:
+        """Verify the edit chain of capsule versions (proof of change): each version's
+        parent_content_hash must equal the prior version's content_hash. Tampering breaks the link."""
+        from . import provenance
+
+        ok, problems = provenance.verify_lineage(
+            [(c.content_hash, c.parent_content_hash, c.lineage_index) for c in capsules]
+        )
+        return {"ok": ok, "problems": problems, "versions": len(capsules)}
+
+    def evidence_merkle_root(self, candidate_id: str) -> str | None:
+        """Merkle root over a candidate's proof-capsule content_hashes — the single value you'd
+        anchor to a public ledger (OpenTimestamps → Bitcoin) for decentralized verifiability. Opt-in;
+        not anchored here."""
+        from . import provenance
+
+        caps = self.repository.list_proof_capsules(candidate_id=candidate_id, limit=500)
+        return provenance.merkle_root([c.content_hash for c in caps])
 
     def list_proof_capsules(
         self,

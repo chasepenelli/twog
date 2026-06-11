@@ -83,6 +83,10 @@ def submit_proof_capsule(
         requested_action=request.requested_action,
         producer=request.producer,
         submitted_by=request.submitted_by,  # Phase 4: actor provenance (excluded from content_hash)
+        # provenance wrappers (excluded from content_hash by construction): edit-chain link + signature
+        parent_content_hash=request.parent_content_hash,
+        lineage_index=request.lineage_index,
+        signature=request.signature,
         target=request.target,
         summary=request.summary,
         payload=request.payload,

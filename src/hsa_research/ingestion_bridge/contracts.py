@@ -4817,6 +4817,7 @@ class CollaboratorRecord(StrictBaseModel):
     role: CollaboratorRole = "collaborator"
     scopes: list[CollaboratorScope] = Field(default_factory=list)
     status: CollaboratorStatus = "active"
+    public_key: str | None = Field(default=None, max_length=128)  # Ed25519 pubkey (hex) — verifies their signed capsules
     note: str | None = Field(default=None, max_length=1000)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -5194,6 +5195,9 @@ class ProofCapsuleSubmitRequest(StrictBaseModel):
     requested_action: ProofCapsuleRequestedAction
     producer: ProofCapsuleProducer = Field(default_factory=ProofCapsuleProducer)
     submitted_by: str | None = Field(default=None, max_length=200)  # Phase 4: actor provenance
+    parent_content_hash: str | None = Field(default=None, max_length=160)  # supersedes a prior version
+    lineage_index: int = Field(default=0, ge=0)  # version number in the edit chain
+    signature: str | None = Field(default=None, max_length=256)  # Ed25519 sig of the content_hash
     target: ProofCapsuleTarget
     summary: ProofCapsuleSummary
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -5241,6 +5245,13 @@ class ProofCapsuleRecord(StrictBaseModel):
     conflicts: list[str] = Field(default_factory=list, max_length=50)
     limitations: list[str] = Field(default_factory=list, max_length=50)
     content_hash: str = Field(min_length=8, max_length=160)
+    # Cryptographic provenance (proof-of-change). content_hash is a pure function of the scientific
+    # content; these wrap around it and are EXCLUDED from it. parent_content_hash links to the prior
+    # version (a hash-linked Merkle DAG = tamper-evident edit history); signature is an Ed25519 sig of
+    # content_hash by the submitter (verifiable against their CollaboratorRecord.public_key).
+    parent_content_hash: str | None = Field(default=None, max_length=160)
+    lineage_index: int = Field(default=0, ge=0)
+    signature: str | None = Field(default=None, max_length=256)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = Field(default_factory=dict)
