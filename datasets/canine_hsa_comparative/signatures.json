@@ -1,0 +1,155 @@
+{
+  "assembly": "CanFam3.1 (Ensembl r104)",
+  "signatures": {
+    "Treg": [
+      {
+        "symbol": "FOXP3",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000015934"
+      },
+      {
+        "symbol": "CTLA4",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000012876"
+      },
+      {
+        "symbol": "IL2RA",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000005210"
+      },
+      {
+        "symbol": "IKZF2",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000014224"
+      }
+    ],
+    "M2_TAM": [
+      {
+        "symbol": "CD163",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000013968"
+      },
+      {
+        "symbol": "MRC1",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000004496"
+      },
+      {
+        "symbol": "MSR1",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000006830"
+      },
+      {
+        "symbol": "CSF1R",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000018219"
+      }
+    ],
+    "immunosuppressive_cytokines": [
+      {
+        "symbol": "IL10",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000011443"
+      },
+      {
+        "symbol": "TGFB1",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000005014"
+      },
+      {
+        "symbol": "CCL2",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000018348"
+      }
+    ],
+    "cytotoxic_effector": [
+      {
+        "symbol": "CD8A",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000007464"
+      },
+      {
+        "symbol": "PRF1",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000014071"
+      },
+      {
+        "symbol": "GZMK",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000018379"
+      },
+      {
+        "symbol": "GZMA",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000006735"
+      },
+      {
+        "symbol": "NKG7",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000042210"
+      }
+    ],
+    "IFNg_response": [
+      {
+        "symbol": "IFNG",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000000408"
+      },
+      {
+        "symbol": "STAT1",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000048528"
+      },
+      {
+        "symbol": "IRF1",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000000851"
+      },
+      {
+        "symbol": "GBP1",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000020204"
+      },
+      {
+        "symbol": "CXCL10",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000008584"
+      },
+      {
+        "symbol": "IDO1",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000005750"
+      },
+      {
+        "symbol": "TAP1",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000000832"
+      },
+      {
+        "symbol": "B2M",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000013633"
+      },
+      {
+        "symbol": "JAK2",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000002102"
+      }
+    ],
+    "endothelial_tumor": [
+      {
+        "symbol": "PECAM1",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000011740"
+      },
+      {
+        "symbol": "VWF",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000015228"
+      },
+      {
+        "symbol": "CDH5",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000020413"
+      },
+      {
+        "symbol": "KDR",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000002079"
+      }
+    ],
+    "angiogenesis": [
+      {
+        "symbol": "VEGFA",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000001938"
+      },
+      {
+        "symbol": "KDR",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000002079"
+      },
+      {
+        "symbol": "FLT1",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000006701"
+      },
+      {
+        "symbol": "ANGPT2",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000008597"
+      },
+      {
+        "symbol": "DLL4",
+        "canine_ensembl_canfam3_1": "ENSCAFG00000009401"
+      }
+    ]
+  }
+}
