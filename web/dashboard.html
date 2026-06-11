@@ -121,7 +121,7 @@
   </section>
 
   <section id="runs">
-    <div class="h2 mono">ACTIVE — H1: CROSS-SPECIES DRUGGABILITY</div>
+    <div class="h2 mono">H1 — CROSS-SPECIES DRUGGABILITY · <span style="color:var(--green)">SUPPORTED</span></div>
     <div class="panel reveal" style="padding:22px 24px">
       <div style="font-size:15px"><b>Hypothesis H1:</b> alpelisib engages <i>canine</i> PI3Kα comparably to human (conserved druggable pocket) → the PI3Kα therapeutic rationale plausibly translates to canine HSA.</div>
       <div class="two" style="margin-top:18px">
@@ -132,16 +132,16 @@
         </div>
         <div>
           <div class="mono" style="font-size:12px;color:var(--muted)">NEGATIVE CONTROL · VEGFR2 (off-target)</div>
-          <div style="font-size:15px;margin-top:6px"><span class="run"><span class="rdot"></span>folding…</span></div>
-          <div class="bar"><i data-w="60"></i></div>
+          <div style="font-size:15px;margin-top:6px"><span class="sig refutes">refutes</span> · P(binder) 0.11 · ~4,300 nM</div>
+          <div class="bar"><i data-w="11"></i></div>
         </div>
       </div>
       <div style="margin-top:18px">
-        <div class="mono" style="font-size:12px;color:var(--muted)">H1 PROPER · canine PI3Kα (1068 aa · identical length to human)</div>
-        <div style="font-size:15px;margin-top:6px"><span class="run"><span class="rdot"></span>folding on A100…</span></div>
-        <div class="bar"><i data-w="60"></i></div>
+        <div class="mono" style="font-size:12px;color:var(--muted)">H1 PROPER · canine PI3Kα · kinase domain 100% identical to human</div>
+        <div style="font-size:15px;margin-top:6px"><span class="sig supports">supports</span> · iptm 0.99 · P(binder) 0.92 · ~11 nM — matches human</div>
+        <div class="bar"><i data-w="99"></i></div>
       </div>
-      <div class="note">Verdict pending both folds. Supported → the human PI3Kα rationale plausibly translates to canine HSA (in silico, motivates an in-vitro test). Not supported → a dog-specific inhibitor or a different node is needed.</div>
+      <div class="note"><b>Verdict: supported.</b> Alpelisib's PI3Kα binding pocket is <b>100% conserved</b> between human and dog (99.8% overall); the cofold predicts identical engagement (~11 nM). The rig <b>discriminates</b> — the VEGFR2 off-target drops to P(binder) 0.11 / ~4,300 nM — so the on-target "supports" is trustworthy. The human PI3Kα rationale translates to canine HSA <i>at the target level</i>. Caveat: target conservation ≠ tumor efficacy.</div>
     </div>
   </section>
 
