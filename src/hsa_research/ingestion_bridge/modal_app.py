@@ -289,7 +289,9 @@ if modal is not None:
                 "  - affinity:\n"
                 "      binder: B\n"
             )
-        cmd = ["boltz", "predict", yaml_path, "--use_msa_server", "--out_dir", workdir, "--cache", "/cache"]
+        cmd = ["boltz", "predict", yaml_path, "--use_msa_server", "--out_dir", workdir, "--cache", "/cache",
+               "--diffusion_samples", str(config.get("diffusion_samples", 1)),  # 1 sample = cost-controlled smoke
+               "--no_kernels"]  # pure-PyTorch path (avoids the optional cuequivariance_torch kernel dep)
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3300)
         target = config.get("target", "target")
         ligand = config.get("ligand_name", config.get("ligand_smiles", "ligand"))
@@ -315,20 +317,29 @@ if modal is not None:
 
     @app.local_entrypoint()
     def cofold() -> None:
-        """First Boltz-2 GPU smoke: co-fold a short target sequence + alpelisib. Verify the
-        invocation/output paths here before trusting results.
-        Run: python -m modal run src/hsa_research/ingestion_bridge/modal_app.py::cofold"""
+        """Boltz-2 smoke == H1 calibration POSITIVE control: co-fold alpelisib with REAL human
+        PI3Kα (UniProt P42336, 1068 aa). Verifies the scaffold (output paths, affinity emits) AND
+        gives the positive-control number — alpelisib is a known 4.6 nM PI3Kα binder, so a sane run
+        should show a confident interface + likely-binder probability.
+        Run: PYTHONPATH=src python -m modal run src/hsa_research/ingestion_bridge/modal_app.py::cofold"""
+        seq = Path("/tmp/PIK3CA_human.seq").read_text().strip()
         result = run_boltz_remote.remote(
             {
-                "protein_sequence": "MELENIVANTVKLINGGQTRQVTVR",  # placeholder short peptide for the smoke
+                "protein_sequence": seq,
                 "ligand_smiles": "Cc1c(sc(n1)NC(=O)N2CCC[C@H]2C(=O)N)c3ccnc(c3)C(C)(C)C(F)(F)F",
                 "ligand_name": "alpelisib",
-                "target": "smoke-peptide",
-                "source_refs": ["smoke"],
+                "target": "human PI3Kα / p110α (UniProt P42336)",
+                "diffusion_samples": 1,
+                "source_refs": ["UniProt:P42336", "alpelisib IC50=4.6nM (Fritsch 2014)"],
             }
         )
+        m = result.get("metrics", {})
         print(f"signal={result.get('signal')} confidence={result.get('confidence')}")
+        print(f"iptm={m.get('iptm')} affinity_prob_binary={m.get('affinity_probability_binary')} "
+              f"affinity_pred={m.get('affinity_pred_value')}")
         print(result.get("findings"))
+        if result.get("error"):
+            print("ERROR:", result.get("error"), "| stderr tail:", result.get("stderr", "")[-800:])
 
     @app.local_entrypoint()
     def md_checkpoint() -> None:
