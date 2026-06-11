@@ -287,6 +287,15 @@ def _call_modal_gnina(config: dict[str, Any]) -> dict[str, Any]:
         return run_gnina_remote.remote(config)
 
 
+def _call_modal_md_checkpoint(config: dict[str, Any]) -> dict[str, Any]:
+    """Run one bounded chunk of GPU MD with durable checkpointing on Modal (lazy import; ephemeral
+    run). Returns a paused/completed result with progress + checkpoint pointer. Mockable in tests."""
+    from .modal_app import app, run_md_checkpoint_remote
+
+    with app.run():
+        return run_md_checkpoint_remote.remote(config)
+
+
 # validation_type -> (config key, the _call_modal_* function NAME). The name is resolved against
 # the module globals at CALL TIME (not captured here) so tests can monkeypatch the call, and so a
 # bug can't silently bind the real cloud call.
@@ -349,3 +358,52 @@ class ModalComputeRunner:
 
 
 register_compute_runner("modal", lambda: ModalComputeRunner())
+
+
+class ModalCheckpointComputeRunner:
+    """Real-GPU checkpointing provider (runner_kind="modal_checkpoint"). Runs a bounded chunk of GPU
+    MD on Modal, persisting an OpenMM checkpoint to a persistent Modal Volume; returns status="paused"
+    until the step budget is reached, then "completed". On resume (record.resume_from_checkpoint) the
+    remote loads the durable checkpoint and continues from where it stopped — true cross-invocation
+    pause/resume that the service's resume_compute_job + workspace lease drive. The modal call is
+    resolved at call time so tests can monkeypatch it without billing GPU."""
+
+    def submit(self, record: ComputeJobRecord) -> dict[str, Any]:
+        run_id = f"modal_md:{record.compute_job_id}"
+        cfg = _extract_lane_config(record, "md_checkpoint") or {}
+        config = {
+            **cfg,
+            "job_id": str(record.compute_job_id),
+            "resume": bool(record.resume_from_checkpoint),
+        }
+        call = globals()["_call_modal_md_checkpoint"]  # resolved at call time -> monkeypatch-able
+        try:
+            result = call(config)
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "external_run_id": run_id,
+                "runpod_job_id": run_id,
+                "output_payload": {"provider": "modal_md_checkpoint", "error": "modal_md_failed",
+                                   "detail": str(exc)[:500]},
+                "metadata": {"provider": "modal_md_checkpoint"},
+            }
+        # the remote returns the full submit-shape (status + progress_fraction + checkpoint_uri +
+        # output_payload + metadata); submit_compute_job persists the checkpoint affordances.
+        result.setdefault("external_run_id", run_id)
+        result.setdefault("runpod_job_id", run_id)
+        return result
+
+    def poll(self, record: ComputeJobRecord) -> dict[str, Any]:
+        return {
+            "status": record.status,
+            "output_payload": record.output_payload or {"provider": "modal_md_checkpoint"},
+            "last_error": None,
+            "metadata": {"provider": "modal_md_checkpoint"},
+        }
+
+    def cancel(self, record: ComputeJobRecord) -> dict[str, Any]:
+        return {"status": "cancelled", "output_payload": {}, "metadata": {"provider": "modal_md_checkpoint"}}
+
+
+register_compute_runner("modal_checkpoint", lambda: ModalCheckpointComputeRunner())

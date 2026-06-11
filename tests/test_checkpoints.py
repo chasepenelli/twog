@@ -79,6 +79,60 @@ def test_checkpoint_lease_handoff(tmp_path):
     assert service.resume_compute_job(job.compute_job_id, principal="chase") is not None
 
 
+def test_modal_checkpoint_runner_adapter_paused_then_completed(tmp_path, monkeypatch):
+    """The real-GPU provider adapter (runner_kind='modal_checkpoint') drives the pause/resume
+    contract. The Modal call is monkeypatched to simulate the remote OpenMM checkpoint loop, so the
+    adapter + submit/resume + checkpoint persistence are verified WITHOUT billing GPU."""
+    from hsa_research.ingestion_bridge import compute_runners
+
+    calls = {"n": 0}
+
+    def fake_modal_md(config):
+        # simulate the remote: advance 0.5 per (resume) call, durable progress comes from `resume`
+        calls["n"] += 1
+        progress = 0.5 if not config.get("resume") else 1.0
+        done = progress >= 1.0
+        return {
+            "status": "completed" if done else "paused",
+            "external_run_id": f"modal_md:{config['job_id']}",
+            "runpod_job_id": f"modal_md:{config['job_id']}",
+            "progress_fraction": progress,
+            "checkpoint_uri": f"modal-volume://twog-md-checkpoints/{config['job_id']}/state.chk",
+            "output_payload": {
+                "provider": "modal_md_checkpoint", "platform": "CUDA", "progress": progress,
+                "findings": "GPU MD completed." if done else "",
+                "limitations": ["mock"], "source_refs": [], "metrics": {"platform": "CUDA"},
+                "signal": "neutral", "confidence": 0.0,
+            },
+            "metadata": {"provider": "modal_md_checkpoint", "platform": "CUDA", "resume_seen": config.get("resume")},
+        }
+
+    monkeypatch.setattr(compute_runners, "_call_modal_md_checkpoint", fake_modal_md)
+
+    repo = SQLiteResearchRepository(tmp_path / "mc.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    job = ComputeJobRecord(
+        runner_kind="modal_checkpoint", compute_profile="gpu", validation_type="md",
+        status="approved", title="GPU MD run", objective="real-provider checkpoint",
+        input_payload={"md_checkpoint": {"total_steps": 30000, "steps_per_chunk": 15000}},
+        # md lane is gated; mark it as already expert-approved-bypassed by using a non-md type instead:
+    )
+    # use an ungated validation_type so the md expert gate doesn't block this adapter test
+    job = job.model_copy(update={"validation_type": "omics"})
+    repo.upsert_compute_job(job)
+    jid = job.compute_job_id
+
+    r1 = service.submit_compute_job(jid, dry_run=False)
+    assert r1.status == "paused" and r1.progress_fraction == 0.5
+    assert r1.checkpoint_uri and r1.checkpoint_uri.startswith("modal-volume://")
+    assert r1.metadata.get("resume_seen") is False  # first call is not a resume
+
+    r2 = service.resume_compute_job(jid)
+    assert r2.status == "completed" and r2.progress_fraction == 1.0
+    assert r2.metadata.get("resume_seen") is True  # resume propagated to the provider
+    assert calls["n"] == 2
+
+
 def test_revoked_principal_cannot_resume(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "c5.sqlite3", seed=False)
     service = HSAResearchService(repo)

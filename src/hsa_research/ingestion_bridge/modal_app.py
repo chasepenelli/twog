@@ -134,6 +134,129 @@ if modal is not None:
                 result["metrics"]["pose_rmsd_error"] = str(exc)[:200]
         return result
 
+    # --- Real-GPU checkpointing lane: OpenMM MD with durable checkpoint to a Modal Volume ---------
+    # MD is the canonical hours-long GPU job (and our MD lane). OpenMM has true binary checkpoint/
+    # restart; a persistent Modal Volume gives durable cross-invocation state — so a job can pause at
+    # 40%, be handed off, and resume from the exact checkpoint. The system here is a deterministic
+    # harmonic-well harness (no force-field parametrization) — it proves the GPU+checkpoint
+    # INFRASTRUCTURE for real, not a scientific MD result.
+    md_checkpoint_volume = modal.Volume.from_name("twog-md-checkpoints", create_if_missing=True)
+    md_image = (
+        modal.Image.from_registry("nvidia/cuda:12.4.1-runtime-ubuntu22.04", add_python="3.11")
+        .pip_install("openmm")
+    )
+
+    @app.function(image=md_image, gpu="T4", timeout=1800, volumes={"/ckpt": md_checkpoint_volume})
+    def run_md_checkpoint_remote(config: dict[str, Any]) -> dict[str, Any]:
+        """Run a bounded chunk of GPU MD (CUDA platform), persisting an OpenMM checkpoint to the
+        Volume. Returns 'paused' (progress<1) or 'completed'. resume=True loads the durable
+        checkpoint and continues — true cross-invocation pause/resume. config: job_id, total_steps,
+        steps_per_chunk, n_particles, resume."""
+        import json
+        import math
+        import os
+
+        import openmm as mm
+        from openmm import unit
+
+        job_id = str(config["job_id"])
+        total_steps = int(config.get("total_steps", 30000))
+        chunk = int(config.get("steps_per_chunk", 10000))
+        n = int(config.get("n_particles", 2000))
+        ckpt_dir = f"/ckpt/{job_id}"
+        os.makedirs(ckpt_dir, exist_ok=True)
+        ckpt_path = os.path.join(ckpt_dir, "state.chk")
+        meta_path = os.path.join(ckpt_dir, "meta.json")
+
+        # deterministic harmonic-well system of n particles (real MD physics, no parametrization)
+        system = mm.System()
+        for _ in range(n):
+            system.addParticle(39.948 * unit.amu)
+        force = mm.CustomExternalForce("0.5*k*((x-x0)^2+(y-y0)^2+(z-z0)^2)")
+        force.addGlobalParameter("k", 100.0)
+        for p in ("x0", "y0", "z0"):
+            force.addPerParticleParameter(p)
+        side = math.ceil(n ** (1 / 3))
+        positions = []
+        for i in range(n):
+            x = (i % side) * 0.3
+            y = ((i // side) % side) * 0.3
+            z = (i // (side * side)) * 0.3
+            force.addParticle(i, [x, y, z])
+            positions.append(mm.Vec3(x, y, z) * unit.nanometer)
+        system.addForce(force)
+        integrator = mm.LangevinMiddleIntegrator(
+            300 * unit.kelvin, 1.0 / unit.picosecond, 0.002 * unit.picoseconds
+        )
+        platform = mm.Platform.getPlatformByName("CUDA")  # require a real GPU platform
+        context = mm.Context(system, integrator, platform)
+
+        md_checkpoint_volume.reload()
+        resume = bool(config.get("resume")) and os.path.exists(ckpt_path)
+        if resume:
+            with open(ckpt_path, "rb") as fh:
+                context.loadCheckpoint(fh.read())
+            steps_done = int(json.load(open(meta_path)).get("steps_done", 0))
+        else:
+            context.setPositions(positions)
+            context.setVelocitiesToTemperature(300 * unit.kelvin, 12345)
+            steps_done = 0
+
+        to_run = max(0, min(chunk, total_steps - steps_done))
+        integrator.step(to_run)
+        steps_done += to_run
+        pe = context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(
+            unit.kilojoule_per_mole
+        )
+        with open(ckpt_path, "wb") as fh:
+            fh.write(context.createCheckpoint())
+        with open(meta_path, "w") as fh:
+            json.dump({"steps_done": steps_done, "total_steps": total_steps}, fh)
+        md_checkpoint_volume.commit()
+
+        progress = round(steps_done / total_steps, 4) if total_steps else 1.0
+        done = steps_done >= total_steps
+        return {
+            "status": "completed" if done else "paused",
+            "external_run_id": f"modal_md:{job_id}",
+            "runpod_job_id": f"modal_md:{job_id}",
+            "progress_fraction": progress,
+            "checkpoint_uri": f"modal-volume://twog-md-checkpoints/{job_id}/state.chk",
+            "output_payload": {
+                "provider": "modal_md_checkpoint",
+                "platform": platform.getName(),
+                "steps_done": steps_done,
+                "total_steps": total_steps,
+                "findings": (
+                    f"GPU MD ({platform.getName()}) completed {steps_done}/{total_steps} steps; "
+                    f"PE={pe:.1f} kJ/mol."
+                    if done
+                    else f"GPU MD paused at {steps_done}/{total_steps} steps (checkpointed)."
+                ),
+                "limitations": [
+                    "harmonic-well harness proves GPU + durable checkpoint infra, not a scientific MD result"
+                ],
+                "source_refs": [],
+                "metrics": {"potential_energy_kj_mol": pe, "platform": platform.getName()},
+                "signal": "neutral",
+                "confidence": 0.0,
+            },
+            "metadata": {"provider": "modal_md_checkpoint", "platform": platform.getName()},
+        }
+
+    @app.local_entrypoint()
+    def md_checkpoint() -> None:
+        """Smoke the real-GPU checkpoint/resume loop across SEPARATE invocations (durable Volume):
+        30k steps in 3 chunks -> paused 0.33, paused 0.67, completed 1.0.
+        Run: python -m modal run src/hsa_research/ingestion_bridge/modal_app.py::md_checkpoint"""
+        cfg = {"job_id": "smoke-md-ckpt", "total_steps": 30000, "steps_per_chunk": 10000, "n_particles": 2000}
+        r1 = run_md_checkpoint_remote.remote({**cfg, "resume": False})
+        print(f"chunk1: status={r1['status']} progress={r1['progress_fraction']} platform={r1['output_payload']['platform']}")
+        r2 = run_md_checkpoint_remote.remote({**cfg, "resume": True})
+        print(f"chunk2: status={r2['status']} progress={r2['progress_fraction']}")
+        r3 = run_md_checkpoint_remote.remote({**cfg, "resume": True})
+        print(f"chunk3: status={r3['status']} progress={r3['progress_fraction']} | {r3['output_payload']['findings']}")
+
     @app.local_entrypoint()
     def dock() -> None:
         """First real gnina GPU smoke: redock VEGFR2/KDR native ligand 0KF (PDB 3VO3) — gold-standard
