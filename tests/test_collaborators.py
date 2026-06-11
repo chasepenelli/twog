@@ -200,6 +200,47 @@ def test_revoked_principal_cannot_run_compute(tmp_path):
         )
 
 
+def test_collaborator_run_marks_external_collaborator_gate(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "co.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    service.register_collaborator(principal="vet1", name="Dr Vet", role="collaborator")
+    cid = _seed_validation_ready_candidate(repo, candidate_id="vr-checkout", ready=True)
+    flow = service.run_compute_validation_flow(
+        cid, _docking_queue_item(repo).queue_item_id, runner_kind="mock", submitted_by="vet1"
+    )
+    assert flow["errors"] == [], flow
+    assert flow["gate_policy"] == "external_collaborator"  # collaborator origin recorded
+    ws = repo.get_research_workspace(UUID(flow["workspace_id"]))
+    assert ws.gate_policy == "external_collaborator"
+
+
+def test_operator_run_stays_trusted_gate(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "co3.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    service.register_collaborator(principal="chase", name="Chase", role="operator")
+    cid = _seed_validation_ready_candidate(repo, candidate_id="vr-op", ready=True)
+    flow = service.run_compute_validation_flow(
+        cid, _docking_queue_item(repo).queue_item_id, runner_kind="mock", submitted_by="chase"
+    )
+    assert flow["errors"] == [], flow
+    assert flow["gate_policy"] == "trusted_operator"  # operator runs stay trusted
+
+
+def test_revoked_operator_loses_write_access(tmp_path):
+    repo = SQLiteResearchRepository(tmp_path / "revop.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    op = service.register_collaborator(principal="chase", name="Chase", role="operator")
+    cid = _seed_validation_ready_candidate(repo, candidate_id="vr-revop", ready=True)
+    flow = service.run_compute_validation_flow(cid, _docking_queue_item(repo).queue_item_id, runner_kind="mock")
+    capsule_id = UUID(flow["capsule_id"])
+    # active operator can accept...
+    service.accept_proof_capsule(capsule_id, reviewer="chase")
+    # ...but once revoked, even an operator is blocked from the write gate
+    service.revoke_collaborator(op.collaborator_id)
+    with pytest.raises(CollaboratorAccessError):
+        service.promote_proof_capsule_to_candidate(capsule_id, reviewer="chase")
+
+
 def test_unregistered_actor_still_allowed_backcompat(tmp_path):
     # the solo-operator model: an unregistered reviewer string is trusted by default
     repo = SQLiteResearchRepository(tmp_path / "gate2.sqlite3", seed=False)

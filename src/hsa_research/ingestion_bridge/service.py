@@ -1991,7 +1991,17 @@ class HSAResearchService:
             return result
         workspace = ws.workspace
         result["workspace_id"] = str(workspace.workspace_id)
-        result["gate_policy"] = workspace.gate_policy  # trusted_operator => autonomous to the write-gate
+
+        # Phase 4: mark a registered collaborator's run as external_collaborator origin so its capsule
+        # is recorded as collaborator-produced (the write gate at accept/promote is enforced by
+        # _authorize regardless). Operators / unregistered legacy actors stay trusted_operator. The
+        # explicit lease/checkout API (lease_workspace) is the separate async handoff/resume path.
+        holder = self.resolve_principal(submitted_by)
+        if holder is not None and holder.role != "operator" and workspace.gate_policy != "external_collaborator":
+            workspace = self.repository.upsert_research_workspace(
+                workspace.model_copy(update={"gate_policy": "external_collaborator"})
+            )
+        result["gate_policy"] = workspace.gate_policy
 
         job = self.create_compute_job_from_validation_queue_item(
             queue_item_id,
