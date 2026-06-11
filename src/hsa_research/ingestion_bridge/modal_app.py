@@ -246,6 +246,90 @@ if modal is not None:
             "metadata": {"provider": "modal_md_checkpoint", "platform": platform.getName()},
         }
 
+    # --- Co-folding lane: Boltz-2 protein-ligand structure + affinity on GPU ---------------------
+    # SCAFFOLD (verify on first GPU run, like gnina was): the parse/signal logic (cofolding.py) is
+    # real + tested; the boltz invocation/flags + output paths are best-effort and MUST be confirmed
+    # on the first real run. Weights are cached on a Volume so later runs skip the multi-GB download.
+    _COFOLDING_MODULE = Path(__file__).resolve().parent / "cofolding.py"
+    boltz_cache_volume = modal.Volume.from_name("twog-boltz-cache", create_if_missing=True)
+    boltz_image = (
+        modal.Image.debian_slim(python_version="3.11")
+        .pip_install("boltz")
+        .add_local_file(str(_COFOLDING_MODULE), "/root/cofolding.py")
+    )
+
+    @app.function(image=boltz_image, gpu="A100", timeout=3600, volumes={"/cache": boltz_cache_volume})
+    def run_boltz_remote(config: dict[str, Any]) -> dict[str, Any]:
+        """Co-fold a protein sequence + ligand SMILES with Boltz-2 on GPU, returning a directional
+        binding result (iptm/affinity -> supports/neutral/refutes). config: protein_sequence,
+        ligand_smiles, target, ligand_name, source_refs."""
+        import glob
+        import json
+        import os
+        import subprocess
+        import sys
+        import tempfile
+
+        sys.path.insert(0, "/root")
+        from cofolding import build_cofolding_result, parse_boltz_outputs
+
+        workdir = tempfile.mkdtemp()
+        yaml_path = os.path.join(workdir, "input.yaml")
+        with open(yaml_path, "w") as fh:
+            fh.write(
+                "version: 1\n"
+                "sequences:\n"
+                "  - protein:\n"
+                "      id: A\n"
+                f"      sequence: {config['protein_sequence']}\n"
+                "  - ligand:\n"
+                "      id: B\n"
+                f"      smiles: '{config['ligand_smiles']}'\n"
+                "properties:\n"
+                "  - affinity:\n"
+                "      binder: B\n"
+            )
+        cmd = ["boltz", "predict", yaml_path, "--use_msa_server", "--out_dir", workdir, "--cache", "/cache"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3300)
+        target = config.get("target", "target")
+        ligand = config.get("ligand_name", config.get("ligand_smiles", "ligand"))
+        pred_dirs = glob.glob(os.path.join(workdir, "boltz_results_*", "predictions", "*"))
+        if not pred_dirs:
+            # flat result (signal at top, like gnina/omics); the runner wraps it into output_payload
+            fail = build_cofolding_result(parse_boltz_outputs({}), target=target, ligand=ligand,
+                                          source_refs=config.get("source_refs"))
+            fail.update({"provider": "boltz2", "error": "no_predictions", "stderr": proc.stderr[-2000:]})
+            return fail
+        pred = pred_dirs[0]
+        conf_files = glob.glob(os.path.join(pred, "confidence_*model_0.json"))
+        aff_files = glob.glob(os.path.join(pred, "affinity_*.json"))
+        confidence = json.load(open(conf_files[0])) if conf_files else {}
+        affinity = json.load(open(aff_files[0])) if aff_files else None
+        boltz_cache_volume.commit()
+        result = build_cofolding_result(
+            parse_boltz_outputs(confidence, affinity),
+            target=target, ligand=ligand, source_refs=config.get("source_refs"),
+        )
+        result["provider"] = "boltz2"
+        return result  # flat (signal/findings/metrics at top); ModalComputeRunner wraps it
+
+    @app.local_entrypoint()
+    def cofold() -> None:
+        """First Boltz-2 GPU smoke: co-fold a short target sequence + alpelisib. Verify the
+        invocation/output paths here before trusting results.
+        Run: python -m modal run src/hsa_research/ingestion_bridge/modal_app.py::cofold"""
+        result = run_boltz_remote.remote(
+            {
+                "protein_sequence": "MELENIVANTVKLINGGQTRQVTVR",  # placeholder short peptide for the smoke
+                "ligand_smiles": "Cc1c(sc(n1)NC(=O)N2CCC[C@H]2C(=O)N)c3ccnc(c3)C(C)(C)C(F)(F)F",
+                "ligand_name": "alpelisib",
+                "target": "smoke-peptide",
+                "source_refs": ["smoke"],
+            }
+        )
+        print(f"signal={result.get('signal')} confidence={result.get('confidence')}")
+        print(result.get("findings"))
+
     @app.local_entrypoint()
     def md_checkpoint() -> None:
         """Smoke the real-GPU checkpoint/resume loop across SEPARATE invocations (durable Volume):

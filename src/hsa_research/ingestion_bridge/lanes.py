@@ -24,6 +24,30 @@ LaneGate = Callable[[Any, Any], "tuple[str | None, dict[str, Any]]"]
 
 
 @dataclass(frozen=True)
+class LaneEnvironment:
+    """Declarative spec of what a ready-to-work sandbox for a lane needs — the "open a sandbox and
+    it has everything" contract. A provisioner (e.g. a Modal Sandbox/Image + Volume) materializes
+    this; the spec itself is dependency-free so it can be inspected, diffed, and reproduced.
+
+    image_ref: container image (registry tag) the lane runs in.
+    tools: binaries expected on PATH (gnina, boltz, ...).
+    python_packages / conda_packages: deps to install.
+    data_refs: datasets to stage into the sandbox (accessions / volume paths).
+    skills: skill refs to install for an agent/collaborator working the lane.
+    gpu: GPU hint ("T4"/"A100"/"") — "" = CPU.
+    """
+
+    image_ref: str = ""
+    tools: tuple[str, ...] = ()
+    python_packages: tuple[str, ...] = ()
+    conda_packages: tuple[str, ...] = ()
+    data_refs: tuple[str, ...] = ()
+    skills: tuple[str, ...] = ()
+    gpu: str = ""
+    notes: str = ""
+
+
+@dataclass(frozen=True)
 class LaneSpec:
     lane_key: str
     validation_type: str
@@ -31,6 +55,7 @@ class LaneSpec:
     compute_profile: str = "gpu"
     supports_checkpointing: bool = False
     description: str = ""
+    environment: LaneEnvironment | None = None  # what a ready sandbox for this lane contains
 
 
 _LANES: dict[str, LaneSpec] = {}
@@ -51,3 +76,33 @@ def get_lane(validation_type: str | None) -> LaneSpec | None:
 def available_lanes() -> tuple[str, ...]:
     """Return the registered validation_types."""
     return tuple(sorted(_LANES))
+
+
+def resolve_sandbox_environment(
+    validation_type: str | None,
+    *,
+    extra_data_refs: tuple[str, ...] = (),
+    extra_skills: tuple[str, ...] = (),
+) -> dict[str, Any] | None:
+    """Resolve a concrete, inspectable sandbox manifest for a lane — "what a ready sandbox contains"
+    — merging the lane's declared environment with any candidate/workspace-specific data + skills.
+    Returns None if the lane is unregistered or has no environment. A provisioner consumes this to
+    materialize the actual sandbox (Modal Image+Volume); the manifest stays dependency-free."""
+    lane = get_lane(validation_type)
+    if lane is None or lane.environment is None:
+        return None
+    env = lane.environment
+    return {
+        "lane_key": lane.lane_key,
+        "validation_type": lane.validation_type,
+        "compute_profile": lane.compute_profile,
+        "supports_checkpointing": lane.supports_checkpointing,
+        "image_ref": env.image_ref,
+        "gpu": env.gpu,
+        "tools": list(env.tools),
+        "python_packages": list(env.python_packages),
+        "conda_packages": list(env.conda_packages),
+        "data_refs": list(dict.fromkeys([*env.data_refs, *extra_data_refs])),
+        "skills": list(dict.fromkeys([*env.skills, *extra_skills])),
+        "notes": env.notes,
+    }

@@ -287,6 +287,14 @@ def _call_modal_gnina(config: dict[str, Any]) -> dict[str, Any]:
         return run_gnina_remote.remote(config)
 
 
+def _call_modal_boltz(config: dict[str, Any]) -> dict[str, Any]:
+    """Run Boltz-2 co-folding on Modal cloud GPU (lazy import; ephemeral run). Mockable in tests."""
+    from .modal_app import app, run_boltz_remote
+
+    with app.run():
+        return run_boltz_remote.remote(config)
+
+
 def _call_modal_md_checkpoint(config: dict[str, Any]) -> dict[str, Any]:
     """Run one bounded chunk of GPU MD with durable checkpointing on Modal (lazy import; ephemeral
     run). Returns a paused/completed result with progress + checkpoint pointer. Mockable in tests."""
@@ -302,6 +310,7 @@ def _call_modal_md_checkpoint(config: dict[str, Any]) -> dict[str, Any]:
 _MODAL_LANES: dict[str, tuple[str, str]] = {
     "omics": ("omics_review", "_call_modal_omics"),
     "docking": ("docking", "_call_modal_gnina"),
+    "cofolding": ("cofolding", "_call_modal_boltz"),
 }
 
 

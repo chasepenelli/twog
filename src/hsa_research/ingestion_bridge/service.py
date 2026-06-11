@@ -260,7 +260,7 @@ from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
 from .claim_extractor import extract_claims_for_chunks
 from .compute_runners import ComputeRunnerConfigError, ComputeRunnerRequestError, get_compute_runner
-from .lanes import LaneSpec, get_lane, register_lane
+from .lanes import LaneEnvironment, LaneSpec, get_lane, register_lane, resolve_sandbox_environment
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, build_embedding_provider, select_embedding_model_from_coverage
 from .evidence_fit import assess_research_followup_ingest_evidence_fit
 from .evidence_gap_resolver import (
@@ -1782,6 +1782,26 @@ class HSAResearchService:
             }
         )
         return self.repository.upsert_research_workspace(updated)
+
+    def describe_sandbox_environment(
+        self,
+        validation_type: str,
+        *,
+        candidate_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Resolve the full "ready sandbox" manifest for a lane — image, tools, deps, GPU, skills,
+        and the data to stage — folding in a candidate's evidence refs as additional data when given.
+        This is what a provisioner needs to open a sandbox that already has (more or less) everything.
+        Returns None if the lane/environment is unregistered."""
+        extra_data: tuple[str, ...] = ()
+        if candidate_id:
+            candidate = self.repository.get_public_candidate(candidate_id)
+            if candidate is not None:
+                extra_data = tuple(candidate.evidence_refs)
+        manifest = resolve_sandbox_environment(validation_type, extra_data_refs=extra_data)
+        if manifest is not None and candidate_id:
+            manifest["candidate_id"] = candidate_id
+        return manifest
 
     def submit_proof_capsule(
         self,
@@ -14148,6 +14168,14 @@ register_lane(
         compute_profile="gpu",
         supports_checkpointing=True,
         description="Molecular dynamics / docking smoke — expert-gated (packet hash + approval).",
+        environment=LaneEnvironment(
+            image_ref="micromamba::conda-forge/openmm",  # matches modal_app md_image
+            tools=("python",),
+            conda_packages=("openmm", "cuda-version=12.4"),
+            skills=("md-setup", "openmm-checkpointing"),
+            gpu="T4",
+            notes="OpenMM CUDA platform via conda-forge; checkpoints to a durable Volume.",
+        ),
     )
 )
 register_lane(
@@ -14158,6 +14186,14 @@ register_lane(
         compute_profile="cpu",
         supports_checkpointing=False,
         description="Omics TME-deconvolution review (the PIK3CA-mutant immunosuppression crux).",
+        environment=LaneEnvironment(
+            image_ref="debian_slim+numpy",
+            python_packages=("numpy",),
+            data_refs=("GSE95183", "PMC7067513-supplement"),  # public expression + genotypes
+            skills=("omics-signature-scoring", "purity-adjustment"),
+            gpu="",
+            notes="CPU; bring the public expression matrix + parsed genotype strata.",
+        ),
     )
 )
 register_lane(
@@ -14168,5 +14204,32 @@ register_lane(
         compute_profile="gpu",
         supports_checkpointing=False,  # one dock is atomic; a screen (fan-out) checkpoints per-ligand
         description="gnina CNN docking on GPU — engagement check (e.g. mTOR inhibitor vs MTOR).",
+        environment=LaneEnvironment(
+            image_ref="gnina/gnina:v1.3.1",
+            tools=("gnina",),
+            python_packages=("rdkit",),
+            skills=("ligand-prep", "docking-pose-rmsd"),
+            gpu="A100",
+            notes="gnina binary + RDKit ligand prep; redock the native ligand to validate the pocket.",
+        ),
+    )
+)
+register_lane(
+    LaneSpec(
+        lane_key="boltz_cofolding",
+        validation_type="cofolding",
+        gate=None,  # ungated compute; rigor lives in parse_result (iptm/affinity) + promotion
+        compute_profile="gpu",
+        supports_checkpointing=False,  # one complex is atomic; a screen fans out per ligand
+        description="Boltz-2 protein-ligand co-folding on GPU — structure + affinity binding check.",
+        environment=LaneEnvironment(
+            image_ref="micromamba::boltz",
+            tools=("boltz",),
+            python_packages=("boltz",),
+            data_refs=("boltz2-weights",),  # model weights staged on a durable Volume
+            skills=("sequence-prep", "boltz-confidence-reading"),
+            gpu="A100",
+            notes="Boltz-2 weights cached on a Volume; co-fold a target sequence + ligand SMILES.",
+        ),
     )
 )
