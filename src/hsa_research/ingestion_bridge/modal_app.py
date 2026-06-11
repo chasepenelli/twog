@@ -141,9 +141,11 @@ if modal is not None:
     # harmonic-well harness (no force-field parametrization) — it proves the GPU+checkpoint
     # INFRASTRUCTURE for real, not a scientific MD result.
     md_checkpoint_volume = modal.Volume.from_name("twog-md-checkpoints", create_if_missing=True)
-    md_image = (
-        modal.Image.from_registry("nvidia/cuda:12.4.1-runtime-ubuntu22.04", add_python="3.11")
-        .pip_install("openmm")
+    # OpenMM's CUDA platform plugin ships via conda-forge (not the pip wheel) -> install with
+    # micromamba, pinning cuda-version so the CUDA-enabled build + runtime libs are present. The GPU
+    # driver is provided by the Modal host.
+    md_image = modal.Image.micromamba(python_version="3.11").micromamba_install(
+        "openmm", "cuda-version=12.4", channels=["conda-forge"]
     )
 
     @app.function(image=md_image, gpu="T4", timeout=1800, volumes={"/ckpt": md_checkpoint_volume})
