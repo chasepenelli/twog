@@ -1,0 +1,904 @@
+{
+  "version": "canine-tme-signatures-v1",
+  "species": "canis_lupus_familiaris",
+  "assemblies": {
+    "canfam3_1": "Ensembl r104",
+    "ros_cfam_1_0": "Ensembl current"
+  },
+  "coverage": {
+    "genes": 85,
+    "canfam3_1_resolved": 84,
+    "ros_cfam_1_0_resolved": 84
+  },
+  "panels": {
+    "T_cell_general": [
+      {
+        "symbol": "CD3D",
+        "canfam3_1": "ENSCAFG00000031719",
+        "ros_cfam_1_0": "ENSCAFG00845002450"
+      },
+      {
+        "symbol": "CD3E",
+        "canfam3_1": "ENSCAFG00000012802",
+        "ros_cfam_1_0": "ENSCAFG00845002518"
+      },
+      {
+        "symbol": "CD2",
+        "canfam3_1": "ENSCAFG00000009829",
+        "ros_cfam_1_0": "ENSCAFG00845028984"
+      },
+      {
+        "symbol": "CD5",
+        "canfam3_1": "ENSCAFG00000016332",
+        "ros_cfam_1_0": "ENSCAFG00845017238"
+      }
+    ],
+    "CD8_cytotoxic": [
+      {
+        "symbol": "CD8A",
+        "canfam3_1": "ENSCAFG00000007464",
+        "ros_cfam_1_0": "ENSCAFG00845013158"
+      },
+      {
+        "symbol": "CD8B",
+        "canfam3_1": "ENSCAFG00000007461",
+        "ros_cfam_1_0": "ENSCAFG00845013126"
+      },
+      {
+        "symbol": "GZMB",
+        "canfam3_1": "ENSCAFG00000025287",
+        "ros_cfam_1_0": "ENSCAFG00845008476"
+      },
+      {
+        "symbol": "GZMA",
+        "canfam3_1": "ENSCAFG00000006735",
+        "ros_cfam_1_0": "ENSCAFG00845025798"
+      },
+      {
+        "symbol": "GZMK",
+        "canfam3_1": "ENSCAFG00000018379",
+        "ros_cfam_1_0": "ENSCAFG00845011436"
+      },
+      {
+        "symbol": "PRF1",
+        "canfam3_1": "ENSCAFG00000014071",
+        "ros_cfam_1_0": "ENSCAFG00845004341"
+      },
+      {
+        "symbol": "NKG7",
+        "canfam3_1": "ENSCAFG00000042210",
+        "ros_cfam_1_0": "ENSCAFG00845004993"
+      }
+    ],
+    "CD4_helper": [
+      {
+        "symbol": "CD4",
+        "canfam3_1": "ENSCAFG00000041713",
+        "ros_cfam_1_0": "ENSCAFG00845027739"
+      },
+      {
+        "symbol": "IL7R",
+        "canfam3_1": "ENSCAFG00000018752",
+        "ros_cfam_1_0": "ENSCAFG00845000499"
+      }
+    ],
+    "Treg": [
+      {
+        "symbol": "FOXP3",
+        "canfam3_1": "ENSCAFG00000015934",
+        "ros_cfam_1_0": "ENSCAFG00845025452"
+      },
+      {
+        "symbol": "CTLA4",
+        "canfam3_1": "ENSCAFG00000012876",
+        "ros_cfam_1_0": "ENSCAFG00845018252"
+      },
+      {
+        "symbol": "IL2RA",
+        "canfam3_1": "ENSCAFG00000005210",
+        "ros_cfam_1_0": "ENSCAFG00845002030"
+      },
+      {
+        "symbol": "IKZF2",
+        "canfam3_1": "ENSCAFG00000014224",
+        "ros_cfam_1_0": "ENSCAFG00845019777"
+      }
+    ],
+    "NK": [
+      {
+        "symbol": "KLRK1",
+        "canfam3_1": "ENSCAFG00000025596",
+        "ros_cfam_1_0": "ENSCAFG00845026278"
+      },
+      {
+        "symbol": "NCR1",
+        "canfam3_1": "ENSCAFG00000023787",
+        "ros_cfam_1_0": "ENSCAFG00845002000"
+      },
+      {
+        "symbol": "KLRB1",
+        "canfam3_1": "ENSCAFG00000013612",
+        "ros_cfam_1_0": "ENSCAFG00845028140"
+      }
+    ],
+    "B_cell": [
+      {
+        "symbol": "CD19",
+        "canfam3_1": "ENSCAFG00000017303",
+        "ros_cfam_1_0": "ENSCAFG00845003588"
+      },
+      {
+        "symbol": "MS4A1",
+        "canfam3_1": "ENSCAFG00000010381",
+        "ros_cfam_1_0": "ENSCAFG00845020720"
+      },
+      {
+        "symbol": "CD79A",
+        "canfam3_1": "ENSCAFG00000004980",
+        "ros_cfam_1_0": "ENSCAFG00845001724"
+      },
+      {
+        "symbol": "CD79B",
+        "canfam3_1": "ENSCAFG00000012677",
+        "ros_cfam_1_0": "ENSCAFG00845021479"
+      }
+    ],
+    "M1_macrophage": [
+      {
+        "symbol": "CD68",
+        "canfam3_1": "ENSCAFG00000016641",
+        "ros_cfam_1_0": "ENSCAFG00845023581"
+      },
+      {
+        "symbol": "NOS2",
+        "canfam3_1": "ENSCAFG00000018642",
+        "ros_cfam_1_0": "ENSCAFG00845014798"
+      },
+      {
+        "symbol": "CD86",
+        "canfam3_1": "ENSCAFG00000011751",
+        "ros_cfam_1_0": "ENSCAFG00845022561"
+      },
+      {
+        "symbol": "IL1B",
+        "canfam3_1": "ENSCAFG00000007249",
+        "ros_cfam_1_0": "ENSCAFG00845011661"
+      }
+    ],
+    "M2_TAM": [
+      {
+        "symbol": "CD163",
+        "canfam3_1": "ENSCAFG00000013968",
+        "ros_cfam_1_0": "ENSCAFG00845023298"
+      },
+      {
+        "symbol": "MRC1",
+        "canfam3_1": "ENSCAFG00000004496",
+        "ros_cfam_1_0": "ENSCAFG00845013649"
+      },
+      {
+        "symbol": "MSR1",
+        "canfam3_1": "ENSCAFG00000006830",
+        "ros_cfam_1_0": "ENSCAFG00845014323"
+      },
+      {
+        "symbol": "CSF1R",
+        "canfam3_1": "ENSCAFG00000018219",
+        "ros_cfam_1_0": "ENSCAFG00845008395"
+      }
+    ],
+    "dendritic": [
+      {
+        "symbol": "ITGAX",
+        "canfam3_1": "ENSCAFG00000016881",
+        "ros_cfam_1_0": "ENSCAFG00845010970"
+      },
+      {
+        "symbol": "BATF3",
+        "canfam3_1": "ENSCAFG00000032161",
+        "ros_cfam_1_0": "ENSCAFG00845003785"
+      },
+      {
+        "symbol": "FLT3",
+        "canfam3_1": "ENSCAFG00000006716",
+        "ros_cfam_1_0": "ENSCAFG00845024412"
+      }
+    ],
+    "IFNg_response": [
+      {
+        "symbol": "IFNG",
+        "canfam3_1": "ENSCAFG00000000408",
+        "ros_cfam_1_0": "ENSCAFG00845013680"
+      },
+      {
+        "symbol": "STAT1",
+        "canfam3_1": "ENSCAFG00000048528",
+        "ros_cfam_1_0": "ENSCAFG00845025854"
+      },
+      {
+        "symbol": "IRF1",
+        "canfam3_1": "ENSCAFG00000000851",
+        "ros_cfam_1_0": "ENSCAFG00845010474"
+      },
+      {
+        "symbol": "GBP1",
+        "canfam3_1": "ENSCAFG00000020204",
+        "ros_cfam_1_0": "ENSCAFG00845018127"
+      },
+      {
+        "symbol": "CXCL9",
+        "canfam3_1": null,
+        "ros_cfam_1_0": null
+      },
+      {
+        "symbol": "CXCL10",
+        "canfam3_1": "ENSCAFG00000008584",
+        "ros_cfam_1_0": "ENSCAFG00845029862"
+      },
+      {
+        "symbol": "CXCL11",
+        "canfam3_1": "ENSCAFG00000045518",
+        "ros_cfam_1_0": "ENSCAFG00845029883"
+      },
+      {
+        "symbol": "IDO1",
+        "canfam3_1": "ENSCAFG00000005750",
+        "ros_cfam_1_0": "ENSCAFG00845009259"
+      },
+      {
+        "symbol": "TAP1",
+        "canfam3_1": "ENSCAFG00000000832",
+        "ros_cfam_1_0": "ENSCAFG00845018353"
+      },
+      {
+        "symbol": "PSMB9",
+        "canfam3_1": "ENSCAFG00000030725",
+        "ros_cfam_1_0": "ENSCAFG00845018485"
+      },
+      {
+        "symbol": "B2M",
+        "canfam3_1": "ENSCAFG00000013633",
+        "ros_cfam_1_0": "ENSCAFG00845028622"
+      },
+      {
+        "symbol": "JAK2",
+        "canfam3_1": "ENSCAFG00000002102",
+        "ros_cfam_1_0": "ENSCAFG00845015728"
+      }
+    ],
+    "checkpoint_exhaustion": [
+      {
+        "symbol": "PDCD1",
+        "canfam3_1": "ENSCAFG00000013184",
+        "ros_cfam_1_0": "ENSCAFG00845024308"
+      },
+      {
+        "symbol": "LAG3",
+        "canfam3_1": "ENSCAFG00000014675",
+        "ros_cfam_1_0": "ENSCAFG00845027788"
+      },
+      {
+        "symbol": "HAVCR2",
+        "canfam3_1": "ENSCAFG00000032010",
+        "ros_cfam_1_0": "ENSCAFG00845002443"
+      },
+      {
+        "symbol": "CTLA4",
+        "canfam3_1": "ENSCAFG00000012876",
+        "ros_cfam_1_0": "ENSCAFG00845018252"
+      },
+      {
+        "symbol": "CD274",
+        "canfam3_1": "ENSCAFG00000002120",
+        "ros_cfam_1_0": "ENSCAFG00845016107"
+      },
+      {
+        "symbol": "TIGIT",
+        "canfam3_1": "ENSCAFG00000010817",
+        "ros_cfam_1_0": "ENSCAFG00845015083"
+      }
+    ],
+    "immunosuppressive_cytokines": [
+      {
+        "symbol": "IL10",
+        "canfam3_1": "ENSCAFG00000011443",
+        "ros_cfam_1_0": "ENSCAFG00845001289"
+      },
+      {
+        "symbol": "TGFB1",
+        "canfam3_1": "ENSCAFG00000005014",
+        "ros_cfam_1_0": "ENSCAFG00845002395"
+      },
+      {
+        "symbol": "TGFB2",
+        "canfam3_1": "ENSCAFG00000010815",
+        "ros_cfam_1_0": "ENSCAFG00845028176"
+      },
+      {
+        "symbol": "CCL2",
+        "canfam3_1": "ENSCAFG00000018348",
+        "ros_cfam_1_0": "ENSCAFG00845011375"
+      },
+      {
+        "symbol": "IL6",
+        "canfam3_1": "ENSCAFG00000002733",
+        "ros_cfam_1_0": "ENSCAFG00845008825"
+      }
+    ],
+    "fibroblast_stroma": [
+      {
+        "symbol": "COL1A1",
+        "canfam3_1": "ENSCAFG00000017018",
+        "ros_cfam_1_0": "ENSCAFG00845012504"
+      },
+      {
+        "symbol": "COL3A1",
+        "canfam3_1": "ENSCAFG00000014812",
+        "ros_cfam_1_0": "ENSCAFG00845019819"
+      },
+      {
+        "symbol": "PDGFRB",
+        "canfam3_1": "ENSCAFG00000018214",
+        "ros_cfam_1_0": "ENSCAFG00845008241"
+      },
+      {
+        "symbol": "ACTA2",
+        "canfam3_1": "ENSCAFG00000015708",
+        "ros_cfam_1_0": "ENSCAFG00845029801"
+      },
+      {
+        "symbol": "DCN",
+        "canfam3_1": "ENSCAFG00000006142",
+        "ros_cfam_1_0": "ENSCAFG00845019761"
+      },
+      {
+        "symbol": "LUM",
+        "canfam3_1": "ENSCAFG00000006138",
+        "ros_cfam_1_0": "ENSCAFG00845019701"
+      },
+      {
+        "symbol": "FAP",
+        "canfam3_1": "ENSCAFG00000010387",
+        "ros_cfam_1_0": "ENSCAFG00845030244"
+      },
+      {
+        "symbol": "THY1",
+        "canfam3_1": "ENSCAFG00000029265",
+        "ros_cfam_1_0": "ENSCAFG00845014436"
+      }
+    ],
+    "endothelial": [
+      {
+        "symbol": "PECAM1",
+        "canfam3_1": "ENSCAFG00000011740",
+        "ros_cfam_1_0": "ENSCAFG00845022888"
+      },
+      {
+        "symbol": "VWF",
+        "canfam3_1": "ENSCAFG00000015228",
+        "ros_cfam_1_0": "ENSCAFG00845029798"
+      },
+      {
+        "symbol": "CDH5",
+        "canfam3_1": "ENSCAFG00000020413",
+        "ros_cfam_1_0": "ENSCAFG00845012097"
+      },
+      {
+        "symbol": "KDR",
+        "canfam3_1": "ENSCAFG00000002079",
+        "ros_cfam_1_0": "ENSCAFG00845012083"
+      },
+      {
+        "symbol": "TEK",
+        "canfam3_1": "ENSCAFG00000001713",
+        "ros_cfam_1_0": "ENSCAFG00845018055"
+      },
+      {
+        "symbol": "FLT1",
+        "canfam3_1": "ENSCAFG00000006701",
+        "ros_cfam_1_0": "ENSCAFG00845023188"
+      }
+    ],
+    "angiogenesis": [
+      {
+        "symbol": "VEGFA",
+        "canfam3_1": "ENSCAFG00000001938",
+        "ros_cfam_1_0": "ENSCAFG00845010533"
+      },
+      {
+        "symbol": "ANGPT2",
+        "canfam3_1": "ENSCAFG00000008597",
+        "ros_cfam_1_0": "ENSCAFG00845022531"
+      },
+      {
+        "symbol": "DLL4",
+        "canfam3_1": "ENSCAFG00000009401",
+        "ros_cfam_1_0": "ENSCAFG00845029137"
+      },
+      {
+        "symbol": "ESM1",
+        "canfam3_1": "ENSCAFG00000018381",
+        "ros_cfam_1_0": "ENSCAFG00845011480"
+      },
+      {
+        "symbol": "CD34",
+        "canfam3_1": "ENSCAFG00000011722",
+        "ros_cfam_1_0": "ENSCAFG00845002498"
+      },
+      {
+        "symbol": "NOTCH4",
+        "canfam3_1": "ENSCAFG00000000791",
+        "ros_cfam_1_0": "ENSCAFG00845016542"
+      }
+    ],
+    "proliferation": [
+      {
+        "symbol": "MKI67",
+        "canfam3_1": "ENSCAFG00000013255",
+        "ros_cfam_1_0": "ENSCAFG00845028130"
+      },
+      {
+        "symbol": "PCNA",
+        "canfam3_1": "ENSCAFG00000006030",
+        "ros_cfam_1_0": "ENSCAFG00845028229"
+      },
+      {
+        "symbol": "TOP2A",
+        "canfam3_1": "ENSCAFG00000016090",
+        "ros_cfam_1_0": "ENSCAFG00845008263"
+      },
+      {
+        "symbol": "CCNB1",
+        "canfam3_1": "ENSCAFG00000007705",
+        "ros_cfam_1_0": "ENSCAFG00845011909"
+      },
+      {
+        "symbol": "CCNA2",
+        "canfam3_1": "ENSCAFG00000004133",
+        "ros_cfam_1_0": "ENSCAFG00845021203"
+      },
+      {
+        "symbol": "BUB1",
+        "canfam3_1": "ENSCAFG00000007062",
+        "ros_cfam_1_0": "ENSCAFG00845008495"
+      },
+      {
+        "symbol": "FOXM1",
+        "canfam3_1": "ENSCAFG00000015642",
+        "ros_cfam_1_0": "ENSCAFG00845024978"
+      },
+      {
+        "symbol": "CDK1",
+        "canfam3_1": "ENSCAFG00000012904",
+        "ros_cfam_1_0": "ENSCAFG00845002973"
+      }
+    ]
+  },
+  "gene_index": {
+    "ACTA2": {
+      "symbol": "ACTA2",
+      "canfam3_1": "ENSCAFG00000015708",
+      "ros_cfam_1_0": "ENSCAFG00845029801"
+    },
+    "ANGPT2": {
+      "symbol": "ANGPT2",
+      "canfam3_1": "ENSCAFG00000008597",
+      "ros_cfam_1_0": "ENSCAFG00845022531"
+    },
+    "B2M": {
+      "symbol": "B2M",
+      "canfam3_1": "ENSCAFG00000013633",
+      "ros_cfam_1_0": "ENSCAFG00845028622"
+    },
+    "BATF3": {
+      "symbol": "BATF3",
+      "canfam3_1": "ENSCAFG00000032161",
+      "ros_cfam_1_0": "ENSCAFG00845003785"
+    },
+    "BUB1": {
+      "symbol": "BUB1",
+      "canfam3_1": "ENSCAFG00000007062",
+      "ros_cfam_1_0": "ENSCAFG00845008495"
+    },
+    "CCL2": {
+      "symbol": "CCL2",
+      "canfam3_1": "ENSCAFG00000018348",
+      "ros_cfam_1_0": "ENSCAFG00845011375"
+    },
+    "CCNA2": {
+      "symbol": "CCNA2",
+      "canfam3_1": "ENSCAFG00000004133",
+      "ros_cfam_1_0": "ENSCAFG00845021203"
+    },
+    "CCNB1": {
+      "symbol": "CCNB1",
+      "canfam3_1": "ENSCAFG00000007705",
+      "ros_cfam_1_0": "ENSCAFG00845011909"
+    },
+    "CD163": {
+      "symbol": "CD163",
+      "canfam3_1": "ENSCAFG00000013968",
+      "ros_cfam_1_0": "ENSCAFG00845023298"
+    },
+    "CD19": {
+      "symbol": "CD19",
+      "canfam3_1": "ENSCAFG00000017303",
+      "ros_cfam_1_0": "ENSCAFG00845003588"
+    },
+    "CD2": {
+      "symbol": "CD2",
+      "canfam3_1": "ENSCAFG00000009829",
+      "ros_cfam_1_0": "ENSCAFG00845028984"
+    },
+    "CD274": {
+      "symbol": "CD274",
+      "canfam3_1": "ENSCAFG00000002120",
+      "ros_cfam_1_0": "ENSCAFG00845016107"
+    },
+    "CD34": {
+      "symbol": "CD34",
+      "canfam3_1": "ENSCAFG00000011722",
+      "ros_cfam_1_0": "ENSCAFG00845002498"
+    },
+    "CD3D": {
+      "symbol": "CD3D",
+      "canfam3_1": "ENSCAFG00000031719",
+      "ros_cfam_1_0": "ENSCAFG00845002450"
+    },
+    "CD3E": {
+      "symbol": "CD3E",
+      "canfam3_1": "ENSCAFG00000012802",
+      "ros_cfam_1_0": "ENSCAFG00845002518"
+    },
+    "CD4": {
+      "symbol": "CD4",
+      "canfam3_1": "ENSCAFG00000041713",
+      "ros_cfam_1_0": "ENSCAFG00845027739"
+    },
+    "CD5": {
+      "symbol": "CD5",
+      "canfam3_1": "ENSCAFG00000016332",
+      "ros_cfam_1_0": "ENSCAFG00845017238"
+    },
+    "CD68": {
+      "symbol": "CD68",
+      "canfam3_1": "ENSCAFG00000016641",
+      "ros_cfam_1_0": "ENSCAFG00845023581"
+    },
+    "CD79A": {
+      "symbol": "CD79A",
+      "canfam3_1": "ENSCAFG00000004980",
+      "ros_cfam_1_0": "ENSCAFG00845001724"
+    },
+    "CD79B": {
+      "symbol": "CD79B",
+      "canfam3_1": "ENSCAFG00000012677",
+      "ros_cfam_1_0": "ENSCAFG00845021479"
+    },
+    "CD86": {
+      "symbol": "CD86",
+      "canfam3_1": "ENSCAFG00000011751",
+      "ros_cfam_1_0": "ENSCAFG00845022561"
+    },
+    "CD8A": {
+      "symbol": "CD8A",
+      "canfam3_1": "ENSCAFG00000007464",
+      "ros_cfam_1_0": "ENSCAFG00845013158"
+    },
+    "CD8B": {
+      "symbol": "CD8B",
+      "canfam3_1": "ENSCAFG00000007461",
+      "ros_cfam_1_0": "ENSCAFG00845013126"
+    },
+    "CDH5": {
+      "symbol": "CDH5",
+      "canfam3_1": "ENSCAFG00000020413",
+      "ros_cfam_1_0": "ENSCAFG00845012097"
+    },
+    "CDK1": {
+      "symbol": "CDK1",
+      "canfam3_1": "ENSCAFG00000012904",
+      "ros_cfam_1_0": "ENSCAFG00845002973"
+    },
+    "COL1A1": {
+      "symbol": "COL1A1",
+      "canfam3_1": "ENSCAFG00000017018",
+      "ros_cfam_1_0": "ENSCAFG00845012504"
+    },
+    "COL3A1": {
+      "symbol": "COL3A1",
+      "canfam3_1": "ENSCAFG00000014812",
+      "ros_cfam_1_0": "ENSCAFG00845019819"
+    },
+    "CSF1R": {
+      "symbol": "CSF1R",
+      "canfam3_1": "ENSCAFG00000018219",
+      "ros_cfam_1_0": "ENSCAFG00845008395"
+    },
+    "CTLA4": {
+      "symbol": "CTLA4",
+      "canfam3_1": "ENSCAFG00000012876",
+      "ros_cfam_1_0": "ENSCAFG00845018252"
+    },
+    "CXCL10": {
+      "symbol": "CXCL10",
+      "canfam3_1": "ENSCAFG00000008584",
+      "ros_cfam_1_0": "ENSCAFG00845029862"
+    },
+    "CXCL11": {
+      "symbol": "CXCL11",
+      "canfam3_1": "ENSCAFG00000045518",
+      "ros_cfam_1_0": "ENSCAFG00845029883"
+    },
+    "CXCL9": {
+      "symbol": "CXCL9",
+      "canfam3_1": null,
+      "ros_cfam_1_0": null
+    },
+    "DCN": {
+      "symbol": "DCN",
+      "canfam3_1": "ENSCAFG00000006142",
+      "ros_cfam_1_0": "ENSCAFG00845019761"
+    },
+    "DLL4": {
+      "symbol": "DLL4",
+      "canfam3_1": "ENSCAFG00000009401",
+      "ros_cfam_1_0": "ENSCAFG00845029137"
+    },
+    "ESM1": {
+      "symbol": "ESM1",
+      "canfam3_1": "ENSCAFG00000018381",
+      "ros_cfam_1_0": "ENSCAFG00845011480"
+    },
+    "FAP": {
+      "symbol": "FAP",
+      "canfam3_1": "ENSCAFG00000010387",
+      "ros_cfam_1_0": "ENSCAFG00845030244"
+    },
+    "FLT1": {
+      "symbol": "FLT1",
+      "canfam3_1": "ENSCAFG00000006701",
+      "ros_cfam_1_0": "ENSCAFG00845023188"
+    },
+    "FLT3": {
+      "symbol": "FLT3",
+      "canfam3_1": "ENSCAFG00000006716",
+      "ros_cfam_1_0": "ENSCAFG00845024412"
+    },
+    "FOXM1": {
+      "symbol": "FOXM1",
+      "canfam3_1": "ENSCAFG00000015642",
+      "ros_cfam_1_0": "ENSCAFG00845024978"
+    },
+    "FOXP3": {
+      "symbol": "FOXP3",
+      "canfam3_1": "ENSCAFG00000015934",
+      "ros_cfam_1_0": "ENSCAFG00845025452"
+    },
+    "GBP1": {
+      "symbol": "GBP1",
+      "canfam3_1": "ENSCAFG00000020204",
+      "ros_cfam_1_0": "ENSCAFG00845018127"
+    },
+    "GZMA": {
+      "symbol": "GZMA",
+      "canfam3_1": "ENSCAFG00000006735",
+      "ros_cfam_1_0": "ENSCAFG00845025798"
+    },
+    "GZMB": {
+      "symbol": "GZMB",
+      "canfam3_1": "ENSCAFG00000025287",
+      "ros_cfam_1_0": "ENSCAFG00845008476"
+    },
+    "GZMK": {
+      "symbol": "GZMK",
+      "canfam3_1": "ENSCAFG00000018379",
+      "ros_cfam_1_0": "ENSCAFG00845011436"
+    },
+    "HAVCR2": {
+      "symbol": "HAVCR2",
+      "canfam3_1": "ENSCAFG00000032010",
+      "ros_cfam_1_0": "ENSCAFG00845002443"
+    },
+    "IDO1": {
+      "symbol": "IDO1",
+      "canfam3_1": "ENSCAFG00000005750",
+      "ros_cfam_1_0": "ENSCAFG00845009259"
+    },
+    "IFNG": {
+      "symbol": "IFNG",
+      "canfam3_1": "ENSCAFG00000000408",
+      "ros_cfam_1_0": "ENSCAFG00845013680"
+    },
+    "IKZF2": {
+      "symbol": "IKZF2",
+      "canfam3_1": "ENSCAFG00000014224",
+      "ros_cfam_1_0": "ENSCAFG00845019777"
+    },
+    "IL10": {
+      "symbol": "IL10",
+      "canfam3_1": "ENSCAFG00000011443",
+      "ros_cfam_1_0": "ENSCAFG00845001289"
+    },
+    "IL1B": {
+      "symbol": "IL1B",
+      "canfam3_1": "ENSCAFG00000007249",
+      "ros_cfam_1_0": "ENSCAFG00845011661"
+    },
+    "IL2RA": {
+      "symbol": "IL2RA",
+      "canfam3_1": "ENSCAFG00000005210",
+      "ros_cfam_1_0": "ENSCAFG00845002030"
+    },
+    "IL6": {
+      "symbol": "IL6",
+      "canfam3_1": "ENSCAFG00000002733",
+      "ros_cfam_1_0": "ENSCAFG00845008825"
+    },
+    "IL7R": {
+      "symbol": "IL7R",
+      "canfam3_1": "ENSCAFG00000018752",
+      "ros_cfam_1_0": "ENSCAFG00845000499"
+    },
+    "IRF1": {
+      "symbol": "IRF1",
+      "canfam3_1": "ENSCAFG00000000851",
+      "ros_cfam_1_0": "ENSCAFG00845010474"
+    },
+    "ITGAX": {
+      "symbol": "ITGAX",
+      "canfam3_1": "ENSCAFG00000016881",
+      "ros_cfam_1_0": "ENSCAFG00845010970"
+    },
+    "JAK2": {
+      "symbol": "JAK2",
+      "canfam3_1": "ENSCAFG00000002102",
+      "ros_cfam_1_0": "ENSCAFG00845015728"
+    },
+    "KDR": {
+      "symbol": "KDR",
+      "canfam3_1": "ENSCAFG00000002079",
+      "ros_cfam_1_0": "ENSCAFG00845012083"
+    },
+    "KLRB1": {
+      "symbol": "KLRB1",
+      "canfam3_1": "ENSCAFG00000013612",
+      "ros_cfam_1_0": "ENSCAFG00845028140"
+    },
+    "KLRK1": {
+      "symbol": "KLRK1",
+      "canfam3_1": "ENSCAFG00000025596",
+      "ros_cfam_1_0": "ENSCAFG00845026278"
+    },
+    "LAG3": {
+      "symbol": "LAG3",
+      "canfam3_1": "ENSCAFG00000014675",
+      "ros_cfam_1_0": "ENSCAFG00845027788"
+    },
+    "LUM": {
+      "symbol": "LUM",
+      "canfam3_1": "ENSCAFG00000006138",
+      "ros_cfam_1_0": "ENSCAFG00845019701"
+    },
+    "MKI67": {
+      "symbol": "MKI67",
+      "canfam3_1": "ENSCAFG00000013255",
+      "ros_cfam_1_0": "ENSCAFG00845028130"
+    },
+    "MRC1": {
+      "symbol": "MRC1",
+      "canfam3_1": "ENSCAFG00000004496",
+      "ros_cfam_1_0": "ENSCAFG00845013649"
+    },
+    "MS4A1": {
+      "symbol": "MS4A1",
+      "canfam3_1": "ENSCAFG00000010381",
+      "ros_cfam_1_0": "ENSCAFG00845020720"
+    },
+    "MSR1": {
+      "symbol": "MSR1",
+      "canfam3_1": "ENSCAFG00000006830",
+      "ros_cfam_1_0": "ENSCAFG00845014323"
+    },
+    "NCR1": {
+      "symbol": "NCR1",
+      "canfam3_1": "ENSCAFG00000023787",
+      "ros_cfam_1_0": "ENSCAFG00845002000"
+    },
+    "NKG7": {
+      "symbol": "NKG7",
+      "canfam3_1": "ENSCAFG00000042210",
+      "ros_cfam_1_0": "ENSCAFG00845004993"
+    },
+    "NOS2": {
+      "symbol": "NOS2",
+      "canfam3_1": "ENSCAFG00000018642",
+      "ros_cfam_1_0": "ENSCAFG00845014798"
+    },
+    "NOTCH4": {
+      "symbol": "NOTCH4",
+      "canfam3_1": "ENSCAFG00000000791",
+      "ros_cfam_1_0": "ENSCAFG00845016542"
+    },
+    "PCNA": {
+      "symbol": "PCNA",
+      "canfam3_1": "ENSCAFG00000006030",
+      "ros_cfam_1_0": "ENSCAFG00845028229"
+    },
+    "PDCD1": {
+      "symbol": "PDCD1",
+      "canfam3_1": "ENSCAFG00000013184",
+      "ros_cfam_1_0": "ENSCAFG00845024308"
+    },
+    "PDGFRB": {
+      "symbol": "PDGFRB",
+      "canfam3_1": "ENSCAFG00000018214",
+      "ros_cfam_1_0": "ENSCAFG00845008241"
+    },
+    "PECAM1": {
+      "symbol": "PECAM1",
+      "canfam3_1": "ENSCAFG00000011740",
+      "ros_cfam_1_0": "ENSCAFG00845022888"
+    },
+    "PRF1": {
+      "symbol": "PRF1",
+      "canfam3_1": "ENSCAFG00000014071",
+      "ros_cfam_1_0": "ENSCAFG00845004341"
+    },
+    "PSMB9": {
+      "symbol": "PSMB9",
+      "canfam3_1": "ENSCAFG00000030725",
+      "ros_cfam_1_0": "ENSCAFG00845018485"
+    },
+    "STAT1": {
+      "symbol": "STAT1",
+      "canfam3_1": "ENSCAFG00000048528",
+      "ros_cfam_1_0": "ENSCAFG00845025854"
+    },
+    "TAP1": {
+      "symbol": "TAP1",
+      "canfam3_1": "ENSCAFG00000000832",
+      "ros_cfam_1_0": "ENSCAFG00845018353"
+    },
+    "TEK": {
+      "symbol": "TEK",
+      "canfam3_1": "ENSCAFG00000001713",
+      "ros_cfam_1_0": "ENSCAFG00845018055"
+    },
+    "TGFB1": {
+      "symbol": "TGFB1",
+      "canfam3_1": "ENSCAFG00000005014",
+      "ros_cfam_1_0": "ENSCAFG00845002395"
+    },
+    "TGFB2": {
+      "symbol": "TGFB2",
+      "canfam3_1": "ENSCAFG00000010815",
+      "ros_cfam_1_0": "ENSCAFG00845028176"
+    },
+    "THY1": {
+      "symbol": "THY1",
+      "canfam3_1": "ENSCAFG00000029265",
+      "ros_cfam_1_0": "ENSCAFG00845014436"
+    },
+    "TIGIT": {
+      "symbol": "TIGIT",
+      "canfam3_1": "ENSCAFG00000010817",
+      "ros_cfam_1_0": "ENSCAFG00845015083"
+    },
+    "TOP2A": {
+      "symbol": "TOP2A",
+      "canfam3_1": "ENSCAFG00000016090",
+      "ros_cfam_1_0": "ENSCAFG00845008263"
+    },
+    "VEGFA": {
+      "symbol": "VEGFA",
+      "canfam3_1": "ENSCAFG00000001938",
+      "ros_cfam_1_0": "ENSCAFG00845010533"
+    },
+    "VWF": {
+      "symbol": "VWF",
+      "canfam3_1": "ENSCAFG00000015228",
+      "ros_cfam_1_0": "ENSCAFG00845029798"
+    }
+  }
+}

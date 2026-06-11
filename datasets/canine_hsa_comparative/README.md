@@ -35,8 +35,9 @@ others can build on it.
 | file | what it is |
 |---|---|
 | `canine_samples.csv` | per-sample harmonized table: exome_id ↔ rnaseq_id ↔ PIK3CA/TP53 status ↔ archive IDs ↔ expression source |
-| `signatures.json` | 7 immune/endothelial signature panels (Treg, M2-TAM, cytotoxic, IFN-γ, endothelial, angiogenesis, cytokines) with **canine CanFam3.1 Ensembl IDs** per human symbol |
-| `build_dataset.py` | rebuilds the artifacts from the upstream sources (reproducible) |
+| `signatures.json` | the 7 panels used by the crux, with canine CanFam3.1 Ensembl IDs |
+| `canine_tme_signature_registry.json` | **versioned canine immune/TME marker registry** — 16 panels / 85 genes, each resolved to BOTH canine assemblies (CanFam3.1 `ENSCAFG00000…` and ROS_Cfam_1.0 `ENSCAFG00845…`) so it joins old *and* new datasets |
+| `build_dataset.py` / `build_signature_registry.py` | reproducible builders |
 
 `canine_samples.csv` columns: `exome_id` (HSA_n, Megquier WES), `rnaseq_id` (GSE95183 matrix column;
 empty = raw-SRA-only), `pik3ca`/`tp53` (`mutant`/`wt` from exome calls), `mutated_examined_genes`,
