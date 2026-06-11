@@ -3754,7 +3754,96 @@ class HSAResearchService:
             dagster_run_id=dagster_run_id,
             metadata=submission["metadata"] | gate_metadata | {"submission_mode": "live"},
         )
+        # Phase 5: persist checkpoint affordances a provider reports (progress + restart pointers),
+        # so a paused job can be resumed from where it stopped (the "resume a 40% session" model).
+        if updated is not None and any(
+            k in submission for k in ("progress_fraction", "checkpoint_uri", "checkpoint_artifact_id", "checkpoint_state")
+        ):
+            ckpt_meta = (
+                {"checkpoint_state": submission["checkpoint_state"]} if "checkpoint_state" in submission else {}
+            )
+            updated = self.repository.upsert_compute_job(
+                updated.model_copy(
+                    update={
+                        "progress_fraction": submission.get("progress_fraction", updated.progress_fraction),
+                        "checkpoint_uri": submission.get("checkpoint_uri", updated.checkpoint_uri),
+                        "checkpoint_artifact_id": submission.get("checkpoint_artifact_id", updated.checkpoint_artifact_id),
+                        "metadata": {**updated.metadata, **ckpt_meta},
+                    }
+                )
+            )
         return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
+
+    # --- Phase 5: compute checkpoint / pause / resume --------------------------------------------
+    def pause_compute_job(
+        self,
+        compute_job_id: UUID,
+        *,
+        progress_fraction: float,
+        checkpoint_uri: str | None = None,
+        checkpoint_artifact_id: UUID | None = None,
+        checkpoint_state: dict[str, Any] | None = None,
+        principal: str | None = None,
+    ) -> ComputeJobRecord | None:
+        """Record a checkpoint and pause a running job — the manual "wrap up a 40% session" path
+        (for externally-run jobs). Stores progress + restart pointers durably so the job can be
+        resumed (by the same or a different principal). Requires submit_compute scope. Returns None
+        if the job does not exist."""
+        self._authorize(principal, "submit_compute")
+        record = self.repository.get_compute_job(compute_job_id)
+        if record is None:
+            return None
+        meta = {**record.metadata, "paused_by": principal, "paused_at": datetime.now(UTC).isoformat()}
+        if checkpoint_state is not None:
+            meta["checkpoint_state"] = checkpoint_state
+        updated = record.model_copy(
+            update={
+                "status": "paused",
+                "progress_fraction": max(0.0, min(1.0, float(progress_fraction))),
+                "checkpoint_uri": checkpoint_uri or record.checkpoint_uri,
+                "checkpoint_artifact_id": checkpoint_artifact_id or record.checkpoint_artifact_id,
+                "resume_from_checkpoint": False,
+                "metadata": meta,
+            }
+        )
+        return self.repository.upsert_compute_job(updated)
+
+    def resume_compute_job(
+        self,
+        compute_job_id: UUID,
+        *,
+        principal: str | None = None,
+    ) -> ComputeJobRecord | None:
+        """Resume a paused, checkpointed job — continuing from its checkpoint. This is the handoff
+        point: a different principal may pick the job back up, but for a collaborator-gated workspace
+        they must hold the workspace lease (operators bypass). Requires submit_compute scope. Raises
+        ValueError if the job is not paused; WorkspaceLeaseError if the resumer lacks the lease."""
+        self._authorize(principal, "submit_compute")
+        record = self.repository.get_compute_job(compute_job_id)
+        if record is None:
+            return None
+        if record.status != "paused":
+            raise ValueError(f"compute_job_not_paused:{record.status}")
+        # lease/handoff gate for collaborator-owned workspaces
+        if record.workspace_id:
+            ws = self.repository.get_research_workspace(record.workspace_id)
+            if ws is not None and ws.gate_policy == "external_collaborator" and self.workspace_lease_active(ws):
+                holder = self.resolve_principal(principal)
+                is_operator = holder is not None and holder.role == "operator"
+                if ws.leased_by != principal and not is_operator:
+                    raise WorkspaceLeaseError(
+                        f"resume requires the workspace lease (held by '{ws.leased_by}'); "
+                        "check out the workspace first"
+                    )
+        resumed = record.model_copy(
+            update={
+                "status": "queued",  # re-enter the submittable state
+                "resume_from_checkpoint": True,
+                "metadata": {**record.metadata, "resumed_by": principal, "resumed_at": datetime.now(UTC).isoformat()},
+            }
+        )
+        self.repository.upsert_compute_job(resumed)
+        return self.submit_compute_job(compute_job_id, dry_run=False)
 
     def _md_live_submit_gate(self, record: ComputeJobRecord) -> tuple[str | None, dict[str, Any]]:
         try:

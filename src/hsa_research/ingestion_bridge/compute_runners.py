@@ -207,6 +207,66 @@ class LocalOmicsComputeRunner:
 register_compute_runner("local", lambda: LocalOmicsComputeRunner())
 
 
+class CheckpointingComputeRunner:
+    """Deterministic provider that proves the checkpoint/pause/resume loop (runner_kind="checkpoint")
+    WITHOUT a GPU — the analogue of MockComputeRunner for long, resumable jobs.
+
+    A long job advances by a fixed fraction per submit (config 'checkpoint' -> {"step": 0.34}). While
+    progress < 1.0 it returns status="paused" plus a checkpoint (progress_fraction + checkpoint_uri +
+    inline restart state, simulating durable storage). On the next submit, if resume_from_checkpoint
+    is set it continues from record.progress_fraction; otherwise it starts fresh at 0. When progress
+    reaches 1.0 it returns a "completed" compute-artifact result. No real computation — this exists to
+    prove the mechanism (and the lease-handoff "resume a 40% session" model) end-to-end."""
+
+    def submit(self, record: ComputeJobRecord) -> dict[str, Any]:
+        config = _extract_lane_config(record, "checkpoint") or {}
+        step = float(config.get("step", 0.34))
+        run_id = f"checkpoint:{record.compute_job_id}"
+        prev = (record.progress_fraction or 0.0) if record.resume_from_checkpoint else 0.0
+        progress = round(min(1.0, prev + step), 4)
+        if progress < 1.0:
+            return {
+                "status": "paused",
+                "external_run_id": run_id,
+                "runpod_job_id": run_id,
+                "output_payload": {"provider": "checkpoint", "progress": progress, "partial": True},
+                "progress_fraction": progress,
+                "checkpoint_uri": f"memory://checkpoint/{record.compute_job_id}/{progress}",
+                "checkpoint_state": {"progress": progress, "resumed_from": prev},
+                "metadata": {"provider": "checkpoint", "paused_at_fraction": progress},
+            }
+        return {
+            "status": "completed",
+            "external_run_id": run_id,
+            "runpod_job_id": run_id,
+            "output_payload": {
+                "provider": "checkpoint",
+                "findings": f"Checkpointed job '{record.title}' completed after resuming from {prev:.2f}.",
+                "limitations": ["Checkpoint mock provider; not scientifically meaningful."],
+                "source_refs": [],
+                "metrics": {"checkpointed": True, "final_progress": 1.0},
+                "signal": "neutral",
+                "confidence": 0.0,
+            },
+            "progress_fraction": 1.0,
+            "metadata": {"provider": "checkpoint"},
+        }
+
+    def poll(self, record: ComputeJobRecord) -> dict[str, Any]:
+        return {
+            "status": record.status,
+            "output_payload": record.output_payload or {"provider": "checkpoint"},
+            "last_error": None,
+            "metadata": {"provider": "checkpoint"},
+        }
+
+    def cancel(self, record: ComputeJobRecord) -> dict[str, Any]:
+        return {"status": "cancelled", "output_payload": {}, "metadata": {"provider": "checkpoint"}}
+
+
+register_compute_runner("checkpoint", lambda: CheckpointingComputeRunner())
+
+
 def _call_modal_omics(config: dict[str, Any]) -> dict[str, Any]:
     """Run the omics analysis on Modal cloud CPU (imports modal + the app lazily, ephemeral run).
 
