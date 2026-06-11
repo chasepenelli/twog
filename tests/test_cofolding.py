@@ -93,3 +93,29 @@ def test_describe_sandbox_environment_folds_candidate_data(tmp_path):
     candidate = repo.get_public_candidate(cid)
     for ref in candidate.evidence_refs:
         assert ref in manifest["data_refs"]
+
+
+# ---- Phase 0: manifest -> concrete image plan (lock-down) --------------------------------------
+def test_lane_image_plans_are_concrete_and_pinned():
+    from hsa_research.ingestion_bridge.lanes import lane_image_plan, UTILITY_IMAGE_PLANS
+
+    cof = lane_image_plan("cofolding")
+    assert cof["builder"] == "debian_slim" and cof["gpu"] == "A100"
+    assert "boltz==2.2.1" in cof["pip"]  # pinned, MIT
+
+    md = lane_image_plan("md")
+    assert md["builder"] == "micromamba"
+    assert "openmm=8.5.1" in md["conda"] and "openmmforcefields=0.16.0" in md["conda"]
+    assert "pdbfixer" in md["conda"] and "openff-toolkit" in md["conda"]
+
+    dock = lane_image_plan("docking")
+    assert dock["builder"] == "registry" and dock["base"] == "gnina/gnina:v1.3.1"
+    assert "rdkit" in dock["pip"]
+
+    assert lane_image_plan("nope") is None
+
+    # the one-shot R/Seurat .rds -> h5ad converter utility image
+    rds = UTILITY_IMAGE_PLANS["rds_convert"]
+    assert rds["builder"] == "micromamba"
+    assert "r-seurat" in rds["conda"] and "r-sceasy" in rds["conda"]
+    assert "bioconda" in rds["channels"]

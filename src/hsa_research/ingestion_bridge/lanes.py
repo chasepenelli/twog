@@ -38,9 +38,11 @@ class LaneEnvironment:
     """
 
     image_ref: str = ""
+    builder: str = "debian_slim"  # how to build it: "debian_slim" | "micromamba" | "registry"
     tools: tuple[str, ...] = ()
-    python_packages: tuple[str, ...] = ()
-    conda_packages: tuple[str, ...] = ()
+    python_packages: tuple[str, ...] = ()  # PINNED pip specs (e.g. "boltz==2.2.1")
+    conda_packages: tuple[str, ...] = ()  # PINNED conda specs (e.g. "openmm=8.5.1")
+    channels: tuple[str, ...] = ("conda-forge",)
     data_refs: tuple[str, ...] = ()
     skills: tuple[str, ...] = ()
     gpu: str = ""
@@ -76,6 +78,42 @@ def get_lane(validation_type: str | None) -> LaneSpec | None:
 def available_lanes() -> tuple[str, ...]:
     """Return the registered validation_types."""
     return tuple(sorted(_LANES))
+
+
+# Utility (non-lane) image plans — e.g. the one-shot R/Seurat .rds -> h5ad converter.
+UTILITY_IMAGE_PLANS: dict[str, dict[str, Any]] = {
+    "rds_convert": {
+        "builder": "micromamba",
+        "base": "",
+        "gpu": "",
+        "conda": ["r-base", "r-seurat", "r-sceasy", "anndata", "python=3.11"],
+        "pip": [],
+        "channels": ["conda-forge", "bioconda"],
+        "notes": "one-shot Seurat .rds -> h5ad (sceasy); emits AnnData once to a Volume",
+    },
+}
+
+
+def lane_image_plan(validation_type: str | None) -> dict[str, Any] | None:
+    """Translate a lane's declared LaneEnvironment into a CONCRETE, inspectable image build plan
+    (builder + base + pip/conda specs + channels + gpu). A provisioner consumes this to construct a
+    real modal.Image; the plan stays dependency-free so the translation is unit-testable without
+    modal. Returns None for an unregistered lane / no environment."""
+    lane = get_lane(validation_type)
+    if lane is None or lane.environment is None:
+        return None
+    env = lane.environment
+    return {
+        "lane_key": lane.lane_key,
+        "validation_type": lane.validation_type,
+        "builder": env.builder,
+        "base": env.image_ref,
+        "pip": list(env.python_packages),
+        "conda": list(env.conda_packages),
+        "channels": list(env.channels),
+        "gpu": env.gpu,
+        "tools": list(env.tools),
+    }
 
 
 def resolve_sandbox_environment(

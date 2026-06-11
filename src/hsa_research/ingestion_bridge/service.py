@@ -14169,12 +14169,14 @@ register_lane(
         supports_checkpointing=True,
         description="Molecular dynamics / docking smoke — expert-gated (packet hash + approval).",
         environment=LaneEnvironment(
-            image_ref="micromamba::conda-forge/openmm",  # matches modal_app md_image
+            image_ref="",
+            builder="micromamba",
             tools=("python",),
-            conda_packages=("openmm", "cuda-version=12.4"),
-            skills=("md-setup", "openmm-checkpointing"),
+            # real protein-ligand MD stack (pinned; openmmforcefields 0.16.0 requires openmm>=8.5.1)
+            conda_packages=("openmm=8.5.1", "openmmforcefields=0.16.0", "openff-toolkit", "pdbfixer", "cuda-version=12.4"),
+            skills=("md-setup", "ligand-parametrization", "openmm-checkpointing"),
             gpu="T4",
-            notes="OpenMM CUDA platform via conda-forge; checkpoints to a durable Volume.",
+            notes="OpenMM CUDA via conda-forge; openmmforcefields+OpenFF for ligand params; checkpoints to a Volume.",
         ),
     )
 )
@@ -14206,6 +14208,7 @@ register_lane(
         description="gnina CNN docking on GPU — engagement check (e.g. mTOR inhibitor vs MTOR).",
         environment=LaneEnvironment(
             image_ref="gnina/gnina:v1.3.1",
+            builder="registry",
             tools=("gnina",),
             python_packages=("rdkit",),
             skills=("ligand-prep", "docking-pose-rmsd"),
@@ -14223,13 +14226,14 @@ register_lane(
         supports_checkpointing=False,  # one complex is atomic; a screen fans out per ligand
         description="Boltz-2 protein-ligand co-folding on GPU — structure + affinity binding check.",
         environment=LaneEnvironment(
-            image_ref="micromamba::boltz",
+            image_ref="",
+            builder="debian_slim",
             tools=("boltz",),
-            python_packages=("boltz",),
-            data_refs=("boltz2-weights",),  # model weights staged on a durable Volume
+            python_packages=("boltz==2.2.1",),  # MIT; weights boltz2_conf.ckpt + boltz2_aff.ckpt auto-download
+            data_refs=("boltz2-weights",),  # cached to a durable Volume via --cache
             skills=("sequence-prep", "boltz-confidence-reading"),
             gpu="A100",
-            notes="Boltz-2 weights cached on a Volume; co-fold a target sequence + ligand SMILES.",
+            notes="Boltz-2 (MIT) weights cached on a Volume; co-fold a target sequence + ligand SMILES.",
         ),
     )
 )
