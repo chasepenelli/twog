@@ -391,6 +391,102 @@ if modal is not None:
         if result.get("error"):
             print("ERROR:", result.get("error"), "| stderr tail:", result.get("stderr", "")[-800:])
 
+    # --- MD 3a: prep a real solvated protein-ligand system (CPU; openmm 8.5.2 stack) -------------
+    md_prep_image = modal.Image.micromamba(python_version="3.11").micromamba_install(
+        "openmm=8.5.2", "openmmforcefields=0.16.0", "openff-toolkit", "pdbfixer", channels=["conda-forge"]
+    )
+    md_prep_volume = modal.Volume.from_name("twog-md-prep", create_if_missing=True)
+
+    @app.function(image=md_prep_image, timeout=2400, cpu=4.0, volumes={"/prep": md_prep_volume})
+    def run_md_prep(config: dict[str, Any]) -> dict[str, Any]:
+        """Build + minimize a real solvated protein-ligand complex (MD 3a). PDBFixer caps the far
+        loops (no modeling) + adds the 53 missing atoms + protonates; the ligand keeps its CRYSTAL
+        pose (bond orders from SMILES); OpenFF parametrizes it; AMBER ff14SB + TIP3P solvate; minimize
+        on CPU. Returns atom counts + before/after energy (finite = stable). Saves the minimized
+        system to the Volume for the 3b GPU run."""
+        import io
+
+        from openff.toolkit import Molecule
+        from openmm import LangevinMiddleIntegrator, Platform, unit
+        from openmm.app import HBonds, Modeller, PDBFile, PME, Simulation
+        from openmmforcefields.generators import SystemGenerator
+        from pdbfixer import PDBFixer
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+
+        stage = "fix_protein"
+        fixer = PDBFixer(pdbfile=io.StringIO(config["receptor_pdb"]))
+        fixer.findMissingResidues()
+        fixer.missingResidues = {}  # DECISION: cap the far loops, do not model them
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        fixer.addMissingHydrogens(7.0)
+
+        stage = "ligand_params"
+        template = Chem.MolFromSmiles(config["ligand_smiles"])
+        lig_rd = Chem.MolFromPDBBlock(config["ligand_pdb_block"], removeHs=False)
+        lig_rd = AllChem.AssignBondOrdersFromTemplate(template, lig_rd)  # crystal coords + correct bonds
+        lig_rd = Chem.AddHs(lig_rd, addCoords=True)
+        ligand = Molecule.from_rdkit(lig_rd, allow_undefined_stereo=True)
+
+        stage = "system_generator"
+        sysgen = SystemGenerator(
+            forcefields=["amber/ff14SB.xml", "amber/tip3p_standard.xml"],
+            small_molecule_forcefield="openff-2.2.0",
+            molecules=[ligand],
+            forcefield_kwargs={"constraints": HBonds, "rigidWater": True, "removeCMMotion": False},
+            periodic_forcefield_kwargs={"nonbondedMethod": PME},
+        )
+
+        stage = "assemble_solvate"
+        modeller = Modeller(fixer.topology, fixer.positions)
+        modeller.add(ligand.to_topology().to_openmm(), ligand.conformers[0].to_openmm())
+        modeller.addSolvent(sysgen.forcefield, model="tip3p",
+                            padding=1.0 * unit.nanometer, ionicStrength=0.15 * unit.molar)
+        system = sysgen.create_system(modeller.topology)
+        n_atoms = system.getNumParticles()
+        n_waters = sum(1 for r in modeller.topology.residues() if r.name in ("HOH", "WAT"))
+
+        stage = "minimize"
+        integ = LangevinMiddleIntegrator(300 * unit.kelvin, 1.0 / unit.picosecond, 0.002 * unit.picoseconds)
+        sim = Simulation(modeller.topology, system, integ, Platform.getPlatformByName("CPU"))
+        sim.context.setPositions(modeller.positions)
+        e0 = sim.context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+        # minimize to convergence (maxIterations=0) — 500 was far too few for a ~350k-atom box; a
+        # relaxed solvated system should reach a large NEGATIVE potential energy.
+        sim.minimizeEnergy(tolerance=10 * unit.kilojoule_per_mole / unit.nanometer, maxIterations=0)
+        e1 = sim.context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+
+        stage = "save"
+        import os
+        os.makedirs("/prep/alpelisib_pi3k", exist_ok=True)
+        with open("/prep/alpelisib_pi3k/minimized.pdb", "w") as fh:
+            PDBFile.writeFile(modeller.topology, sim.context.getState(getPositions=True).getPositions(), fh)
+        sim.saveState("/prep/alpelisib_pi3k/minimized.xml")
+        md_prep_volume.commit()
+        return {
+            "status": "ok", "n_atoms": n_atoms, "n_waters": n_waters,
+            "energy_before_kj_mol": round(e0, 1), "energy_after_kj_mol": round(e1, 1),
+            "stable": bool(e1 == e1 and abs(e1) < 1e12),  # finite (not NaN/inf)
+        }
+
+    @app.local_entrypoint()
+    def md_prep() -> None:
+        """MD 3a smoke: prep + minimize the solvated alpelisib–PI3Kα complex (CPU, free).
+        Run: PYTHONPATH=src python -m modal run src/.../modal_app.py::md_prep"""
+        r = run_md_prep.remote(
+            {
+                "receptor_pdb": Path("/tmp/4JPS_receptor.pdb").read_text(),
+                "ligand_pdb_block": Path("/tmp/4JPS_ligand.pdb").read_text(),
+                "ligand_smiles": "Cc1c(sc(n1)NC(=O)N2CCC[C@H]2C(=O)N)c3ccnc(c3)C(C)(C)C(F)(F)F",
+            }
+        )
+        print(f"status={r.get('status')} atoms={r.get('n_atoms')} waters={r.get('n_waters')} "
+              f"stable={r.get('stable')}")
+        print(f"energy: {r.get('energy_before_kj_mol')} -> {r.get('energy_after_kj_mol')} kJ/mol")
+        if r.get("error"):
+            print("ERROR @", r.get("stage"), ":", r.get("error"))
+
     @app.local_entrypoint()
     def md_checkpoint() -> None:
         """Smoke the real-GPU checkpoint/resume loop across SEPARATE invocations (durable Volume):
