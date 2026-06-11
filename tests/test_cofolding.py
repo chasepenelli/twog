@@ -105,7 +105,7 @@ def test_lane_image_plans_are_concrete_and_pinned():
 
     md = lane_image_plan("md")
     assert md["builder"] == "micromamba"
-    assert "openmm=8.5.1" in md["conda"] and "openmmforcefields=0.16.0" in md["conda"]
+    assert "openmm=8.5.2" in md["conda"] and "openmmforcefields=0.16.0" in md["conda"]
     assert "pdbfixer" in md["conda"] and "openff-toolkit" in md["conda"]
 
     dock = lane_image_plan("docking")

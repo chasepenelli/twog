@@ -30,15 +30,16 @@ No hand-waving. Lead with the coverage gaps. Reference upstream data; do not re-
   `boltz_results_*` wrapper) and whether the affinity JSON name uses `_` or `-`. The parse logic is
   correct; the globbing is what the smoke confirms.
 
-## 2. MD toolchain (real protein-ligand MD)
-**Pinned, conda-forge, to be co-resolution-confirmed by the image build:**
-- `openmm=8.5.1` — engine + CUDA platform.
-- `openmmforcefields=0.16.0` (rel. 2026-04-27) — **requires OpenMM ≥ 8.5.1** (per its README; this
-  is why the MD-prep image is *not* the openmm-8.2 harmonic-harness image).
-- `openff-toolkit` (latest compatible) — SMIRNOFF ligand parametrization (RDKit backend).
-- `pdbfixer` (latest; requires OpenMM ≥ 8.2) — add missing atoms, protonate, solvate.
-- `cuda-version=12.4` — pins the CUDA-enabled openmm build (final co-resolution confirmed when the
-  micromamba image builds; the openmm-8.5.1 + cuda-version combo is the one thing to verify).
+## 2. MD toolchain (real protein-ligand MD) — **CONFIRMED at build (2026-06)**
+Co-resolution verified by an actual micromamba image build (Modal). **Resolved + pinned:**
+- `openmm=8.5.2` — engine (resolved from unpinned; ≥8.5.1 as openmmforcefields requires).
+- `openmmforcefields=0.16.0` — SMIRNOFF/AMBER small-molecule + biopolymer FF management.
+- `openff-toolkit` — SMIRNOFF ligand parametrization (RDKit backend).
+- `pdbfixer` — add missing atoms, protonate, solvate.
+- **`cuda-version` is NOT pinned.** The strict `cuda-version=12.4` pin was the conflict (it has no
+  openmm 8.5.x build) — *that was the Phase-0 open question, and the build answered it.* The CUDA
+  build is only needed for the **3b GPU run** and is resolved at that image's build (a CPU prep image
+  resolves the CPU platform fine for 3a).
 
 ## 3. Loop modeling decision (the 148 missing residues; 75 on chain A)
 **Decision: binding-site-restrained capping. No loop modeling.** Justified by the geometry below —

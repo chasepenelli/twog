@@ -346,7 +346,8 @@ if modal is not None:
         checks = {
             "md": "import openmm,openmmforcefields,openff.toolkit,pdbfixer;"
                   "print('openmm',openmm.version.version,'| openmmforcefields',openmmforcefields.__version__,"
-                  "'| openff',openff.toolkit.__version__,'| pdbfixer ok')",
+                  "'| openff',openff.toolkit.__version__,'| pdbfixer ok');"
+                  "print('platforms:',[openmm.Platform.getPlatform(i).getName() for i in range(openmm.Platform.getNumPlatforms())])",
             "cofolding": "import boltz;print('boltz import ok')",
             "docking": "import rdkit;print('rdkit',rdkit.__version__)",
         }

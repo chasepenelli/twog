@@ -14224,8 +14224,10 @@ register_lane(
             image_ref="",
             builder="micromamba",
             tools=("python",),
-            # real protein-ligand MD stack (pinned; openmmforcefields 0.16.0 requires openmm>=8.5.1)
-            conda_packages=("openmm=8.5.1", "openmmforcefields=0.16.0", "openff-toolkit", "pdbfixer", "cuda-version=12.4"),
+            # real protein-ligand MD stack — CONFIRMED co-resolving on conda-forge (build 2026-06).
+            # cuda-version is intentionally NOT pinned: it conflicted with openmm here, and the CUDA
+            # build is only needed for the 3b GPU run (resolved at that image's build).
+            conda_packages=("openmm=8.5.2", "openmmforcefields=0.16.0", "openff-toolkit", "pdbfixer"),
             skills=("md-setup", "ligand-parametrization", "openmm-checkpointing"),
             gpu="T4",
             notes="OpenMM CUDA via conda-forge; openmmforcefields+OpenFF for ligand params; checkpoints to a Volume.",
