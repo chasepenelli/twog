@@ -226,6 +226,50 @@ def test_operator_run_stays_trusted_gate(tmp_path):
     assert flow["gate_policy"] == "trusted_operator"  # operator runs stay trusted
 
 
+def test_full_collaborator_workflow_end_to_end(tmp_path):
+    """Capstone: operator onboards a collaborator; the collaborator runs compute and produces a
+    capsule but is blocked from the write gate; the operator reviews and promotes; the audit trail
+    records both principals."""
+    repo = SQLiteResearchRepository(tmp_path / "capstone.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    service.register_collaborator(principal="chase", name="Chase", role="operator")
+    service.register_collaborator(principal="dr.vet", name="Dr Vet", role="collaborator")
+    cid = _seed_validation_ready_candidate(repo, candidate_id="vr-capstone", ready=True)
+
+    # collaborator runs the compute->capsule middle of the loop
+    flow = service.run_compute_validation_flow(
+        cid, _docking_queue_item(repo).queue_item_id, runner_kind="mock", submitted_by="dr.vet"
+    )
+    assert flow["errors"] == [], flow
+    assert flow["gate_policy"] == "external_collaborator"
+    capsule_id = UUID(flow["capsule_id"])
+    capsule = repo.get_proof_capsule(capsule_id)
+    assert capsule.status == "submitted" and capsule.submitted_by == "dr.vet"
+
+    # the collaborator cannot cross the write gate
+    with pytest.raises(CollaboratorAccessError):
+        service.accept_proof_capsule(capsule_id, reviewer="dr.vet")
+    with pytest.raises(CollaboratorAccessError):
+        service.promote_proof_capsule_to_candidate(capsule_id, reviewer="dr.vet")
+
+    # the operator reviews and promotes
+    accepted = service.accept_proof_capsule(capsule_id, reviewer="chase")
+    assert accepted.reviewed_by == "chase"
+    before = repo.get_public_candidate(cid)
+    promotion = service.promote_proof_capsule_to_candidate(capsule_id, reviewer="chase")
+    assert promotion["promoted"] is True, promotion
+
+    # candidate grew + full provenance is on the audit trail
+    after = repo.get_public_candidate(cid)
+    assert len(after.evidence_refs) > len(before.evidence_refs)
+    assert repo.get_proof_capsule(capsule_id).status == "archived"
+    final = repo.get_proof_capsule(capsule_id)
+    assert final.submitted_by == "dr.vet" and final.reviewed_by == "chase"
+    events = repo.list_public_candidate_decision_events(candidate_id=cid)
+    assert any(e.action == "evidence_added" and e.actor == "chase" and e.related_capsule_id == capsule_id
+               for e in events)
+
+
 def test_revoked_operator_loses_write_access(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "revop.sqlite3", seed=False)
     service = HSAResearchService(repo)
