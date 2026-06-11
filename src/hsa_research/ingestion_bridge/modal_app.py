@@ -315,27 +315,76 @@ if modal is not None:
         result["provider"] = "boltz2"
         return result  # flat (signal/findings/metrics at top); ModalComputeRunner wraps it
 
+    def build_lane_image(plan: dict[str, Any]):
+        """Materialize a lane's image PLAN (from lanes.lane_image_plan) into a real modal.Image."""
+        b = plan.get("builder", "debian_slim")
+        if b == "registry":
+            img = modal.Image.from_registry(plan["base"], add_python="3.11")
+        elif b == "micromamba":
+            img = modal.Image.micromamba(python_version="3.11")
+            if plan.get("conda"):
+                img = img.micromamba_install(*plan["conda"], channels=plan.get("channels") or ["conda-forge"])
+        else:
+            img = modal.Image.debian_slim(python_version="3.11")
+        if plan.get("pip"):
+            img = img.pip_install(*plan["pip"])
+        return img
+
     @app.local_entrypoint()
-    def cofold() -> None:
-        """Boltz-2 smoke == H1 calibration POSITIVE control: co-fold alpelisib with REAL human
-        PI3Kα (UniProt P42336, 1068 aa). Verifies the scaffold (output paths, affinity emits) AND
-        gives the positive-control number — alpelisib is a known 4.6 nM PI3Kα binder, so a sane run
-        should show a confident interface + likely-binder probability.
-        Run: PYTHONPATH=src python -m modal run src/hsa_research/ingestion_bridge/modal_app.py::cofold"""
-        seq = Path("/tmp/PIK3CA_human.seq").read_text().strip()
+    def provision(lane: str = "md") -> None:
+        """Item 2 — materialize describe_sandbox_environment into a LIVE Modal Sandbox: build the
+        lane image, create the sandbox, exec a verification, terminate (never GPU-idle). Also
+        confirms the Phase-0 lock co-resolves (e.g. openmm 8.5.1 + openmmforcefields).
+        Run: PYTHONPATH=src python -m modal run src/.../modal_app.py::provision --lane md"""
+        import sys
+        sys.path.insert(0, "src")
+        from hsa_research.ingestion_bridge.lanes import lane_image_plan
+
+        plan = lane_image_plan(lane)
+        if plan is None:
+            print(f"no image plan for lane '{lane}'"); return
+        checks = {
+            "md": "import openmm,openmmforcefields,openff.toolkit,pdbfixer;"
+                  "print('openmm',openmm.version.version,'| openmmforcefields',openmmforcefields.__version__,"
+                  "'| openff',openff.toolkit.__version__,'| pdbfixer ok')",
+            "cofolding": "import boltz;print('boltz import ok')",
+            "docking": "import rdkit;print('rdkit',rdkit.__version__)",
+        }
+        print(f"provisioning sandbox for lane '{lane}' (builder={plan['builder']})...")
+        sb = modal.Sandbox.create(image=build_lane_image(plan), app=app, timeout=600)
+        print(f"  sandbox id: {sb.object_id}  (reconnect via modal.Sandbox.from_id)")
+        try:
+            p = sb.exec("python", "-c", checks.get(lane, "print('sandbox ok')"))
+            out, err = p.stdout.read(), p.stderr.read()
+            print("  VERIFY:", out.strip() or err.strip()[-400:])
+        finally:
+            sb.terminate()
+            print("  sandbox terminated (no idle cost).")
+
+    @app.local_entrypoint()
+    def cofold(target: str = "pi3k_human") -> None:
+        """Boltz-2 co-fold alpelisib with a chosen target. Calibration + H1:
+          pi3k_human  -> POSITIVE control (known 4.6 nM binder; expect confident interface)
+          vegfr2      -> NEGATIVE control (PI3Kα-selective drug; expect weaker binder-probability)
+          pi3k_canine -> H1 PROPER (does alpelisib engage canine PI3Kα comparably to human?)
+        Run: PYTHONPATH=src python -m modal run src/.../modal_app.py::cofold --target pi3k_canine"""
+        ALPELISIB = "Cc1c(sc(n1)NC(=O)N2CCC[C@H]2C(=O)N)c3ccnc(c3)C(C)(C)C(F)(F)F"
+        targets = {
+            "pi3k_human": ("/tmp/PIK3CA_human.seq", "human PI3Kα / p110α (UniProt P42336)", ["UniProt:P42336", "IC50=4.6nM Fritsch2014"]),
+            "vegfr2": ("/tmp/KDR_human.seq", "human VEGFR2 / KDR (UniProt P35968) [off-target control]", ["UniProt:P35968"]),
+            "pi3k_canine": ("/tmp/PIK3CA_canine.seq", "canine PI3Kα / p110α (UniProt A0A8I3NX58)", ["UniProt:A0A8I3NX58"]),
+        }
+        seq_path, label, refs = targets[target]
         result = run_boltz_remote.remote(
             {
-                "protein_sequence": seq,
-                "ligand_smiles": "Cc1c(sc(n1)NC(=O)N2CCC[C@H]2C(=O)N)c3ccnc(c3)C(C)(C)C(F)(F)F",
-                "ligand_name": "alpelisib",
-                "target": "human PI3Kα / p110α (UniProt P42336)",
-                "diffusion_samples": 1,
-                "source_refs": ["UniProt:P42336", "alpelisib IC50=4.6nM (Fritsch 2014)"],
+                "protein_sequence": Path(seq_path).read_text().strip(),
+                "ligand_smiles": ALPELISIB, "ligand_name": "alpelisib",
+                "target": label, "diffusion_samples": 1, "source_refs": refs,
             }
         )
         m = result.get("metrics", {})
-        print(f"signal={result.get('signal')} confidence={result.get('confidence')}")
-        print(f"iptm={m.get('iptm')} affinity_prob_binary={m.get('affinity_probability_binary')} "
+        print(f"[{target}] signal={result.get('signal')} confidence={result.get('confidence')}")
+        print(f"[{target}] iptm={m.get('iptm')} P(binder)={m.get('affinity_probability_binary')} "
               f"affinity_pred={m.get('affinity_pred_value')}")
         print(result.get("findings"))
         if result.get("error"):
