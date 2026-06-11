@@ -459,16 +459,101 @@ if modal is not None:
 
         stage = "save"
         import os
-        os.makedirs("/prep/alpelisib_pi3k", exist_ok=True)
-        with open("/prep/alpelisib_pi3k/minimized.pdb", "w") as fh:
+
+        from openmm import XmlSerializer
+
+        d = "/prep/alpelisib_pi3k"
+        os.makedirs(d, exist_ok=True)
+        with open(f"{d}/minimized.pdb", "w") as fh:
             PDBFile.writeFile(modeller.topology, sim.context.getState(getPositions=True).getPositions(), fh)
-        sim.saveState("/prep/alpelisib_pi3k/minimized.xml")
+        sim.saveState(f"{d}/minimized.xml")
+        with open(f"{d}/system.xml", "w") as fh:  # the serialized System -> 3b needs no re-parametrization
+            fh.write(XmlSerializer.serialize(system))
         md_prep_volume.commit()
         return {
             "status": "ok", "n_atoms": n_atoms, "n_waters": n_waters,
             "energy_before_kj_mol": round(e0, 1), "energy_after_kj_mol": round(e1, 1),
             "stable": bool(e1 == e1 and abs(e1) < 1e12),  # finite (not NaN/inf)
         }
+
+    # --- MD 3b: GPU equilibration + production on the relaxed complex ----------------------------
+    md_gpu_image = modal.Image.micromamba(python_version="3.11").micromamba_install(
+        "openmm=8.5.2", "cuda-version=12.9", channels=["conda-forge"]  # 8.5.2 CUDA build needs >=12.9
+    )
+
+    @app.function(image=md_gpu_image, gpu="A100", timeout=3600, volumes={"/prep": md_prep_volume})
+    def run_md_production(config: dict[str, Any]) -> dict[str, Any]:
+        """Real GPU MD (3b): load the relaxed alpelisib–PI3Kα system, equilibrate (NPT), run a
+        production chunk, and report whether alpelisib STAYS in the pocket (protein-Cα-aligned ligand
+        heavy-atom RMSD). The validation question: does the canine-conserved pocket hold the drug
+        under dynamics?"""
+        import numpy as np
+        from openmm import LangevinMiddleIntegrator, MonteCarloBarostat, Platform, XmlSerializer, unit
+        from openmm.app import PDBFile, Simulation
+
+        d = "/prep/alpelisib_pi3k"
+        md_prep_volume.reload()
+        system = XmlSerializer.deserialize(open(f"{d}/system.xml").read())
+        pdb = PDBFile(f"{d}/minimized.pdb")
+
+        _AA = {"ALA","ARG","ASN","ASP","CYS","GLN","GLU","GLY","HIS","ILE","LEU","LYS","MET","PHE",
+               "PRO","SER","THR","TRP","TYR","VAL","HID","HIE","HIP","CYX"}
+        _SOLV = {"HOH","WAT","NA","CL","K","MG","ZN","CA"}
+        lig_heavy, prot_ca = [], []
+        for a in pdb.topology.atoms():
+            rn = a.residue.name
+            if rn not in _AA and rn not in _SOLV and a.element is not None and a.element.symbol != "H":
+                lig_heavy.append(a.index)
+            if rn in _AA and a.name == "CA":
+                prot_ca.append(a.index)
+        lig_heavy, prot_ca = np.array(lig_heavy), np.array(prot_ca)
+
+        system.addForce(MonteCarloBarostat(1 * unit.bar, 300 * unit.kelvin))
+        integ = LangevinMiddleIntegrator(300 * unit.kelvin, 1.0 / unit.picosecond, 0.002 * unit.picoseconds)
+        sim = Simulation(pdb.topology, system, integ, Platform.getPlatformByName("CUDA"))
+        sim.context.setPositions(pdb.positions)
+        sim.context.setVelocitiesToTemperature(300 * unit.kelvin, 1234)
+
+        def xyz():
+            return np.array(sim.context.getState(getPositions=True).getPositions().value_in_unit(unit.nanometer))
+
+        sim.step(int(config.get("equil_steps", 25000)))  # ~50 ps NPT equilibration
+        p0 = xyz()
+        sim.step(int(config.get("prod_steps", 100000)))  # ~200 ps production
+        p1 = xyz()
+
+        # protein-Cα Kabsch align p1 onto p0, then ligand heavy-atom RMSD (Å)
+        A, B = p1[prot_ca], p0[prot_ca]
+        Ac, Bc = A - A.mean(0), B - B.mean(0)
+        U, _, Vt = np.linalg.svd(Ac.T @ Bc)
+        Dz = np.diag([1, 1, np.sign(np.linalg.det(Vt.T @ U.T))])
+        R = Vt.T @ Dz @ U.T
+        lig1 = (p1[lig_heavy] - A.mean(0)) @ R.T + B.mean(0)
+        rmsd = float(np.sqrt(((lig1 - p0[lig_heavy]) ** 2).sum(1).mean())) * 10.0
+
+        pe = sim.context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+        return {
+            "status": "ok",
+            "platform": "CUDA",
+            "n_ligand_heavy_atoms": int(len(lig_heavy)),
+            "ligand_rmsd_A": round(rmsd, 2),
+            "potential_energy_kj_mol": round(pe, 1),
+            "equil_ps": round(int(config.get("equil_steps", 25000)) * 0.002, 1),
+            "prod_ps": round(int(config.get("prod_steps", 100000)) * 0.002, 1),
+            "stays_in_pocket": rmsd < 3.0,  # heavy-atom RMSD < 3 Å = stable in the pocket
+        }
+
+    @app.local_entrypoint()
+    def md_production() -> None:
+        """MD 3b validation chunk: equilibrate + short production on the relaxed alpelisib–PI3Kα
+        complex; report ligand-in-pocket RMSD.
+        Run: PYTHONPATH=src python -m modal run src/.../modal_app.py::md_production"""
+        r = run_md_production.remote({"equil_steps": 25000, "prod_steps": 100000})
+        print(f"status={r.get('status')} platform={r.get('platform')} "
+              f"equil={r.get('equil_ps')}ps prod={r.get('prod_ps')}ps")
+        print(f"ligand heavy atoms={r.get('n_ligand_heavy_atoms')} | "
+              f"LIGAND RMSD={r.get('ligand_rmsd_A')} Å | stays_in_pocket={r.get('stays_in_pocket')}")
+        print(f"potential energy={r.get('potential_energy_kj_mol')} kJ/mol")
 
     @app.local_entrypoint()
     def md_prep() -> None:
