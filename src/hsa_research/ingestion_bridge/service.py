@@ -1944,7 +1944,7 @@ class HSAResearchService:
         ruled_out = frozenset(failure_corpus.ruled_out_lanes(capsules))  # inc6 novelty penalty
         # inc7: lanes the candidate has no real inputs for — flagged + ranked last (prefer runnable).
         inputs_unresolved = frozenset(
-            lane for lane in runnable if not lane_inputs.resolve(candidate, lane).resolved
+            lane for lane in runnable if not lane_inputs.resolve(candidate, lane, resolvers=getattr(self, "input_resolvers", None)).resolved
         )
 
         def _run() -> FalsificationPlannerResult:
@@ -1987,7 +1987,7 @@ class HSAResearchService:
         candidate = self.get_public_candidate(candidate_id)
         if candidate is None:
             return None
-        return lane_inputs.resolve(candidate, lane)
+        return lane_inputs.resolve(candidate, lane, resolvers=getattr(self, "input_resolvers", None))
 
     # --- Falsification round: pre-registration + auto-dispatch (increment 2) --------------------
     def _falsification_preregistration_hash(
@@ -2040,7 +2040,7 @@ class HSAResearchService:
         # Increment 7: resolve real lane inputs from the candidate so a Modal dispatch runs real
         # compute. If unresolved, the test is still pre-registered but carries no fabricated inputs —
         # a real provider surfaces the gap (mock ignores inputs, so the loop stays testable in CI).
-        resolution = lane_inputs.resolve(candidate, plan.lane) if candidate is not None else None
+        resolution = lane_inputs.resolve(candidate, plan.lane, resolvers=getattr(self, "input_resolvers", None)) if candidate is not None else None
         prereg_block["inputs_resolved"] = bool(resolution and resolution.resolved)
         request_metadata: dict[str, Any] = {"falsification_preregistration": prereg_block}
         if resolution is not None and resolution.resolved:

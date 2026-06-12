@@ -129,3 +129,82 @@ def test_propose_prefers_lane_with_resolved_inputs(tmp_path):
     assert result.proposed.inputs_ready is True
     omics_alt = next((p for p in result.alternatives if p.lane == "omics"), None)
     assert omics_alt is not None and omics_alt.inputs_ready is False
+
+
+# ---- network input resolution (v0.2): name a target + therapy, fetch the inputs -----------------
+class _FakeResolvers:
+    """Stands in for NetworkInputResolvers (PubChem + RCSB) — no network in CI."""
+
+    def __init__(self, smiles="CCO", structure=None):
+        self._smiles = smiles
+        self._structure = structure if structure is not None else {
+            "receptor_pdb": "ATOM      1  N   ALA A   1      11.1  13.2   8.6  1.00\nEND\n",
+            "pdb_id": "9XYZ", "center_x": 1.0, "center_y": 2.0, "center_z": 3.0,
+        }
+
+    def compound_smiles(self, name):
+        return self._smiles
+
+    def target_structure(self, target):
+        return self._structure
+
+
+def _candidate_named(repo, service, cid, *, targets, therapies, lane_inputs_bag=None):
+    _seed_validation_ready_candidate(repo, candidate_id=cid)
+    cand = service.get_public_candidate(cid)
+    update = {"targets": targets, "candidate_therapies": therapies}
+    if lane_inputs_bag is not None:
+        update["metadata"] = {"lane_inputs": lane_inputs_bag}
+    repo.upsert_public_candidate(cand.model_copy(update=update))
+
+
+def test_network_resolves_docking_from_named_target_and_therapy(tmp_path):
+    from hsa_research.ingestion_bridge import lane_inputs
+
+    service, repo = _svc(tmp_path, "net")
+    _candidate_named(repo, service, "vr-net", targets=["PIK3CA"], therapies=["alpelisib"])
+    cand = service.get_public_candidate("vr-net")
+    res = lane_inputs.resolve(cand, "docking", resolvers=_FakeResolvers())
+    assert res.resolved is True and res.source == "network"
+    assert res.config["ligand_smiles"] == "CCO" and res.config["receptor_pdb"].startswith("ATOM")
+    assert res.config["target"] == "PIK3CA"
+
+
+def test_curated_inputs_win_over_network(tmp_path):
+    from hsa_research.ingestion_bridge import lane_inputs
+
+    service, repo = _svc(tmp_path, "win")
+    _candidate_named(repo, service, "vr-win", targets=["PIK3CA"], therapies=["alpelisib"], lane_inputs_bag={"docking": DOCK_INPUTS})
+    cand = service.get_public_candidate("vr-win")
+    res = lane_inputs.resolve(cand, "docking", resolvers=_FakeResolvers())
+    assert res.resolved is True and res.source == "candidate.metadata"  # curated wins
+
+
+def test_no_resolvers_means_curated_only(tmp_path):
+    from hsa_research.ingestion_bridge import lane_inputs
+
+    service, repo = _svc(tmp_path, "nores")
+    _candidate_named(repo, service, "vr-nores", targets=["PIK3CA"], therapies=["alpelisib"])
+    cand = service.get_public_candidate("vr-nores")
+    assert lane_inputs.resolve(cand, "docking").resolved is False  # no resolvers -> curated only
+
+
+def test_network_unresolved_on_resolver_miss(tmp_path):
+    from hsa_research.ingestion_bridge import lane_inputs
+
+    service, repo = _svc(tmp_path, "miss")
+    _candidate_named(repo, service, "vr-miss", targets=["PIK3CA"], therapies=["alpelisib"])
+    cand = service.get_public_candidate("vr-miss")
+    res = lane_inputs.resolve(cand, "docking", resolvers=_FakeResolvers(smiles=None))  # PubChem miss
+    assert res.resolved is False
+
+
+def test_service_uses_injected_resolvers_for_input_aware_planning(tmp_path):
+    service, repo = _svc(tmp_path, "svc-net")
+    _candidate_named(repo, service, "vr-svc-net", targets=["PIK3CA"], therapies=["alpelisib"])
+    _seed_capsule(repo, "vr-svc-net", signal="neutral", validation_type="homology")
+    service.input_resolvers = _FakeResolvers()  # inject network resolvers
+
+    result = service.propose_next_falsification("vr-svc-net")
+    # docking inputs auto-resolve from the named target+therapy -> docking is ready and preferred
+    assert result.proposed.lane == "docking" and result.proposed.inputs_ready is True
