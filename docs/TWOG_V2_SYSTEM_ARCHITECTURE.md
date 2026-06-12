@@ -1,5 +1,10 @@
 # TWOG / HSA Dagster v2 System Architecture
 
+> **v2.1 NOTE.** This document predates the v2.1 compute layer. The GPU work is now real and
+> runs through a *provider-agnostic* lane seam (docking, co-folding, MD, omics), currently on
+> Modal — superseding the earlier "future RunPod lane" framing below. RunPod was removed.
+> See the README "Compute Layer" + CHANGELOG.md for the current state.
+
 Status: draft architecture rationale
 Project: TWOG HSA AutoResearch v2 / `hsa-dagster`
 Last reviewed against repo: 2026-05-04

@@ -49,7 +49,29 @@ That audit trail is the product.
 - Agent run ledger, review ledger, research briefs, therapy ideas, validation packets, omics readouts, and compute ledgers.
 - Deterministic ingestion lanes for literature, structured biomedical sources, source health, candidate records, and public contribution intake.
 - OpenRouter-backed agent lanes for synthesis, critique, evaluation, and research-program reasoning.
-- TWOG-owned RunPod/Docker worker foundation for approval-first MD smoke tests.
+- Provider-agnostic, GPU-accelerated **compute lanes** (docking, co-folding, molecular dynamics, omics) with reproducible pinned environments and checkpoint/resume.
+
+## v2.1 — What's New
+
+v2.1 matures the compute and rigor layers and runs one honest end-to-end example. Everything below
+is **in-silico and hypothesis-generating** — the bar is integrity and reproducibility, not a
+validated treatment. See [CHANGELOG.md](CHANGELOG.md).
+
+- **Reproducible GPU compute.** A provider-agnostic `ComputeRunner` seam makes each lane (docking,
+  co-folding, MD, omics) a pluggable unit that can target any GPU backend without touching the
+  science code — currently Modal (A100/T4). Environments are pinned at build
+  ([docs/ENVIRONMENT_LOCK.md](docs/ENVIRONMENT_LOCK.md)); long runs checkpoint and resume.
+- **One end-to-end run (canine HSA ↔ human angiosarcoma).** A literature hypothesis was *falsified*
+  by the system (an apparent immune signal was a tumor-purity artifact, caught by orthogonal
+  controls), reframed to a PI3Kα/endothelial axis, and replicated cross-species (human AS, p=0.001).
+  The therapeutic angle then held across the structural lanes: docking redock 1.8 Å → co-fold iptm
+  0.99 / ~11 nM (vs 4.6 nM measured) → drug pocket 100% conserved dog↔human → ~350k-atom MD-stable
+  (ligand RMSD 1.25 Å).
+- **Rigor spine.** Results are **proof capsules**: portable, Ed25519-signed, content-hashed units of
+  evidence with tamper-evident lineage. They prove *integrity* (unchanged, when, by whom), not
+  *validity* (that the science is right) — by design.
+- **Open contributions.** A harmonized cross-species cohort, a canine TME signature registry, and a
+  v0 cell-type deconvolver.
 
 ## What To Inspect First
 
@@ -208,11 +230,36 @@ Every meaningful agent run is ledgered. The system stores model metadata, prompt
 
 ## Compute Layer
 
-TWOG has an approval-first compute lane for GPU-backed scientific jobs.
+TWOG runs GPU-backed scientific work as **pluggable, expert-gated lanes** behind a
+provider-agnostic seam (`ComputeRunner`). A lane (docking, co-folding, MD, omics) declares its
+inputs, its compute profile, and an optional approval gate; the runtime can target any GPU backend.
+Today that backend is Modal (A100/T4); the seam means it could target NVIDIA/BioNeMo infrastructure
+without changing the science code.
 
-The first owned worker path is an MD smoke worker under [`runpod_workers/md_smoke/`](runpod_workers/md_smoke/). The goal of this lane is not to make efficacy claims from short simulations. The goal is to prove the worker contract, artifact flow, structured diagnostics, and reproducible compute ledger before any heavier scientific workflow is trusted.
+Verified lanes today:
 
-Future compute lanes can include docking, longer MD, free-energy estimation, raw omics processing, or other containerized methods, but each needs a method version, artifact policy, and approval gate.
+- **gnina** CNN docking (pose + affinity; native-ligand redock as a validation control).
+- **Boltz-2** co-folding (predicted complex structure + binding affinity).
+- **OpenMM** molecular dynamics (solvated protein–ligand systems) with **checkpoint/resume** to
+  durable storage — a multi-hour run can pause and be picked back up by the same or a different
+  operator (lease/handoff).
+- A CPU **omics / TME** lane (deconvolution + purity-aware confound checks).
+
+Every run is ledgered and packaged as a signed proof capsule. The point of a lane is never to claim
+efficacy from a short simulation — it is to make the compute reproducible, inspectable, and gated.
+
+### What Runs Where (plain language)
+
+- **Orchestration** (pipeline steps, dependencies, runs, artifacts): local/containerized, via
+  Dagster. Dagster is the orchestration layer, *not* the cloud — it defines and tracks the workflow.
+- **LLM calls** (synthesis, critique): cloud APIs, so model quality isn't the limiting factor while
+  the research workflow itself is being tested.
+- **Heavy structural/bio compute** (docking, co-folding, MD): real cloud GPUs through the
+  provider-agnostic lane seam, with environments pinned at build for reproducibility.
+- **Storage**: local SQLite by default; hosted Postgres/Neon for shared state.
+
+In one line: **local-first orchestration, cloud model calls, reproducible GPU compute lanes — with a
+clear seam where accelerated tooling plugs in.**
 
 ## Repository Layout
 
@@ -223,7 +270,8 @@ Future compute lanes can include docking, longer MD, free-energy estimation, raw
 ├── tests/                               Contract, service, API, and worker tests
 ├── docs/                                SOPs, architecture, setup, public explanations
 ├── db/migrations/                       Research-store migrations
-├── runpod_workers/md_smoke/             TWOG-owned MD smoke worker
+├── datasets/                            Open contributions (harmonized cohort, signature registry)
+├── web/                                 Project one-pager + research-state dashboard
 ├── twog/                                Public Next.js site and candidate layer
 │   ├── app/                             Pages and API routes
 │   ├── data/                            Static public candidate snapshots
@@ -300,15 +348,20 @@ Reliable today:
 - Dagster definitions and manual jobs;
 - typed contracts and repository adapters;
 - agent run/review ledgers;
-- research briefs, therapy ideas, validation packets, and candidate records.
+- research briefs, therapy ideas, validation packets, and candidate records;
+- provider-agnostic GPU compute lanes (docking, co-folding, MD, omics) with pinned, reproducible
+  environments and checkpoint/resume;
+- signed, content-hashed proof capsules with tamper-evident lineage.
 
 Still maturing:
 
 - broader candidate export volume;
 - method pages for every compute lane;
 - external contribution review experience;
-- owned GPU compute worker hardening;
-- deeper primitive layers for entity resolution, compound similarity, ortholog mapping, and bioactivity indexing.
+- a real GPU checkpointing provider for production-length simulations;
+- deeper primitive layers for entity resolution, compound similarity, ortholog mapping, and
+  bioactivity indexing (and the next-generation agent primitives in
+  [docs/AGENT_PRIMITIVES.md](docs/AGENT_PRIMITIVES.md)).
 
 ## Safety Boundary
 

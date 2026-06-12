@@ -3504,7 +3504,7 @@ class HSAResearchService:
         self,
         queue_item_id: UUID,
         *,
-        runner_kind: str = "runpod",
+        runner_kind: str = "mock",
         compute_profile: str = "gpu",
         approved_by: str | None = None,
         approval_note: str | None = None,

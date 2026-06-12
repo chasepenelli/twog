@@ -34,6 +34,8 @@ class ComputeRunner(Protocol):
     """Provider seam. Each method returns a dict carrying at least a ``status`` key.
 
     submit(record) -> {status, external_run_id, runpod_job_id?, output_payload, metadata}
+        (runpod_job_id is a legacy result-key alias for the provider job id; RunPod was removed —
+         providers are now pluggable, e.g. Modal. The key name is retained for store compatibility.)
     poll(record)   -> {status, output_payload, last_error, metadata}
     cancel(record) -> {status, output_payload, metadata}
 

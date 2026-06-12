@@ -1,5 +1,10 @@
 # TWOG v2 Non-Technical System Overview
 
+> **v2.1 NOTE.** This document predates the v2.1 compute layer. The GPU work is now real and
+> runs through a *provider-agnostic* lane seam (docking, co-folding, MD, omics), currently on
+> Modal — superseding the earlier "future RunPod lane" framing below. RunPod was removed.
+> See the README "Compute Layer" + CHANGELOG.md for the current state.
+
 Draft for collaborators, advisors, funders, clinicians, scientists, and operations partners who want to understand what TWOG / hsa-dagster v2 is, why it is being built this way, and how it can be trusted.
 
 This document avoids implementation detail where possible. It is meant to sit beside the technical architecture, not replace it.

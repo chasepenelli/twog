@@ -4102,7 +4102,7 @@ class ComputeJobRecord(StrictBaseModel):
     trace_id: UUID | None = None
     queue_item_id: UUID | None = None
     status: ComputeJobStatus = "needs_approval"
-    runner_kind: ComputeRunnerKind = "runpod"
+    runner_kind: ComputeRunnerKind = "mock"
     compute_profile: ComputeProfile = "gpu"
     validation_type: str | None = Field(default=None, max_length=100)
     # Workspace/candidate binding (Phase 2): lets a completed job auto-build a proof capsule that
