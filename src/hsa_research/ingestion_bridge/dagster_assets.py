@@ -37,6 +37,7 @@ from .contracts import (
     PubMedIdentifierRepairRequest,
     PublicCandidateGenerateRequest,
     PublicCandidateIntegrityReportRequest,
+    PublicCandidateLibraryRequest,
     ResearchBriefEvaluationRequest,
     ResearchBriefFollowupQueueRequest,
     ResearchBriefQualityReportRequest,
@@ -2233,6 +2234,20 @@ if dg is not None:
             "selected": _metadata_table(selected_rows, _VALIDATION_AUTOPILOT_TABLE_COLUMNS),
             "dispatched": _metadata_table(dispatched_rows, _VALIDATION_AUTOPILOT_TABLE_COLUMNS),
             "skipped": _metadata_table(skipped_rows[:25], _VALIDATION_AUTOPILOT_TABLE_COLUMNS),
+        }
+
+    def _falsification_loop_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
+        rows = report.get("rows", [])
+        return {
+            "enabled": bool(report.get("enabled", False)),
+            "dry_run": bool(report.get("dry_run", False)),
+            "candidates_available": dg.MetadataValue.int(int(report.get("candidates_available", 0))),
+            "candidates_processed": dg.MetadataValue.int(int(report.get("candidates_processed", 0))),
+            "total_est_cost_usd": dg.MetadataValue.float(float(report.get("total_est_cost_usd", 0.0))),
+            "budget_exhausted": bool(report.get("budget_exhausted", False)),
+            "any_promoted": bool(report.get("any_promoted", False)),
+            "terminal_reasons": dg.MetadataValue.json(report.get("terminal_reasons", {})),
+            "rows": dg.MetadataValue.json(rows),
         }
 
     def _research_brief_queue_metadata(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -5728,6 +5743,101 @@ if dg is not None:
     @dg.asset(
         group_name="ai_research",
         config_schema={
+            "enabled": dg.Field(bool, default_value=True, description="Allow live falsification loops when dry_run is false."),
+            "dry_run": dg.Field(bool, default_value=True, description="Preview selected candidates without running any loop."),
+            "max_candidates_per_tick": dg.Field(int, default_value=3),
+            "budget_usd_per_candidate": dg.Field(float, default_value=0.50),
+            "tick_budget_usd": dg.Field(float, default_value=2.0, description="Hard cost cap across the whole tick."),
+            "runner_kind": dg.Field(str, default_value="modal"),
+        },
+    )
+    def falsification_loop_report(
+        context,
+        research_repository: ResearchRepositoryResource,
+    ) -> dg.MaterializeResult:
+        """Autonomous falsification-loop scheduler tick: run budget-capped falsification campaigns for
+        VALIDATION-READY public candidates. NEVER promotes — run_falsification_loop terminates a
+        refuting/neutral outcome without promotion (the Megquier shape); the human write-gate stays
+        terminal."""
+
+        from .service import HSAResearchService
+
+        config = context.op_config
+        enabled = bool(config.get("enabled", True))
+        dry_run = bool(config.get("dry_run", True))
+        max_candidates_per_tick = int(config.get("max_candidates_per_tick", 3))
+        budget_usd_per_candidate = float(config.get("budget_usd_per_candidate", 0.50))
+        tick_budget_usd = float(config.get("tick_budget_usd", 2.0))
+        runner_kind = str(config.get("runner_kind") or "modal")
+
+        repository = research_repository.build_repository()
+        service = HSAResearchService(repository)
+
+        library = service.list_public_candidates(PublicCandidateLibraryRequest(limit=500))
+        ready = [record for record in library.candidates if record.validation_ready is True]
+
+        rows: list[dict[str, Any]] = []
+        terminal_reasons: dict[str, int] = {}
+        running_cost = 0.0
+        processed = 0
+        budget_exhausted = False
+
+        if enabled:
+            for record in ready:
+                if processed >= max_candidates_per_tick:
+                    break
+                if running_cost >= tick_budget_usd:
+                    budget_exhausted = True
+                    break
+
+                candidate_id = record.candidate_id
+                if dry_run:
+                    rows.append({"candidate_id": candidate_id, "dry_run": True})
+                    processed += 1
+                    continue
+
+                result = service.run_falsification_loop(
+                    candidate_id,
+                    budget_usd=budget_usd_per_candidate,
+                    runner_kind=runner_kind,
+                    submitted_by=f"falsification_loop_scheduler:{context.run_id}",
+                )
+                if result is None:
+                    continue
+                running_cost += float(result.total_est_cost_usd)
+                terminal_reasons[result.terminal_reason] = terminal_reasons.get(result.terminal_reason, 0) + 1
+                rows.append(
+                    {
+                        "candidate_id": result.candidate_id,
+                        "terminal_reason": result.terminal_reason,
+                        "leading_hypothesis_status": result.leading_hypothesis_status,
+                        "rounds_run": result.rounds_run,
+                        "total_est_cost_usd": float(result.total_est_cost_usd),
+                        "promoted": bool(result.promoted),
+                    }
+                )
+                processed += 1
+
+        report = {
+            "enabled": enabled,
+            "dry_run": dry_run,
+            "runner_kind": runner_kind,
+            "candidates_available": len(ready),
+            "candidates_processed": processed,
+            "total_est_cost_usd": running_cost,
+            "budget_exhausted": budget_exhausted,
+            "any_promoted": any(bool(row.get("promoted", False)) for row in rows),
+            "terminal_reasons": terminal_reasons,
+            "rows": rows,
+        }
+        return dg.MaterializeResult(
+            value=report,
+            metadata=_falsification_loop_metadata(report),
+        )
+
+    @dg.asset(
+        group_name="ai_research",
+        config_schema={
             "brief_ids": dg.Field(
                 [str],
                 default_value=[],
@@ -7963,6 +8073,20 @@ if dg is not None:
             metadata={"missing": missing, "required": sorted(required)},
         )
 
+    @dg.asset_check(asset=falsification_loop_report)
+    def falsification_loop_never_promotes(falsification_loop_report: dict) -> dg.AssetCheckResult:
+        """The autonomous falsification loop must NEVER promote a candidate — the human write-gate
+        stays terminal (the Megquier shape)."""
+
+        any_promoted = bool(falsification_loop_report.get("any_promoted", False))
+        return dg.AssetCheckResult(
+            passed=any_promoted is False,
+            metadata={
+                "any_promoted": any_promoted,
+                "candidates_processed": int(falsification_loop_report.get("candidates_processed", 0)),
+            },
+        )
+
     @dg.asset_check(asset=structured_source_pipeline_report)
     def structured_source_pipeline_has_minimum_outputs(
         structured_source_pipeline_report: dict,
@@ -8382,6 +8506,7 @@ if dg is not None:
         md_expert_review_packet_report,
         md_expert_agent_review_report,
         validation_autopilot_report,
+        falsification_loop_report,
         research_brief_queue_report,
         research_brief_queue_batch_report,
         research_brief_queue_seed_report,
@@ -8691,6 +8816,10 @@ if dg is not None:
         "validation_autopilot_job",
         selection=dg.AssetSelection.assets(validation_autopilot_report),
     )
+    falsification_loop_job = dg.define_asset_job(
+        "falsification_loop_job",
+        selection=dg.AssetSelection.assets(falsification_loop_report),
+    )
     research_brief_queue_job = dg.define_asset_job(
         "research_brief_queue_job",
         selection=dg.AssetSelection.assets(research_brief_queue_report),
@@ -8932,6 +9061,27 @@ if dg is not None:
             }
         },
     )
+    falsification_loop_hourly_schedule = dg.ScheduleDefinition(
+        name="falsification_loop_hourly_schedule",
+        job=falsification_loop_job,
+        cron_schedule="0 * * * *",
+        execution_timezone=SCHEDULE_TIMEZONE,
+        default_status=dg.DefaultScheduleStatus.STOPPED,
+        run_config={
+            "ops": {
+                "falsification_loop_report": {
+                    "config": {
+                        "enabled": True,
+                        "dry_run": False,
+                        "max_candidates_per_tick": 3,
+                        "budget_usd_per_candidate": 0.50,
+                        "tick_budget_usd": 2.0,
+                        "runner_kind": "modal",
+                    }
+                }
+            }
+        },
+    )
     literature_full_text_source_date_daily_schedule = dg.ScheduleDefinition(
         name="literature_full_text_source_date_daily_schedule",
         job=literature_full_text_source_date_job,
@@ -8945,6 +9095,7 @@ if dg is not None:
         assets=ingestion_bridge_assets,
         asset_checks=[
             source_registry_has_phase_one_sources,
+            falsification_loop_never_promotes,
             structured_source_pipeline_has_minimum_outputs,
             structured_source_smoke_has_minimum_outputs,
             structured_source_multisource_smoke_has_minimum_outputs,
@@ -9036,6 +9187,7 @@ if dg is not None:
             md_expert_review_packet_job,
             md_expert_agent_review_job,
             validation_autopilot_job,
+            falsification_loop_job,
             research_brief_queue_job,
             research_brief_queue_batch_job,
             research_brief_queue_seed_job,
@@ -9081,6 +9233,7 @@ if dg is not None:
             embedding_maintenance_daily_schedule,
             source_health_daily_schedule,
             validation_autopilot_hourly_schedule,
+            falsification_loop_hourly_schedule,
             literature_full_text_source_date_daily_schedule,
         ],
         resources={
@@ -9154,6 +9307,8 @@ else:
     md_expert_review_packet_job = None
     md_expert_agent_review_job = None
     validation_autopilot_job = None
+    falsification_loop_report = None
+    falsification_loop_job = None
     research_brief_queue_job = None
     research_brief_queue_batch_job = None
     research_brief_queue_seed_job = None
@@ -9198,6 +9353,7 @@ else:
     embedding_maintenance_daily_schedule = None
     source_health_daily_schedule = None
     validation_autopilot_hourly_schedule = None
+    falsification_loop_hourly_schedule = None
     defs = None
 
 
