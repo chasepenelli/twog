@@ -604,6 +604,7 @@ ValidationPlanTaskType = Literal[
     "compound_screen",
     "docking",
     "boltz",
+    "cofolding",
     "md",
     "admet",
     "safety",
@@ -4053,6 +4054,7 @@ class ValidationAssayContext(StrictBaseModel):
 class ValidationRequest(StrictBaseModel):
     validation_type: Literal[
         "boltz",
+        "cofolding",
         "docking",
         "md",
         "admet",
@@ -6907,6 +6909,7 @@ class ModelProfile(StrictBaseModel):
 # at runtime as available_lanes() & FalsificationLane, never hardcoded (lanes != compute providers).
 FalsificationLane = Literal[
     "boltz",
+    "cofolding",
     "docking",
     "md",
     "admet",

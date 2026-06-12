@@ -14738,7 +14738,7 @@ def reset_service_for_tests() -> None:
 # UP to conservative per-run figures (steady-state with cached images/weights is cheaper). MD is
 # unmeasured here (expert-gated, hours-long A100) — kept as a deliberately high estimate. Exact billed
 # $ is in the Modal dashboard.
-LANE_COST_USD: dict[str, float] = {"omics": 0.01, "docking": 0.10, "md": 40.00}
+LANE_COST_USD: dict[str, float] = {"omics": 0.01, "docking": 0.10, "cofolding": 0.25, "md": 40.00}
 _DEFAULT_LANE_COST_USD = 100.0
 
 

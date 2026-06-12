@@ -135,8 +135,9 @@ def test_propose_prefers_lane_with_resolved_inputs(tmp_path):
 class _FakeResolvers:
     """Stands in for NetworkInputResolvers (PubChem + RCSB) — no network in CI."""
 
-    def __init__(self, smiles="CCO", structure=None):
+    def __init__(self, smiles="CCO", structure=None, sequence="MQIFVKTLTGK"):
         self._smiles = smiles
+        self._sequence = sequence
         self._structure = structure if structure is not None else {
             "receptor_pdb": "ATOM      1  N   ALA A   1      11.1  13.2   8.6  1.00\nEND\n",
             "pdb_id": "9XYZ", "center_x": 1.0, "center_y": 2.0, "center_z": 3.0,
@@ -147,6 +148,9 @@ class _FakeResolvers:
 
     def target_structure(self, target):
         return self._structure
+
+    def protein_sequence(self, target):
+        return self._sequence
 
 
 def _candidate_named(repo, service, cid, *, targets, therapies, lane_inputs_bag=None):
@@ -168,6 +172,17 @@ def test_network_resolves_docking_from_named_target_and_therapy(tmp_path):
     assert res.resolved is True and res.source == "network"
     assert res.config["ligand_smiles"] == "CCO" and res.config["receptor_pdb"].startswith("ATOM")
     assert res.config["target"] == "PIK3CA"
+
+
+def test_network_resolves_cofolding_sequence_from_named_target(tmp_path):
+    from hsa_research.ingestion_bridge import lane_inputs
+
+    service, repo = _svc(tmp_path, "cofold")
+    _candidate_named(repo, service, "vr-cofold", targets=["PIK3CA"], therapies=["alpelisib"])
+    cand = service.get_public_candidate("vr-cofold")
+    res = lane_inputs.resolve(cand, "cofolding", resolvers=_FakeResolvers())
+    assert res.resolved is True and res.source == "network"
+    assert res.config["protein_sequence"] == "MQIFVKTLTGK" and res.config["ligand_smiles"] == "CCO"
 
 
 def test_curated_inputs_win_over_network(tmp_path):

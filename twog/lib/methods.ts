@@ -36,6 +36,90 @@ export interface MethodRecord {
 
 export const methods: MethodRecord[] = [
   {
+    methodId: 'autonomous-discovery-loop-v1',
+    title: 'Autonomous Discovery Loop v2.2',
+    version: 'v2.2',
+    category: 'discovery orchestration',
+    status: 'active',
+    appliesTo: 'candidate cruxes',
+    claimsLevel: 'falsification attempt',
+    summary:
+      'How TWOG drives its own scientific crux: it proposes the next falsifying test, pre-registers a hashed kill-criterion before compute, resolves its own inputs, dispatches real GPU work, and audits the result through confound and provenance gates before deciding what to test next.',
+    heroStatement:
+      'The loop is falsification-first. For a leading hypothesis it proposes the test most likely to kill it, commits the kill-criterion before any compute runs, and never auto-promotes what survives. A supporting result is evidence the idea is harder to kill, not proof that it is true.',
+    operatorLine: 'Falsification first. The human write-gate is strictly terminal.',
+    flow: [
+      {
+        label: 'Propose the kill test',
+        detail:
+          'Given a candidate, the loop selects the next experiment most likely to falsify the leading hypothesis rather than the one most likely to confirm it.',
+      },
+      {
+        label: 'Pre-register the criterion',
+        detail:
+          'A kill-criterion is hashed and committed before any compute runs, so the threshold for failure cannot be moved after the result is known. This is the anti p-hacking gate.',
+      },
+      {
+        label: 'Resolve inputs',
+        detail:
+          'From a candidate’s named target and therapy, the loop fetches its own inputs: PubChem SMILES for the compound and an RCSB structure for the target, with no hand-curation.',
+      },
+      {
+        label: 'Dispatch compute',
+        detail:
+          'It runs real GPU compute on Modal and ledgers the artifact. In CI it falls back to an in-process mock provider so the loop is reproducible without a GPU.',
+      },
+      {
+        label: 'Gate and terminate',
+        detail:
+          'A result must clear mandatory confound and provenance pre-gates before it can be accepted; a supports result cannot be accepted until its known confounds survive controls. The loop then decides what to test next, and the human write-gate remains terminal.',
+      },
+    ],
+    auditFields: [
+      ['What is being tested', 'The leading hypothesis for a candidate and the falsifying experiment chosen to attack it.'],
+      ['Pre-registered criterion', 'The hashed kill-criterion committed before compute, with the hash and commit time.'],
+      ['Resolved inputs', 'The named target and therapy, the fetched RCSB structure, the PubChem SMILES, and their source provenance.'],
+      ['Compute run', 'Provider (Modal GPU or CI mock), job ID, docking and pose outputs, cost, and ledger reference.'],
+      ['Gate outcome', 'Confound-control results, provenance checks, the resulting verdict, and the explicit non-promotion record.'],
+    ],
+    sections: [
+      {
+        heading: 'Why falsification-first',
+        body:
+          'A confirmation-seeking engine drifts toward agreeable results. The loop instead proposes the test most likely to kill the leading hypothesis, so the work that survives is the work that resisted a genuine attempt to break it.',
+      },
+      {
+        heading: 'Why the criterion is pre-registered',
+        body:
+          'The kill-criterion is hashed and committed before any compute runs. Pre-registration removes the freedom to redefine success after seeing the numbers, which is the main route to p-hacking in an automated pipeline.',
+      },
+      {
+        heading: 'How inputs are resolved',
+        body:
+          'The loop starts from a candidate’s named target and therapy and fetches its own inputs — the RCSB structure for the target and the PubChem SMILES for the compound — instead of relying on a curated file someone prepared by hand.',
+      },
+      {
+        heading: 'How results are gated',
+        body:
+          'Confound and provenance pre-gates are mandatory. A supports result cannot be accepted until its known confounds survive controls, and verdicts are never recorded as true. Nothing the loop concludes is auto-promoted; the human write-gate is the only path to a record change.',
+      },
+      {
+        heading: 'What it does not claim',
+        body:
+          'Everything here is in-silico and hypothesis-generating. A surviving hypothesis is not a validated treatment. The bar the loop optimizes for is integrity and reproducibility, not clinical proof.',
+      },
+    ],
+    interpretationRules: [
+      'A surviving hypothesis is harder to kill, not proven true.',
+      'A pre-registered kill-criterion cannot be revised after the result is known.',
+      'A supports verdict is invalid until its known confounds survive controls.',
+      'No loop result is auto-promoted; the human write-gate is terminal.',
+      'In-silico survival is hypothesis-generating, not clinical validation.',
+    ],
+    boundary:
+      'Autonomous Discovery Loop v2.2 does not certify efficacy, safety, or clinical readiness. It runs reproducible, pre-registered falsification attempts in silico and leaves every promotion decision to a human operator.',
+  },
+  {
     methodId: 'candidate-record-v1',
     title: 'Candidate Record v1',
     version: 'v1',

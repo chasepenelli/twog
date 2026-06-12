@@ -153,6 +153,18 @@ def _generic_kill_criterion(lane: str) -> tuple[KillCriterion, str, str]:
             "Run MD to test binding-pose stability of the complex.",
             "supports",
         )
+    if lane == "cofolding":
+        return (
+            KillCriterion(
+                metric="iptm",
+                comparator="<",
+                threshold=0.5,
+                observed_signal_kills="refutes",
+                rationale="A low interface predicted-TM (no confident co-folded complex) refutes binding.",
+            ),
+            "Co-fold the target with the ligand to test complex formation + affinity.",
+            "supports",
+        )
     if lane == "omics":
         return (
             KillCriterion(

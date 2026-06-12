@@ -36,8 +36,9 @@ _REQUIRED_KEY_SETS: dict[str, list[tuple[str, ...]]] = {
 }
 
 
-# Lanes whose inputs can be auto-resolved from the network (target structure + ligand SMILES).
-_NETWORK_STRUCTURE_LANES = {"docking"}
+# Lanes whose inputs can be auto-resolved from the network.
+_NETWORK_STRUCTURE_LANES = {"docking"}  # target structure (RCSB) + ligand SMILES (PubChem)
+_NETWORK_SEQUENCE_LANES = {"cofolding"}  # target sequence (UniProt) + ligand SMILES (PubChem)
 
 
 def _candidate_lane_inputs(candidate: Any, lane: str) -> dict[str, Any] | None:
@@ -56,19 +57,28 @@ def _complete(lane: str, cfg: dict[str, Any]) -> bool:
 
 
 def _resolve_from_network(candidate: Any, lane: str, resolvers: Any) -> dict[str, Any] | None:
-    """For a structure lane, build the lane config from a candidate's NAMED target + therapy via the
-    injected resolvers (PubChem SMILES + RCSB structure). Returns None on any miss — never fabricates."""
-    if lane not in _NETWORK_STRUCTURE_LANES:
+    """Build a lane config from a candidate's NAMED target + therapy via the injected resolvers —
+    structure lanes get an RCSB receptor, sequence lanes a UniProt sequence, both a PubChem SMILES.
+    Returns None on any miss — never fabricates."""
+    if lane not in _NETWORK_STRUCTURE_LANES and lane not in _NETWORK_SEQUENCE_LANES:
         return None
     targets = getattr(candidate, "targets", []) or []
     therapies = getattr(candidate, "candidate_therapies", []) or []
     if not targets or not therapies:
         return None
     smiles = resolvers.compound_smiles(therapies[0])
-    structure = resolvers.target_structure(targets[0])
-    if not smiles or not structure or not structure.get("receptor_pdb"):
+    if not smiles:
         return None
-    return {**structure, "ligand_smiles": smiles, "target": targets[0], "ligand_name": therapies[0]}
+    common = {"ligand_smiles": smiles, "target": targets[0], "ligand_name": therapies[0]}
+    if lane in _NETWORK_STRUCTURE_LANES:
+        structure = resolvers.target_structure(targets[0])
+        if not structure or not structure.get("receptor_pdb"):
+            return None
+        return {**structure, **common}
+    sequence = resolvers.protein_sequence(targets[0])
+    if not sequence:
+        return None
+    return {"protein_sequence": sequence, **common}
 
 
 def resolve(candidate: Any, lane: str, *, resolvers: Any = None) -> LaneInputResolution:

@@ -87,6 +87,12 @@ const testingPath = [
       'The candidate record captures mechanism, citations, risks, methods, decision history, payload links, and known gaps.',
   },
   {
+    label: 'Autonomous crux',
+    mode: 'falsification-first loop',
+    detail:
+      'TWOG proposes the next test most likely to kill the leading hypothesis, pre-registers a hashed kill-criterion before compute, and resolves its own target/therapy inputs. Confound and provenance gates must pass; nothing is auto-promoted.',
+  },
+  {
     label: 'Validation packet',
     mode: 'explicit test plan',
     detail:

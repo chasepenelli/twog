@@ -46,13 +46,13 @@ def test_neutral_signal_runs_rounds_until_test_space_exhausted(tmp_path):
     # seed on 'homology' (no lane) so both ungated runnable lanes (omics, docking) are untested
     service, repo = _svc(tmp_path, "stand", "vr-loop-stand", signal="neutral", validation_type="homology")
     result = service.run_falsification_loop("vr-loop-stand")
-    # the loop runs omics then docking (cheapest-first, neither kills), then has nothing left.
-    # MD is expert-gated, so the unattended loop never proposes it.
+    # the loop runs the ungated lanes cheapest-first (omics, docking, cofolding; none kill), then has
+    # nothing left. MD is expert-gated, so the unattended loop never proposes it.
     assert result.terminal_reason == "no_runnable_proposal"
     assert result.leading_hypothesis_status == "standing"
-    assert result.rounds_run == 2
+    assert result.rounds_run == 3
     lanes = [r.plan.lane for r in result.rounds if r.plan is not None]
-    assert lanes == ["omics", "docking"]
+    assert lanes == ["omics", "docking", "cofolding"]
     assert "md" not in lanes  # expert-gated lane excluded from the autonomous loop
 
 

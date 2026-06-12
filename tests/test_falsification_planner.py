@@ -94,10 +94,9 @@ def test_kill_criterion_serializes_byte_stable():
 def test_runnable_lanes_are_science_lanes_not_providers(tmp_path):
     service, _ = _service(tmp_path, "runnable")
     runnable = service._runnable_falsification_lanes()
-    assert runnable <= {"docking", "md", "omics"}
-    assert "cofolding" not in runnable  # registered lane, but not in the validation_type Literal
-    assert runnable.isdisjoint({"mock", "modal", "local", "checkpoint", "modal_checkpoint"})
-    assert {"docking", "omics"} <= runnable  # registered AND in the Literal
+    assert runnable <= {"docking", "md", "omics", "cofolding"}  # registered AND in the validation_type Literal
+    assert runnable.isdisjoint({"mock", "modal", "local", "checkpoint", "modal_checkpoint"})  # never provider kinds
+    assert {"docking", "omics", "cofolding"} <= runnable
 
 
 # ---- belief distillation ---------------------------------------------------------------------

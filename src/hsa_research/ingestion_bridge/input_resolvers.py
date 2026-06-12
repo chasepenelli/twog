@@ -24,6 +24,10 @@ _PUBCHEM_SMILES = (
 )
 _RCSB_SEARCH = "https://search.rcsb.org/rcsbsearch/v2/query"
 _RCSB_DOWNLOAD = "https://files.rcsb.org/download/{pdb_id}.pdb"
+_UNIPROT_SEARCH = (
+    "https://rest.uniprot.org/uniprotkb/search?query=gene:{gene}+AND+reviewed:true"
+    "&format=json&size=1&fields=sequence"
+)
 
 
 def _http_get(url: str, timeout: int = 60) -> str:
@@ -73,6 +77,7 @@ class NetworkInputResolvers:
     def __init__(self) -> None:
         self._smiles_cache: dict[str, str | None] = {}
         self._structure_cache: dict[str, dict[str, Any] | None] = {}
+        self._sequence_cache: dict[str, str | None] = {}
 
     def compound_smiles(self, name: str) -> str | None:
         if name in self._smiles_cache:
@@ -101,6 +106,22 @@ class NetworkInputResolvers:
             result = None
         self._structure_cache[target] = result
         return result
+
+    def protein_sequence(self, target: str) -> str | None:
+        """Resolve a target gene name to its reviewed (Swiss-Prot) canonical sequence — for co-folding."""
+        if target in self._sequence_cache:
+            return self._sequence_cache[target]
+        seq: str | None = None
+        try:
+            raw = _http_get(_UNIPROT_SEARCH.format(gene=urllib.parse.quote(target)))
+            results = json.loads(raw).get("results") or []
+            if results:
+                value = (results[0].get("sequence") or {}).get("value")
+                seq = value or None
+        except Exception:  # noqa: BLE001
+            seq = None
+        self._sequence_cache[target] = seq
+        return seq
 
     def _top_pdb_id(self, target: str) -> str | None:
         query = {

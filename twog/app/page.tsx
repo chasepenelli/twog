@@ -46,6 +46,14 @@ const HERO_MARKERS = [
   ['Structured check-ins', 'ProofCapsules from reviewers and sandboxes'],
 ] as const;
 
+const LOOP_STEPS = [
+  ['01', 'Propose the kill test', 'TWOG picks the next experiment most likely to falsify the leading hypothesis, not the one most likely to confirm it.'],
+  ['02', 'Pre-register the criterion', 'A hashed kill-criterion is committed before any compute runs, so the bar for failure cannot move after the result.'],
+  ['03', 'Resolve its own inputs', 'From a candidate’s named target and therapy, it fetches the PubChem SMILES and RCSB structure itself — no hand-curated files.'],
+  ['04', 'Dispatch real compute', 'It runs the job on GPU via Modal and ledgers the artifact. In CI it falls back to an in-process mock provider with no GPU.'],
+  ['05', 'Gate, then decide', 'Confound and provenance pre-gates must pass before a result is accepted, and it chooses what to test next. The human write-gate stays terminal.'],
+] as const;
+
 export default function Home() {
   const featured = getFeaturedCandidate();
   const candidate = featured?.candidate;
@@ -110,6 +118,55 @@ export default function Home() {
             </p>
           </div>
         </div>
+      </section>
+
+      <section className="home-section home-engine-section" data-marker="V2.2 / AUTONOMOUS DISCOVERY LOOP">
+        <div className="home-section-grid">
+          <div className="home-section-header">
+            <p className="section-kicker">Autonomous discovery loop</p>
+            <h2>TWOG now drives its own scientific crux.</h2>
+            <p>
+              Given a candidate, TWOG proposes the test most likely to kill the leading
+              hypothesis, pre-registers a hashed kill-criterion before any compute, fetches
+              its own inputs, runs real GPU work, and audits the result through mandatory
+              confound and provenance gates. A result that supports the idea is never
+              treated as &ldquo;true,&rdquo; and nothing it concludes is ever auto-promoted.
+            </p>
+            <p className="operator-line">
+              Falsification first. The human write-gate stays terminal.
+            </p>
+          </div>
+
+          <div className="home-process-list" aria-label="TWOG autonomous discovery loop">
+            {LOOP_STEPS.map(([number, label, text]) => (
+              <article className="home-process-step" key={label}>
+                <code>{number}</code>
+                <div>
+                  <h3>{label}</h3>
+                  <p>{text}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+
+        <article className="home-record-card editorial-record-card" aria-label="Autonomous loop proof run">
+          <div className="proof-header">
+            <span>Proven live</span>
+            <code>target=PIK3CA · therapy=alpelisib</code>
+          </div>
+          <h3>The hypothesis survived its own falsification attempt.</h3>
+          <p>
+            Given only a named target and therapy — no curated inputs — the loop fetched the
+            PI3Kα structure and alpelisib SMILES and ran real gnina docking on a Modal A100.
+          </p>
+          <div className="proof-metrics">
+            <span>Dock / −9.8 kcal/mol</span>
+            <span>CNN pose / 0.99</span>
+            <span>Verdict / supports (not promoted)</span>
+            <span>Cost / ~$0.10</span>
+          </div>
+        </article>
       </section>
 
       <section className="home-section home-loop-section" data-marker="OPERATING LOOP / EVIDENCE REVIEW RECORD">
