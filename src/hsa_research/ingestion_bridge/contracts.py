@@ -7149,3 +7149,16 @@ class FailureCorpusEntry(StrictBaseModel):
     related_capsule_id: UUID | None = None
     summary: str = Field(default="", max_length=2000)
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+# --- Increment 7: lane input resolution -------------------------------------------------------
+# Turns a candidate's curated inputs into the real lane config a Modal dispatch needs (receptor_pdb +
+# ligand_smiles for docking, expression + strata for omics, ...). Honest: a candidate without real
+# inputs resolves to resolved=False (the test is recorded but not run as garbage), never fabricated.
+class LaneInputResolution(StrictBaseModel):
+    lane: str = Field(min_length=1, max_length=100)
+    config_key: str = Field(min_length=1, max_length=100)  # the validation_request.metadata key the lane reads
+    resolved: bool
+    config: dict[str, Any] = Field(default_factory=dict)
+    missing: list[str] = Field(default_factory=list, max_length=20)
+    source: str = Field(default="", max_length=200)

@@ -273,11 +273,12 @@ from .lanes import (
     register_lane,
     resolve_sandbox_environment,
 )
-from . import confound_auditor, failure_corpus, falsification_planner, provenance_auditor
+from . import confound_auditor, failure_corpus, falsification_planner, lane_inputs, provenance_auditor
 from .contracts import (
     ConfoundVerdict,
     FailureCorpusEntry,
     FalsificationLane,
+    LaneInputResolution,
     FalsificationLoopResult,
     FalsificationPlan,
     FalsificationPlannerResult,
@@ -1974,6 +1975,15 @@ class HSAResearchService:
             for entry in failure_corpus.derive(capsules)
         ]
 
+    def resolve_lane_inputs(self, candidate_id: str, lane: str) -> LaneInputResolution | None:
+        """Resolve the real compute inputs a candidate carries for a science lane (so a falsification
+        test on that lane can run real Modal compute), or report what's missing. Returns None if the
+        candidate does not exist. Honest: never fabricates inputs."""
+        candidate = self.get_public_candidate(candidate_id)
+        if candidate is None:
+            return None
+        return lane_inputs.resolve(candidate, lane)
+
     # --- Falsification round: pre-registration + auto-dispatch (increment 2) --------------------
     def _falsification_preregistration_hash(
         self, *, candidate_id: str, lane: str, kill_criterion: KillCriterion, expected_signal: str
@@ -2022,6 +2032,14 @@ class HSAResearchService:
         }
         candidate = self.get_public_candidate(plan.candidate_id)
         target_name = (candidate.targets[0] if candidate and candidate.targets else None) or "unspecified_target"
+        # Increment 7: resolve real lane inputs from the candidate so a Modal dispatch runs real
+        # compute. If unresolved, the test is still pre-registered but carries no fabricated inputs —
+        # a real provider surfaces the gap (mock ignores inputs, so the loop stays testable in CI).
+        resolution = lane_inputs.resolve(candidate, plan.lane) if candidate is not None else None
+        prereg_block["inputs_resolved"] = bool(resolution and resolution.resolved)
+        request_metadata: dict[str, Any] = {"falsification_preregistration": prereg_block}
+        if resolution is not None and resolution.resolved:
+            request_metadata[resolution.config_key] = resolution.config
         request = ValidationRequest(
             validation_type=plan.validation_type,  # type: ignore[arg-type]
             candidate_name=plan.candidate_id,
@@ -2036,7 +2054,7 @@ class HSAResearchService:
                 readout="directional signal vs the pre-registered kill-criterion",
                 endpoint="computational plausibility",
             ),
-            metadata={"falsification_preregistration": prereg_block},
+            metadata=request_metadata,
         )
         queue_item = self.repository.upsert_validation_request_queue_item(
             ValidationRequestQueueItem(
@@ -2049,7 +2067,7 @@ class HSAResearchService:
                 objective=plan.test_objective,
                 rationale=plan.rank_rationale or "Agent-proposed falsification test (read-only planner).",
                 validation_request=request,
-                metadata={"falsification_preregistration": prereg_block},
+                metadata=request_metadata,
             )
         )
         self.approve_validation_request_queue_item(queue_item.queue_item_id, approved_by=approved_by)
