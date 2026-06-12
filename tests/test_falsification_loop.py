@@ -59,12 +59,12 @@ def test_neutral_signal_runs_rounds_until_test_space_exhausted(tmp_path):
 # ---- termination knobs -----------------------------------------------------------------------
 def test_budget_caps_the_campaign(tmp_path):
     service, repo = _svc(tmp_path, "budget", "vr-loop-budget", signal="neutral", validation_type="homology")
-    result = service.run_falsification_loop("vr-loop-budget", budget_usd=0.4)
-    # round 1 (omics, ~$0.50) pushes spend past the $0.40 ceiling -> stop before round 2
+    result = service.run_falsification_loop("vr-loop-budget", budget_usd=0.005)
+    # round 1 (omics, ~$0.01 calibrated) pushes spend past the $0.005 ceiling -> stop before round 2
     assert result.terminal_reason == "budget_exhausted"
     assert result.rounds_run == 1
     assert result.leading_hypothesis_status == "underpowered"
-    assert result.total_est_cost_usd >= 0.4
+    assert result.total_est_cost_usd >= 0.005
 
 
 def test_max_rounds_caps_the_campaign(tmp_path):

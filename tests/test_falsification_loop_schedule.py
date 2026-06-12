@@ -76,7 +76,8 @@ def test_loop_tick_runs_campaigns_and_never_promotes(tmp_path):
 # ---- 2. the tick budget hard-caps the campaign ------------------------------------------------
 def test_tick_budget_caps_candidates_processed(tmp_path):
     repo = _repo(tmp_path, "budget")
-    # each neutral/homology candidate costs ~$0.50/round; a $0.60 tick cap admits one then stops.
+    # each neutral/homology candidate costs ~$0.11 (omics $0.01 + docking $0.10, calibrated); a
+    # $0.05 tick cap admits one candidate then short-circuits the rest.
     for i in range(4):
         _seed_ready(repo, f"vr-loop-budget-{i}", signal="neutral", validation_type="homology")
 
@@ -88,7 +89,7 @@ def test_tick_budget_caps_candidates_processed(tmp_path):
             "runner_kind": "mock",
             "max_candidates_per_tick": 10,
             "budget_usd_per_candidate": 0.50,
-            "tick_budget_usd": 0.60,
+            "tick_budget_usd": 0.05,
         },
     )
     assert result.success

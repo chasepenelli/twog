@@ -14709,11 +14709,13 @@ def reset_service_for_tests() -> None:
     _SERVICE = None
 
 
-# Forward per-lane cost ESTIMATES (USD) — coarse ordinal (omics < docking < md), used ONLY to rank
-# proposed falsification tests by value-of-information per dollar. NOT a measured cost; real run costs
-# replace these downstream (increment 2+). Per the standing spend rule, this only ranks what WOULD
-# spend later — the planner itself spends nothing.
-LANE_COST_USD: dict[str, float] = {"omics": 0.50, "docking": 2.50, "md": 40.00}
+# Forward per-lane cost estimates (USD) for VOI/cost ranking + loop budget caps. CALIBRATED against a
+# real Modal baseline (scripts/modal_cost_baseline.py, first-run wall-clock incl. one-time image build):
+# omics CPU ~$0.0001 (5.9s), gnina docking A100 ~$0.07 (64s), Boltz cofold A100 ~$0.23 (213s). Rounded
+# UP to conservative per-run figures (steady-state with cached images/weights is cheaper). MD is
+# unmeasured here (expert-gated, hours-long A100) — kept as a deliberately high estimate. Exact billed
+# $ is in the Modal dashboard.
+LANE_COST_USD: dict[str, float] = {"omics": 0.01, "docking": 0.10, "md": 40.00}
 _DEFAULT_LANE_COST_USD = 100.0
 
 
