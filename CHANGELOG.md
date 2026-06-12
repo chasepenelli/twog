@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.2.0 — The autonomous discovery loop
+
+TWOG now drives its own scientific crux. Given a candidate, the system proposes the next test most
+likely to KILL the leading hypothesis, fetches its own inputs, runs real GPU compute, audits the
+result, and decides what to do next — falsification-first, with the human write-gate strictly
+terminal. Nothing it concludes is ever auto-promoted.
+
+### The loop
+- **Active Falsification Planner** — reads a candidate's signed evidence ledger and proposes the
+  cheapest test that could refute the leading hypothesis, pre-registering an explicit kill-criterion.
+- **Pre-registration lock** — the kill-criterion is content-hashed BEFORE any compute runs and rides
+  unchanged onto the produced proof capsule (anti p-hacking).
+- **Confound + Provenance pre-gates** — a `supports` capsule cannot be accepted until its known
+  confounds each survive a control (the tumor-purity catch, made mandatory), and a capsule's claimed
+  run must match its linked compute job ("claimed V100, ran H100"). Verdicts are never "true".
+- **Multi-round controller** — chains rounds until the kill-criterion is met, the test space is
+  exhausted, or the budget / round cap is hit; a refuting outcome terminates WITHOUT promotion.
+- **Failure Corpus** — accumulating, queryable negative knowledge; the planner deprioritizes
+  already-settled approaches.
+- **Input-aware + self-supplying** — the planner prefers lanes it can actually run, and resolves real
+  inputs from a candidate's named target + therapy (PubChem SMILES + RCSB structure) — no curation.
+- **Scheduler** — a STOPPED-by-default Dagster schedule ticks the loop for validation-ready candidates
+  between operator sessions, budget-capped, never promoting.
+
+### Proven on real science
+Pointed at the alpelisib → PI3Kα hypothesis (named target + therapy only), the loop autonomously
+fetched the PI3Kα structure + alpelisib SMILES, dispatched real gnina docking on a Modal A100, and
+found strong engagement (−9.8 kcal/mol, CNN pose 0.99) → the hypothesis SURVIVED its own falsification
+attempt, and nothing was promoted. Real Modal cost ~$0.10/round.
+
+### Also
+- Fixed the adapter→Modal path (the lane functions dragged the heavy package onto the slim GPU images);
+  `runner_kind="modal"` now runs real compute end-to-end.
+- Calibrated per-lane cost from a real Modal baseline (omics CPU ~$0.0001, docking A100 ~$0.07,
+  cofolding A100 ~$0.23).
+- 640 tests; the loop runs entirely on the in-process mock provider in CI (no GPU, no network).
+
 ## v2.1.0 — Reproducible GPU compute, a validated in-silico chain, and a rigor spine
 
 This release matures TWOG v2 from "structured proof of concept" into a system that carries a

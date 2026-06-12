@@ -51,6 +51,29 @@ That audit trail is the product.
 - OpenRouter-backed agent lanes for synthesis, critique, evaluation, and research-program reasoning.
 - Provider-agnostic, GPU-accelerated **compute lanes** (docking, co-folding, molecular dynamics, omics) with reproducible pinned environments and checkpoint/resume.
 
+## v2.2 — The Autonomous Discovery Loop
+
+v2.2 closes the loop: TWOG now **drives its own scientific crux**. Point it at a candidate and it
+proposes the next test most likely to *kill* the leading hypothesis, fetches its own inputs, runs real
+GPU compute, audits the result, and decides what to test next — falsification-first, with the human
+write-gate strictly terminal. **Nothing it concludes is ever auto-promoted.** See
+[CHANGELOG.md](CHANGELOG.md).
+
+- **It chooses, runs, and judges its own experiments.** `run_falsification_loop(candidate)` proposes a
+  falsification (pre-registering a hashed kill-criterion *before* compute), resolves real inputs from a
+  candidate's named target + therapy (PubChem SMILES + RCSB structure — no hand-curation), dispatches
+  real compute on Modal, and evaluates the result against the pre-registration.
+- **Rigor is inside the loop, not bolted on.** A `supports` result can't be accepted until its known
+  confounds each survive a control (the tumor-purity catch, made *mandatory*) and its claimed run
+  matches reality. Verdicts are never "true". A refuting outcome terminates the campaign *without*
+  promotion.
+- **Proven on real science.** Given only `target=PIK3CA, therapy=alpelisib`, the loop autonomously
+  fetched the structure + SMILES and ran real gnina docking on a Modal A100 (−9.8 kcal/mol, CNN pose
+  0.99) → the hypothesis *survived* its own falsification attempt, nothing promoted, ~$0.10.
+- **Runs unattended (when you let it).** A STOPPED-by-default Dagster schedule ticks the loop for
+  validation-ready candidates between sessions, budget-capped, never promoting. CI exercises the whole
+  loop on an in-process mock provider (no GPU, no network).
+
 ## v2.1 — What's New
 
 v2.1 matures the compute and rigor layers and runs one honest end-to-end example. Everything below

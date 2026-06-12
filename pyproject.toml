@@ -1,7 +1,7 @@
 [project]
 name = "hsa_dagster"
 requires-python = ">=3.11,<3.15"
-version = "2.1.0"
+version = "2.2.0"
 license = "Apache-2.0"
 dependencies = [
     "dagster==1.13.2",
