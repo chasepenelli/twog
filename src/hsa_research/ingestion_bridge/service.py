@@ -273,9 +273,10 @@ from .lanes import (
     register_lane,
     resolve_sandbox_environment,
 )
-from . import confound_auditor, falsification_planner, provenance_auditor
+from . import confound_auditor, failure_corpus, falsification_planner, provenance_auditor
 from .contracts import (
     ConfoundVerdict,
+    FailureCorpusEntry,
     FalsificationLane,
     FalsificationLoopResult,
     FalsificationPlan,
@@ -1939,6 +1940,7 @@ class HSAResearchService:
         ).capsules
         decisions = self.list_validation_decisions(candidate_id=candidate_id, limit=50)
         provider_configured = bool(available_compute_runners())
+        ruled_out = frozenset(failure_corpus.ruled_out_lanes(capsules))  # inc6 novelty penalty
 
         def _run() -> FalsificationPlannerResult:
             result = falsification_planner.propose(
@@ -1947,6 +1949,7 @@ class HSAResearchService:
                 decisions,
                 runnable_lanes=runnable,
                 cost_fn=self._estimate_lane_cost,
+                ruled_out=ruled_out,
             )
             if not provider_configured and "no_compute_provider" not in result.blockers:
                 result = result.model_copy(update={"blockers": [*result.blockers, "no_compute_provider"]})
@@ -1958,6 +1961,18 @@ class HSAResearchService:
             input_payload={"candidate_id": candidate_id},
             execute=_run,
         )
+
+    def get_failure_corpus(self, candidate_id: str) -> list[FailureCorpusEntry]:
+        """The candidate's accumulated negative knowledge: refuted tests + caught confounds, derived
+        from the persistent capsule ledger (no separate store). Read-only; queryable by operators and
+        read by the planner to deprioritize already-settled approaches."""
+        capsules = self.list_proof_capsules(
+            ProofCapsuleLibraryRequest(candidate_id=candidate_id, limit=200)
+        ).capsules
+        return [
+            FailureCorpusEntry(candidate_id=candidate_id, **entry)
+            for entry in failure_corpus.derive(capsules)
+        ]
 
     # --- Falsification round: pre-registration + auto-dispatch (increment 2) --------------------
     def _falsification_preregistration_hash(

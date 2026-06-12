@@ -7128,3 +7128,24 @@ class FalsificationLoopResult(StrictBaseModel):
     total_est_cost_usd: float = Field(default=0.0, ge=0.0)
     promoted: Literal[False] = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+# --- Increment 6: Failure Corpus --------------------------------------------------------------
+# The accumulating, queryable record of NEGATIVE knowledge — what has been ruled out for a candidate
+# and why. Derived from the persistent capsule ledger (a capsule carrying a pre-registration whose
+# kill-criterion was met = a refuted test; a capsule that controlled a confound = a caught confound).
+# The planner reads it to deprioritize already-refuted approaches (a novelty penalty).
+FailureCorpusEntryKind = Literal["refuted_test", "caught_confound"]
+
+
+class FailureCorpusEntry(StrictBaseModel):
+    candidate_id: str = Field(min_length=1, max_length=260)
+    kind: FailureCorpusEntryKind
+    lane: str | None = Field(default=None, max_length=100)
+    validation_type: str | None = Field(default=None, max_length=100)
+    confound: str | None = Field(default=None, max_length=100)
+    observed_signal: str | None = Field(default=None, max_length=40)
+    preregistration_hash: str | None = Field(default=None, max_length=160)
+    related_capsule_id: UUID | None = None
+    summary: str = Field(default="", max_length=2000)
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

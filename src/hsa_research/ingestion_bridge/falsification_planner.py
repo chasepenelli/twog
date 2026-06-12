@@ -238,10 +238,12 @@ def rank_falsification_tests(
     belief: BeliefState,
     runnable_lanes: set[str],
     cost_fn: Callable[[str], float],
+    ruled_out: frozenset[str] = frozenset(),
 ) -> list[FalsificationPlan]:
     """Generate candidate tests and rank them by value-of-information per dollar (falsification-first).
     Confound-audit tests are keyed on the confound (not the lane), so they survive lane de-dup; generic
-    orthogonal tests are skipped for already-tested lanes."""
+    orthogonal tests are skipped for already-tested lanes. ``ruled_out`` lanes (settled in the Failure
+    Corpus) take a novelty penalty so the planner does not revisit a refuted approach."""
     plans: list[FalsificationPlan] = []
 
     for flag in belief.open_confounds:
@@ -257,6 +259,19 @@ def rank_falsification_tests(
             continue
         plans.append(_generic_plan(belief, lane, cost_fn))
 
+    if ruled_out:  # novelty penalty: deprioritize approaches already settled (refuted) for this candidate
+        plans = [
+            p.model_copy(
+                update={
+                    "value_of_information": round(p.value_of_information * 0.5, 6),
+                    "novelty_note": "Lane previously refuted for this candidate — deprioritized (novelty penalty).",
+                }
+            )
+            if p.lane in ruled_out
+            else p
+            for p in plans
+        ]
+
     # Rank by VOI per dollar (cheaper wins on equal VOI), then by raw cost, then lane for stability.
     plans.sort(key=lambda p: (-(p.value_of_information / max(p.est_cost_usd, 1e-6)), p.est_cost_usd, p.lane))
     return plans
@@ -269,10 +284,11 @@ def propose(
     *,
     runnable_lanes: set[str],
     cost_fn: Callable[[str], float],
+    ruled_out: frozenset[str] = frozenset(),
 ) -> FalsificationPlannerResult:
     """Compose belief distillation + ranking into a read-only proposal."""
     belief = distill_belief_state(candidate, capsules, decisions)
-    ranked = rank_falsification_tests(belief, set(runnable_lanes), cost_fn)
+    ranked = rank_falsification_tests(belief, set(runnable_lanes), cost_fn, ruled_out=ruled_out)
 
     blockers: list[str] = []
     if belief.signalful_capsule_count < 2:
