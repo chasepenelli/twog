@@ -6890,3 +6890,121 @@ class ModelProfile(StrictBaseModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_tokens: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# ----------------------------------------------------------------------------------------------
+# Active Falsification Planner (autonomous discovery — increment 1, read-only proposer)
+# ----------------------------------------------------------------------------------------------
+# twog's first genuinely autonomous discovery move: an agent reads a candidate's signed proof-capsule
+# ledger and proposes the next cheapest test that could KILL the leading hypothesis, pre-registering
+# an explicit kill-criterion and a lane that is actually runnable. It is READ-ONLY — it never writes a
+# capsule/compute job and never touches the accept/promote write-gate; the proposal is provenance
+# logged via AgentRunner. (autonomy + rigor in the same act: a plan that cannot name what it would
+# refute is rejected; thin evidence yields low confidence + a blocker, never crisp-but-hollow certainty.)
+
+# FalsificationLane is the SCIENCE-lane axis. Its members MUST equal ValidationRequest.validation_type
+# — a unit test asserts this so the Literal can never silently drift. The RUNNABLE subset is computed
+# at runtime as available_lanes() & FalsificationLane, never hardcoded (lanes != compute providers).
+FalsificationLane = Literal[
+    "boltz",
+    "docking",
+    "md",
+    "admet",
+    "homology",
+    "safety",
+    "expert_review",
+    "wet_lab",
+    "omics",
+]
+
+
+class KillCriterion(StrictBaseModel):
+    """A pre-registered, falsification-first stopping rule: the observed signal that KILLS the
+    hypothesis, fixed BEFORE the test runs (anti-p-hacking). Serializes deterministically
+    (no factory defaults) so a later increment can content-hash it as the pre-registration lock."""
+
+    metric: str = Field(min_length=1, max_length=200)
+    comparator: Literal["<", ">", "==", "!=", "signal_is"]
+    threshold: float | str
+    observed_signal_kills: Literal["refutes", "neutral"] = "refutes"
+    rationale: str = Field(min_length=8, max_length=2000)
+
+
+class ConfoundFlag(StrictBaseModel):
+    """An orthogonal explanation that could make a `supports` signal an artifact. `refutes_capsule_id`
+    names the SPECIFIC ledger capsule the confound undermines (so it is verifiable, not a template)."""
+
+    kind: Literal[
+        "tumor_purity",
+        "batch",
+        "cell_composition",
+        "normalization",
+        "base_rate",
+        "leakage",
+        "other",
+    ]
+    status: Literal["open", "controlled", "unauditable"]
+    control_lane: FalsificationLane | None = None
+    refutes_capsule_id: UUID | None = None
+
+
+class BeliefState(StrictBaseModel):
+    """The distilled state of belief about a candidate, read from its signed evidence ledger.
+    `signalful_capsule_count` (how many capsules actually carried a signal) gates confidence so a
+    thin evidence base can never produce crisp certainty."""
+
+    candidate_id: str = Field(min_length=1, max_length=260)
+    leading_hypothesis: str = Field(default="", max_length=2000)
+    net_signal: Literal["supports", "refutes", "neutral", "none"] = "none"
+    net_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    supporting_capsule_ids: list[UUID] = Field(default_factory=list)
+    refuting_capsule_ids: list[UUID] = Field(default_factory=list)
+    open_confounds: list[ConfoundFlag] = Field(default_factory=list)
+    tested_lanes: list[FalsificationLane] = Field(default_factory=list)
+    ledger_capsule_count: int = Field(default=0, ge=0)
+    signalful_capsule_count: int = Field(default=0, ge=0)
+
+
+class FalsificationPlan(StrictBaseModel):
+    """A proposed next test, optimized to REFUTE the leading hypothesis. If it addresses a confound it
+    must name the capsule(s) it would refute (enforced below)."""
+
+    plan_id: UUID = Field(default_factory=uuid4)
+    candidate_id: str = Field(min_length=1, max_length=260)
+    hypothesis: str = Field(default="", max_length=2000)
+    test_objective: str = Field(min_length=1, max_length=2000)
+    lane: FalsificationLane
+    validation_type: str = Field(min_length=1, max_length=100)
+    kill_criterion: KillCriterion
+    expected_signal_if_alive: Literal["supports", "refutes", "neutral"]
+    addresses_confound: ConfoundFlag | None = None
+    targets_capsule_ids: list[UUID] = Field(default_factory=list)
+    est_cost_usd: float = Field(ge=0.0)
+    est_cost_source: Literal["lane_cost_table"] = "lane_cost_table"
+    value_of_information: float = Field(ge=0.0, le=1.0)
+    rank_rationale: str = Field(default="", max_length=2000)
+    novelty_note: str = Field(default="", max_length=1000)
+    provenance_flag: Literal["agent_proposed_unconfirmed"] = "agent_proposed_unconfirmed"
+    agent_run_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def require_targets_when_addressing_confound(self) -> "FalsificationPlan":
+        if self.addresses_confound is not None and not self.targets_capsule_ids:
+            raise ValueError(
+                "a falsification plan that addresses a confound must name the capsule(s) it would refute"
+            )
+        return self
+
+
+class FalsificationPlannerResult(StrictBaseModel):
+    """The planner's output. `agent_run_id` is a TOP-LEVEL field so AgentRunner stamps the durable run
+    id onto it; `runnable_lanes` snapshots what was dispatchable at plan time."""
+
+    candidate_id: str = Field(min_length=1, max_length=260)
+    belief_state: BeliefState
+    proposed: FalsificationPlan | None = None
+    alternatives: list[FalsificationPlan] = Field(default_factory=list, max_length=5)
+    blockers: list[str] = Field(default_factory=list, max_length=20)
+    runnable_lanes: list[FalsificationLane] = Field(default_factory=list)
+    agent_run_id: UUID | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

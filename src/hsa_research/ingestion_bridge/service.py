@@ -259,8 +259,22 @@ from .agent_performance import (
 from .agent_runner import AgentRunner
 from .claim_curator import ClaimCuratorAgent
 from .claim_extractor import extract_claims_for_chunks
-from .compute_runners import ComputeRunnerConfigError, ComputeRunnerRequestError, get_compute_runner
-from .lanes import LaneEnvironment, LaneSpec, get_lane, register_lane, resolve_sandbox_environment
+from .compute_runners import (
+    ComputeRunnerConfigError,
+    ComputeRunnerRequestError,
+    available_compute_runners,
+    get_compute_runner,
+)
+from .lanes import (
+    LaneEnvironment,
+    LaneSpec,
+    available_lanes,
+    get_lane,
+    register_lane,
+    resolve_sandbox_environment,
+)
+from . import falsification_planner
+from .contracts import FalsificationLane, FalsificationPlannerResult
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, build_embedding_provider, select_embedding_model_from_coverage
 from .evidence_fit import assess_research_followup_ingest_evidence_fit
 from .evidence_gap_resolver import (
@@ -1866,6 +1880,65 @@ class HSAResearchService:
         request: ProofCapsuleLibraryRequest | None = None,
     ) -> ProofCapsuleLibraryResult:
         return build_proof_capsule_library(self.repository, request or ProofCapsuleLibraryRequest())
+
+    # --- Active Falsification Planner (autonomous discovery — increment 1, read-only) -----------
+    def _estimate_lane_cost(self, lane: str, candidate: Any | None = None) -> float:
+        """Transparent FORWARD per-lane cost ESTIMATE (ordinal, not a measured cost). Used only to
+        rank proposed falsification tests by value-of-information per dollar; real run costs land
+        downstream (this is deliberately NOT _queue_item_cost_usd, which reads realized LLM spend)."""
+        return float(LANE_COST_USD.get(lane, _DEFAULT_LANE_COST_USD))
+
+    def _runnable_falsification_lanes(self, lane_allowlist: list[str] | None = None) -> set[str]:
+        """Science lanes that are BOTH registered as compute lanes AND valid falsification lanes:
+        available_lanes() & FalsificationLane. This is NOT available_compute_runners() (which returns
+        provider kinds like mock/modal). 'cofolding' is a registered lane but absent from the lane
+        Literal, so it is correctly excluded; today this yields {docking, md, omics}."""
+        runnable = set(available_lanes()) & set(FalsificationLane.__args__)
+        if lane_allowlist is not None:
+            runnable &= set(lane_allowlist)
+        return runnable
+
+    def propose_next_falsification(
+        self,
+        candidate_id: str,
+        *,
+        lane_allowlist: list[str] | None = None,
+        model_profile: str = "falsification_planner",
+    ) -> FalsificationPlannerResult | None:
+        """Autonomous discovery (read-only): read the candidate's signed proof-capsule ledger and
+        propose the next cheapest test that could KILL the leading hypothesis, pre-registering the
+        kill-criterion and a lane that is actually runnable. Performs ZERO writes to
+        candidates/capsules/compute jobs and never touches the accept/promote write-gate; the proposal
+        is provenance-logged as a durable agent_run. Returns None if the candidate does not exist."""
+        candidate = self.get_public_candidate(candidate_id)
+        if candidate is None:
+            return None
+
+        runnable = self._runnable_falsification_lanes(lane_allowlist)
+        capsules = self.list_proof_capsules(
+            ProofCapsuleLibraryRequest(candidate_id=candidate_id, limit=200)
+        ).capsules
+        decisions = self.list_validation_decisions(candidate_id=candidate_id, limit=50)
+        provider_configured = bool(available_compute_runners())
+
+        def _run() -> FalsificationPlannerResult:
+            result = falsification_planner.propose(
+                candidate,
+                capsules,
+                decisions,
+                runnable_lanes=runnable,
+                cost_fn=self._estimate_lane_cost,
+            )
+            if not provider_configured and "no_compute_provider" not in result.blockers:
+                result = result.model_copy(update={"blockers": [*result.blockers, "no_compute_provider"]})
+            return result
+
+        return AgentRunner(self.repository).run(
+            agent_name="active_falsification_planner",
+            model_profile=model_profile,
+            input_payload={"candidate_id": candidate_id},
+            execute=_run,
+        )
 
     def _transition_proof_capsule(
         self,
@@ -14206,6 +14279,14 @@ def reset_service_for_tests() -> None:
 
     global _SERVICE
     _SERVICE = None
+
+
+# Forward per-lane cost ESTIMATES (USD) — coarse ordinal (omics < docking < md), used ONLY to rank
+# proposed falsification tests by value-of-information per dollar. NOT a measured cost; real run costs
+# replace these downstream (increment 2+). Per the standing spend rule, this only ranks what WOULD
+# spend later — the planner itself spends nothing.
+LANE_COST_USD: dict[str, float] = {"omics": 0.50, "docking": 2.50, "md": 40.00}
+_DEFAULT_LANE_COST_USD = 100.0
 
 
 # --- Compute lane registry (ROADMAP P3 / PHASE3_PLAN 3a) -------------------------------------
