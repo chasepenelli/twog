@@ -7046,3 +7046,32 @@ class FalsificationRoundResult(StrictBaseModel):
     errors: list[str] = Field(default_factory=list, max_length=20)
     agent_run_id: UUID | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+# --- Increment 3: Confound Auditor pre-gate ---------------------------------------------------
+# A `supports` capsule may not be accepted onto a candidate until its known confounds are audited.
+# The verdict is NEVER "true": the best attainable status is "survived known confounds".
+ConfoundVerdictStatus = Literal[
+    "survived_known_confounds",  # every known confound for this lane has a surviving control
+    "unauditable",  # one or more controls are missing — cannot accept until run (NOT "clean")
+    "refuted",  # a control shows the signal vanishes under a confound — likely an artifact
+    "not_required",  # the capsule carries no supporting signal, so no audit applies
+]
+
+
+class ConfoundVerdict(StrictBaseModel):
+    """The Confound Auditor's adversarial verdict on a supporting capsule. `missing_controls` and
+    `demanded_control_plan` make a non-passing verdict actionable (reuses the falsification planner to
+    emit the exact control the candidate still owes)."""
+
+    capsule_id: UUID
+    candidate_id: str = Field(min_length=1, max_length=260)
+    status: ConfoundVerdictStatus
+    applicable_confounds: list[str] = Field(default_factory=list, max_length=40)
+    checked_confounds: list[str] = Field(default_factory=list, max_length=40)
+    missing_controls: list[str] = Field(default_factory=list, max_length=40)
+    refuted_by: list[str] = Field(default_factory=list, max_length=40)
+    demanded_control_plan: FalsificationPlan | None = None
+    rationale: str = Field(default="", max_length=2000)
+    auditor: str = Field(default="twog_confound_auditor", max_length=200)
+    audited_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

@@ -1160,7 +1160,9 @@ def test_omics_crux_lane_runs_real_analysis_through_the_loop(tmp_path):
     assert capsule.payload["validation_type"] == "omics"
     assert capsule.payload["metrics"]["method"] == "ssgsea_meanz"
 
-    service.accept_proof_capsule(capsule.capsule_id, reviewer="chase")
+    # This test exercises the lane/loop plumbing; the confound pre-gate is enforced + tested
+    # separately (tests/test_confound_auditor.py), so opt out of it here for a clean lane assertion.
+    service.accept_proof_capsule(capsule.capsule_id, reviewer="chase", enforce_confound_gate=False)
     assert service.promote_proof_capsule_to_candidate(capsule.capsule_id, reviewer="chase")["promoted"]
 
 
@@ -1205,7 +1207,8 @@ def test_modal_adapter_runs_omics_through_the_loop(tmp_path, monkeypatch):
     capsule = repo.get_proof_capsule(UUID(flow["capsule_id"]))
     assert capsule.payload["signal"] == "supports"
     assert capsule.payload["output_payload"]["provider"] == "modal"
-    service.accept_proof_capsule(capsule.capsule_id, reviewer="chase")
+    # Lane/loop plumbing test; the confound pre-gate is enforced + tested in test_confound_auditor.py.
+    service.accept_proof_capsule(capsule.capsule_id, reviewer="chase", enforce_confound_gate=False)
     assert service.promote_proof_capsule_to_candidate(capsule.capsule_id, reviewer="chase")["promoted"]
 
 

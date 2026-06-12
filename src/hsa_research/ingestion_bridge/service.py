@@ -273,8 +273,9 @@ from .lanes import (
     register_lane,
     resolve_sandbox_environment,
 )
-from . import falsification_planner
+from . import confound_auditor, falsification_planner
 from .contracts import (
+    ConfoundVerdict,
     FalsificationLane,
     FalsificationPlan,
     FalsificationPlannerResult,
@@ -2100,6 +2101,54 @@ class HSAResearchService:
             agent_run_id=proposal.agent_run_id,
         )
 
+    # --- Confound Auditor pre-gate (increment 3) -----------------------------------------------
+    def _confound_audit_dict(self, capsule: ProofCapsuleRecord) -> dict[str, Any]:
+        """Run the deterministic confound audit for a capsule against its candidate's ledger."""
+        ledger = self.list_proof_capsules(
+            ProofCapsuleLibraryRequest(candidate_id=capsule.candidate_id, limit=200)
+        ).capsules
+        return confound_auditor.audit(capsule, ledger)
+
+    def audit_capsule_confounds(
+        self,
+        capsule_id: UUID,
+        *,
+        auditor: str = "twog_confound_auditor",
+        propose_control: bool = True,
+        persist: bool = True,
+    ) -> ConfoundVerdict | None:
+        """Adversarially audit a capsule's known confounds (the executable (3,3) standard). For a
+        non-passing verdict, reuse the falsification planner to emit the exact control the candidate
+        still owes, and persist the verdict into capsule metadata (metadata is excluded from
+        content_hash, so this does not mutate the scientific content). Returns None if no such capsule.
+        The verdict is never 'true' — the best status is 'survived_known_confounds'."""
+        capsule = self.repository.get_proof_capsule(capsule_id)
+        if capsule is None:
+            return None
+        audit = self._confound_audit_dict(capsule)
+        demanded = None
+        if propose_control and audit["status"] in {"unauditable", "refuted"}:
+            proposal = self.propose_next_falsification(capsule.candidate_id)
+            demanded = proposal.proposed if proposal else None
+        verdict = ConfoundVerdict(
+            capsule_id=capsule_id,
+            candidate_id=capsule.candidate_id,
+            status=audit["status"],
+            applicable_confounds=audit["applicable"],
+            checked_confounds=audit["checked"],
+            missing_controls=audit["missing"],
+            refuted_by=audit["refuted_by"],
+            demanded_control_plan=demanded,
+            rationale=audit["rationale"],
+            auditor=auditor,
+        )
+        if persist:
+            updated = capsule.model_copy(
+                update={"metadata": {**capsule.metadata, "confound_verdict": verdict.model_dump(mode="json")}}
+            )
+            self.repository.upsert_proof_capsule(updated)
+        return verdict
+
     def _transition_proof_capsule(
         self,
         capsule_id: UUID,
@@ -2141,8 +2190,13 @@ class HSAResearchService:
         reviewer: str,
         accepted_status: str = "accepted_for_evidence_review",
         note: str | None = None,
+        enforce_confound_gate: bool = True,
     ) -> ProofCapsuleRecord | None:
-        """Operator accepts a submitted capsule, advancing it toward promotion."""
+        """Operator accepts a submitted capsule, advancing it toward promotion. Increment 3: a capsule
+        carrying a `supports` signal is BLOCKED by the Confound Auditor pre-gate until its known
+        confounds each have a surviving control (verdict 'survived_known_confounds'). A blocked accept
+        leaves the capsule at 'submitted' and records the gate verdict in metadata — the human operator
+        still cannot launder an unaudited positive onto a candidate."""
         self._authorize(reviewer, "accept_capsule")  # Phase 4 write gate — operator scope only
         allowed_accept = {
             "accepted_for_evidence_review",
@@ -2152,6 +2206,29 @@ class HSAResearchService:
         }
         if accepted_status not in allowed_accept:
             raise ValueError(f"invalid accepted_status: {accepted_status}")
+        if enforce_confound_gate:
+            capsule = self.repository.get_proof_capsule(capsule_id)
+            if capsule is None:
+                return None
+            if isinstance(capsule.payload, dict) and capsule.payload.get("signal") == "supports":
+                audit = self._confound_audit_dict(capsule)
+                if audit["status"] != "survived_known_confounds":
+                    blocked = capsule.model_copy(
+                        update={
+                            "metadata": {
+                                **capsule.metadata,
+                                "confound_gate": {
+                                    "status": "blocked",
+                                    "verdict": audit["status"],
+                                    "missing_controls": audit["missing"],
+                                    "refuted_by": audit["refuted_by"],
+                                    "reason": audit["rationale"],
+                                    "reviewer": reviewer,
+                                },
+                            }
+                        }
+                    )
+                    return self.repository.upsert_proof_capsule(blocked)
         return self._transition_proof_capsule(
             capsule_id,
             accepted_status,
