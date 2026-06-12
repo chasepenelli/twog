@@ -156,11 +156,11 @@ def _generic_kill_criterion(lane: str) -> tuple[KillCriterion, str, str]:
     if lane == "omics":
         return (
             KillCriterion(
-                metric="cross_species_axis_p",
-                comparator=">",
-                threshold=0.05,
-                observed_signal_kills="neutral",
-                rationale="A non-significant cross-species expression axis weakens the translational claim.",
+                metric="cross_species_axis_direction",
+                comparator="signal_is",
+                threshold="refutes",
+                observed_signal_kills="refutes",
+                rationale="A refuting cross-species expression axis kills the translational claim (neutral is inconclusive).",
             ),
             "Re-test the expression axis against the orthogonal cohort.",
             "supports",

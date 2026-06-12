@@ -7101,3 +7101,30 @@ class ProvenanceVerdict(StrictBaseModel):
     rationale: str = Field(default="", max_length=2000)
     auditor: str = Field(default="twog_provenance_auditor", max_length=200)
     audited_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+# --- Increment 5: multi-round controller + termination ----------------------------------------
+FalsificationLoopTerminalReason = Literal[
+    "hypothesis_refuted",  # a round's pre-registered kill-criterion was met — the answer is in
+    "no_runnable_proposal",  # the planner has no further runnable test (the space was exhausted)
+    "budget_exhausted",  # the cost ceiling was reached
+    "max_rounds",  # the round cap was hit before resolution
+    "round_error",  # a round failed to dispatch
+]
+LeadingHypothesisStatus = Literal["refuted", "standing", "underpowered"]
+
+
+class FalsificationLoopResult(StrictBaseModel):
+    """An autonomous multi-round falsification campaign: chain rounds until the kill-criterion is met,
+    the test space is exhausted, the budget runs out, or the round cap is hit. NEVER auto-promotes —
+    a refuting/neutral outcome terminates WITHOUT promotion (the Megquier shape), and the human
+    write-gate stays terminal."""
+
+    candidate_id: str = Field(min_length=1, max_length=260)
+    rounds: list[FalsificationRoundResult] = Field(default_factory=list, max_length=50)
+    rounds_run: int = Field(default=0, ge=0)
+    terminal_reason: FalsificationLoopTerminalReason
+    leading_hypothesis_status: LeadingHypothesisStatus
+    total_est_cost_usd: float = Field(default=0.0, ge=0.0)
+    promoted: Literal[False] = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

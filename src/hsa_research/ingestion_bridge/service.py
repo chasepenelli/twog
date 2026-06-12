@@ -277,6 +277,7 @@ from . import confound_auditor, falsification_planner, provenance_auditor
 from .contracts import (
     ConfoundVerdict,
     FalsificationLane,
+    FalsificationLoopResult,
     FalsificationPlan,
     FalsificationPlannerResult,
     FalsificationPreregistration,
@@ -1907,6 +1908,15 @@ class HSAResearchService:
             runnable &= set(lane_allowlist)
         return runnable
 
+    def _autonomously_runnable_lanes(self, lane_allowlist: list[str] | None = None) -> set[str]:
+        """Runnable lanes that need NO human gate (LaneSpec.gate is None) — the only lanes an unattended
+        multi-round loop may auto-dispatch. Excludes expert-gated lanes like MD."""
+        return {
+            lane
+            for lane in self._runnable_falsification_lanes(lane_allowlist)
+            if (get_lane(lane) is None or get_lane(lane).gate is None)
+        }
+
     def propose_next_falsification(
         self,
         candidate_id: str,
@@ -1991,6 +2001,9 @@ class HSAResearchService:
             "expected_signal_if_alive": plan.expected_signal_if_alive,
             "preregistration_hash": prereg_hash,
             "provenance_flag": plan.provenance_flag,
+            # If this test is a confound control, the produced capsule marks the confound controlled so
+            # the planner advances to a NEW test next round instead of re-proposing the same control.
+            "controls_confound": plan.addresses_confound.kind if plan.addresses_confound else None,
         }
         candidate = self.get_public_candidate(plan.candidate_id)
         target_name = (candidate.targets[0] if candidate and candidate.targets else None) or "unspecified_target"
@@ -2100,6 +2113,75 @@ class HSAResearchService:
             blockers=proposal.blockers,
             errors=list(flow.get("errors") or []),
             agent_run_id=proposal.agent_run_id,
+        )
+
+    def run_falsification_loop(
+        self,
+        candidate_id: str,
+        *,
+        max_rounds: int = 5,
+        budget_usd: float | None = None,
+        lane_allowlist: list[str] | None = None,
+        runner_kind: str = "mock",
+        submitted_by: str | None = None,
+    ) -> FalsificationLoopResult | None:
+        """Run an autonomous multi-round falsification campaign: chain rounds until a pre-registered
+        kill-criterion is met, the planner runs out of runnable tests, the budget is exhausted, or the
+        round cap is hit. NEVER auto-promotes — a refuting/neutral outcome TERMINATES without promotion
+        (reproducing the Megquier shape: the hypothesis is refuted and does not become a candidate's
+        evidence). The human write-gate stays terminal. Returns None if the candidate does not exist."""
+        if self.get_public_candidate(candidate_id) is None:
+            return None
+
+        # An unattended loop can only run AUTONOMOUSLY-runnable lanes — i.e. ungated ones. Expert-gated
+        # lanes (e.g. MD) require a human packet + approval, so the loop never auto-proposes them; they
+        # are surfaced for expert review separately. This keeps the loop from dead-ending on a gate.
+        auto_allow = list(self._autonomously_runnable_lanes(lane_allowlist))
+
+        rounds: list[FalsificationRoundResult] = []
+        total_cost = 0.0
+        terminal: str = "max_rounds"
+
+        for _ in range(max(1, max_rounds)):
+            if budget_usd is not None and total_cost >= budget_usd:
+                terminal = "budget_exhausted"
+                break
+            rnd = self.run_falsification_round(
+                candidate_id,
+                lane_allowlist=auto_allow,
+                runner_kind=runner_kind,
+                submitted_by=submitted_by,
+            )
+            if rnd is None:  # candidate vanished mid-loop (shouldn't happen — guarded above)
+                terminal = "round_error"
+                break
+            rounds.append(rnd)
+            if rnd.plan is None:
+                terminal = "no_runnable_proposal"
+                break
+            total_cost += rnd.plan.est_cost_usd
+            if rnd.errors:
+                terminal = "round_error"
+                break
+            if rnd.kill_criterion_met:
+                terminal = "hypothesis_refuted"
+                break
+
+        rounds_run = sum(1 for r in rounds if r.plan is not None)
+        if terminal == "hypothesis_refuted":
+            status = "refuted"
+        elif terminal == "no_runnable_proposal" and rounds_run > 0:
+            status = "standing"  # the hypothesis survived every falsification test we could run
+        else:  # budget_exhausted, max_rounds, round_error, or no test ever ran
+            status = "underpowered"
+
+        return FalsificationLoopResult(
+            candidate_id=candidate_id,
+            rounds=rounds,
+            rounds_run=rounds_run,
+            terminal_reason=terminal,  # type: ignore[arg-type]
+            leading_hypothesis_status=status,  # type: ignore[arg-type]
+            total_est_cost_usd=total_cost,
         )
 
     # --- Confound Auditor pre-gate (increment 3) -----------------------------------------------
@@ -2424,6 +2506,11 @@ class HSAResearchService:
                     {
                         "falsification_preregistration": prereg_block,
                         "provenance_flag": prereg_block.get("provenance_flag"),
+                        **(
+                            {"controls_confound": prereg_block["controls_confound"]}
+                            if prereg_block.get("controls_confound")
+                            else {}
+                        ),
                     }
                     if prereg_block
                     else {}
