@@ -330,9 +330,9 @@ TWOG v2 anticipates a future GPU lane for that kind of work.
 
 The core system should coordinate heavy compute, not become the heavy compute environment.
 
-### 37. RunPod Frame
+### 37. GPU Compute Provider Frame
 
-RunPod or similar GPU services could become useful later.
+Modal or similar GPU services could become useful later.
 
 But in TWOG v2, heavy compute should still produce artifacts that are tracked, reviewed, and fed back into the evidence library.
 

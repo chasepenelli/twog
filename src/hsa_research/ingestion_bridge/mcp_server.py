@@ -2976,7 +2976,7 @@ if mcp is not None:
 
     @mcp.tool()
     def get_run_status(run_id: str) -> dict:
-        """Return status for a Dagster, RunPod, MCP, local, or external async run."""
+        """Return status for a Dagster, MCP, local, or external async run."""
 
         handle = get_service().get_run_status(UUID(run_id))
         return {} if handle is None else handle.model_dump(mode="json")

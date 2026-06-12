@@ -22,7 +22,7 @@ from .repository import ResearchRepository
 
 _SECRET_PATTERNS = [
     re.compile(r"\bpostgres(?:ql)?://", re.IGNORECASE),
-    re.compile(r"\b(?:database_url|postgres_url|neon_database_url|openrouter_api_key|runpod_api_key|gh_token)\b", re.IGNORECASE),
+    re.compile(r"\b(?:database_url|postgres_url|neon_database_url|openrouter_api_key|provider_api_key|gh_token)\b", re.IGNORECASE),
     re.compile(r"\brpa_[A-Za-z0-9]{20,}\b"),
     re.compile(r"\bnapi_[A-Za-z0-9]{20,}\b"),
     re.compile(r"\bnpg_[A-Za-z0-9]{8,}\b"),

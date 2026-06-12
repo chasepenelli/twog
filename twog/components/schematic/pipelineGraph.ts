@@ -652,7 +652,7 @@ export const NODES: Node[] = [
       schedule: '',
       tag: 'LOCAL',
       tagType: 'local',
-      tip: 'OpenMM v3 explicit solvent MD. AMBER14 + SMIRNOFF. Calibrated stable < 0.163nm. Runs on RunPod 3x RTX 4090 or local Mac.',
+      tip: 'OpenMM v3 explicit solvent MD. AMBER14 + SMIRNOFF. Calibrated stable < 0.163nm. Runs on Modal A100 GPU or local Mac.',
     } satisfies AgentNodeData,
   },
 

@@ -99,7 +99,7 @@ Deferred to Phase 4: a queryable index column for browse-by-ready.
 fully, with zero multi-tenancy. This is the highest-leverage missing piece.
 
 **The three gaps to fill (CURRENT_STATE / research findings):**
-1. **Compute result → auto proof-capsule.** When a RunPod job reaches `completed`, parse its
+1. **Compute result → auto proof-capsule.** When a compute job reaches `completed`, parse its
    `output_payload` + artifact hashes and auto-construct a `compute_artifact` proof capsule with
    `requested_action = docking_or_md_review`. (Today the output just sits in the payload.)
 2. **Capsule status advancement.** Implement the operator-gated transitions that already exist
@@ -124,7 +124,7 @@ gate) → compute job **bound** to the workspace (snapshot/manifest hashes copie
 (packet_type=compute_artifact). Then operator-gated `accept_proof_capsule` →
 `promote_proof_capsule_to_candidate` (merge evidence → regenerate snapshot → re-assess the P1
 gate). New: 4 ComputeJobRecord binding fields, `related_capsule_id` on the decision event, a
-`MockComputeRunner` registered for `runner_kind="mock"`. The old `runner_kind != "runpod"` submit
+`MockComputeRunner` registered for `runner_kind="mock"`. The old `runner_kind != "external"` submit
 guards were removed — `get_compute_runner()` is now the single provider gate. 507 tests green.
 Phase 3 (pluggable lanes + a real provider) is the next pass.
 
@@ -141,7 +141,7 @@ then turn on the first real lane the bio dept asks for.
 > Modal as a real provider; build the **ADMET → gnina → Boltz-2** cascade on GPU). Pressure-tested
 > design + verified provider/lane picks from `docs/FRONTIER_SCAN.md`.
 
-**What exists (2026-06-09):** the RunPod execution provider + smoke worker were **removed**
+**What exists (2026-06-09):** the original hosted-GPU execution provider + smoke worker were **removed**
 (never worked). What remains is the provider *seam* (`compute_runners.py`: a `ComputeRunner`
 protocol + `register_compute_runner()` registry) and the provider-agnostic machinery around it —
 the expert gate, validation queue, proof-capsule model, and compute-job ledger, all green-tested.

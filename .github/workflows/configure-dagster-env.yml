@@ -21,8 +21,8 @@ jobs:
       HSA_DATABASE_URL: ${{ secrets.HSA_DATABASE_URL }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
-      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-      HSA_RUNPOD_ENDPOINT_ID: ${{ secrets.HSA_RUNPOD_ENDPOINT_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      HSA_MD_ENDPOINT_ID: ${{ secrets.HSA_MD_ENDPOINT_ID }}
       NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
       NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
       NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
@@ -111,16 +111,16 @@ jobs:
               echo "::warning::TWITTERAPI_IO_KEY is not configured as a GitHub Actions secret; X topic monitoring will stay disabled in Dagster+."
             fi
 
-            if [ -n "$RUNPOD_API_KEY" ]; then
-              create_env "$scope" RUNPOD_API_KEY --from-local-env
+            if [ -n "$MODAL_TOKEN_SECRET" ]; then
+              create_env "$scope" MODAL_TOKEN_SECRET --from-local-env
             else
-              echo "::warning::RUNPOD_API_KEY is not configured as a GitHub Actions secret; live RunPod compute will stay disabled in Dagster+."
+              echo "::warning::MODAL_TOKEN_SECRET is not configured as a GitHub Actions secret; live Modal compute will stay disabled in Dagster+."
             fi
 
-            if [ -n "$HSA_RUNPOD_ENDPOINT_ID" ]; then
-              create_env "$scope" HSA_RUNPOD_ENDPOINT_ID "$HSA_RUNPOD_ENDPOINT_ID"
+            if [ -n "$HSA_MD_ENDPOINT_ID" ]; then
+              create_env "$scope" HSA_MD_ENDPOINT_ID "$HSA_MD_ENDPOINT_ID"
             else
-              echo "::warning::HSA_RUNPOD_ENDPOINT_ID is not configured as a GitHub Actions secret; live RunPod compute will stay disabled in Dagster+."
+              echo "::warning::HSA_MD_ENDPOINT_ID is not configured as a GitHub Actions secret; live Modal compute will stay disabled in Dagster+."
             fi
 
             if [ -n "$NEON_API_KEY" ]; then

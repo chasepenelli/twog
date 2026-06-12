@@ -64,7 +64,7 @@ None of this runs on a laptop. The pipeline architecture:
 
 - **Hetzner CPX41** ($111/mo) — the brain. Runs 24/7, orchestrating 25+ agents across 8 tiers. Literature scanning, scoring, hypothesis generation, reporting. 316 cycles and counting.
 
-- **NVIDIA B300 GPU** (RunPod, on-demand) — the muscle. 288GB VRAM, Blackwell architecture. Runs the MD simulations at 1,190 ns/day. Each compound validated in ~1 hour.
+- **NVIDIA B300 GPU** (Modal, on-demand) — the muscle. 288GB VRAM, Blackwell architecture. Runs the MD simulations at 1,190 ns/day. Each compound validated in ~1 hour.
 
 - **Supabase** — the memory. Every result from every agent writes to a shared database. 32,180 designed compounds, 20,650 docking results, all queryable in real-time.
 

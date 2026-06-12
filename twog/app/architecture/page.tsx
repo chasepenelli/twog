@@ -45,7 +45,7 @@ const architectureNodes = [
     step: '08',
     label: 'Compute',
     mode: 'approval-first',
-    detail: 'RunPod/Docker jobs are ledgered, artifact-backed, and gated.',
+    detail: 'GPU/Docker compute jobs are ledgered, artifact-backed, and gated.',
   },
 ] as const;
 
@@ -123,7 +123,7 @@ const stack = [
   'Neon Postgres',
   'TypeScript / Next.js',
   'Python research bridge',
-  'RunPod',
+  'Modal',
   'Docker workers',
   'MCP service boundary',
 ] as const;

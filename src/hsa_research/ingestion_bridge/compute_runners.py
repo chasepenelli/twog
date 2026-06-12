@@ -1,8 +1,8 @@
 """Compute runner seam for approval-first validation jobs.
 
-The RunPod execution provider was REMOVED — it never worked reliably (the worker
-failed in ligand preparation; see docs/DAGSTER_REVIEW.md §4 and ROADMAP.md P3).
-A replacement will be built from scratch or use a different tool.
+The original hosted-GPU execution provider was REMOVED — it never worked reliably
+(the worker failed in ligand preparation). Heavy compute now runs on Modal; see
+modal_app.py and the registered "modal" provider below.
 
 What remains here is the provider-agnostic *seam*: a ComputeRunner protocol plus a
 registry. The expert gate, validation queue, proof-capsule model, and compute-job
@@ -33,9 +33,8 @@ class ComputeRunnerRequestError(RuntimeError):
 class ComputeRunner(Protocol):
     """Provider seam. Each method returns a dict carrying at least a ``status`` key.
 
-    submit(record) -> {status, external_run_id, runpod_job_id?, output_payload, metadata}
-        (runpod_job_id is a legacy result-key alias for the provider job id; RunPod was removed —
-         providers are now pluggable, e.g. Modal. The key name is retained for store compatibility.)
+    submit(record) -> {status, external_run_id, provider_job_id?, output_payload, metadata}
+        (provider_job_id is the provider job id; providers are pluggable, e.g. Modal.)
     poll(record)   -> {status, output_payload, last_error, metadata}
     cancel(record) -> {status, output_payload, metadata}
 
@@ -71,8 +70,8 @@ def get_compute_runner(record: ComputeJobRecord) -> ComputeRunner:
     if factory is None:
         raise ComputeRunnerConfigError(
             f"compute_provider_not_configured: no '{record.runner_kind}' compute provider is "
-            "registered. The RunPod provider was removed (non-functional); implement a "
-            "ComputeRunner and register it via register_compute_runner() — see ROADMAP.md P3."
+            "registered. Implement a ComputeRunner and register it via "
+            "register_compute_runner() — see modal_app.py for the Modal provider."
         )
     return factory()
 
@@ -89,7 +88,7 @@ class MockComputeRunner:
         return {
             "status": "completed",
             "external_run_id": run_id,
-            "runpod_job_id": run_id,
+            "provider_job_id": run_id,
             "output_payload": {
                 "provider": "mock",
                 "findings": f"Mock compute completed for '{record.title}' ({record.validation_type or 'compute'}).",
@@ -157,7 +156,7 @@ class LocalOmicsComputeRunner:
             return {
                 "status": "failed",
                 "external_run_id": run_id,
-                "runpod_job_id": run_id,
+                "provider_job_id": run_id,
                 "output_payload": {"provider": "local_omics", "error": error, **(extra or {})},
                 "metadata": {"provider": "local_omics"},
             }
@@ -189,7 +188,7 @@ class LocalOmicsComputeRunner:
         return {
             "status": "completed",
             "external_run_id": run_id,
-            "runpod_job_id": run_id,
+            "provider_job_id": run_id,
             "output_payload": {"provider": "local_omics", **result},
             "metadata": {"provider": "local_omics"},
         }
@@ -230,7 +229,7 @@ class CheckpointingComputeRunner:
             return {
                 "status": "paused",
                 "external_run_id": run_id,
-                "runpod_job_id": run_id,
+                "provider_job_id": run_id,
                 "output_payload": {"provider": "checkpoint", "progress": progress, "partial": True},
                 "progress_fraction": progress,
                 "checkpoint_uri": f"memory://checkpoint/{record.compute_job_id}/{progress}",
@@ -240,7 +239,7 @@ class CheckpointingComputeRunner:
         return {
             "status": "completed",
             "external_run_id": run_id,
-            "runpod_job_id": run_id,
+            "provider_job_id": run_id,
             "output_payload": {
                 "provider": "checkpoint",
                 "findings": f"Checkpointed job '{record.title}' completed after resuming from {prev:.2f}.",
@@ -328,7 +327,7 @@ class ModalComputeRunner:
             return {
                 "status": "failed",
                 "external_run_id": run_id,
-                "runpod_job_id": run_id,
+                "provider_job_id": run_id,
                 "output_payload": {"provider": "modal", "error": error, **(extra or {})},
                 "metadata": {"provider": "modal"},
             }
@@ -351,7 +350,7 @@ class ModalComputeRunner:
         return {
             "status": "completed",
             "external_run_id": run_id,
-            "runpod_job_id": run_id,
+            "provider_job_id": run_id,
             "output_payload": {"provider": "modal", **result},
             "metadata": {"provider": "modal"},
         }
@@ -394,7 +393,7 @@ class ModalCheckpointComputeRunner:
             return {
                 "status": "failed",
                 "external_run_id": run_id,
-                "runpod_job_id": run_id,
+                "provider_job_id": run_id,
                 "output_payload": {"provider": "modal_md_checkpoint", "error": "modal_md_failed",
                                    "detail": str(exc)[:500]},
                 "metadata": {"provider": "modal_md_checkpoint"},
@@ -402,7 +401,7 @@ class ModalCheckpointComputeRunner:
         # the remote returns the full submit-shape (status + progress_fraction + checkpoint_uri +
         # output_payload + metadata); submit_compute_job persists the checkpoint affordances.
         result.setdefault("external_run_id", run_id)
-        result.setdefault("runpod_job_id", run_id)
+        result.setdefault("provider_job_id", run_id)
         return result
 
     def poll(self, record: ComputeJobRecord) -> dict[str, Any]:

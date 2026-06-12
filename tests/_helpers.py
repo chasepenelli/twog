@@ -711,7 +711,7 @@ _MINIMAL_MD_PDB = (
     "TER\n"
     "END\n"
 )
-def _md_runpod_input(**overrides):
+def _md_compute_input(**overrides):
     payload = {
         "protein_pdb": _MINIMAL_MD_PDB,
         "compound_smiles": "CCO",
@@ -725,7 +725,7 @@ def _md_runpod_input(**overrides):
     }
     payload.update(overrides)
     return payload
-def _md_queue_item(runpod_input=None) -> ValidationRequestQueueItem:
+def _md_queue_item(compute_input=None) -> ValidationRequestQueueItem:
     return ValidationRequestQueueItem(
         plan_id=uuid4(),
         task_id=uuid4(),
@@ -734,14 +734,14 @@ def _md_queue_item(runpod_input=None) -> ValidationRequestQueueItem:
         task_type="target_validation",
         title="Run a smoke MD job against KDR",
         objective="Submit one expert-approved smoke-scale MD worker test.",
-        rationale="The RunPod lane needs an expert-gated input contract before live execution.",
+        rationale="The GPU lane needs an expert-gated input contract before live execution.",
         validation_request=ValidationRequest(
             validation_type="md",
             target_name="KDR",
             candidate_name="ethanol smoke ligand",
             objective="Run one smoke-scale MD worker test.",
             require_approval=True,
-            metadata={"runpod_input": runpod_input or _md_runpod_input()},
+            metadata={"compute_input": compute_input or _md_compute_input()},
             assay_context=ValidationAssayContext(
                 disease_context="canine hemangiosarcoma and human angiosarcoma",
                 species=["canine", "human"],
@@ -1069,7 +1069,7 @@ __all__ = [
     '_cleanup_workspace',
     '_contains_key',
     '_md_queue_item',
-    '_md_runpod_input',
+    '_md_compute_input',
     '_ready_for_therapy_ideas_program',
     '_research_program_fixture',
     '_seed_evaluated_brief',

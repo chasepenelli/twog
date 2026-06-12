@@ -1,4 +1,4 @@
-"""MD expert review agent for approval-first RunPod compute packets."""
+"""MD expert review agent for approval-first GPU compute packets."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ MD_EXPERT_REVIEW_AGENT_VERSION = "v1"
 DEFAULT_MD_EXPERT_REVIEW_MODEL = default_openrouter_model()
 
 _SYSTEM_PROMPT = """You are an MD/docking/structure-computation expert agent.
-You review one TWOG MD expert review packet before any live RunPod MD job is submitted.
+You review one TWOG MD expert review packet before any live GPU MD job is submitted.
 Your job is not to judge therapeutic efficacy. Your job is to decide whether this exact packet is suitable for one smoke-scale worker-contract test.
 Use only the supplied packet, input schema, worker history, cost bounds, and checklist.
 Return strict JSON only.

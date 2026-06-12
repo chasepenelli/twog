@@ -17,7 +17,7 @@ source -> raw record -> canonical research object -> legal artifact/full text
 -> chunks -> entities -> claims -> tags -> evidence graph -> candidate decisions
 ```
 
-This is the foundation for the frontier system. Dagster runs the durable data and compute flows. MCP exposes clean typed tools to Claude, OpenAI, vet partners, and future contributors. RunPod/Docker handles expensive GPU work.
+This is the foundation for the frontier system. Dagster runs the durable data and compute flows. MCP exposes clean typed tools to Claude, OpenAI, vet partners, and future contributors. Modal handles expensive GPU work.
 
 ## Lean v1 Stack
 
@@ -30,7 +30,7 @@ MCP server
       |
 Typed HSA service layer
       |
-Dagster + local SQLite/artifact storage + RunPod
+Dagster + local SQLite/artifact storage + Modal
       |
 TWOG lightweight dashboard
 ```
@@ -326,7 +326,7 @@ MCP is the clean conversational interface. These tools are the v0 contract:
 | `commit_hypothesis` | write | Save a human-approved hypothesis |
 | `run_boltz` | async compute | Queue a structure or binding prediction job |
 | `request_validation` | async compute | Queue validation such as MD, docking, ADMET, homology, safety, or expert review |
-| `get_run_status` | read | Check Dagster/RunPod/MCP job status |
+| `get_run_status` | read | Check Dagster/compute/MCP job status |
 | `get_artifact` | read | Fetch artifact metadata and links |
 | `list_scrape_profiles` | read | Inspect approved non-API scrape profiles and controls |
 | `review_scrape_profile` | write | Record robots/TOS/storage review before disabled sources can fetch |
@@ -495,7 +495,7 @@ Each tool or model call should log:
 - output summary
 - linked claim/candidate/hypothesis IDs
 - status, latency, error
-- Dagster run ID or RunPod job ID
+- Dagster run ID or compute job ID
 - created by and created at
 
 `agent_runs` is the durable ledger for agent execution. Each service-level agent
@@ -633,7 +633,7 @@ stopped daily schedule.
 
 ### Phase 4: Validation and GPU
 
-- Wire `run_boltz` and `request_validation` into Dagster and RunPod.
+- Wire `run_boltz` and `request_validation` into Dagster and Modal.
 - Store structured model outputs as artifacts.
 - Promote validation outputs into `validation_result` claims only after checks pass.
 

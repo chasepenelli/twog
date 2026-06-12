@@ -8,7 +8,7 @@ that is built to falsify itself before it can mislead. Everything here is in-sil
 hypothesis-generating; the bar is integrity and reproducibility, not a validated treatment.
 
 ### Compute — the layer that grew up
-- **Provider-agnostic compute seam.** Removed the non-functional RunPod path; a `ComputeRunner`
+- **Provider-agnostic compute seam.** Removed the original non-functional hosted-GPU path; a `ComputeRunner`
   protocol + lane registry means a lane (docking / co-folding / MD / omics) is a pluggable unit that
   can target any GPU backend without touching the science code. Currently runs on Modal (A100/T4).
 - **Real GPU lanes, verified end-to-end:** gnina CNN docking, Boltz-2 co-folding (structure +

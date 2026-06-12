@@ -11,7 +11,7 @@ from tests._helpers import (  # noqa: F401
     _cleanup_workspace,
     _contains_key,
     _md_queue_item,
-    _md_runpod_input,
+    _md_compute_input,
     _ready_for_therapy_ideas_program,
     _research_program_fixture,
     _seed_evaluated_brief,
@@ -813,7 +813,7 @@ def test_daytona_workspace_stub_is_non_live_and_secret_ref_only():
     assert result.provider_payload["checkout_manifest_hash"] == "sha256:manifest"
     assert result.provider_payload["forbidden_secrets"] == [
         "OPENROUTER_API_KEY",
-        "RUNPOD_API_KEY",
+        "MODAL_TOKEN_SECRET",
         "GH_TOKEN",
         "production_database_url",
     ]
@@ -1092,7 +1092,7 @@ def test_live_compute_validation_lanes_stay_blocked_until_runner_exists(tmp_path
                 candidate_name="candidate A",
                 objective="Dock candidate A against KDR.",
                 require_approval=True,
-                metadata={"runpod_input": {"protein_pdb": "ATOM test"}},
+                metadata={"compute_input": {"protein_pdb": "ATOM test"}},
                 assay_context=ValidationAssayContext(
                     disease_context="canine hemangiosarcoma and human angiosarcoma",
                     species=["canine", "human"],
@@ -1156,14 +1156,14 @@ def test_md_smoke_seed_fetches_live_api_inputs_and_creates_compute_job(tmp_path,
     assert item.status == "approved"
     assert item.task_type == "md"
     assert item.validation_request.validation_type == "md"
-    assert item.validation_request.metadata["runpod_input"]["protein_source"].startswith("RCSB PDB 1ABC")
-    assert item.validation_request.metadata["runpod_input"]["compound_smiles"] == "CCO"
-    assert item.validation_request.metadata["runpod_input"]["ph"] == 7.4
-    assert item.validation_request.metadata["runpod_input"]["box_padding"] == 10.0
-    assert item.validation_request.metadata["runpod_input"]["force_field"]
-    assert item.validation_request.metadata["runpod_input"]["solvent_model"] == "tip3p"
-    assert item.validation_request.metadata["runpod_input"]["enable_docking"] is False
-    assert item.validation_request.metadata["runpod_input"]["metadata"]["pdb_preparation"]["retained_records"] == [
+    assert item.validation_request.metadata["compute_input"]["protein_source"].startswith("RCSB PDB 1ABC")
+    assert item.validation_request.metadata["compute_input"]["compound_smiles"] == "CCO"
+    assert item.validation_request.metadata["compute_input"]["ph"] == 7.4
+    assert item.validation_request.metadata["compute_input"]["box_padding"] == 10.0
+    assert item.validation_request.metadata["compute_input"]["force_field"]
+    assert item.validation_request.metadata["compute_input"]["solvent_model"] == "tip3p"
+    assert item.validation_request.metadata["compute_input"]["enable_docking"] is False
+    assert item.validation_request.metadata["compute_input"]["metadata"]["pdb_preparation"]["retained_records"] == [
         "ATOM",
         "TER",
         "END",
@@ -1171,8 +1171,8 @@ def test_md_smoke_seed_fetches_live_api_inputs_and_creates_compute_job(tmp_path,
     assert job is not None
     assert job.validation_type == "md"
     assert job.status == "approved"
-    assert report["queue_item"]["validation_request"]["metadata"]["runpod_input"]["protein_pdb_sha256"]
-    assert "protein_pdb" not in report["queue_item"]["validation_request"]["metadata"]["runpod_input"]
+    assert report["queue_item"]["validation_request"]["metadata"]["compute_input"]["protein_pdb_sha256"]
+    assert "protein_pdb" not in report["queue_item"]["validation_request"]["metadata"]["compute_input"]
     assert report["pdb_preparation"]["preparation"] == "protein_only_strip_hetatm_waters_ligands"
 
 
@@ -1202,7 +1202,7 @@ def test_md_smoke_seed_can_create_distinct_docking_enabled_packet(tmp_path, monk
     assert docking_report["queue_item_id"] != prep_report["queue_item_id"]
     docking_item = repo.get_validation_request_queue_item(UUID(docking_report["queue_item_id"]))
     assert docking_item is not None
-    assert docking_item.validation_request.metadata["runpod_input"]["enable_docking"] is True
+    assert docking_item.validation_request.metadata["compute_input"]["enable_docking"] is True
     docking_job = repo.get_compute_job(UUID(docking_report["compute_job_id"]))
     assert docking_job is not None
     packet = service.create_md_expert_review_packet(docking_job.compute_job_id, endpoint_id="endpoint-test")
@@ -1212,16 +1212,16 @@ def test_md_smoke_seed_can_create_distinct_docking_enabled_packet(tmp_path, monk
 
 
 def test_md_input_packet_rejects_missing_or_malformed_inputs():
-    valid = MDInputPacket(**_md_runpod_input())
+    valid = MDInputPacket(**_md_compute_input())
     assert valid.simulation_steps == 10
     assert valid.compound_smiles == "CCO"
 
     with pytest.raises(ValidationError):
-        MDInputPacket(**_md_runpod_input(protein_pdb="HEADER only\nEND\n"))
+        MDInputPacket(**_md_compute_input(protein_pdb="HEADER only\nEND\n"))
     with pytest.raises(ValidationError):
-        MDInputPacket(**_md_runpod_input(compound_smiles="C C"))
+        MDInputPacket(**_md_compute_input(compound_smiles="C C"))
     with pytest.raises(ValidationError):
-        MDInputPacket(**_md_runpod_input(compound_smiles=""))
+        MDInputPacket(**_md_compute_input(compound_smiles=""))
 
 
 def test_md_expert_review_packet_round_trip_and_approval_status(tmp_path):
@@ -1271,8 +1271,7 @@ def test_md_live_submit_blocks_until_exact_expert_approval_exists(tmp_path, monk
     ).created_job
     assert created is not None
 
-    monkeypatch.setenv("RUNPOD_API_KEY", "temp-test-key")
-    monkeypatch.setenv("HSA_RUNPOD_ENDPOINT_ID", "endpoint-test")
+    monkeypatch.setenv("HSA_MD_ENDPOINT_ID", "endpoint-test")
 
     blocked_without_packet = service.submit_compute_job(created.compute_job_id, dry_run=False)
     assert blocked_without_packet is not None
@@ -1301,7 +1300,7 @@ def test_md_live_submit_allows_approved_packet_and_sends_worker_fields(tmp_path,
     ).created_job
     assert created is not None
 
-    monkeypatch.setenv("HSA_RUNPOD_ENDPOINT_ID", "endpoint-test")
+    monkeypatch.setenv("HSA_MD_ENDPOINT_ID", "endpoint-test")
     packet = service.create_md_expert_review_packet(created.compute_job_id, endpoint_id="endpoint-test")
     assert packet is not None
     approval = service.record_md_expert_approval(
@@ -1312,14 +1311,14 @@ def test_md_live_submit_allows_approved_packet_and_sends_worker_fields(tmp_path,
     )
     assert approval is not None
 
-    # RunPod was removed; register a fake provider via the seam to prove the expert gate
+    # Register a fake provider via the seam to prove the expert gate
     # passes after approval and the job reaches the provider (see compute_runners).
     class _FakeRunner:
         def submit(self, record):
             return {
                 "status": "submitted",
                 "external_run_id": "fake-md-run",
-                "runpod_job_id": "fake-md-run",
+                "provider_job_id": "fake-md-run",
                 "output_payload": {"provider": "fake"},
                 "metadata": {"provider": "fake"},
             }
@@ -1330,17 +1329,17 @@ def test_md_live_submit_allows_approved_packet_and_sends_worker_fields(tmp_path,
         def cancel(self, record):  # pragma: no cover - not exercised here
             return {"status": "cancelled", "output_payload": {}, "metadata": {}}
 
-    monkeypatch.setitem(compute_runners._PROVIDERS, "runpod", lambda: _FakeRunner())
+    monkeypatch.setitem(compute_runners._PROVIDERS, "external", lambda: _FakeRunner())
     submitted = service.submit_compute_job(created.compute_job_id, dry_run=False)
 
     assert submitted is not None
     assert submitted.status == "submitted"
-    assert submitted.runpod_job_id == "fake-md-run"
+    assert submitted.provider_job_id == "fake-md-run"
     # gate metadata (the approval id) is merged into the live submission metadata
     assert submitted.metadata["md_expert_approval_id"] == str(approval.approval_id)
 
 
-def test_force_new_compute_job_does_not_reuse_failed_runpod_state(tmp_path):
+def test_force_new_compute_job_does_not_reuse_failed_provider_state(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "md-force-new-compute-job.sqlite3", seed=False)
     service = HSAResearchService(repo)
     item = repo.upsert_validation_request_queue_item(_md_queue_item())
@@ -1356,9 +1355,9 @@ def test_force_new_compute_job_does_not_reuse_failed_runpod_state(tmp_path):
     failed = repo.update_compute_job(
         first.compute_job_id,
         status="failed",
-        external_run_id="old-runpod-job",
-        runpod_job_id="old-runpod-job",
-        output_payload={"runpod_status_response": {"status": "FAILED"}},
+        external_run_id="old-provider-job",
+        provider_job_id="old-provider-job",
+        output_payload={"provider_status_response": {"status": "FAILED"}},
         last_error="worker_ligand_prep_failed",
     )
     assert failed is not None
@@ -1378,7 +1377,7 @@ def test_force_new_compute_job_does_not_reuse_failed_runpod_state(tmp_path):
     assert fresh.compute_job_id != failed.compute_job_id
     assert fresh.status == "approved"
     assert fresh.external_run_id is None
-    assert fresh.runpod_job_id is None
+    assert fresh.provider_job_id is None
     assert fresh.output_payload == {}
     assert fresh.last_error is None
     assert fresh.metadata["force_new_compute_job"] is True
@@ -1406,7 +1405,7 @@ def test_compute_job_report_creates_dry_run_and_blocks_live_submit(tmp_path):
                 candidate_name="candidate A",
                 objective="Dock candidate A against KDR.",
                 require_approval=True,
-                metadata={"runpod_input": {"protein_pdb": "ATOM test"}},
+                metadata={"compute_input": {"protein_pdb": "ATOM test"}},
                 assay_context=ValidationAssayContext(
                     disease_context="canine hemangiosarcoma and human angiosarcoma",
                     species=["canine", "human"],

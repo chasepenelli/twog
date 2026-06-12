@@ -11,7 +11,7 @@
 - **3a — the abstraction.** Lane registry, generalized gate, `parse_result`, autonomy policy,
   pipeline/checkpoint *affordances*, and a CPU/mock lane proving pluggability. **Fully testable
   today with the mock provider; no cloud, no GPU.** This is the safe strangler refactor.
-- **3b — the reality.** Register **Modal** (or RunPod+Cedana) as a real `ComputeRunner`; build the
+- **3b — the reality.** Register **Modal** (or a cheaper-GPU provider + Cedana) as a real `ComputeRunner`; build the
   **ADMET → gnina → Boltz-2** lane containers; run real GPU jobs. Needs cloud accounts, GPU budget,
   container builds, and the bio dept's first-payload priority. Do **not** block 3a on 3b.
 
@@ -55,8 +55,8 @@ durable filesystem/directory snapshots. **Caveat (verified):** GPU and live-memo
 compose on Modal — so implement checkpoints as **artifacts written to durable storage at stage
 boundaries**, not live GPU pause. That's the work-queue shape, which is what screening wants anyway.
 
-**Later, for true single-run GPU pause/resume: RunPod + Cedana.** Cheaper H100/A100 + Cedana
-(cuda-checkpoint/CRIUgpu) adds genuine mid-job GPU checkpoint/resume/migration that Modal/RunPod
+**Later, for true single-run GPU pause/resume: a cheaper-GPU provider + Cedana.** Cheaper H100/A100 + Cedana
+(cuda-checkpoint/CRIUgpu) adds genuine mid-job GPU checkpoint/resume/migration that managed providers like Modal
 alone lack. Add this when a lane has long *non-decomposable* runs that must survive a pause.
 
 **Self-host option (own the provenance): Daytona or Northflank** — defer unless owning the stack
@@ -122,7 +122,7 @@ ComputePipeline orchestrator + real checkpoint *implementation* remain deferred 
 9. **Build the ADMET container/lane** for real (CPU on Modal) — cheapest real lane, proves the
    provider end-to-end.
 10. **gnina + Boltz-2 lanes** (GPU containers) — the real science; gated; the screening cascade.
-11. **RunPod + Cedana** only if/when a non-decomposable long run needs true GPU pause/resume.
+11. **A cheaper-GPU provider + Cedana** only if/when a non-decomposable long run needs true GPU pause/resume.
 
 ## Explicitly deferred (not Phase 3)
 - The `ComputePipeline` orchestrator (the resumable gated advancer) — affordances baked, orchestrator later.

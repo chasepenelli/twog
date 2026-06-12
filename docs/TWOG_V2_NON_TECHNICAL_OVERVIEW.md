@@ -2,7 +2,8 @@
 
 > **v2.1 NOTE.** This document predates the v2.1 compute layer. The GPU work is now real and
 > runs through a *provider-agnostic* lane seam (docking, co-folding, MD, omics), currently on
-> Modal — superseding the earlier "future RunPod lane" framing below. RunPod was removed.
+> Modal — superseding the earlier "future GPU lane" framing below. The original hosted-GPU
+> provider was removed (unreliable); compute now runs on Modal.
 > See the README "Compute Layer" + CHANGELOG.md for the current state.
 
 Draft for collaborators, advisors, funders, clinicians, scientists, and operations partners who want to understand what TWOG / hsa-dagster v2 is, why it is being built this way, and how it can be trusted.
@@ -473,7 +474,7 @@ The point is not to let social media drive the science. The point is to avoid mi
 
 ---
 
-## Why A Future GPU / RunPod Lane
+## Why A Future GPU Lane
 
 Some future research tasks may require heavier compute than a normal application server should handle.
 
@@ -484,7 +485,7 @@ Examples could include:
 - High-volume dataset processing.
 - Model-assisted analysis that benefits from GPU acceleration.
 
-The architecture anticipates a future GPU lane, potentially using services such as RunPod, but keeps that lane separate from the core system.
+The architecture anticipates a future GPU lane, potentially using services such as Modal, but keeps that lane separate from the core system.
 
 The design principle is:
 
@@ -689,7 +690,7 @@ The important point is that the architecture is not only for today's scripts. It
 | Autopilot | Controlled execution helper | Runs approved low-risk tasks and records results |
 | Full-text hardening | Evidence quality protection | Keeps richer text useful without losing context |
 | X/Twitter lane | Early signal monitor | Helps discover conversations but does not prove claims |
-| GPU / RunPod lane | Future heavy-compute path | Supports larger analyses without overloading the core app |
+| GPU compute lane | Future heavy-compute path | Supports larger analyses without overloading the core app |
 
 ---
 

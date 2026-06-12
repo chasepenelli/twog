@@ -2,7 +2,8 @@
 
 > **v2.1 NOTE.** This document predates the v2.1 compute layer. The GPU work is now real and
 > runs through a *provider-agnostic* lane seam (docking, co-folding, MD, omics), currently on
-> Modal — superseding the earlier "future RunPod lane" framing below. RunPod was removed.
+> Modal — superseding the earlier "future GPU lane" framing below. The original hosted-GPU
+> provider was removed.
 > See the README "Compute Layer" + CHANGELOG.md for the current state.
 
 Status: draft architecture rationale
@@ -55,7 +56,7 @@ The repo already has the main v2 spine:
 Some pieces are intentionally scaffolded or future-facing. The normalized SQL
 migration in `db/migrations/005_ingestion_bridge_v2.sql` describes a richer
 Postgres target, while the current hosted Postgres adapter mirrors the proven
-payload-oriented SQLite runtime contract. RunPod/GPU execution is represented
+payload-oriented SQLite runtime contract. GPU execution is represented
 by async run handles and validation contracts, but the actual external compute
 lane is not yet wired as a worker.
 
@@ -70,7 +71,7 @@ flowchart LR
     Trials[Clinical and veterinary trials]
     X[X/Twitter monitoring]
     Scrape[Review-gated scraper bridge]
-    FutureGPU[Future GPU / RunPod outputs]
+    FutureGPU[GPU compute provider outputs]
   end
 
   Scholarly --> Ingest
@@ -212,7 +213,7 @@ phase. Instead, it stores the operational facts it needs for audit and replay:
 - source follow-up queue rows track DOI, PMID, PMCID, NCT, and other identifier
   follow-ups from social, scrape, and agent review lanes.
 - research leads store watchlist items that are not yet durable evidence.
-- async run handles model future Dagster, RunPod, MCP, local, and external runs.
+- async run handles model future Dagster, compute-provider, MCP, local, and external runs.
 - approval metadata records who approved dispatch and why.
 
 The reason for this design is scientific accountability. A brief, hypothesis,
@@ -517,19 +518,19 @@ credible article links under scraper controls, parse primary-source links, and
 queue those identifiers into primary API harvesters. The social or article page
 remains context unless durable source chunks are attached.
 
-## Why A Future GPU / RunPod Lane
+## Why A GPU Compute Lane
 
 The repo already has the contract shape for future GPU work:
 
 - `ValidationRequest` supports `boltz`, `docking`, `md`, `admet`, `homology`,
   `safety`, `expert_review`, `wet_lab`, and `omics`.
 - `BoltzRunRequest` can create a validation request.
-- `AsyncRunHandle` includes `run_kind="runpod"` and `runpod_job_id`.
+- `AsyncRunHandle` includes `run_kind="compute"` and `provider_job_id`.
 - `ResearchObjectType.VALIDATION_RUN` and `ClaimType.VALIDATION_RESULT` exist.
 - Dagster setup notes state that heavy GPU tasks should stay outside Dagster+
   workers, with Dagster submitting jobs and tracking handles.
 
-The reason to put GPU work behind RunPod or a similar lane is cost and runtime
+The reason to put GPU work behind the provider-agnostic compute lane is cost and runtime
 isolation. Dagster+ should orchestrate and observe GPU work, not execute Boltz,
 docking, MD, or large omics jobs inside serverless workers. The durable output
 should be an artifact and, after checks pass, optionally a `validation_result`
@@ -542,16 +543,16 @@ sequenceDiagram
   participant Operator
   participant Queue as Validation Queue
   participant Dagster
-  participant RunPod
+  participant Compute as Modal GPU worker
   participant Repo as Repository
   participant Review as Validation Agent / Human Review
 
   Operator->>Queue: approve GPU-ready request
   Queue->>Dagster: dispatch run handle
-  Dagster->>RunPod: submit Boltz/docking/MD job
-  RunPod-->>Dagster: job id and status
+  Dagster->>Compute: submit Boltz/docking/MD job
+  Compute-->>Dagster: job id and status
   Dagster->>Repo: persist async run handle
-  RunPod-->>Dagster: artifacts and metrics
+  Compute-->>Dagster: artifacts and metrics
   Dagster->>Repo: store artifact handles
   Repo->>Review: expose outputs for checks
   Review->>Repo: promote only reviewed validation_result claims
@@ -644,5 +645,5 @@ New source chunks improve retrieval, claims, briefs, and validation decisions.
    explainable.
 5. Preserve the current repository contract while deciding when to move hosted
    Postgres from payload-oriented tables toward the normalized migration.
-6. Design the RunPod worker boundary as an async artifact-producing lane before
+6. Design the Modal GPU worker boundary as an async artifact-producing lane before
    any GPU job can create durable claims.

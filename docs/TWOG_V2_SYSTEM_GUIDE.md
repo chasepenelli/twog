@@ -668,7 +668,7 @@ Planned or still maturing:
 - Deeper omics-specific ingestion and interpretation.
 - More source/date partition coverage.
 - More full-text parser hardening and source-specific fallbacks.
-- GPU validation lanes through RunPod or Docker for structure prediction,
+- GPU validation lanes through Modal or Docker for structure prediction,
   docking, molecular dynamics, and related tasks.
 - A richer hosted command center once backend contracts stabilize.
 - More formal cost accounting per model, job, and lane.

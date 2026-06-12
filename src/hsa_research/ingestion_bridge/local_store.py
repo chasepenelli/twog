@@ -3201,7 +3201,7 @@ class SQLiteResearchRepository(ResearchRepository):
             """
             insert into compute_jobs (
               compute_job_id, queue_item_id, status, runner_kind, compute_profile,
-              validation_type, title, runpod_job_id, dagster_run_id, created_at,
+              validation_type, title, provider_job_id, dagster_run_id, created_at,
               updated_at, payload
             )
             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3212,7 +3212,7 @@ class SQLiteResearchRepository(ResearchRepository):
               compute_profile = excluded.compute_profile,
               validation_type = excluded.validation_type,
               title = excluded.title,
-              runpod_job_id = excluded.runpod_job_id,
+              provider_job_id = excluded.provider_job_id,
               dagster_run_id = excluded.dagster_run_id,
               updated_at = excluded.updated_at,
               payload = excluded.payload
@@ -3225,7 +3225,7 @@ class SQLiteResearchRepository(ResearchRepository):
                 record.compute_profile,
                 record.validation_type,
                 record.title,
-                record.runpod_job_id,
+                record.provider_job_id,
                 record.dagster_run_id,
                 record.created_at.isoformat(),
                 record.updated_at.isoformat(),
@@ -3283,7 +3283,7 @@ class SQLiteResearchRepository(ResearchRepository):
         output_payload: dict | None = None,
         external_run_id: str | None = None,
         dagster_run_id: str | None = None,
-        runpod_job_id: str | None = None,
+        provider_job_id: str | None = None,
         cost_actual_usd: float | None = None,
         last_error: str | None = None,
         metadata: dict | None = None,
@@ -3297,7 +3297,7 @@ class SQLiteResearchRepository(ResearchRepository):
             "output_payload": record.output_payload if output_payload is None else output_payload,
             "external_run_id": record.external_run_id if external_run_id is None else external_run_id,
             "dagster_run_id": record.dagster_run_id if dagster_run_id is None else dagster_run_id,
-            "runpod_job_id": record.runpod_job_id if runpod_job_id is None else runpod_job_id,
+            "provider_job_id": record.provider_job_id if provider_job_id is None else provider_job_id,
             "cost_actual_usd": record.cost_actual_usd if cost_actual_usd is None else cost_actual_usd,
             "last_error": last_error,
             "updated_at": now,
@@ -4910,7 +4910,7 @@ class SQLiteResearchRepository(ResearchRepository):
               compute_profile text not null,
               validation_type text,
               title text not null,
-              runpod_job_id text,
+              provider_job_id text,
               dagster_run_id text,
               payload text not null,
               created_at text not null default current_timestamp,

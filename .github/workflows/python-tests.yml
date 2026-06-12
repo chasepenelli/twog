@@ -37,7 +37,6 @@ jobs:
         # Floor is set just below current 77% to catch real regressions, not noise.
         run: |
           python -m pytest tests/ -p no:cacheprovider \
-            --ignore=tests/test_runpod_md_worker.py \
             -n auto -q \
             --cov=hsa_research.ingestion_bridge \
             --cov-report=term-missing:skip-covered \

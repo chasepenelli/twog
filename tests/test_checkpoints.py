@@ -95,7 +95,7 @@ def test_modal_checkpoint_runner_adapter_paused_then_completed(tmp_path, monkeyp
         return {
             "status": "completed" if done else "paused",
             "external_run_id": f"modal_md:{config['job_id']}",
-            "runpod_job_id": f"modal_md:{config['job_id']}",
+            "provider_job_id": f"modal_md:{config['job_id']}",
             "progress_fraction": progress,
             "checkpoint_uri": f"modal-volume://twog-md-checkpoints/{config['job_id']}/state.chk",
             "output_payload": {

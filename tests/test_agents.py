@@ -11,7 +11,7 @@ from tests._helpers import (  # noqa: F401
     _cleanup_workspace,
     _contains_key,
     _md_queue_item,
-    _md_runpod_input,
+    _md_compute_input,
     _ready_for_therapy_ideas_program,
     _research_program_fixture,
     _seed_evaluated_brief,
@@ -1065,14 +1065,14 @@ def test_md_expert_agent_deterministic_review_persists_agent_approval(tmp_path, 
     assert approvals[0].reviewer_type == "md_expert_agent"
     assert repo.get_md_expert_review_packet(packet.packet_id).status == "approved"
 
-    # RunPod was removed; a fake provider registered through the seam proves the agent
+    # A fake provider registered through the seam proves the agent
     # approval lets the gated job reach the provider (see compute_runners.get_compute_runner).
     class _FakeRunner:
         def submit(self, record):
             return {
                 "status": "submitted",
                 "external_run_id": "fake-md-agent-run",
-                "runpod_job_id": "fake-md-agent-run",
+                "provider_job_id": "fake-md-agent-run",
                 "output_payload": {"provider": "fake"},
                 "metadata": {"provider": "fake"},
             }
@@ -1083,11 +1083,11 @@ def test_md_expert_agent_deterministic_review_persists_agent_approval(tmp_path, 
         def cancel(self, record):  # pragma: no cover - not exercised here
             return {"status": "cancelled", "output_payload": {}, "metadata": {}}
 
-    monkeypatch.setitem(compute_runners._PROVIDERS, "runpod", lambda: _FakeRunner())
+    monkeypatch.setitem(compute_runners._PROVIDERS, "external", lambda: _FakeRunner())
     submitted = service.submit_compute_job(created.compute_job_id, dry_run=False)
     assert submitted is not None
     assert submitted.status == "submitted"
-    assert submitted.runpod_job_id == "fake-md-agent-run"
+    assert submitted.provider_job_id == "fake-md-agent-run"
     assert submitted.metadata["md_expert_approval_id"] == str(result.approval_record.approval_id)
     assert submitted.metadata["md_expert_reviewer_type"] == "md_expert_agent"
 

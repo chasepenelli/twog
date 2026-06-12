@@ -11,7 +11,7 @@ from tests._helpers import (  # noqa: F401
     _cleanup_workspace,
     _contains_key,
     _md_queue_item,
-    _md_runpod_input,
+    _md_compute_input,
     _ready_for_therapy_ideas_program,
     _research_program_fixture,
     _seed_evaluated_brief,

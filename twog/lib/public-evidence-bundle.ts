@@ -143,7 +143,7 @@ export function buildPublicEvidenceBundle(candidate: PublicCandidateDetail) {
           'solvent_model',
           'seeds',
           'container_image',
-          'runpod_endpoint_or_worker',
+          'modal_endpoint_or_worker',
         ],
         expected_artifacts: [
           'sanitized_protein_pdb',

@@ -221,7 +221,7 @@ if modal is not None:
         return {
             "status": "completed" if done else "paused",
             "external_run_id": f"modal_md:{job_id}",
-            "runpod_job_id": f"modal_md:{job_id}",
+            "provider_job_id": f"modal_md:{job_id}",
             "progress_fraction": progress,
             "checkpoint_uri": f"modal-volume://twog-md-checkpoints/{job_id}/state.chk",
             "output_payload": {

@@ -11,7 +11,7 @@ from tests._helpers import (  # noqa: F401
     _cleanup_workspace,
     _contains_key,
     _md_queue_item,
-    _md_runpod_input,
+    _md_compute_input,
     _ready_for_therapy_ideas_program,
     _research_program_fixture,
     _seed_evaluated_brief,
@@ -1934,7 +1934,7 @@ def test_compute_jobs_round_trip_and_filter_in_sqlite(tmp_path):
         ComputeJobRecord(
             queue_item_id=queue_item_id,
             status="approved",
-            runner_kind="runpod",
+            runner_kind="modal",
             compute_profile="gpu_l4",
             validation_type="docking",
             title="Dock candidate A against KDR",
@@ -1943,7 +1943,7 @@ def test_compute_jobs_round_trip_and_filter_in_sqlite(tmp_path):
     )
 
     fetched = repo.get_compute_job(record.compute_job_id)
-    filtered = repo.list_compute_jobs(status="approved", runner_kind="runpod", queue_item_id=queue_item_id)
+    filtered = repo.list_compute_jobs(status="approved", runner_kind="modal", queue_item_id=queue_item_id)
     updated = repo.update_compute_job(
         record.compute_job_id,
         status="submitted",

@@ -147,8 +147,8 @@ jobs:
       HSA_RESEARCH_BRIEF_MODEL: "anthropic/claude-sonnet-4.6"
       HSA_BIG_IDEA_OPENROUTER_MODEL: "~anthropic/claude-opus-latest"
       HSA_RESEARCH_PROGRAM_BOARD_MODEL: "~anthropic/claude-opus-latest"
-      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-      HSA_RUNPOD_ENDPOINT_ID: ${{ secrets.HSA_RUNPOD_ENDPOINT_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      HSA_MD_ENDPOINT_ID: ${{ secrets.HSA_MD_ENDPOINT_ID }}
       NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
       NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
       NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
@@ -195,8 +195,8 @@ jobs:
             exit 1
           fi
           if [ "$DAGSTER_CLOUD_JOB" = "compute_job_job" ] && printf '%s' "$DAGSTER_CLOUD_CONFIG_JSON" | grep -q '"dry_run"[[:space:]]*:[[:space:]]*false'; then
-            if [ -z "$RUNPOD_API_KEY" ] || [ -z "$HSA_RUNPOD_ENDPOINT_ID" ]; then
-              echo "::error::RUNPOD_API_KEY and HSA_RUNPOD_ENDPOINT_ID are required for live compute_job_job submissions."
+            if [ -z "$MODAL_TOKEN_SECRET" ] || [ -z "$HSA_MD_ENDPOINT_ID" ]; then
+              echo "::error::MODAL_TOKEN_SECRET and HSA_MD_ENDPOINT_ID are required for live compute_job_job submissions."
               exit 1
             fi
           fi
@@ -739,7 +739,7 @@ jobs:
           queue_items = service.list_validation_request_queue_items(task_type="md", limit=10)
           compute_jobs = [
               job
-              for job in service.repository.list_compute_jobs(runner_kind="runpod", limit=25)
+              for job in service.repository.list_compute_jobs(runner_kind="modal", limit=25)
               if job.validation_type == "md"
           ][:10]
           packets = service.repository.list_md_expert_review_packets(limit=10)
@@ -770,8 +770,8 @@ jobs:
           payload = {
               "dagster_run_id": os.getenv("DAGSTER_CLOUD_RUN_ID"),
               "runtime_readiness": {
-                  "runpod_api_key_configured": bool(os.getenv("RUNPOD_API_KEY")),
-                  "runpod_endpoint_id_configured": bool(os.getenv("HSA_RUNPOD_ENDPOINT_ID")),
+                  "provider_api_key_configured": bool(os.getenv("MODAL_TOKEN_SECRET")),
+                  "provider_endpoint_id_configured": bool(os.getenv("HSA_MD_ENDPOINT_ID")),
                   "openrouter_api_key_configured": bool(os.getenv("OPENROUTER_API_KEY")),
               },
               "md_queue_items": [
@@ -796,11 +796,11 @@ jobs:
                       "status": job.status,
                       "validation_type": job.validation_type,
                       "title": job.title,
-                      "runpod_job_id": job.runpod_job_id,
+                      "provider_job_id": job.provider_job_id,
                       "external_run_id": job.external_run_id,
                       "last_error": job.last_error,
-                      "runpod_submit_preview": preview(job.output_payload.get("runpod_submit_response")),
-                      "runpod_status_preview": preview(job.output_payload.get("runpod_status_response")),
+                      "provider_submit_preview": preview(job.output_payload.get("provider_submit_response")),
+                      "provider_status_preview": preview(job.output_payload.get("provider_status_response")),
                       "updated_at": job.updated_at.isoformat(),
                   }
                   for job in compute_jobs
@@ -835,7 +835,7 @@ jobs:
                   for job in payload["md_compute_jobs"][:5]:
                       summary.write(
                           f"- `{job['status']}` compute `{job['compute_job_id']}` "
-                          f"queue `{job['queue_item_id']}` runpod `{job['runpod_job_id']}`\n"
+                          f"queue `{job['queue_item_id']}` job `{job['provider_job_id']}`\n"
                       )
                   for packet in payload["md_expert_packets"][:5]:
                       summary.write(

@@ -345,7 +345,7 @@ export const methods: MethodRecord[] = [
     version: 'v1',
     category: 'compute gate',
     status: 'operator-gated',
-    appliesTo: 'RunPod MD smoke jobs',
+    appliesTo: 'Modal MD smoke jobs',
     claimsLevel: 'workflow proof',
     summary:
       'The first molecular-dynamics compute contract for TWOG: expert-reviewed inputs, small smoke settings, structured worker diagnostics, and ledgered artifacts.',
@@ -366,12 +366,12 @@ export const methods: MethodRecord[] = [
       {
         label: 'Worker execution',
         detail:
-          'The RunPod worker validates inputs, prepares protein and ligand artifacts, runs the enabled smoke stages, and returns structured stage diagnostics.',
+          'The Modal GPU worker validates inputs, prepares protein and ligand artifacts, runs the enabled smoke stages, and returns structured stage diagnostics.',
       },
       {
         label: 'Ledger',
         detail:
-          'RunPod IDs, worker outputs, stage errors, artifacts, cost fields, and status transitions are persisted in the TWOG compute ledger.',
+          'Provider job IDs, worker outputs, stage errors, artifacts, cost fields, and status transitions are persisted in the TWOG compute ledger.',
       },
       {
         label: 'Record attachment',
@@ -384,7 +384,7 @@ export const methods: MethodRecord[] = [
       ['Approval', 'Expert approval metadata tied to the exact packet version.'],
       ['Worker stages', 'Input validation, protein prep, ligand 3D, ligand PDBQT, docking, MD smoke, warnings, and errors.'],
       ['Artifacts', 'Sanitized PDB, ligand files, output payloads, plots, and hashes when available.'],
-      ['Cost and status', 'RunPod job ID, status, timestamps, runner profile, and any cost estimates or actuals.'],
+      ['Cost and status', 'Provider job ID, status, timestamps, runner profile, and any cost estimates or actuals.'],
     ],
     sections: [
       {
@@ -559,9 +559,9 @@ export const methods: MethodRecord[] = [
           'If sample labels support tumor/control comparison, the method can report cohort differences. If labels are missing, the output stays descriptive.',
       },
       {
-        heading: 'When RunPod enters',
+        heading: 'When heavy GPU compute enters',
         body:
-          'RunPod is reserved for later raw-data work: FASTQ/BAM reprocessing, large single-cell jobs, spatial analysis, or containerized workflows that exceed local CPU scope.',
+          'The Modal GPU lane is reserved for later raw-data work: FASTQ/BAM reprocessing, large single-cell jobs, spatial analysis, or containerized workflows that exceed local CPU scope.',
       },
     ],
     interpretationRules: [

@@ -309,7 +309,7 @@ Dagster defaults to `dry_run=true`; live creation requires `dry_run=false` in ru
 - repo/ref/branch checkout information;
 - selected K-Dense skill refs from `skill_profile`.
 
-Contributor workspaces must not receive production database credentials, OpenRouter keys, RunPod keys, or GitHub write tokens.
+Contributor workspaces must not receive production database credentials, OpenRouter keys, MODAL_TOKEN_SECRET, or GitHub write tokens.
 
 ## Next Slices
 

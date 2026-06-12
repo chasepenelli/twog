@@ -2,7 +2,7 @@
 
 ## Purpose
 
-TWOG must not submit live MD jobs to RunPod until the exact input packet has been reviewed and approved. The approval can come from a qualified human expert or the dedicated MD expert agent, but it must be tied to the exact packet hash being submitted. This keeps the GPU lane approval-first while the worker contract is still being hardened.
+TWOG must not submit live MD jobs to the compute provider until the exact input packet has been reviewed and approved. The approval can come from a qualified human expert or the dedicated MD expert agent, but it must be tied to the exact packet hash being submitted. This keeps the GPU lane approval-first while the worker contract is still being hardened.
 
 ## Scope
 
@@ -10,7 +10,7 @@ This SOP covers the first MD lane only:
 
 - Endpoint: `hsa-md-validation`
 - Endpoint ID: `cbf4ffekmo36t9`
-- Runner: RunPod serverless
+- Runner: Modal serverless GPU worker
 - Job type: one smoke-scale MD worker contract test
 
 DiffDock, Boltz, docking, raw omics, and larger MD workflows are out of scope until this gate proves reliable.
@@ -36,7 +36,7 @@ For the first smoke route, TWOG should also provide the formerly optional prepar
 - `force_field`: currently `protein=amber14; ligand=worker_default_openff_or_gaff`.
 - `solvent_model`: currently `tip3p`.
 
-The current contract is that TWOG supplies a protein-only PDB and canonical SMILES. The RunPod worker is responsible for SMILES-to-3D conversion, protonation, ligand parameterization, ligand placement, and either a successful smoke result or a structured preparation failure.
+The current contract is that TWOG supplies a protein-only PDB and canonical SMILES. The Modal GPU worker is responsible for SMILES-to-3D conversion, protonation, ligand parameterization, ligand placement, and either a successful smoke result or a structured preparation failure.
 
 ## Workflow
 
@@ -55,7 +55,7 @@ The current contract is that TWOG supplies a protein-only PDB and canonical SMIL
 6. Live submit is allowed only when:
    - the compute job is approved,
    - `dry_run=false`,
-   - `RUNPOD_API_KEY` and `HSA_RUNPOD_ENDPOINT_ID` are configured,
+   - `MODAL_TOKEN_SECRET` and `HSA_MD_ENDPOINT_ID` are configured,
    - the exact packet hash exists,
    - the exact packet hash has an `approved` expert approval from either a human expert or the MD expert agent,
    - safety and cost bounds are present.
@@ -68,12 +68,12 @@ The current worker contract discovered from live tests:
 - Missing `compound_smiles` fails with `compound_smiles is required`.
 - Minimal ligand smoke reached worker execution and failed during ligand preparation.
 - The first approved packet for pazopanib/KDR used a stripped protein-only PDB, explicit preparation settings, and packet hash `7601216eb7080b76f83e86262094f727a466d966ed8af0ee437d864faca75ed9`.
-- The first live RunPod submission created a RunPod job handle and persisted it in the compute ledger.
-- The first terminal RunPod result failed inside worker ligand preparation:
+- The first live compute submission created a compute job handle and persisted it in the compute ledger.
+- The first terminal compute result failed inside worker ligand preparation:
   - status: `FAILED`
   - location: `/app/handler.py`, `dock_ligand_vina`
   - failing command: `mk_prepare_ligand.py -i ligand.pdb -o ligand.pdbqt`
-  - interpretation: TWOG reached the RunPod worker successfully; the remaining defect is the worker's ligand preparation path.
+  - interpretation: TWOG reached the compute worker successfully; the remaining defect is the worker's ligand preparation path.
 
 That means the next live test should be a scientifically valid prepared packet, not another minimal placeholder.
 
@@ -83,7 +83,7 @@ Use this route for a single approved smoke test:
 
 1. Create or reuse the approved validation queue item.
 2. Create or reuse the compute job with `compute_job_job`.
-   - If an old compute job exists for the same queue item but belongs to a retired endpoint or failed worker image, create a fresh compute job with `force_new_compute_job=true`. This preserves the old failed row for audit while preventing stale RunPod handles, output payloads, and failure status from blocking the new endpoint test.
+   - If an old compute job exists for the same queue item but belongs to a retired endpoint or failed worker image, create a fresh compute job with `force_new_compute_job=true`. This preserves the old failed row for audit while preventing stale compute handles, output payloads, and failure status from blocking the new endpoint test.
    - For the first docking-stage test, seed a separate packet with `enable_docking=true`. This changes the packet hash and requires a fresh MD expert approval before live submission.
 3. Generate the expert packet with `md_expert_review_packet_job`.
 4. Run the MD expert review agent with OpenRouter and persist the approval.
@@ -91,18 +91,18 @@ Use this route for a single approved smoke test:
 6. Submit once with `compute_job_job` using `dry_run=false`, `submit=true`, and `poll=true`.
 7. For follow-up polling, use `submit=false` and `poll=true`.
 
-Do not submit again just to poll. If a compute job has already received a RunPod handle, follow-up runs must reuse that handle.
+Do not submit again just to poll. If a compute job has already received a compute handle, follow-up runs must reuse that handle.
 
 ## Polling And Recovery Rules
 
-The durable compute ledger is the source of truth for RunPod handles:
+The durable compute ledger is the source of truth for compute handles:
 
-- `runpod_job_id` and `external_run_id` must be preserved whenever an existing compute job is rebuilt from a queue item.
-- Poll-only jobs must never erase `runpod_job_id`.
+- `provider_job_id` and `external_run_id` must be preserved whenever an existing compute job is rebuilt from a queue item.
+- Poll-only jobs must never erase `provider_job_id`.
 - Poll-only jobs should target an existing `compute_job_id` when possible.
-- If an earlier poll-only bug cleared the RunPod handle, use the `recover_runpod_job_id` field once, then poll with `submit=false`.
+- If an earlier poll-only bug cleared the compute handle, use the `recover_provider_job_id` field once, then poll with `submit=false`.
 
-Recovery exists only to reconnect TWOG to a job that was already submitted. It is not an alternate approval path and must not be used to invent or bypass RunPod job IDs.
+Recovery exists only to reconnect TWOG to a job that was already submitted. It is not an alternate approval path and must not be used to invent or bypass compute job IDs.
 
 ## Post-Smoke Decision Tree
 
@@ -112,7 +112,7 @@ After the first live smoke reaches a terminal state:
 - `failed` with structured ligand/protein prep error: keep the endpoint but create a worker-contract issue with exact missing dependency, preparation step, or input assumption.
 - `failed` with unstructured error: harden the worker image/logging before any larger run.
 - `running` or `submitted`: keep polling with `submit=false`.
-- `blocked`: inspect `last_error`; fix the local gate or ledger path before touching RunPod again.
+- `blocked`: inspect `last_error`; fix the local gate or ledger path before touching the compute provider again.
 
 No larger MD, docking, Boltz, raw omics, or repeated GPU tests should run until this single smoke is understood.
 
@@ -127,7 +127,7 @@ The preferred worker fix is:
 3. Optimize the conformer with an appropriate force field such as MMFF94 or UFF.
 4. Write ligand SDF/MOL with bond orders preserved.
 5. Run ligand preparation from SDF/MOL/MOL2 into PDBQT, not from ligand PDB.
-6. Capture stdout/stderr from every subprocess and return it in the RunPod `output` payload.
+6. Capture stdout/stderr from every subprocess and return it in the compute worker's `output` payload.
 7. Treat ligand-prep failure as a structured result with:
    - `stage`
    - `command`
@@ -142,11 +142,11 @@ The next endpoint should be tested with three tiers before any larger MD claim:
 2. Pazopanib/KDR smoke with 10 simulation steps.
 3. A slightly longer still-non-scientific smoke only after tier 2 completes.
 
-If the current endpoint image cannot be patched, create a new TWOG-owned RunPod worker image with a minimal `handler.py`, explicit requirements, local handler test input, and a container build workflow. RunPod's documented worker layout is `Dockerfile`, `src/handler.py`, and `requirements.txt`; the handler processes `job["input"]` and starts with `runpod.serverless.start`.
+If the current endpoint image cannot be patched, create a new TWOG-owned Modal GPU worker image with a minimal `handler.py`, explicit requirements, local handler test input, and a container build workflow. The Modal worker layout is `Dockerfile`, `src/handler.py`, and `requirements.txt`; the handler processes the compute job's `input` and starts the Modal serverless entrypoint.
 
 ## TWOG-Owned MD Worker
 
-The first repo-owned worker lives at `runpod_workers/md_smoke/`.
+The first repo-owned worker lives at `compute_workers/md_smoke/`.
 
 It preserves ligand chemistry by using this ligand route:
 
@@ -164,30 +164,30 @@ The GitHub Actions workflow `.github/workflows/build-md-worker.yml` builds and t
 - `ghcr.io/chasepenelli/twog-md-worker:<commit-sha>`
 - `ghcr.io/chasepenelli/twog-md-worker:smoke-v1`
 
-RunPod uses the credential-free public image published from the worker-only public mirror:
+Modal uses the credential-free public image published from the worker-only public mirror:
 
 - public repo: `chasepenelli/twog-md-worker-public`
 - public image: `ghcr.io/chasepenelli/twog-md-worker-public:smoke-v1`
 
-The new RunPod endpoint should be created from `ghcr.io/chasepenelli/twog-md-worker-public:smoke-v1` with:
+The new Modal endpoint should be created from `ghcr.io/chasepenelli/twog-md-worker-public:smoke-v1` with:
 
 - endpoint name: `twog-md-smoke-v1`
 - `workersMin=0`
 - `workersMax=2` during smoke validation
 - raise to `workersMax=5` only after positive-control and pazopanib/KDR smoke tiers pass
 
-After endpoint creation, update `HSA_RUNPOD_ENDPOINT_ID` in GitHub Actions and Dagster+ to the new endpoint ID. Do not reuse the old opaque endpoint for this lane.
+After endpoint creation, update `HSA_MD_ENDPOINT_ID` in GitHub Actions and Dagster+ to the new endpoint ID. Do not reuse the old opaque endpoint for this lane.
 
 Docking-enabled smoke packets require the worker image to include AutoDock Vina and Meeko receptor preparation. When `enable_docking=true`, the worker prepares `receptor.pdbqt`, runs Vina with a small smoke grid, and returns `docked_ligand.pdbqt` plus structured stdout/stderr. Missing Vina, receptor-prep failure, or empty docking artifacts are terminal worker failures for the docking smoke tier.
 
 Current hosted state:
 
 - GHCR image build and publish workflow: passing on `main`.
-- RunPod template: `3qszkm4q1c` (`twog-md-smoke-v1-template`).
-- RunPod endpoint: `bpjbi4te75eoul` (`twog-md-smoke-v1`).
-- RunPod template image: `ghcr.io/chasepenelli/twog-md-worker-public:smoke-v1`.
+- Modal template: `3qszkm4q1c` (`twog-md-smoke-v1-template`).
+- Modal endpoint: `bpjbi4te75eoul` (`twog-md-smoke-v1`).
+- Modal template image: `ghcr.io/chasepenelli/twog-md-worker-public:smoke-v1`.
 - Old opaque MD endpoint: `cbf4ffekmo36t9` (`hsa-md-validation`) reduced from `workersMax=5` to `workersMax=3` to free quota for the owned worker.
-- GitHub Actions secret `HSA_RUNPOD_ENDPOINT_ID` points to `bpjbi4te75eoul`; the Dagster+ env sync workflow was dispatched after the update.
+- GitHub Actions secret `HSA_MD_ENDPOINT_ID` points to `bpjbi4te75eoul`; the Dagster+ env sync workflow was dispatched after the update.
 
 Hosted smoke validation:
 
@@ -231,4 +231,4 @@ If a live MD submit is attempted without the required packet and approval, TWOG 
 - `md_safety_cost_bounds_required`
 - `md_expert_approval_required`
 
-The gate intentionally blocks before sending anything to RunPod.
+The gate intentionally blocks before sending anything to the compute provider.

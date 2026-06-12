@@ -110,7 +110,7 @@ separable.
 `research_program_board` · `research_followup_resolver` · `research_followup_refinement` ·
 `agent_performance` · `research_workspaces` · `scraper_bridge`
 
-**`runpod_workers/md_smoke/`** — GPU molecular-dynamics smoke test. Scaffolded, approval-gated,
+**`compute_workers/md_smoke/`** — GPU molecular-dynamics smoke test. Scaffolded, approval-gated,
 pay-per-use (zero idle cost). This is the seed of the "compute expedition" pattern, not a
 running system.
 
@@ -155,7 +155,7 @@ and scary to edit.
 **Plan:** split into per-area modules (`test_agent_runner.py`, `test_repository.py`,
 `test_contracts.py`, `test_validation.py`, `test_therapy_committee.py`, …), sharing common
 fixtures via `conftest.py`. Preserve every test. Run the full suite before and after to prove
-zero coverage loss. (`test_runpod_md_worker.py`, 211 lines, is already fine.)
+zero coverage loss.
 
 ---
 
@@ -175,7 +175,7 @@ at the keyboard — the "data keeps flowing during absences" property we want, n
 | **Dagster+** (hosted) | **Monthly subscription (fixed)** | **KEEP.** Runs the ingestion heartbeat unattended. Justified by the real multi-source ingestion DAG. Verify the schedules you want are enabled and the run cadence/cost is acceptable. |
 | **Neon** Postgres | Usage-based, **currently very low** | **KEEP.** Scales with the corpus; needed for this project. Local SQLite path still exists for offline dev. |
 | **Vercel** (twog.bio) | Hobby ≈ free | Keep; confirm tier. |
-| **RunPod** GPU | **REMOVED** (never worked) | Execution layer deleted 2026-06-09. Compute is now a provider *seam* (`compute_runners.py`) awaiting a rebuilt/different tool — ROADMAP P3. $0 idle. |
+| **Hosted-GPU** | **REMOVED** (never worked) | Original execution layer deleted 2026-06-09. Compute is now a provider *seam* (`compute_runners.py`), currently running on Modal — ROADMAP P3. $0 idle. |
 | **OpenRouter / OpenAI / Anthropic** | Pay-per-call, $0 idle | No action. |
 
 **Honest idle cost = Dagster+ monthly + low Neon usage** — a deliberate, modest spend that buys

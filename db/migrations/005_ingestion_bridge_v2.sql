@@ -468,7 +468,7 @@ create table if not exists approval_events (
 create table if not exists async_runs (
   id uuid primary key default gen_random_uuid(),
   run_kind text not null check (
-    run_kind in ('dagster','runpod','mcp','local','external')
+    run_kind in ('dagster','mcp','local','external')
   ),
   run_name text not null,
   external_run_id text,
@@ -476,7 +476,7 @@ create table if not exists async_runs (
   requested_by text,
   mcp_tool_call_id uuid references mcp_tool_calls(id) on delete set null,
   dagster_run_id text,
-  runpod_job_id text,
+  provider_job_id text,
   cost_estimate_usd numeric(10,4),
   input_payload jsonb not null default '{}'::jsonb,
   output_payload jsonb not null default '{}'::jsonb,
@@ -577,4 +577,4 @@ comment on table research_objects is 'Canonical objects such as publications, tr
 comment on table claims is 'Structured scientific assertions extracted from research objects with provenance.';
 comment on table tag_assignments is 'Provenance-backed tags over claims, entities, objects, candidates, hypotheses, artifacts, and runs.';
 comment on table mcp_tool_calls is 'Lightweight MCP observability log for tool calls and structured outputs.';
-comment on table async_runs is 'Async handles for Dagster, RunPod, MCP, local, and external compute jobs.';
+comment on table async_runs is 'Async handles for Dagster, MCP, local, and external compute jobs.';

@@ -237,7 +237,7 @@ Copy:
 
 ```text
 As the platform expands, agents will connect to scientific research tools
-through Docker and GPU-backed environments such as RunPod. These workflows may
+through Docker and GPU-backed environments such as Modal. These workflows may
 include molecular modeling, protein-compound analysis, structure review, omics
 interpretation, safety signal review, pathway comparison, and computational
 validation tasks.

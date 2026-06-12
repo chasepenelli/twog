@@ -816,7 +816,7 @@ _COMPUTE_JOB_TABLE_COLUMNS = (
     "compute_profile",
     "validation_type",
     "title",
-    "runpod_job_id",
+    "provider_job_id",
     "dagster_run_id",
     "last_error",
     "updated_at",
@@ -2136,7 +2136,7 @@ if dg is not None:
             "compute_profile": item.get("compute_profile"),
             "validation_type": item.get("validation_type"),
             "title": str(item.get("title") or "")[:300],
-            "runpod_job_id": item.get("runpod_job_id"),
+            "provider_job_id": item.get("provider_job_id"),
             "dagster_run_id": item.get("dagster_run_id"),
             "last_error": str(item.get("last_error") or "")[:300],
             "updated_at": item.get("updated_at"),
@@ -5497,7 +5497,7 @@ if dg is not None:
             "status": dg.Field(str, is_required=False, description="Optional compute job status filter."),
             "runner_kind": dg.Field(
                 str,
-                default_value="runpod",
+                default_value="external",
                 description="Compute runner kind for new jobs and optional list filter.",
             ),
             "compute_profile": dg.Field(
@@ -5527,22 +5527,22 @@ if dg is not None:
             "poll": dg.Field(
                 bool,
                 default_value=False,
-                description="Poll the created/submitted RunPod job after submission.",
+                description="Poll the created/submitted GPU job after submission.",
             ),
             "cancel": dg.Field(
                 bool,
                 default_value=False,
-                description="Cancel the created/submitted RunPod job after submission/polling.",
+                description="Cancel the created/submitted GPU job after submission/polling.",
             ),
             "dry_run": dg.Field(
                 bool,
                 default_value=True,
-                description="Keep submission in dry-run mode. Live RunPod submission is blocked until configured.",
+                description="Keep submission in dry-run mode. Live GPU submission is blocked until configured.",
             ),
-            "recover_runpod_job_id": dg.Field(
+            "recover_provider_job_id": dg.Field(
                 str,
                 is_required=False,
-                description="Optional RunPod job ID to restore before polling an existing compute job.",
+                description="Optional GPU job ID to restore before polling an existing compute job.",
             ),
             "approved_by": dg.Field(str, is_required=False, description="Optional operator approval identity."),
             "approval_note": dg.Field(str, is_required=False, description="Optional operator approval note."),
@@ -5574,7 +5574,7 @@ if dg is not None:
                 poll=config["poll"],
                 cancel=config["cancel"],
                 dry_run=config["dry_run"],
-                recover_runpod_job_id=config.get("recover_runpod_job_id"),
+                recover_provider_job_id=config.get("recover_provider_job_id"),
                 approved_by=config.get("approved_by"),
                 approval_note=config.get("approval_note"),
                 dagster_run_id=context.run_id,

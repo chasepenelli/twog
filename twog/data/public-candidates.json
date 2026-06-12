@@ -295,11 +295,11 @@
               "summary": {
                 "status": "submitted",
                 "last_error": null,
-                "runpod_job_id": "02540a16-2a0d-4725-848d-8df125d3797c-u1",
+                "provider_job_id": "02540a16-2a0d-4725-848d-8df125d3797c-u1",
                 "external_run_id": "02540a16-2a0d-4725-848d-8df125d3797c-u1"
               },
-              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before RunPod submission.",
-              "runner_kind": "runpod",
+              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before compute submission.",
+              "runner_kind": "modal",
               "artifact_ids": [],
               "compute_job_id": "2d7ea17a-b7ff-4da6-85cb-9572368d092f",
               "compute_profile": "gpu",
@@ -316,11 +316,11 @@
               "summary": {
                 "status": "completed",
                 "last_error": null,
-                "runpod_job_id": "3d553bc7-ad2b-495f-ae39-56a66216d02c-u2",
+                "provider_job_id": "3d553bc7-ad2b-495f-ae39-56a66216d02c-u2",
                 "external_run_id": "3d553bc7-ad2b-495f-ae39-56a66216d02c-u2"
               },
-              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before RunPod submission.",
-              "runner_kind": "runpod",
+              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before compute submission.",
+              "runner_kind": "modal",
               "artifact_ids": [],
               "compute_job_id": "bc5013e9-37ef-4dc7-a7a4-22e3aa0218ee",
               "compute_profile": "gpu",
@@ -337,11 +337,11 @@
               "summary": {
                 "status": "completed",
                 "last_error": null,
-                "runpod_job_id": "c92fcfcb-2275-41da-b802-5a0cdd42747e-u2",
+                "provider_job_id": "c92fcfcb-2275-41da-b802-5a0cdd42747e-u2",
                 "external_run_id": "c92fcfcb-2275-41da-b802-5a0cdd42747e-u2"
               },
-              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before RunPod submission.",
-              "runner_kind": "runpod",
+              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before compute submission.",
+              "runner_kind": "modal",
               "artifact_ids": [],
               "compute_job_id": "afcdf24f-1a0a-4bfb-a48e-b2133e5210f6",
               "compute_profile": "gpu",
@@ -358,11 +358,11 @@
               "summary": {
                 "status": "completed",
                 "last_error": null,
-                "runpod_job_id": "84dd45b4-1c26-43f3-8639-c5f72d806aa0-u2",
+                "provider_job_id": "84dd45b4-1c26-43f3-8639-c5f72d806aa0-u2",
                 "external_run_id": "84dd45b4-1c26-43f3-8639-c5f72d806aa0-u2"
               },
-              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before RunPod submission.",
-              "runner_kind": "runpod",
+              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before compute submission.",
+              "runner_kind": "modal",
               "artifact_ids": [],
               "compute_job_id": "fb839c4e-f747-4718-a1bd-455e5e8e4cc7",
               "compute_profile": "gpu",
@@ -379,11 +379,11 @@
               "summary": {
                 "status": "completed",
                 "last_error": null,
-                "runpod_job_id": "f81c3f17-42f0-46ed-bd44-b2d0ba90b712-u2",
+                "provider_job_id": "f81c3f17-42f0-46ed-bd44-b2d0ba90b712-u2",
                 "external_run_id": "f81c3f17-42f0-46ed-bd44-b2d0ba90b712-u2"
               },
-              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before RunPod submission.",
-              "runner_kind": "runpod",
+              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before compute submission.",
+              "runner_kind": "modal",
               "artifact_ids": [],
               "compute_job_id": "f787811a-0df5-443d-a798-721cfd64aa4d",
               "compute_profile": "gpu",
@@ -400,11 +400,11 @@
               "summary": {
                 "status": "failed",
                 "last_error": "Command '['mk_prepare_ligand.py', '-i', '/tmp/tmp26pu5xm2/ligand.pdb', '-o', '/tmp/tmp26pu5xm2/ligand.pdbqt']' returned non-zero exit status 1.",
-                "runpod_job_id": "7f6d1d1e-1d45-42dc-a8df-e30fff31ae38-u1",
+                "provider_job_id": "7f6d1d1e-1d45-42dc-a8df-e30fff31ae38-u1",
                 "external_run_id": "7f6d1d1e-1d45-42dc-a8df-e30fff31ae38-u1"
               },
-              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before RunPod submission.",
-              "runner_kind": "runpod",
+              "objective": "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, then send it through MD expert packet review before compute submission.",
+              "runner_kind": "modal",
               "artifact_ids": [],
               "compute_job_id": "17314ab2-e8dc-4c30-a858-1fb0a0fe4049",
               "compute_profile": "gpu",
@@ -507,7 +507,7 @@
           "action": "evidence_added",
           "event_id": "a3fc8bad-59a1-58aa-9b73-b2e060e8fc79",
           "metadata": {
-            "runner_kind": "runpod",
+            "runner_kind": "modal",
             "validation_type": "md"
           },
           "new_status": "investigating",
@@ -526,7 +526,7 @@
           "action": "evidence_added",
           "event_id": "bb960eff-4d56-5c61-9691-73e70c97aae9",
           "metadata": {
-            "runner_kind": "runpod",
+            "runner_kind": "modal",
             "validation_type": "md"
           },
           "new_status": "investigating",
@@ -545,7 +545,7 @@
           "action": "evidence_added",
           "event_id": "11bd1af2-43c4-5736-ba8e-976b2e9e76a9",
           "metadata": {
-            "runner_kind": "runpod",
+            "runner_kind": "modal",
             "validation_type": "md"
           },
           "new_status": "investigating",
@@ -564,7 +564,7 @@
           "action": "evidence_added",
           "event_id": "59d83e97-a7be-5c36-bc46-4c8765388240",
           "metadata": {
-            "runner_kind": "runpod",
+            "runner_kind": "modal",
             "validation_type": "md"
           },
           "new_status": "investigating",
@@ -583,7 +583,7 @@
           "action": "evidence_added",
           "event_id": "205f20e2-5282-5387-9864-e949f1379069",
           "metadata": {
-            "runner_kind": "runpod",
+            "runner_kind": "modal",
             "validation_type": "md"
           },
           "new_status": "investigating",

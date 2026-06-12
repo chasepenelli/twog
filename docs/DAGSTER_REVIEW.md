@@ -58,7 +58,7 @@ Storage: Neon Postgres (hosted) via repository abstraction; SQLite for local dev
 
 | Problem | Severity | Fix |
 |---|---|---|
-| ~~RunPod endpoint ID half-migrated~~ | **RESOLVED 2026-06-09** | RunPod execution layer removed entirely (it never worked). `compute_runners.py` is now a provider seam (`ComputeRunner` protocol + registry); the dead `cbf4ffekmo36t9` endpoint is gone. Next compute tool registers via `register_compute_runner()` — ROADMAP P3. |
+| ~~Hosted-GPU endpoint ID half-migrated~~ | **RESOLVED 2026-06-09** | The original hosted-GPU execution layer was removed entirely (it never worked); compute now runs on Modal. `compute_runners.py` is now a provider seam (`ComputeRunner` protocol + registry); the dead `cbf4ffekmo36t9` endpoint is gone. Next compute tool registers via `register_compute_runner()` — ROADMAP P3. |
 | **`launch-dagster-smoke.yml` is 122KB / 2,535 lines** of hand-maintained per-job boilerplate (84 jobs × dropdown+validation+report) | Maintainability | Generate from a job manifest; target ~500 lines. |
 | **`dagster_assets.py` 9,216 lines** — 97 boilerplate jobs, ~50 metadata extractors, formulaic asset wrappers | Maintainability | Asset/job factories → ~2,500 lines, zero behavior change. Ties into the `service.py` decoupling. |
 | **`harvesters_v2.py` 4,275 lines** — 20–30% copy-paste across `normalize()` methods, no base class / plugin system | Maintainability | Extract `APIHarvesterV2` base + split into modules by source family. |
@@ -88,7 +88,7 @@ compound/target vocabularies are hardcoded across `query_policy.py`, `harvesters
 
 ## 7. Recommended sequence
 
-1. **Endpoint hygiene** (cheap, do soon): make RunPod endpoint env/config-driven, kill the stale
+1. **Endpoint hygiene** (cheap, do soon): make the compute endpoint env/config-driven, kill the stale
    hardcoded default, confirm the live ID. Removes a whole class of footgun.
 2. **Verify schedules enabled** in the Dagster+ UI; record the enabled set.
 3. **Opportunistic refactor** (rides with `service.py` decoupling): asset/job factories to shrink

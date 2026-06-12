@@ -497,7 +497,7 @@ choose review and planning capabilities such as:
 - mutation-function review,
 - safety/translational risk review.
 
-No live wet lab, RunPod, docking, Boltz, MD, or paid external compute dispatch
+No live wet lab, GPU compute provider, docking, Boltz, MD, or paid external compute dispatch
 is enabled by default in this architecture snapshot.
 
 ## 15. Validation Queue And Autopilot

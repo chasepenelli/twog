@@ -704,18 +704,18 @@ def _queue_item_cost_usd(item: ValidationRequestQueueItem) -> float | None:
     return None
 
 
-def _md_runpod_input_from_compute_job(record: ComputeJobRecord) -> dict[str, Any]:
+def _md_compute_input_from_compute_job(record: ComputeJobRecord) -> dict[str, Any]:
     explicit_input: dict[str, Any] = {}
     validation_request = record.input_payload.get("validation_request")
     if isinstance(validation_request, dict):
         request_metadata = validation_request.get("metadata")
-        if isinstance(request_metadata, dict) and isinstance(request_metadata.get("runpod_input"), dict):
-            explicit_input.update(request_metadata["runpod_input"])
+        if isinstance(request_metadata, dict) and isinstance(request_metadata.get("compute_input"), dict):
+            explicit_input.update(request_metadata["compute_input"])
     metadata = record.metadata or {}
-    if isinstance(metadata.get("runpod_input"), dict):
-        explicit_input.update(metadata["runpod_input"])
-    if isinstance(record.input_payload.get("runpod_input"), dict):
-        explicit_input.update(record.input_payload["runpod_input"])
+    if isinstance(metadata.get("compute_input"), dict):
+        explicit_input.update(metadata["compute_input"])
+    if isinstance(record.input_payload.get("compute_input"), dict):
+        explicit_input.update(record.input_payload["compute_input"])
     return explicit_input
 
 
@@ -723,17 +723,17 @@ def _md_input_packet_from_compute_job(record: ComputeJobRecord) -> MDInputPacket
     validation_request = record.input_payload.get("validation_request")
     if not isinstance(validation_request, dict):
         validation_request = {}
-    runpod_input = _md_runpod_input_from_compute_job(record)
+    compute_input = _md_compute_input_from_compute_job(record)
     missing = [
         key
         for key in ("protein_pdb", "compound_smiles", "protein_source", "ligand_source", "preparation_method")
-        if not str(runpod_input.get(key) or "").strip()
+        if not str(compute_input.get(key) or "").strip()
     ]
     if missing:
-        raise ValueError(f"missing MD runpod_input fields: {', '.join(missing)}")
-    target_name = str(runpod_input.get("target_name") or validation_request.get("target_name") or "").strip()
+        raise ValueError(f"missing MD compute_input fields: {', '.join(missing)}")
+    target_name = str(compute_input.get("target_name") or validation_request.get("target_name") or "").strip()
     compound_name = str(
-        runpod_input.get("compound_name")
+        compute_input.get("compound_name")
         or validation_request.get("candidate_name")
         or validation_request.get("candidate_id")
         or ""
@@ -743,27 +743,27 @@ def _md_input_packet_from_compute_job(record: ComputeJobRecord) -> MDInputPacket
     if not compound_name:
         raise ValueError("compound_name or candidate_name is required for MD input packets")
     return MDInputPacket(
-        protein_pdb=str(runpod_input["protein_pdb"]),
-        compound_smiles=str(runpod_input["compound_smiles"]),
+        protein_pdb=str(compute_input["protein_pdb"]),
+        compound_smiles=str(compute_input["compound_smiles"]),
         target_name=target_name,
         compound_name=compound_name,
-        simulation_steps=int(runpod_input.get("simulation_steps") or runpod_input.get("steps") or 10),
-        temperature=float(runpod_input.get("temperature") or 300.0),
-        ph=_float_or_none(runpod_input.get("ph")),
-        box_padding=_float_or_none(runpod_input.get("box_padding")),
-        force_field=str(runpod_input["force_field"]) if runpod_input.get("force_field") is not None else None,
-        solvent_model=str(runpod_input["solvent_model"]) if runpod_input.get("solvent_model") is not None else None,
-        enable_docking=bool(runpod_input.get("enable_docking")),
-        protein_source=str(runpod_input["protein_source"]),
-        ligand_source=str(runpod_input["ligand_source"]),
-        preparation_method=str(runpod_input["preparation_method"]),
+        simulation_steps=int(compute_input.get("simulation_steps") or compute_input.get("steps") or 10),
+        temperature=float(compute_input.get("temperature") or 300.0),
+        ph=_float_or_none(compute_input.get("ph")),
+        box_padding=_float_or_none(compute_input.get("box_padding")),
+        force_field=str(compute_input["force_field"]) if compute_input.get("force_field") is not None else None,
+        solvent_model=str(compute_input["solvent_model"]) if compute_input.get("solvent_model") is not None else None,
+        enable_docking=bool(compute_input.get("enable_docking")),
+        protein_source=str(compute_input["protein_source"]),
+        ligand_source=str(compute_input["ligand_source"]),
+        preparation_method=str(compute_input["preparation_method"]),
         metadata={
-            **(runpod_input.get("metadata") if isinstance(runpod_input.get("metadata"), dict) else {}),
+            **(compute_input.get("metadata") if isinstance(compute_input.get("metadata"), dict) else {}),
             "compute_job_id": str(record.compute_job_id),
             "queue_item_id": str(record.queue_item_id) if record.queue_item_id else None,
             "validation_type": record.validation_type,
             "title": record.title,
-            "source_metadata_keys": sorted(str(key) for key in runpod_input.keys()),
+            "source_metadata_keys": sorted(str(key) for key in compute_input.keys()),
         },
     )
 
@@ -797,7 +797,7 @@ def _md_worker_error_history(record: ComputeJobRecord) -> list[dict[str, Any]]:
     for payload_key, payload in (("output_payload", record.output_payload), ("metadata", record.metadata)):
         if not isinstance(payload, dict):
             continue
-        for response_key in ("runpod_submit_response", "runpod_status_response", "runpod_cancel_response"):
+        for response_key in ("provider_submit_response", "provider_status_response", "provider_cancel_response"):
             response = payload.get(response_key)
             if not isinstance(response, dict):
                 continue
@@ -806,7 +806,7 @@ def _md_worker_error_history(record: ComputeJobRecord) -> list[dict[str, Any]]:
             if error or isinstance(output, dict):
                 entry: dict[str, Any] = {
                     "source": f"{payload_key}.{response_key}",
-                    "runpod_status": response.get("status"),
+                    "provider_status": response.get("status"),
                 }
                 if error:
                     entry["error"] = str(error)[:2000]
@@ -833,7 +833,7 @@ def _md_input_schema() -> dict[str, Any]:
         ],
         "optional": ["ph", "box_padding", "force_field", "solvent_model", "enable_docking", "metadata"],
         "worker_contract": {
-            "runpod_body": "Fields are sent at top-level under JSON body input.",
+            "request_body": "Fields are sent at top-level under JSON body input.",
             "protein_pdb": "PDB text containing ATOM/HETATM records and TER or END.",
             "compound_smiles": "Single ligand SMILES string without whitespace.",
             "simulation_steps": "Smoke tests must be <= 1000 steps.",
@@ -1014,15 +1014,15 @@ def _fetch_pubchem_canonical_smiles(compound_name: str, *, timeout_seconds: int 
 
 def _redacted_md_smoke_queue_item(item: ValidationRequestQueueItem) -> dict[str, Any]:
     payload = item.model_dump(mode="json")
-    runpod_input = (
+    compute_input = (
         payload.get("validation_request", {})
         .get("metadata", {})
-        .get("runpod_input", {})
+        .get("compute_input", {})
     )
-    if isinstance(runpod_input, dict) and isinstance(runpod_input.get("protein_pdb"), str):
-        protein_pdb = runpod_input.pop("protein_pdb")
-        runpod_input["protein_pdb_line_count"] = len(protein_pdb.splitlines())
-        runpod_input["protein_pdb_sha256"] = hashlib.sha256(protein_pdb.encode("utf-8")).hexdigest()
+    if isinstance(compute_input, dict) and isinstance(compute_input.get("protein_pdb"), str):
+        protein_pdb = compute_input.pop("protein_pdb")
+        compute_input["protein_pdb_line_count"] = len(protein_pdb.splitlines())
+        compute_input["protein_pdb_sha256"] = hashlib.sha256(protein_pdb.encode("utf-8")).hexdigest()
     return payload
 
 
@@ -1037,7 +1037,7 @@ def _redacted_md_smoke_compute_job(record: ComputeJobRecord | None) -> dict[str,
         "compute_profile": record.compute_profile,
         "validation_type": record.validation_type,
         "title": record.title,
-        "runpod_job_id": record.runpod_job_id,
+        "provider_job_id": record.provider_job_id,
         "last_error": record.last_error,
         "created_at": record.created_at.isoformat(),
         "updated_at": record.updated_at.isoformat(),
@@ -3240,7 +3240,7 @@ class HSAResearchService:
         """Create a real MD queue item from live structure/compound APIs.
 
         This is intentionally narrow: it seeds one expert-gated MD smoke test,
-        then reuses the existing queue -> compute -> expert-review -> RunPod path.
+        then reuses the existing queue -> compute -> expert-review -> GPU compute path.
         """
 
         normalized_pdb_id = re.sub(r"[^A-Za-z0-9]", "", pdb_id or "").upper()
@@ -3269,7 +3269,7 @@ class HSAResearchService:
             preparation_method=(
                 "TWOG supplies a protein-only PDB with HETATM records, crystallographic waters, and "
                 "co-crystallized ligands stripped before submission. TWOG supplies canonical SMILES only "
-                "for the ligand; no upstream docking pose is generated. The RunPod worker is expected to "
+                "for the ligand; no upstream docking pose is generated. The GPU worker is expected to "
                 "perform SMILES-to-3D embedding, protonation at pH 7.4, and small-molecule force-field "
                 "parameterization, or return structured prepared_ligand_artifact_or_error."
             ),
@@ -3278,7 +3278,7 @@ class HSAResearchService:
                 "compound_name": compound_name,
                 "source_route": "rcsb_pdb+pubchem",
                 "pdb_preparation": pdb_preparation_metadata,
-                "co_crystallized_ligand_handling": "all HETATM records stripped before RunPod submission",
+                "co_crystallized_ligand_handling": "all HETATM records stripped before GPU submission",
                 "worker_ligand_prep_contract": (
                     "worker handles SMILES-to-3D, protonation, and ligand parameterization; structured "
                     "failure is acceptable for this smoke-scale contract test"
@@ -3295,7 +3295,7 @@ class HSAResearchService:
         task_id = uuid5(NAMESPACE_URL, f"{identity_basis}:task")
         brief_id = uuid5(NAMESPACE_URL, f"{identity_basis}:brief")
         approval = approval_note or (
-            "Seeded from live RCSB/PubChem APIs for one expert-gated RunPod MD smoke test. "
+            "Seeded from live RCSB/PubChem APIs for one expert-gated GPU MD smoke test. "
             "Live submission still requires exact packet-hash MD expert approval."
         )
         queue_item = ValidationRequestQueueItem(
@@ -3310,7 +3310,7 @@ class HSAResearchService:
             title=f"MD smoke: {compound_name} against {target_name}",
             objective=(
                 "Create one smoke-scale MD compute job using live RCSB and PubChem inputs, "
-                "then send it through MD expert packet review before RunPod submission."
+                "then send it through MD expert packet review before GPU submission."
             ),
             rationale=(
                 "The hosted database currently has no durable MD queue item. This seed route "
@@ -3331,7 +3331,7 @@ class HSAResearchService:
                         f"{compound_name} canonical SMILES."
                     ),
                     assay_type="in silico MD smoke test",
-                    readout="RunPod worker contract acceptance and structured preparation/runtime failure modes.",
+                    readout="GPU worker contract acceptance and structured preparation/runtime failure modes.",
                     endpoint="MD compute lane readiness",
                 ),
                 quality_gates=[
@@ -3342,7 +3342,7 @@ class HSAResearchService:
                     "single_smoke_job_only",
                 ],
                 metadata={
-                    "runpod_input": input_packet.model_dump(mode="json"),
+                    "compute_input": input_packet.model_dump(mode="json"),
                     "api_sources": {
                         "protein_pdb": f"https://files.rcsb.org/download/{normalized_pdb_id}.pdb",
                         "compound_smiles": (
@@ -3385,7 +3385,7 @@ class HSAResearchService:
         if create_compute_job:
             compute_job = self.create_compute_job_from_validation_queue_item(
                 queue_item.queue_item_id,
-                runner_kind="runpod",
+                runner_kind="external",
                 compute_profile="gpu",
                 approved_by=approved_by if approve_queue_item else None,
                 approval_note=approval if approve_queue_item else None,
@@ -3560,7 +3560,7 @@ class HSAResearchService:
             artifact_ids=existing.artifact_ids if existing else [],
             external_run_id=existing.external_run_id if existing else None,
             dagster_run_id=dagster_run_id or (existing.dagster_run_id if existing else None),
-            runpod_job_id=existing.runpod_job_id if existing else None,
+            provider_job_id=existing.provider_job_id if existing else None,
             cost_estimate_usd=_queue_item_cost_usd(item),
             cost_actual_usd=existing.cost_actual_usd if existing else None,
             approved_by=approved_by or item.approved_by,
@@ -3619,8 +3619,8 @@ class HSAResearchService:
             worker_error_history=worker_error_history or _md_worker_error_history(record),
             input_schema=_md_input_schema(),
             expected_outputs=[
-                "runpod_job_id",
-                "runpod_status_response",
+                "provider_job_id",
+                "provider_status_response",
                 "prepared_ligand_artifact_or_error",
                 "md_or_docking_metrics_or_structured_failure",
             ],
@@ -3822,7 +3822,7 @@ class HSAResearchService:
             status=submission["status"],
             output_payload=submission["output_payload"],
             external_run_id=submission["external_run_id"],
-            runpod_job_id=submission["runpod_job_id"],
+            provider_job_id=submission["provider_job_id"],
             dagster_run_id=dagster_run_id,
             metadata=submission["metadata"] | gate_metadata | {"submission_mode": "live"},
         )
@@ -3922,7 +3922,7 @@ class HSAResearchService:
             input_packet = _md_input_packet_from_compute_job(record)
         except Exception as exc:
             return f"md_input_packet_invalid: {exc}", {}
-        endpoint_id = os.getenv("HSA_RUNPOD_ENDPOINT_ID", "twog-md-default").strip() or "twog-md-default"
+        endpoint_id = os.getenv("HSA_MD_ENDPOINT_ID", "twog-md-default").strip() or "twog-md-default"
         packet_hash = _md_expert_packet_hash(
             input_packet,
             endpoint_id=endpoint_id,
@@ -4028,7 +4028,7 @@ class HSAResearchService:
             else:
                 created_job = self.create_compute_job_from_validation_queue_item(
                     request.queue_item_id,
-                    runner_kind=request.runner_kind or "runpod",
+                    runner_kind=request.runner_kind or "external",
                     compute_profile=request.compute_profile,
                     approved_by=request.approved_by,
                     approval_note=request.approval_note,
@@ -4038,18 +4038,18 @@ class HSAResearchService:
                 )
                 if created_job is None:
                     errors.append("queue_item_not_found")
-        if created_job is not None and request.recover_runpod_job_id:
+        if created_job is not None and request.recover_provider_job_id:
             recovered_status = "submitted" if created_job.status in {"approved", "blocked", "queued"} else created_job.status
             recovered = self.repository.update_compute_job(
                 created_job.compute_job_id,
                 status=recovered_status,
-                external_run_id=request.recover_runpod_job_id,
-                runpod_job_id=request.recover_runpod_job_id,
+                external_run_id=request.recover_provider_job_id,
+                provider_job_id=request.recover_provider_job_id,
                 dagster_run_id=request.dagster_run_id,
                 last_error=None,
                 metadata={
-                    "runpod_job_id_recovered_at": datetime.now(UTC).isoformat(),
-                    "runpod_job_id_recovered_from": "compute_job_report_request",
+                    "provider_job_id_recovered_at": datetime.now(UTC).isoformat(),
+                    "provider_job_id_recovered_from": "compute_job_report_request",
                 },
             )
             if recovered is not None:
@@ -7144,7 +7144,7 @@ def _attach_compute_job_run_manifest(
         output_refs={
             "status": record.status,
             "external_run_id": record.external_run_id,
-            "runpod_job_id": record.runpod_job_id,
+            "provider_job_id": record.provider_job_id,
             "output_keys": sorted(record.output_payload.keys()),
         },
         errors=[record.last_error] if record.last_error else [],
@@ -8283,7 +8283,7 @@ def _public_candidate_compute_summary(job: ComputeJobRecord) -> dict[str, Any]:
     return {
         "status": job.status,
         "last_error": job.last_error,
-        "runpod_job_id": job.runpod_job_id,
+        "provider_job_id": job.provider_job_id,
         "external_run_id": job.external_run_id,
     }
 

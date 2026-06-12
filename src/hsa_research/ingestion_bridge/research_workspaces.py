@@ -767,7 +767,7 @@ def plan_daytona_workspace(
         "skill_profile": request.skill_profile,
         "installed_skill_refs": installed_skill_refs,
         "recommended_source_refs": request.recommended_source_refs,
-        "forbidden_secrets": ["OPENROUTER_API_KEY", "RUNPOD_API_KEY", "GH_TOKEN", "production_database_url"],
+        "forbidden_secrets": ["OPENROUTER_API_KEY", "MODAL_TOKEN_SECRET", "GH_TOKEN", "production_database_url"],
     }
     ready_for_provider_dispatch = bool(
         request.dry_run

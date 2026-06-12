@@ -50,8 +50,8 @@ HSA_PMC_OA_MAX_CANDIDATE_RECORDS=20
 HSA_EMBEDDING_MODEL=openrouter:openai/text-embedding-3-large
 OPENROUTER_API_KEY=<required for hosted OpenRouter review modes>
 TWITTERAPI_IO_KEY=<optional for X/Twitter topic monitoring>
-RUNPOD_API_KEY=<required for approval-gated live RunPod compute>
-HSA_RUNPOD_ENDPOINT_ID=cbf4ffekmo36t9
+MODAL_TOKEN_SECRET=<required for approval-gated live Modal compute>
+HSA_MD_ENDPOINT_ID=cbf4ffekmo36t9
 ```
 
 Do not commit or paste `HSA_DATABASE_URL` into chat. Store it directly in
@@ -67,8 +67,8 @@ The preferred automated path is:
    if hosted model-review comparison should run.
 4. Store the TwitterAPI.io key as the GitHub Actions secret `TWITTERAPI_IO_KEY`
    if X/Twitter topic monitoring should run.
-5. Store the RunPod key and endpoint as `RUNPOD_API_KEY` and
-   `HSA_RUNPOD_ENDPOINT_ID` if approval-gated GPU compute should run.
+5. Store the Modal token and endpoint as `MODAL_TOKEN_SECRET` and
+   `HSA_MD_ENDPOINT_ID` if approval-gated GPU compute should run.
 6. Run the `Configure Dagster Plus Environment` GitHub Actions workflow.
 
 That workflow uses `DAGSTER_PLUS_ENV_API_TOKEN` to write the production Dagster+
@@ -84,8 +84,8 @@ uv run dg plus create env HSA_FULL_TEXT_FETCH_TIME_BUDGET_SECONDS 120 --global -
 uv run dg plus create env TWITTERAPI_IO_KEY --from-local-env --global --scope full --yes
 uv run dg plus create env HSA_PMC_OA_MAX_CANDIDATE_RECORDS 20 --global --scope full --yes
 uv run dg plus create env OPENROUTER_API_KEY --from-local-env --global --scope full --yes
-uv run dg plus create env RUNPOD_API_KEY --from-local-env --global --scope full --yes
-uv run dg plus create env HSA_RUNPOD_ENDPOINT_ID cbf4ffekmo36t9 --global --scope full --yes
+uv run dg plus create env MODAL_TOKEN_SECRET --from-local-env --global --scope full --yes
+uv run dg plus create env HSA_MD_ENDPOINT_ID cbf4ffekmo36t9 --global --scope full --yes
 ```
 
 ## GitHub Actions Settings
@@ -106,7 +106,7 @@ These improve rate limits or unlock later compute paths:
 ```text
 NCBI_API_KEY=<free NCBI key>
 OPENFDA_API_KEY=<free openFDA key>
-RUNPOD_API_KEY=<later GPU jobs>
+MODAL_TOKEN_SECRET=<later GPU jobs>
 OPENROUTER_API_KEY=<optional hosted model-review comparison>
 ```
 
@@ -272,7 +272,7 @@ safe termination request and the run must be cleared from orchestration state.
 ## Notes
 
 - Dagster+ Serverless is the preferred first deployment mode.
-- Heavy GPU tasks should stay outside Dagster+ workers and run through RunPod.
+- Heavy GPU tasks should stay outside Dagster+ workers and run through Modal.
   Dagster should submit those jobs and track handles, not execute GPU work
   directly.
 - SQLite remains the local development backend.

@@ -23,7 +23,7 @@ HELPERS = Path("tests/_helpers.py")
 BUCKETS = [
     ("test_agents.py", ["agent_runner", "run_manifest", "agent_run", "agent_perf", "_agent_"]),
     ("test_repository.py", ["repository", "sqlite", "postgres", "_store", "storage"]),
-    ("test_compute.py", ["compute", "_md_", "md_expert", "runpod", "docking", "proof_capsule", "workspace", "checkout"]),
+    ("test_compute.py", ["compute", "_md_", "md_expert", "provider_job", "docking", "proof_capsule", "workspace", "checkout"]),
     ("test_validation.py", ["validation", "validation_tool", "validation_queue"]),
     ("test_therapy.py", ["therapy"]),
     ("test_omics.py", ["omics", "locus"]),

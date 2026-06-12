@@ -625,7 +625,7 @@ ValidationRequestQueueStatus = Literal[
 ]
 
 ComputeRunnerKind = Literal[
-    "runpod", "local", "dagster", "external", "mock", "modal", "checkpoint", "modal_checkpoint"
+    "local", "dagster", "external", "mock", "modal", "checkpoint", "modal_checkpoint"
 ]
 ComputeProfile = Literal["cpu", "gpu", "gpu_a10", "gpu_l4", "gpu_a100", "gpu_h100", "unknown"]
 ComputeJobStatus = Literal[
@@ -4085,12 +4085,12 @@ class ValidationRequest(StrictBaseModel):
 
 class AsyncRunHandle(StrictBaseModel):
     run_id: UUID = Field(default_factory=uuid4)
-    run_kind: Literal["dagster", "runpod", "mcp", "local", "external"] = "mcp"
+    run_kind: Literal["dagster", "mcp", "local", "external"] = "mcp"
     run_name: str
     status: RunStatus = RunStatus.QUEUED
     external_run_id: str | None = None
     dagster_run_id: str | None = None
-    runpod_job_id: str | None = None
+    provider_job_id: str | None = None
     cost_estimate_usd: float | None = None
     artifact_ids: list[UUID] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -4129,7 +4129,7 @@ class ComputeJobRecord(StrictBaseModel):
     artifact_ids: list[UUID] = Field(default_factory=list)
     external_run_id: str | None = Field(default=None, max_length=300)
     dagster_run_id: str | None = Field(default=None, max_length=300)
-    runpod_job_id: str | None = Field(default=None, max_length=300)
+    provider_job_id: str | None = Field(default=None, max_length=300)
     cost_estimate_usd: float | None = Field(default=None, ge=0.0)
     cost_actual_usd: float | None = Field(default=None, ge=0.0)
     approved_by: str | None = Field(default=None, max_length=200)
@@ -4155,8 +4155,8 @@ class ComputeJobRecord(StrictBaseModel):
             self.external_run_id = self.external_run_id.strip() or None
         if self.dagster_run_id:
             self.dagster_run_id = self.dagster_run_id.strip() or None
-        if self.runpod_job_id:
-            self.runpod_job_id = self.runpod_job_id.strip() or None
+        if self.provider_job_id:
+            self.provider_job_id = self.provider_job_id.strip() or None
         if self.candidate_id:
             self.candidate_id = self.candidate_id.strip() or None
         if self.candidate_snapshot_hash:
@@ -4183,7 +4183,7 @@ class ComputeJobReportRequest(StrictBaseModel):
     cancel: bool = False
     dry_run: bool = True
     compute_profile: ComputeProfile = "gpu"
-    recover_runpod_job_id: str | None = Field(default=None, max_length=300)
+    recover_provider_job_id: str | None = Field(default=None, max_length=300)
     approved_by: str | None = Field(default=None, max_length=200)
     approval_note: str | None = Field(default=None, max_length=1000)
     dagster_run_id: str | None = None
