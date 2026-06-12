@@ -10,6 +10,8 @@ Nothing is auto-promoted.
 
 from __future__ import annotations
 
+import sys
+
 from hsa_research.ingestion_bridge.input_resolvers import NetworkInputResolvers
 from hsa_research.ingestion_bridge.postgres_store import PostgresResearchRepository
 from hsa_research.ingestion_bridge.service import HSAResearchService
@@ -18,7 +20,12 @@ from hsa_research.ingestion_bridge.service import HSAResearchService
 from scripts.run_real_demo import _database_url
 from tests.test_candidates import _seed_validation_ready_candidate
 
-CANDIDATE_ID = "alpelisib-pi3ka-auto"
+# Usage: python scripts/run_autonomous_demo.py [TARGET] [THERAPY]
+#   default        -> PIK3CA / alpelisib (a real inhibitor: expect the hypothesis to STAND)
+#   PIK3CA aspirin -> a negative control (wrong drug class: expect REFUTED)
+TARGET = sys.argv[1] if len(sys.argv) > 1 else "PIK3CA"
+THERAPY = sys.argv[2] if len(sys.argv) > 2 else "alpelisib"
+CANDIDATE_ID = f"{THERAPY}-{TARGET}-auto".lower()
 
 
 def main() -> None:
@@ -29,9 +36,9 @@ def main() -> None:
     _seed_validation_ready_candidate(repo, candidate_id=CANDIDATE_ID, ready=True)
     cand = service.get_public_candidate(CANDIDATE_ID)
     repo.upsert_public_candidate(cand.model_copy(update={
-        "targets": ["PIK3CA"], "candidate_therapies": ["alpelisib"], "metadata": {},  # NO curated inputs
+        "targets": [TARGET], "candidate_therapies": [THERAPY], "metadata": {},  # NO curated inputs
     }))
-    print(f"Seeded '{CANDIDATE_ID}' naming ONLY target=PIK3CA, therapy=alpelisib — no curated inputs.\n")
+    print(f"Seeded '{CANDIDATE_ID}' naming ONLY target={TARGET}, therapy={THERAPY} — no curated inputs.\n")
 
     print("Running the loop (network resolvers ON: RCSB structure + PubChem SMILES; real gnina on Modal)...", flush=True)
     result = service.run_falsification_loop(CANDIDATE_ID, lane_allowlist=["docking"], runner_kind="modal", max_rounds=2)
