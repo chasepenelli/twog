@@ -274,7 +274,14 @@ from .lanes import (
     resolve_sandbox_environment,
 )
 from . import falsification_planner
-from .contracts import FalsificationLane, FalsificationPlannerResult
+from .contracts import (
+    FalsificationLane,
+    FalsificationPlan,
+    FalsificationPlannerResult,
+    FalsificationPreregistration,
+    FalsificationRoundResult,
+    KillCriterion,
+)
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, build_embedding_provider, select_embedding_model_from_coverage
 from .evidence_fit import assess_research_followup_ingest_evidence_fit
 from .evidence_gap_resolver import (
@@ -1940,6 +1947,159 @@ class HSAResearchService:
             execute=_run,
         )
 
+    # --- Falsification round: pre-registration + auto-dispatch (increment 2) --------------------
+    def _falsification_preregistration_hash(
+        self, *, candidate_id: str, lane: str, kill_criterion: KillCriterion, expected_signal: str
+    ) -> str:
+        """Deterministic content hash over the pre-registered test, committed BEFORE dispatch."""
+        canonical = json.dumps(
+            {
+                "candidate_id": candidate_id,
+                "lane": lane,
+                "kill_criterion": kill_criterion.model_dump(mode="json"),
+                "expected_signal_if_alive": expected_signal,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def register_falsification_test(
+        self,
+        plan: FalsificationPlan,
+        *,
+        approved_by: str = "twog_operator",
+        submitted_by: str | None = None,
+    ) -> FalsificationPreregistration:
+        """Freeze a proposed test's kill-criterion onto an approved validation-queue item, content
+        hashed BEFORE any compute runs (the pre-registration lock). The hash + frozen criterion ride in
+        validation_request.metadata so they thread to the resulting proof capsule unchanged."""
+        prereg_hash = self._falsification_preregistration_hash(
+            candidate_id=plan.candidate_id,
+            lane=plan.lane,
+            kill_criterion=plan.kill_criterion,
+            expected_signal=plan.expected_signal_if_alive,
+        )
+        prereg_block = {
+            "plan_id": str(plan.plan_id),
+            "candidate_id": plan.candidate_id,
+            "lane": plan.lane,
+            "validation_type": plan.validation_type,
+            "kill_criterion": plan.kill_criterion.model_dump(mode="json"),
+            "expected_signal_if_alive": plan.expected_signal_if_alive,
+            "preregistration_hash": prereg_hash,
+            "provenance_flag": plan.provenance_flag,
+        }
+        candidate = self.get_public_candidate(plan.candidate_id)
+        target_name = (candidate.targets[0] if candidate and candidate.targets else None) or "unspecified_target"
+        request = ValidationRequest(
+            validation_type=plan.validation_type,  # type: ignore[arg-type]
+            candidate_name=plan.candidate_id,
+            target_name=target_name,
+            objective=plan.test_objective,
+            require_approval=True,
+            assay_context=ValidationAssayContext(
+                disease_context="canine hemangiosarcoma and human angiosarcoma",
+                species=["canine", "human"],
+                model_system="Computational model with explicit source provenance.",
+                assay_type="in silico falsification test",
+                readout="directional signal vs the pre-registered kill-criterion",
+                endpoint="computational plausibility",
+            ),
+            metadata={"falsification_preregistration": prereg_block},
+        )
+        queue_item = self.repository.upsert_validation_request_queue_item(
+            ValidationRequestQueueItem(
+                plan_id=uuid4(),
+                task_id=uuid4(),
+                brief_id=uuid4(),
+                topic=f"Falsification: {plan.test_objective}"[:1000],
+                task_type=plan.validation_type,  # type: ignore[arg-type]
+                title=f"Falsify: {plan.hypothesis or plan.candidate_id}"[:500],
+                objective=plan.test_objective,
+                rationale=plan.rank_rationale or "Agent-proposed falsification test (read-only planner).",
+                validation_request=request,
+                metadata={"falsification_preregistration": prereg_block},
+            )
+        )
+        self.approve_validation_request_queue_item(queue_item.queue_item_id, approved_by=approved_by)
+        return FalsificationPreregistration(
+            plan_id=plan.plan_id,
+            candidate_id=plan.candidate_id,
+            lane=plan.lane,
+            validation_type=plan.validation_type,
+            kill_criterion=plan.kill_criterion,
+            expected_signal_if_alive=plan.expected_signal_if_alive,
+            preregistration_hash=prereg_hash,
+            queue_item_id=queue_item.queue_item_id,
+        )
+
+    @staticmethod
+    def _evaluate_kill_criterion(kill_criterion: KillCriterion, observed_signal: str) -> bool:
+        """Increment-2 evaluation is signal-based: the hypothesis is killed when the observed
+        directional signal equals the pre-registered killing signal. (Metric-threshold evaluation
+        against real lane metrics lands once lanes emit them.)"""
+        return observed_signal == kill_criterion.observed_signal_kills
+
+    def run_falsification_round(
+        self,
+        candidate_id: str,
+        *,
+        lane_allowlist: list[str] | None = None,
+        runner_kind: str = "mock",
+        submitted_by: str | None = None,
+    ) -> FalsificationRoundResult | None:
+        """Close one loop iteration: autonomously PROPOSE the next falsification, PRE-REGISTER its
+        kill-criterion (content-hashed before dispatch), DISPATCH it (mock in CI / Modal on GPU), and
+        read the result against the pre-registration. NEVER auto-accepts or auto-promotes the resulting
+        capsule — the human write-gate stays terminal. Returns None if the candidate does not exist."""
+
+        def _maybe_uuid(value: Any) -> UUID | None:
+            try:
+                return UUID(str(value)) if value else None
+            except (ValueError, TypeError):
+                return None
+
+        proposal = self.propose_next_falsification(candidate_id, lane_allowlist=lane_allowlist)
+        if proposal is None:
+            return None
+        if proposal.proposed is None:
+            return FalsificationRoundResult(
+                candidate_id=candidate_id,
+                blockers=proposal.blockers,
+                errors=["no_runnable_proposal"],
+                agent_run_id=proposal.agent_run_id,
+            )
+
+        plan = proposal.proposed
+        prereg = self.register_falsification_test(plan, submitted_by=submitted_by)
+        flow = self.run_compute_validation_flow(
+            candidate_id, prereg.queue_item_id, runner_kind=runner_kind, submitted_by=submitted_by
+        )
+
+        capsule_id = _maybe_uuid(flow.get("capsule_id"))
+        observed_signal = "none"
+        if capsule_id is not None:
+            capsule = self.repository.get_proof_capsule(capsule_id)
+            if capsule is not None and isinstance(capsule.payload, dict):
+                signal = capsule.payload.get("signal")
+                if signal in ("supports", "refutes", "neutral"):
+                    observed_signal = signal
+
+        return FalsificationRoundResult(
+            candidate_id=candidate_id,
+            plan=plan,
+            preregistration=prereg,
+            compute_job_id=_maybe_uuid(flow.get("compute_job_id")),
+            capsule_id=capsule_id,
+            capsule_status=flow.get("capsule_status"),
+            observed_signal=observed_signal,
+            kill_criterion_met=self._evaluate_kill_criterion(plan.kill_criterion, observed_signal),
+            blockers=proposal.blockers,
+            errors=list(flow.get("errors") or []),
+            agent_run_id=proposal.agent_run_id,
+        )
+
     def _transition_proof_capsule(
         self,
         capsule_id: UUID,
@@ -2048,6 +2208,19 @@ class HSAResearchService:
 
         out = job.output_payload if isinstance(job.output_payload, dict) else {}
 
+        # Increment 2: if this job carries a frozen falsification pre-registration (committed onto the
+        # queue item before dispatch), thread it onto the capsule UNCHANGED so the kill-criterion and
+        # its pre-dispatch hash live on the produced evidence (the anti-p-hacking lock).
+        prereg_block = None
+        job_input = job.input_payload if isinstance(job.input_payload, dict) else {}
+        request_blob = job_input.get("validation_request")
+        if isinstance(request_blob, dict):
+            request_meta = request_blob.get("metadata")
+            if isinstance(request_meta, dict) and isinstance(
+                request_meta.get("falsification_preregistration"), dict
+            ):
+                prereg_block = request_meta["falsification_preregistration"]
+
         def _min3(text: str, fallback: str) -> str:
             text = (text or "").strip()
             return text if len(text) >= 3 else fallback
@@ -2102,6 +2275,14 @@ class HSAResearchService:
                 "signal": out.get("signal") or "neutral",
                 "confidence": out.get("confidence"),
                 "output_payload": out,
+                **(
+                    {
+                        "falsification_preregistration": prereg_block,
+                        "provenance_flag": prereg_block.get("provenance_flag"),
+                    }
+                    if prereg_block
+                    else {}
+                ),
             },
             artifacts=artifacts,
             source_refs=source_refs,

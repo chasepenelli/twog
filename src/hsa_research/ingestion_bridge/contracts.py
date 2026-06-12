@@ -7008,3 +7008,41 @@ class FalsificationPlannerResult(StrictBaseModel):
     runnable_lanes: list[FalsificationLane] = Field(default_factory=list)
     agent_run_id: UUID | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+# --- Increment 2: pre-registration + auto-dispatch --------------------------------------------
+class FalsificationPreregistration(StrictBaseModel):
+    """The pre-registration LOCK. A proposed test's kill-criterion + a content hash, committed onto an
+    approved validation-queue item BEFORE any compute runs. The hash (computed pre-dispatch) lets an
+    auditor prove the criterion was not changed after seeing the result — the anti-p-hacking guarantee."""
+
+    prereg_id: UUID = Field(default_factory=uuid4)
+    plan_id: UUID
+    candidate_id: str = Field(min_length=1, max_length=260)
+    lane: FalsificationLane
+    validation_type: str = Field(min_length=1, max_length=100)
+    kill_criterion: KillCriterion
+    expected_signal_if_alive: Literal["supports", "refutes", "neutral"]
+    preregistration_hash: str = Field(min_length=8, max_length=160)
+    queue_item_id: UUID
+    registered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class FalsificationRoundResult(StrictBaseModel):
+    """One closed falsification round: propose -> pre-register -> dispatch (mock in CI / Modal on GPU)
+    -> read result vs the pre-registration. NEVER auto-accepts or auto-promotes — `promoted` is fixed
+    False; the resulting capsule stays at the agent-produced gate and the human write-gate is terminal."""
+
+    candidate_id: str = Field(min_length=1, max_length=260)
+    plan: FalsificationPlan | None = None
+    preregistration: FalsificationPreregistration | None = None
+    compute_job_id: UUID | None = None
+    capsule_id: UUID | None = None
+    capsule_status: str | None = Field(default=None, max_length=80)
+    observed_signal: Literal["supports", "refutes", "neutral", "none"] = "none"
+    kill_criterion_met: bool = False
+    promoted: Literal[False] = False
+    blockers: list[str] = Field(default_factory=list, max_length=20)
+    errors: list[str] = Field(default_factory=list, max_length=20)
+    agent_run_id: UUID | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
