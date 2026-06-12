@@ -6986,6 +6986,9 @@ class FalsificationPlan(StrictBaseModel):
     novelty_note: str = Field(default="", max_length=1000)
     provenance_flag: Literal["agent_proposed_unconfirmed"] = "agent_proposed_unconfirmed"
     agent_run_id: UUID | None = None
+    # inc7: True iff the candidate carries real inputs for this lane (so a Modal dispatch runs real
+    # compute). The planner ranks inputs_ready lanes FIRST — it prefers what it can actually run.
+    inputs_ready: bool = True
 
     @model_validator(mode="after")
     def require_targets_when_addressing_confound(self) -> "FalsificationPlan":

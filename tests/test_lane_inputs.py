@@ -11,9 +11,18 @@ from tests._helpers import *  # noqa: F401,F403
 from tests._helpers import HSAResearchService, SQLiteResearchRepository
 from tests.test_candidates import _seed_validation_ready_candidate
 
-from hsa_research.ingestion_bridge.contracts import FalsificationPlan, KillCriterion
+from tests.test_falsification_planner import _seed_capsule
+
+from hsa_research.ingestion_bridge.contracts import BeliefState, FalsificationPlan, KillCriterion
+from hsa_research.ingestion_bridge.falsification_planner import rank_falsification_tests
 
 DOCK_INPUTS = {"receptor_pdb": "ATOM  ...minimal...", "ligand_smiles": "CCO"}
+
+_COST = {"omics": 0.01, "docking": 0.10, "md": 40.0}
+
+
+def _cost(lane):
+    return _COST.get(lane, 100.0)
 
 
 def _svc(tmp_path, name):
@@ -98,3 +107,25 @@ def test_register_records_unresolved_and_fabricates_nothing(tmp_path):
     meta = item.validation_request.metadata
     assert "docking" not in meta  # no fabricated lane config
     assert meta["falsification_preregistration"]["inputs_resolved"] is False
+
+
+# ---- input-aware planning: prefer lanes the candidate can really run --------------------------
+def test_rank_prefers_input_ready_lane_over_cheaper_unresolved():
+    belief = BeliefState(candidate_id="c", net_signal="neutral", net_confidence=0.2, tested_lanes=[])
+    plans = rank_falsification_tests(belief, {"docking", "omics"}, _cost, inputs_unresolved=frozenset({"omics"}))
+    # omics is cheaper (higher VOI/$) but its inputs are unresolved -> docking (ready) ranks first
+    assert plans[0].lane == "docking" and plans[0].inputs_ready is True
+    omics = next(p for p in plans if p.lane == "omics")
+    assert omics.inputs_ready is False and "inputs unresolved" in omics.novelty_note
+
+
+def test_propose_prefers_lane_with_resolved_inputs(tmp_path):
+    service, repo = _svc(tmp_path, "ia")
+    _candidate_with_inputs(repo, service, "vr-ia", {"docking": DOCK_INPUTS})  # docking inputs only
+    _seed_capsule(repo, "vr-ia", signal="neutral", validation_type="homology")  # docking + omics untested
+
+    result = service.propose_next_falsification("vr-ia")
+    assert result.proposed.lane == "docking"  # preferred despite omics being far cheaper
+    assert result.proposed.inputs_ready is True
+    omics_alt = next((p for p in result.alternatives if p.lane == "omics"), None)
+    assert omics_alt is not None and omics_alt.inputs_ready is False

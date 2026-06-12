@@ -239,11 +239,14 @@ def rank_falsification_tests(
     runnable_lanes: set[str],
     cost_fn: Callable[[str], float],
     ruled_out: frozenset[str] = frozenset(),
+    inputs_unresolved: frozenset[str] = frozenset(),
 ) -> list[FalsificationPlan]:
     """Generate candidate tests and rank them by value-of-information per dollar (falsification-first).
     Confound-audit tests are keyed on the confound (not the lane), so they survive lane de-dup; generic
     orthogonal tests are skipped for already-tested lanes. ``ruled_out`` lanes (settled in the Failure
-    Corpus) take a novelty penalty so the planner does not revisit a refuted approach."""
+    Corpus) take a novelty penalty. ``inputs_unresolved`` lanes (the candidate has no real inputs for
+    them) are flagged inputs_ready=False and rank BELOW all input-ready lanes — the planner prefers what
+    it can actually run with real data."""
     plans: list[FalsificationPlan] = []
 
     for flag in belief.open_confounds:
@@ -272,8 +275,27 @@ def rank_falsification_tests(
             for p in plans
         ]
 
-    # Rank by VOI per dollar (cheaper wins on equal VOI), then by raw cost, then lane for stability.
-    plans.sort(key=lambda p: (-(p.value_of_information / max(p.est_cost_usd, 1e-6)), p.est_cost_usd, p.lane))
+    if inputs_unresolved:  # flag tests the candidate has no real inputs for (still proposed, ranked last)
+        plans = [
+            p.model_copy(
+                update={
+                    "inputs_ready": False,
+                    "novelty_note": (
+                        f"{p.novelty_note} | inputs unresolved — attach "
+                        f"candidate.metadata['lane_inputs']['{p.lane}'] to run real compute."
+                    ).strip(" |"),
+                }
+            )
+            if p.lane in inputs_unresolved
+            else p
+            for p in plans
+        ]
+
+    # Rank input-ready lanes FIRST (prefer what we can really run), then by VOI per dollar (cheaper
+    # wins on equal VOI), then by raw cost, then lane for stability.
+    plans.sort(
+        key=lambda p: (not p.inputs_ready, -(p.value_of_information / max(p.est_cost_usd, 1e-6)), p.est_cost_usd, p.lane)
+    )
     return plans
 
 
@@ -285,10 +307,13 @@ def propose(
     runnable_lanes: set[str],
     cost_fn: Callable[[str], float],
     ruled_out: frozenset[str] = frozenset(),
+    inputs_unresolved: frozenset[str] = frozenset(),
 ) -> FalsificationPlannerResult:
     """Compose belief distillation + ranking into a read-only proposal."""
     belief = distill_belief_state(candidate, capsules, decisions)
-    ranked = rank_falsification_tests(belief, set(runnable_lanes), cost_fn, ruled_out=ruled_out)
+    ranked = rank_falsification_tests(
+        belief, set(runnable_lanes), cost_fn, ruled_out=ruled_out, inputs_unresolved=inputs_unresolved
+    )
 
     blockers: list[str] = []
     if belief.signalful_capsule_count < 2:

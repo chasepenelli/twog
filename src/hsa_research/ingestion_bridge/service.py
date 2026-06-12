@@ -1942,6 +1942,10 @@ class HSAResearchService:
         decisions = self.list_validation_decisions(candidate_id=candidate_id, limit=50)
         provider_configured = bool(available_compute_runners())
         ruled_out = frozenset(failure_corpus.ruled_out_lanes(capsules))  # inc6 novelty penalty
+        # inc7: lanes the candidate has no real inputs for — flagged + ranked last (prefer runnable).
+        inputs_unresolved = frozenset(
+            lane for lane in runnable if not lane_inputs.resolve(candidate, lane).resolved
+        )
 
         def _run() -> FalsificationPlannerResult:
             result = falsification_planner.propose(
@@ -1951,6 +1955,7 @@ class HSAResearchService:
                 runnable_lanes=runnable,
                 cost_fn=self._estimate_lane_cost,
                 ruled_out=ruled_out,
+                inputs_unresolved=inputs_unresolved,
             )
             if not provider_configured and "no_compute_provider" not in result.blockers:
                 result = result.model_copy(update={"blockers": [*result.blockers, "no_compute_provider"]})
