@@ -273,7 +273,7 @@ from .lanes import (
     register_lane,
     resolve_sandbox_environment,
 )
-from . import confound_auditor, falsification_planner
+from . import confound_auditor, falsification_planner, provenance_auditor
 from .contracts import (
     ConfoundVerdict,
     FalsificationLane,
@@ -282,6 +282,7 @@ from .contracts import (
     FalsificationPreregistration,
     FalsificationRoundResult,
     KillCriterion,
+    ProvenanceVerdict,
 )
 from .embeddings import LOCAL_HASH_EMBEDDING_MODEL, build_embedding_provider, select_embedding_model_from_coverage
 from .evidence_fit import assess_research_followup_ingest_evidence_fit
@@ -2149,6 +2150,49 @@ class HSAResearchService:
             self.repository.upsert_proof_capsule(updated)
         return verdict
 
+    # --- Provenance Auditor pre-gate (increment 4) ---------------------------------------------
+    def _resolve_claimed_compute_job(self, capsule: ProofCapsuleRecord) -> ComputeJobRecord | None:
+        claimed = capsule.payload.get("compute_job_id") if isinstance(capsule.payload, dict) else None
+        if not claimed:
+            return None
+        try:
+            return self.repository.get_compute_job(UUID(str(claimed)))
+        except (ValueError, TypeError):
+            return None
+
+    def _provenance_audit_dict(self, capsule: ProofCapsuleRecord) -> dict[str, Any]:
+        """Run the deterministic provenance audit for a capsule against its claimed compute job."""
+        return provenance_auditor.audit(capsule, self._resolve_claimed_compute_job(capsule))
+
+    def audit_capsule_provenance(
+        self, capsule_id: UUID, *, persist: bool = True
+    ) -> ProvenanceVerdict | None:
+        """Verify a capsule's CLAIMED run against the linked compute job + its signature ('claimed V100,
+        ran H100' catch). Integrity, not validity. A capsule with no claim verifies trivially (nothing to
+        refute). Persists the verdict to capsule metadata. Returns None if the capsule does not exist."""
+        capsule = self.repository.get_proof_capsule(capsule_id)
+        if capsule is None:
+            return None
+        audit = self._provenance_audit_dict(capsule)
+        sig = self.verify_capsule_provenance(capsule)
+        verdict = ProvenanceVerdict(
+            capsule_id=capsule_id,
+            candidate_id=capsule.candidate_id,
+            ok=audit["ok"],
+            status=audit["status"],
+            checks_passed=audit["checks_passed"],
+            mismatches=audit["mismatches"],
+            signed=bool(sig.get("signed")),
+            signature_valid=bool(sig.get("signature_valid")),
+            rationale=audit["rationale"],
+        )
+        if persist:
+            updated = capsule.model_copy(
+                update={"metadata": {**capsule.metadata, "provenance_verdict": verdict.model_dump(mode="json")}}
+            )
+            self.repository.upsert_proof_capsule(updated)
+        return verdict
+
     def _transition_proof_capsule(
         self,
         capsule_id: UUID,
@@ -2191,12 +2235,15 @@ class HSAResearchService:
         accepted_status: str = "accepted_for_evidence_review",
         note: str | None = None,
         enforce_confound_gate: bool = True,
+        enforce_provenance_gate: bool = True,
     ) -> ProofCapsuleRecord | None:
-        """Operator accepts a submitted capsule, advancing it toward promotion. Increment 3: a capsule
-        carrying a `supports` signal is BLOCKED by the Confound Auditor pre-gate until its known
-        confounds each have a surviving control (verdict 'survived_known_confounds'). A blocked accept
-        leaves the capsule at 'submitted' and records the gate verdict in metadata — the human operator
-        still cannot launder an unaudited positive onto a candidate."""
+        """Operator accepts a submitted capsule, advancing it toward promotion. Two pre-gates run
+        before the transition and block (leaving the capsule 'submitted', verdict in metadata) — the
+        operator cannot launder a bad capsule onto a candidate:
+        - Provenance gate (inc4, integrity): a capsule whose claimed run does not match its linked
+          compute job is blocked. A capsule with no claim verifies trivially.
+        - Confound gate (inc3, validity): a `supports` capsule is blocked until its known confounds
+          each have a surviving control (verdict 'survived_known_confounds')."""
         self._authorize(reviewer, "accept_capsule")  # Phase 4 write gate — operator scope only
         allowed_accept = {
             "accepted_for_evidence_review",
@@ -2206,6 +2253,27 @@ class HSAResearchService:
         }
         if accepted_status not in allowed_accept:
             raise ValueError(f"invalid accepted_status: {accepted_status}")
+        if enforce_provenance_gate:
+            capsule = self.repository.get_proof_capsule(capsule_id)
+            if capsule is None:
+                return None
+            prov = self._provenance_audit_dict(capsule)
+            if not prov["ok"]:
+                blocked = capsule.model_copy(
+                    update={
+                        "metadata": {
+                            **capsule.metadata,
+                            "provenance_gate": {
+                                "status": "blocked",
+                                "verdict": prov["status"],
+                                "mismatches": prov["mismatches"],
+                                "reason": prov["rationale"],
+                                "reviewer": reviewer,
+                            },
+                        }
+                    }
+                )
+                return self.repository.upsert_proof_capsule(blocked)
         if enforce_confound_gate:
             capsule = self.repository.get_proof_capsule(capsule_id)
             if capsule is None:

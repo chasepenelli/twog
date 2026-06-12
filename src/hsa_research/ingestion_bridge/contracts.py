@@ -7075,3 +7075,29 @@ class ConfoundVerdict(StrictBaseModel):
     rationale: str = Field(default="", max_length=2000)
     auditor: str = Field(default="twog_confound_auditor", max_length=200)
     audited_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+# --- Increment 4: Provenance Auditor pre-gate -------------------------------------------------
+# Verifies a capsule's CLAIMED run (linked compute job, workspace/snapshot hashes, validation type,
+# completion, signature) against reality — the machine-verifiable answer to "claimed V100, ran H100".
+# Integrity, not validity (that's the Confound Auditor's job).
+ProvenanceVerdictStatus = Literal[
+    "verified",  # the claim resolves and every field matches the linked compute job
+    "no_claim",  # the capsule makes no compute-provenance claim to verify (nothing to refute)
+    "claim_unresolved",  # the capsule claims a compute job that does not exist
+    "mismatch",  # a claimed field disagrees with the linked compute job
+]
+
+
+class ProvenanceVerdict(StrictBaseModel):
+    capsule_id: UUID
+    candidate_id: str = Field(min_length=1, max_length=260)
+    ok: bool
+    status: ProvenanceVerdictStatus
+    checks_passed: list[str] = Field(default_factory=list, max_length=40)
+    mismatches: list[str] = Field(default_factory=list, max_length=40)
+    signed: bool = False
+    signature_valid: bool = False
+    rationale: str = Field(default="", max_length=2000)
+    auditor: str = Field(default="twog_provenance_auditor", max_length=200)
+    audited_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
