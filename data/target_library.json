@@ -1,0 +1,45 @@
+{
+  "version": "target-library-v1",
+  "_doc": "Curated docking targets. An entry is usable by the campaign ONLY when verified=true (set by scripts/verify_target_library.py after the native co-crystal ligand redocks with symmetry-corrected RMSD <= 2.0 A AND passes PoseBusters). receptor_pdb + box are filled by the verifier (the prepared apo receptor + co-crystal-ligand box). Human structures are used with conserved-pocket reasoning for the canine HSA <-> human AS thesis.",
+  "entries": {
+    "PIK3CA": {
+      "target": "PIK3CA",
+      "uniprot": "P42336",
+      "pdb_id": "4JPS",
+      "chain": "A",
+      "cocrystal_ligand_code": null,
+      "cocrystal_smiles": null,
+      "box": null,
+      "receptor_pdb": null,
+      "verified": false,
+      "redock_rmsd": null,
+      "notes": "PI3Kalpha p110a kinase domain; alpelisib (BYL719) co-crystal. Project history: redock ~1.8A. Box auto from the largest drug-like HET (= alpelisib)."
+    },
+    "KDR": {
+      "target": "KDR",
+      "uniprot": "P35968",
+      "pdb_id": "3VHE",
+      "chain": "A",
+      "cocrystal_ligand_code": null,
+      "cocrystal_smiles": null,
+      "box": null,
+      "verified": false,
+      "receptor_pdb": null,
+      "redock_rmsd": null,
+      "notes": "VEGFR2 (KDR) kinase domain co-crystal. Angiogenesis is central to hemangiosarcoma; toceranib (Palladia) is the clinical canine VEGFR-TKI. Verify the chosen PDB by redock; re-curate if it fails."
+    },
+    "MTOR": {
+      "target": "MTOR",
+      "uniprot": "P42345",
+      "pdb_id": "4JT6",
+      "chain": "A",
+      "cocrystal_ligand_code": null,
+      "cocrystal_smiles": null,
+      "box": null,
+      "verified": false,
+      "receptor_pdb": null,
+      "redock_rmsd": null,
+      "notes": "mTOR kinase domain + ATP-competitive inhibitor co-crystal. NOTE: rapalogs (everolimus) bind allosterically via FKBP and will NOT redock here; pair MTOR with an ATP-competitive mTOR inhibitor, or verify before use."
+    }
+  }
+}

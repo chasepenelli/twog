@@ -74,11 +74,13 @@ def test_resolve_unresolved_without_inputs(tmp_path):
 
 
 def test_resolve_incomplete_inputs_reports_missing_key(tmp_path):
+    # omics still reports missing keys from incomplete curated metadata (docking now goes through the
+    # curated-library gate instead — see test_target_library.py).
     service, repo = _svc(tmp_path, "inc")
-    _candidate_with_inputs(repo, service, "vr-inc", {"docking": {"receptor_pdb": "ATOM"}})  # no ligand_smiles
-    res = service.resolve_lane_inputs("vr-inc", "docking")
+    _candidate_with_inputs(repo, service, "vr-inc", {"omics": {"expression": {"g": {"m0": 1.0}}}})  # no strata
+    res = service.resolve_lane_inputs("vr-inc", "omics")
     assert res.resolved is False
-    assert "ligand_smiles" in res.missing
+    assert "strata" in res.missing
 
 
 def test_resolve_none_for_unknown_candidate(tmp_path):
@@ -162,16 +164,36 @@ def _candidate_named(repo, service, cid, *, targets, therapies, lane_inputs_bag=
     repo.upsert_public_candidate(cand.model_copy(update=update))
 
 
-def test_network_resolves_docking_from_named_target_and_therapy(tmp_path):
+def _verified_library(target="PIK3CA"):
+    return {"version": "t", "entries": {target: {
+        "target": target, "uniprot": "P", "pdb_id": "4JPS", "chain": "A",
+        "box": {"center_x": 0.0, "center_y": 0.0, "center_z": 0.0, "size_x": 20, "size_y": 20, "size_z": 20},
+        "receptor_pdb": "ATOM      1  N   ALA A   1      11.1  13.2   8.6  1.00\nEND\n",
+        "verified": True, "redock_rmsd": 1.6,
+    }}}
+
+
+def test_curated_library_resolves_docking_for_verified_target(tmp_path):
     from hsa_research.ingestion_bridge import lane_inputs
 
-    service, repo = _svc(tmp_path, "net")
-    _candidate_named(repo, service, "vr-net", targets=["PIK3CA"], therapies=["alpelisib"])
-    cand = service.get_public_candidate("vr-net")
-    res = lane_inputs.resolve(cand, "docking", resolvers=_FakeResolvers())
-    assert res.resolved is True and res.source == "network"
+    service, repo = _svc(tmp_path, "lib")
+    _candidate_named(repo, service, "vr-lib", targets=["PIK3CA"], therapies=["alpelisib"])
+    cand = service.get_public_candidate("vr-lib")
+    res = lane_inputs.resolve(cand, "docking", resolvers=_FakeResolvers(), target_library=_verified_library("PIK3CA"))
+    assert res.resolved is True and res.source == "curated_library"
     assert res.config["ligand_smiles"] == "CCO" and res.config["receptor_pdb"].startswith("ATOM")
-    assert res.config["target"] == "PIK3CA"
+    assert res.config["target"] == "PIK3CA" and res.config["source_pdb"] == "4JPS"
+
+
+def test_docking_refused_for_unverified_target(tmp_path):
+    from hsa_research.ingestion_bridge import lane_inputs
+
+    service, repo = _svc(tmp_path, "unver")
+    _candidate_named(repo, service, "vr-unver", targets=["NOSUCH"], therapies=["alpelisib"])
+    cand = service.get_public_candidate("vr-unver")
+    # target not in the (verified) library -> refuse, no dirty fallback
+    res = lane_inputs.resolve(cand, "docking", resolvers=_FakeResolvers(), target_library=_verified_library("PIK3CA"))
+    assert res.resolved is False and res.source == "curated_library" and res.missing
 
 
 def test_network_resolves_cofolding_sequence_from_named_target(tmp_path):
@@ -214,12 +236,15 @@ def test_network_unresolved_on_resolver_miss(tmp_path):
     assert res.resolved is False
 
 
-def test_service_uses_injected_resolvers_for_input_aware_planning(tmp_path):
+def test_service_uses_injected_resolvers_for_input_aware_planning(tmp_path, monkeypatch):
+    from hsa_research.ingestion_bridge import target_library
+
     service, repo = _svc(tmp_path, "svc-net")
     _candidate_named(repo, service, "vr-svc-net", targets=["PIK3CA"], therapies=["alpelisib"])
     _seed_capsule(repo, "vr-svc-net", signal="neutral", validation_type="homology")
-    service.input_resolvers = _FakeResolvers()  # inject network resolvers
+    service.input_resolvers = _FakeResolvers()  # PubChem SMILES resolver
+    monkeypatch.setattr(target_library, "load_target_library", lambda *a, **k: _verified_library("PIK3CA"))
 
     result = service.propose_next_falsification("vr-svc-net")
-    # docking inputs auto-resolve from the named target+therapy -> docking is ready and preferred
+    # docking resolves from the verified library (receptor) + PubChem ligand -> ready and preferred
     assert result.proposed.lane == "docking" and result.proposed.inputs_ready is True

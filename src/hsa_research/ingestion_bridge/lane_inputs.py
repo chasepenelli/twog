@@ -36,8 +36,9 @@ _REQUIRED_KEY_SETS: dict[str, list[tuple[str, ...]]] = {
 }
 
 
-# Lanes whose inputs can be auto-resolved from the network.
-_NETWORK_STRUCTURE_LANES = {"docking"}  # target structure (RCSB) + ligand SMILES (PubChem)
+# Lanes auto-resolved from the network. Docking is NOT here: it is gated on the curated, redock-verified
+# target library (the spend gate — no dirty RCSB full-text fallback for real GPU). Sequence lanes only.
+_NETWORK_STRUCTURE_LANES: set[str] = set()
 _NETWORK_SEQUENCE_LANES = {"cofolding"}  # target sequence (UniProt) + ligand SMILES (PubChem)
 
 
@@ -81,10 +82,49 @@ def _resolve_from_network(candidate: Any, lane: str, resolvers: Any) -> dict[str
     return {"protein_sequence": sequence, **common}
 
 
-def resolve(candidate: Any, lane: str, *, resolvers: Any = None) -> LaneInputResolution:
-    """Resolve real lane inputs for a candidate, or report what's missing. Curated inputs
-    (candidate.metadata['lane_inputs'][lane]) always win; if absent/incomplete and ``resolvers`` is
-    injected, fall back to network resolution from the candidate's named target + therapy."""
+def _resolve_docking_from_library(
+    candidate: Any, config_key: str, resolvers: Any, target_library: Any
+) -> LaneInputResolution:
+    """Docking spend gate: resolve the receptor + box from the curated, redock-VERIFIED target library
+    (by candidate.targets[0]) + the candidate's therapy SMILES (PubChem). Refuse (resolved=False) if the
+    target is missing/unverified or the ligand can't be resolved — never a dirty full-text fallback."""
+    from . import target_library as _tl
+
+    lib = target_library if target_library is not None else _tl.load_target_library()
+    targets = getattr(candidate, "targets", []) or []
+    therapies = getattr(candidate, "candidate_therapies", []) or []
+
+    def refuse(missing: str) -> LaneInputResolution:
+        return LaneInputResolution(
+            lane="docking", config_key=config_key, resolved=False, missing=[missing], source="curated_library"
+        )
+
+    if not targets:
+        return refuse("candidate.targets is empty")
+    target = targets[0]
+    entry = _tl.get_entry(lib, target)
+    if not entry or not entry.get("verified"):
+        return refuse(f"no redock-verified target_library entry for '{target}'")
+    if not therapies:
+        return refuse("candidate.candidate_therapies is empty")
+    if resolvers is None:
+        return refuse("no SMILES resolver (PubChem) injected")
+    smiles = resolvers.compound_smiles(therapies[0])
+    if not smiles:
+        return refuse(f"PubChem SMILES not found for therapy '{therapies[0]}'")
+    config = _tl.curated_docking_config(lib, target, ligand_smiles=smiles, ligand_name=therapies[0])
+    if config is None:
+        return refuse(f"verified library entry for '{target}' is missing a prepared receptor/box")
+    return LaneInputResolution(
+        lane="docking", config_key=config_key, resolved=True, config=config, source="curated_library"
+    )
+
+
+def resolve(candidate: Any, lane: str, *, resolvers: Any = None, target_library: Any = None) -> LaneInputResolution:
+    """Resolve real lane inputs for a candidate, or report what's missing. Curated per-candidate inputs
+    (candidate.metadata['lane_inputs'][lane]) always win. DOCKING then resolves ONLY from the curated,
+    redock-verified target library (the spend gate — refuse if unverified). Sequence lanes (cofolding)
+    fall back to network resolution from the candidate's named target + therapy."""
     config_key = LANE_CONFIG_KEY.get(lane, lane)
     cfg = _candidate_lane_inputs(candidate, lane)
 
@@ -92,6 +132,9 @@ def resolve(candidate: Any, lane: str, *, resolvers: Any = None) -> LaneInputRes
         return LaneInputResolution(
             lane=lane, config_key=config_key, resolved=True, config=dict(cfg), source="candidate.metadata"
         )
+
+    if lane == "docking":
+        return _resolve_docking_from_library(candidate, config_key, resolvers, target_library)
 
     if resolvers is not None:
         network_cfg = _resolve_from_network(candidate, lane, resolvers)
