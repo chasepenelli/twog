@@ -7376,6 +7376,8 @@ class MoonshotRubric(StrictBaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     def content_payload(self) -> dict[str, Any]:
-        """Stable scientific content for hashing — excludes timestamps/the hash itself, mirroring the
+        """Stable scientific content for hashing — excludes timestamps, the hash itself, and the
+        candidate_snapshot_hash pointer (a version pointer, not content — and circular when the rubric
+        is embedded in the very snapshot whose hash that would be). Mirrors the
         _public_candidate_content_hash + ProofCapsuleRecord.content_hash convention."""
-        return self.model_dump(mode="json", exclude={"rubric_hash", "created_at"})
+        return self.model_dump(mode="json", exclude={"rubric_hash", "created_at", "candidate_snapshot_hash"})
