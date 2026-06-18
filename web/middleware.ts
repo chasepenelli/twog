@@ -15,20 +15,35 @@ import { NextResponse, type NextRequest } from "next/server";
 import type { NextFetchEvent } from "next/server";
 import { authkitMiddleware } from "@workos-inc/authkit-nextjs";
 
-const authkit = authkitMiddleware({
-  middlewareAuth: {
-    enabled: true,
-    // PUBLIC allowlist — reachable WITHOUT signing in. Every other matched route
-    // requires authentication (then the per-surface guards enforce scope).
-    unauthenticatedPaths: ["/", "/login", "/callback"],
-  },
-});
+// Constructed lazily + only when WorkOS is configured, so module load never crashes the public site
+// when no WorkOS keys are present (the public Phase-1 launch).
+let _authkit: ReturnType<typeof authkitMiddleware> | null = null;
+function getAuthkit() {
+  if (!_authkit) {
+    _authkit = authkitMiddleware({
+      middlewareAuth: {
+        enabled: true,
+        // PUBLIC allowlist — reachable WITHOUT signing in. The public Phase-1 surface
+        // (STATE / EVIDENCE / RUNS) is open; everything else requires auth once WorkOS is configured.
+        unauthenticatedPaths: [
+          "/", "/login", "/callback",
+          "/evidence", "/evidence/:path*",
+          "/runs", "/runs/:path*",
+        ],
+      },
+    });
+  }
+  return _authkit;
+}
 
 export default function middleware(req: NextRequest, ev: NextFetchEvent) {
-  // DEV-ONLY bypass (server-only env, OFF by default). Skips WorkOS enforcement so the app renders on
-  // mock data without an account. getPrincipal() returns a synthetic operator under the same flag.
-  if (process.env.DEV_AUTH_BYPASS === "1") return NextResponse.next();
-  return authkit(req, ev);
+  // DEV-ONLY bypass (server-only env). AND: when WorkOS isn't configured (public Phase-1 launch, no
+  // keys), pass everything through — the site is fully public until WorkOS is set up, at which point
+  // enforcement engages automatically. Per-surface guards still apply once a principal exists.
+  if (process.env.DEV_AUTH_BYPASS === "1" || !process.env.WORKOS_API_KEY) {
+    return NextResponse.next();
+  }
+  return getAuthkit()(req, ev);
 }
 
 export const config = {
