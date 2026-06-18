@@ -2502,6 +2502,202 @@ class HSAResearchService:
             return None
         return lane_inputs.resolve(candidate, lane, resolvers=getattr(self, "input_resolvers", None))
 
+    # --- Increment 8: the MoonshotRubric — the pre-registered "whole shabang" (derived view) ----
+    def _rubric_target(self, target: str, lib: dict[str, Any], *, role: str):
+        """Project a target_library entry into a RubricTarget with its REAL 3-state verification."""
+        from . import target_library as _tl
+        from .contracts import RubricTarget
+
+        entry = _tl.get_entry(lib, target) or {}
+        verification = "verified" if entry.get("verified") else ("unverified" if entry else "absent")
+        return RubricTarget(
+            target=target, role=role, uniprot=entry.get("uniprot"), pdb_id=entry.get("pdb_id"),
+            chain=entry.get("chain"), cocrystal_ligand_code=entry.get("cocrystal_ligand_code"),
+            cocrystal_smiles=entry.get("cocrystal_smiles"), verification=verification,
+            redock_rmsd=entry.get("redock_rmsd"), box=(entry.get("box") or {}), notes=entry.get("notes", "") or "",
+        )
+
+    def _rubric_lane_inputs(self, lane: str, res: "LaneInputResolution", candidate, lib: dict[str, Any]):
+        """Typed projection of LaneInputResolution: 3-state readiness + an ALWAYS-present MD schedule
+        for the md lane (the pre-registered protocol, even when inputs are unresolved)."""
+        from . import target_library as _tl
+        from .contracts import MDScheduleSpec, RubricLaneInputs
+
+        keysets = lane_inputs._REQUIRED_KEY_SETS.get(lane) or []
+        required = list(keysets[0]) if keysets else []
+        readiness = "resolved" if res.resolved else "missing"
+        if not res.resolved and lane == "docking" and candidate.targets:
+            entry = _tl.get_entry(lib, candidate.targets[0])
+            if entry and not entry.get("verified"):
+                readiness = "needs_verification"  # structure exists but failed/awaits the redock QC gate
+        md_schedule = None
+        if lane == "md":
+            md_schedule = MDScheduleSpec(
+                simulation_steps=1000,  # current worker ceiling (le=1000) => maturity flags this 'smoke'
+                equilibration=(
+                    "minimize -> NVT 100ps @300K (heavy-atom restrained) -> NPT 100ps (1 bar, restraints "
+                    "released) -> production sampling."
+                ),
+                preparation_method=(
+                    "Apo receptor = the verified structure's chain (waters/ions/HETATM stripped); ligand "
+                    "placed by the docking lane's top pose; protonation at pH 7.4."
+                ),
+            )
+        return RubricLaneInputs(
+            lane=lane, config_key=res.config_key, readiness=readiness, resolution_source=(res.source or ""),
+            required_keys=required, present_keys=list((res.config or {}).keys()), missing=list(res.missing or []),
+            md_schedule=md_schedule,
+        )
+
+    def _rubric_inputs_rollup(self, test_plan: list, planner_blockers: list[str]):
+        """Section 6 — the honest readiness ledger. ready_to_run_lanes = the ONLY lanes a real-GPU run
+        may dispatch (resolved AND the planner marked inputs_ready)."""
+        from .contracts import RubricInputsRollup
+
+        resolved, needs_ver, missing, ready = [], [], [], []
+        per_missing: dict[str, list[str]] = {}
+        for rl in test_plan:
+            r = rl.inputs.readiness
+            (resolved if r == "resolved" else needs_ver if r == "needs_verification" else missing).append(rl.lane)
+            if rl.inputs.missing:
+                per_missing[rl.lane] = list(rl.inputs.missing)
+            if r == "resolved" and rl.inputs_ready:
+                ready.append(rl.lane)
+        blockers = list(planner_blockers)
+        blockers += [f"{lane}: {', '.join(miss)}" for lane, miss in per_missing.items()]
+        blockers += [f"docking_target_unverified" for lane in needs_ver if lane == "docking"]
+        return RubricInputsRollup(
+            resolved_lanes=resolved, needs_verification_lanes=needs_ver, missing_lanes=missing,
+            ready_to_run_lanes=ready, per_lane_missing=per_missing, blockers=blockers,
+        )
+
+    def build_moonshot_rubric(self, candidate_id: str, *, min_moonshot_score: float = 0.8, lane_allowlist: list[str] | None = None):
+        """Assemble the pre-registered MoonshotRubric for a candidate — the full spec of WHAT the
+        moonshot wants to see and HOW it must be tested (targets+proteins, compounds+SMILES, the ordered
+        per-lane test plan with pre-registered kill criteria, the MD schedule, the inputs checklist,
+        confounds to audit, cross-species replication, promotion criteria). Derived on demand from
+        existing primitives (planner + lane resolver + target library + moonshot gate + belief state);
+        NEVER re-derives science and NEVER fabricates readiness. Returns None iff the candidate does not
+        exist. The only side-effect is the durable agent_run propose_next_falsification already logs."""
+        from . import target_library as _tl
+        from .contracts import (
+            ConfoundPlan, CrossSpeciesPlan, MoonshotRubric, PromotionCriteria, RubricCompound, RubricLaneTest,
+        )
+
+        candidate = self.get_public_candidate(candidate_id)
+        if candidate is None:
+            return None
+        notes: list[str] = []
+        resolvers = getattr(self, "input_resolvers", None)
+        if resolvers is None:  # attach PubChem so SMILES + verified-docking surface; degrade gracefully
+            try:
+                from .input_resolvers import NetworkInputResolvers
+                resolvers = NetworkInputResolvers()
+                notes.append("attached_default_pubchem_resolver_for_rubric")
+            except Exception:
+                resolvers = None
+
+        # (1) Thesis + moonshot gate — the RAW dict from the SAME gate the publication path uses (zero drift)
+        gate: dict[str, Any] = {}
+        grade, score = False, 0.0
+        idea = self.get_therapy_idea(candidate.therapy_idea_id) if candidate.therapy_idea_id else None
+        if idea is not None:
+            gate = _public_candidate_moonshot_gate(idea, min_score=min_moonshot_score)
+            grade, score = bool(gate.get("passed")), float(gate.get("weighted_score", 0.0))
+        else:
+            notes.append("no_therapy_idea_linked: moonshot gate not evaluable from the candidate alone")
+
+        planner = self.propose_next_falsification(candidate_id, lane_allowlist=lane_allowlist)
+        belief = planner.belief_state if planner else None
+        plans = [p for p in (([planner.proposed] if (planner and planner.proposed) else []) + (list(planner.alternatives) if planner else [])) if p]
+        runnable = list(planner.runnable_lanes) if planner else []
+        proposed_id = planner.proposed.plan_id if (planner and planner.proposed) else None
+
+        # (2) Targets needed — 3-state verification from the library flag (NOT substring matching)
+        lib = _tl.load_target_library()
+        targets_needed = [self._rubric_target(t, lib, role=("primary" if i == 0 else "orthogonal")) for i, t in enumerate(candidate.targets)]
+        if "docking" in runnable and not any(t.verification == "verified" for t in targets_needed):
+            notes.append("no_verified_docking_target: the docking spend-gate will refuse real GPU")
+
+        # (4)/(5) Ordered test plan — project each plan (strip plan_id/created_at), attach inputs + MD schedule
+        smiles_seen: dict[str, tuple] = {}
+        test_plan: list = []
+        for i, plan in enumerate(plans):
+            res = lane_inputs.resolve(candidate, plan.lane, resolvers=resolvers)
+            lane_proj = self._rubric_lane_inputs(plan.lane, res, candidate, lib)
+            for k in ("ligand_smiles", "compound_smiles"):
+                v = (res.config or {}).get(k)
+                if v:
+                    nm = (res.config or {}).get("ligand_name") or (candidate.candidate_therapies[0] if candidate.candidate_therapies else "ligand")
+                    smiles_seen.setdefault(nm, (v, res.source or "resolver"))
+            spec = get_lane(plan.lane)
+            autonomously = spec is None or spec.gate is None
+            maturity = "smoke" if (plan.lane == "md" and lane_proj.md_schedule and lane_proj.md_schedule.simulation_steps <= 1000) else "production"
+            is_proposed = bool(proposed_id is not None and plan.plan_id == proposed_id)
+            test_plan.append(RubricLaneTest(
+                order=i + 1, lane=plan.lane, validation_type=plan.validation_type, test_objective=plan.test_objective,
+                kill_criterion=plan.kill_criterion, expected_signal_if_alive=plan.expected_signal_if_alive,
+                addresses_confound=plan.addresses_confound, est_cost_usd=plan.est_cost_usd,
+                value_of_information=plan.value_of_information, inputs_ready=plan.inputs_ready,
+                is_proposed=is_proposed, autonomously_runnable=autonomously, maturity=maturity,
+                standing=("queued" if is_proposed else "untested"), inputs=lane_proj,
+                rank_rationale=plan.rank_rationale, novelty_note=plan.novelty_note,
+            ))
+
+        # (3) Compounds — names from the candidate; SMILES ONLY from what the resolver surfaced (+ native cocrystals)
+        compounds = [RubricCompound(
+            name=n, role="lead", smiles=smiles_seen.get(n, (None, "unresolved"))[0],
+            readiness=("resolved" if n in smiles_seen else "missing"),
+            resolution_source=smiles_seen.get(n, (None, "unresolved"))[1], intended_targets=candidate.targets[:1],
+        ) for n in candidate.candidate_therapies]
+        compounds += [RubricCompound(
+            name=(t.cocrystal_ligand_code or f"{t.target}_cocrystal"), role="native_cocrystal", smiles=t.cocrystal_smiles,
+            readiness="resolved", resolution_source="curated_library", intended_targets=[t.target],
+        ) for t in targets_needed if t.verification == "verified" and t.cocrystal_smiles]
+
+        # (6) rollup · (7) confounds (open vs controlled via the failure corpus) · (8) cross-species (real omics KC)
+        rollup = self._rubric_inputs_rollup(test_plan, list(planner.blockers) if planner else [])
+        caught = {e.confound for e in self.get_failure_corpus(candidate_id) if e.kind == "caught_confound" and e.confound}
+        open_cf = list(belief.open_confounds) if belief else []
+        confounds = ConfoundPlan(
+            open_confounds=[c for c in open_cf if c.kind not in caught],
+            controlled_confounds=[c for c in open_cf if c.kind in caught],
+        )
+        omics_kc = next((rl.kill_criterion for rl in test_plan if rl.lane == "omics"), None)
+        cross = CrossSpeciesPlan(
+            replication_axis=(candidate.summary or "")[:2000], kill_criterion=omics_kc,
+            replication_lane=("omics" if omics_kc else None),
+            evidence_to_date=[r for r in candidate.evidence_refs if ("cross" in r.lower() or "auc" in r.lower())],
+        )
+        # (11) promotion — typed, never auto-satisfiable
+        promotion = PromotionCriteria(
+            required_surviving_lanes=sorted({rl.lane for rl in test_plan}),
+            required_confounds_controlled=[c.kind for c in open_cf],
+            statement=(
+                "Promote only if every test-plan lane survives its pre-registered kill criterion, all open "
+                "confounds are controlled, the cross-species axis replicates in an orthogonal cohort, and an "
+                "operator accepts the resulting capsules. Never auto-promoted."
+            ),
+        )
+        if planner and "cofolding" not in runnable:
+            notes.append("cofolding is supported by lane_inputs but absent from the FalsificationLane planner set (known gap)")
+
+        rubric = MoonshotRubric(
+            candidate_id=candidate_id, title=candidate.title, candidate_snapshot_hash=candidate.content_hash,
+            thesis=(candidate.summary or (belief.leading_hypothesis if belief else "")), rationale_md=candidate.rationale_md,
+            moonshot_gate=gate, moonshot_grade=grade, moonshot_score=score,
+            targets_needed=targets_needed, compounds_needed=compounds, test_plan=test_plan, runnable_lanes=runnable,
+            inputs_rollup=rollup, confounds=confounds, cross_species=cross, evidence_anchors=list(candidate.evidence_refs),
+            risks=[*candidate.risk_flags, *(planner.blockers if planner else [])], promotion=promotion,
+            belief_state=belief, net_signal=(belief.net_signal if belief else "none"),
+            net_confidence=(belief.net_confidence if belief else 0.0),
+            signalful_capsule_count=(belief.signalful_capsule_count if belief else 0),
+            planner_blockers=(list(planner.blockers) if planner else []),
+            ready_to_run=bool(grade and rollup.ready_to_run_lanes),
+            has_falsifiable_plan=any(rl.kill_criterion for rl in test_plan), assembly_notes=notes,
+        )
+        return rubric.model_copy(update={"rubric_hash": _public_candidate_content_hash(rubric.content_payload())})
+
     # --- Falsification round: pre-registration + auto-dispatch (increment 2) --------------------
     def _falsification_preregistration_hash(
         self, *, candidate_id: str, lane: str, kill_criterion: KillCriterion, expected_signal: str
