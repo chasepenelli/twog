@@ -151,6 +151,7 @@ from .contracts import (
     OmicsLocusSignalResult,
     OmicsReadoutRequest,
     CollaboratorRecord,
+    default_scopes_for_role,
     OmicsReadoutResult,
     ProofCapsuleLibraryRequest,
     ProofCapsuleRecord,
@@ -1120,6 +1121,13 @@ class HSAResearchService:
     ) -> None:
         self.repository = repository or build_default_repository()
         self.model_profiles = model_profiles or DEFAULT_MODEL_PROFILES
+        # Phase B: deny-unknown access. When True, an UNREGISTERED principal is denied at every
+        # _authorize gate (require registration). Default False preserves the solo-operator model
+        # (unregistered/legacy actors trusted). Independent of the per-workspace external_collaborator
+        # submit gate, which is always enforced regardless of this flag. Env-overridable.
+        self.require_registered_principals = (
+            os.getenv("TWOG_REQUIRE_REGISTERED_PRINCIPALS", "").strip().lower() in {"1", "true", "yes"}
+        )
 
     def search_claims(self, request: ClaimSearchRequest) -> ClaimSearchResults:
         results = self.repository.search_claims(request)
@@ -1452,6 +1460,322 @@ class HSAResearchService:
     def get_public_candidate(self, candidate_id: str) -> PublicCandidateRecord | None:
         return self.repository.get_public_candidate(candidate_id)
 
+    def seed_validation_ready_candidate(
+        self,
+        candidate_id: str,
+        *,
+        title: str,
+        evidence_refs: list[str],
+        targets: list[str] | None = None,
+        candidate_therapies: list[str] | None = None,
+        biomarkers: list[str] | None = None,
+        lane_inputs: dict[str, Any] | None = None,
+        decisive_questions: list[str] | None = None,
+        rationale: str = "",
+        public_status: str = "evidence_supported",
+        ready: bool = True,
+    ):
+        """Seed a real, honestly-validation-ready public candidate (snapshot + record + a
+        validation-ready decision), then run the real readiness gate so `validation_ready` is set by the
+        assessor — NOT by fiat. Builds a campaign roster without a therapy-idea pipeline. Idempotent on
+        candidate_id (upserts). `lane_inputs` rides on metadata['lane_inputs']. Returns the readiness."""
+        content_hash = hashlib.sha256(f"{candidate_id}|{title}".encode("utf-8")).hexdigest()[:40]
+        snapshot = PublicCandidateSnapshot(
+            candidate_id=candidate_id, content_hash=content_hash, title=title,
+            public_status=public_status, snapshot_version=1, source_refs=list(evidence_refs),
+        )
+        self.repository.upsert_public_candidate_snapshot(snapshot)
+        self.repository.upsert_public_candidate(
+            PublicCandidateRecord(
+                candidate_id=candidate_id, title=title,
+                public_status=public_status if ready else "proposed",
+                evidence_refs=list(evidence_refs) if ready else [],
+                targets=list(targets or []), candidate_therapies=list(candidate_therapies or []),
+                biomarkers=list(biomarkers or []),
+                content_hash=content_hash, latest_snapshot_id=snapshot.snapshot_id,
+                metadata={"lane_inputs": lane_inputs} if lane_inputs else {},
+            )
+        )
+        decision = ValidationDecisionPacket(
+            decision_id=f"validation_decision:{candidate_id}",
+            packet_id=f"validation_packet:{candidate_id}",
+            candidate_id=candidate_id, source_type="therapy_idea", source_id=candidate_id,
+            title=f"Validation decision: {title}"[:300],
+            outcome="promote_broader_program", confidence=0.7, validation_ready=ready,
+            specific_claim_viability="uncertain", broader_program_signal="strong",
+            rationale=(rationale or f"Seeded validation-ready candidate {candidate_id} for the real campaign.")[:2000],
+            recommended_downstream_action="Run the autonomous falsification loop; promotion stays operator-gated.",
+            decisive_questions=decisive_questions or ["What is the decisive falsification for this candidate?"],
+            evidence_tasks=["Run the proposed falsification test(s)."],
+            evidence_summary={"evidence_refs": list(evidence_refs)},
+        )
+        self.repository.upsert_validation_decision(ValidationDecisionRecord.from_decision(decision))
+        return self.assess_candidate_validation_readiness(candidate_id, persist=True)
+
+    # --- Autonomous idea generation: NEW dockable candidates, gated on real resolvability ---------
+    def _docking_inputs_resolvable(self, target: str, therapy: str) -> tuple[bool, list[str]]:
+        """Would a (target, therapy) actually dock? Run the EXACT same resolution the loop will run
+        (verified target-library entry + PubChem ligand) so the generator never seeds a candidate that
+        would just become another no_runnable_proposal. Returns (resolvable, missing-reasons)."""
+        probe = PublicCandidateRecord(
+            candidate_id="__resolve_probe__", title="resolvability probe",
+            targets=[target], candidate_therapies=[therapy],
+        )
+        res = lane_inputs.resolve(probe, "docking", resolvers=getattr(self, "input_resolvers", None))
+        return bool(res.resolved), list(getattr(res, "missing", []) or [])
+
+    def assess_novelty(
+        self, compound: str, target: str, disease: str = "canine hemangiosarcoma", *, refresh: bool = False
+    ) -> dict[str, Any]:
+        """Prior-art / novelty gate for a (compound, target, disease) hypothesis — the input analog of
+        the docking spend-gate. CACHE-FIRST: an existing novelty_gate assessment for this exact triple
+        is reused (fast, no re-query) — and because every assessment is written to the AgentRun ledger
+        keyed by source_key=triple, the agents accumulate a durable, queryable explored-vs-white-space
+        map they learn from. On a miss, queries the literature (Europe PMC) wrapped in AgentRunner so the
+        verdict is provenance-logged. Returns the verdict dict (see novelty_gate.assess)."""
+        from . import novelty_gate
+
+        key = novelty_gate.triple_key(compound, target, disease)
+        if not refresh:
+            for run in self.repository.list_agent_runs(agent_name="novelty_gate", source_key=key, limit=1):
+                if run.output_payload:
+                    return dict(run.output_payload)  # agent reuse — fast path, no network
+        count_fn = getattr(self, "novelty_count_fn", None) or novelty_gate.europepmc_count
+        return AgentRunner(self.repository).run(
+            agent_name="novelty_gate",
+            input_payload={"compound": compound, "target": target, "disease": disease},
+            source_key=key,
+            execute=lambda: novelty_gate.assess(compound, target, disease, count_fn=count_fn),
+            summarize=lambda v: {
+                "novelty_score": v["novelty_score"], "is_novel": v["is_novel"], "n_ctd": v["prior_art"]["n_ctd"],
+            },
+        )
+
+    def discover_cross_species_white_space(
+        self, *, disease_efo: str = "EFO_0003968", size: int = 25, max_targets: int = 12, refresh: bool = False
+    ) -> dict[str, Any]:
+        """Cross-species white-space discovery (the novel-hypothesis frontier): targets associated with
+        HUMAN angiosarcoma that have a conserved CANINE ortholog but are NOT yet studied in canine HSA.
+        The dog↔human translation is the novelty. Provenance-logged + CACHE-FIRST in the AgentRun ledger
+        (source_key=disease) so agents reuse it and accumulate the map. Targets absent from the verified
+        target library become a `verification_queue` — what to add so drugs can be docked against them
+        (the growth loop). Returns the report dict."""
+        from . import cross_species, novelty_gate, target_library as _tl
+
+        key = f"whitespace:{disease_efo}"
+        if not refresh:
+            for run in self.repository.list_agent_runs(agent_name="cross_species_whitespace", source_key=key, limit=1):
+                if run.output_payload:
+                    return dict(run.output_payload)
+        count_fn = getattr(self, "novelty_count_fn", None) or novelty_gate.europepmc_count
+        ot_fetch = getattr(self, "ot_fetch", None) or cross_species._ot_fetch
+        ens_fetch = getattr(self, "ens_fetch", None) or cross_species._ens_fetch
+        lib = _tl.load_target_library()
+        verified = {k for k, v in (lib.get("entries") or {}).items() if v.get("verified")}
+
+        def _run() -> dict[str, Any]:
+            rows = cross_species.white_space_targets(
+                disease_efo, canine_lit_count=count_fn, verified_targets=verified,
+                ot_fetch=ot_fetch, ens_fetch=ens_fetch, size=size, max_targets=max_targets,
+            )
+            ws = [r for r in rows if r["is_white_space"]]
+            return {
+                "disease_efo": disease_efo,
+                "targets_examined": len(rows),
+                "white_space_count": len(ws),
+                "white_space": ws,
+                "dockable_white_space": [r["symbol"] for r in ws if r["dockable"]],
+                "verification_queue": [r["symbol"] for r in ws if not r["dockable"]],
+            }
+
+        return AgentRunner(self.repository).run(
+            agent_name="cross_species_whitespace",
+            input_payload={"disease_efo": disease_efo, "size": size},
+            source_key=key,
+            execute=_run,
+            summarize=lambda r: {"white_space": r["white_space_count"], "queue": len(r["verification_queue"])},
+        )
+
+    def generate_candidate_ideas(
+        self,
+        *,
+        source: str = "curated_seed",
+        max_new: int = 5,
+        seed_path: str | None = None,
+        require_resolvable: bool = True,
+        check_novelty: bool = False,
+        novelty_disease: str = "canine hemangiosarcoma",
+        persist: bool = True,
+        submitted_by: str | None = None,
+        dry_run: bool = False,
+    ) -> RunManifestRecord:
+        """Propose NEW grounded candidate hypotheses and seed the dockable ones validation-ready, so the
+        falsification loop has fresh work. Generation spends NO GPU money (only PubChem lookups); the
+        downstream docking is what costs. Each idea is gated on real input-resolvability and deduped
+        against existing candidates by a stable (compound,target) id. NEVER promotes — seeding only
+        makes a candidate validation-ready; the human write-gate stays terminal. Persists a
+        RunManifestRecord(manifest_type='candidate_generation') for provenance and returns it."""
+        from . import candidate_generator, target_library as _tl
+
+        if source == "claims":
+            lib = _tl.load_target_library()
+            verified = {k for k, v in (lib.get("entries") or {}).items() if v.get("verified")}
+            try:
+                claims = self.repository.search_claims(
+                    ClaimSearchRequest(query="hemangiosarcoma angiosarcoma therapy target", limit=200, min_confidence=0.0)
+                )
+            except Exception:
+                claims = []
+            rows = candidate_generator.pairs_from_claims(claims, verified)
+        else:
+            rows = candidate_generator.load_candidate_generation_seed(seed_path)
+
+        existing = {c.candidate_id for c in self.list_public_candidates(PublicCandidateLibraryRequest(limit=500)).candidates}
+        seeded: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+
+        for row in rows:
+            if len(seeded) >= max_new:
+                break
+            compound = (row.get("compound") or "").strip()
+            target = (row.get("target") or "").strip()
+            if not compound or not target:
+                rejected.append({"row": row, "reason": "missing compound/target"})
+                continue
+            cid = candidate_generator.candidate_id_for(compound, target)
+            if cid in existing:
+                skipped.append({"candidate_id": cid, "reason": "already exists"})
+                continue
+            resolvable, missing = self._docking_inputs_resolvable(target, compound)
+            if require_resolvable and not resolvable:
+                rejected.append({"candidate_id": cid, "reason": "docking inputs unresolvable", "missing": missing})
+                continue
+            # Novelty / prior-art gate — don't spend compute re-deriving known biochemistry.
+            novelty = None
+            if check_novelty:
+                novelty = self.assess_novelty(compound, target, novelty_disease)
+                if not novelty.get("is_novel"):
+                    rejected.append({
+                        "candidate_id": cid, "reason": "not_novel",
+                        "novelty_score": novelty.get("novelty_score"),
+                        "n_ctd": (novelty.get("prior_art") or {}).get("n_ctd"),
+                    })
+                    continue
+            if dry_run:
+                seeded.append({"candidate_id": cid, "target": target, "therapy": compound, "would_seed": True,
+                               **({"novelty_score": novelty["novelty_score"]} if novelty else {})})
+                existing.add(cid)
+                continue
+            self.seed_validation_ready_candidate(
+                cid,
+                title=candidate_generator.title_for(compound, target),
+                evidence_refs=list(row.get("evidence_refs") or []),
+                targets=[target],
+                candidate_therapies=[compound],
+                biomarkers=list(row.get("biomarkers") or []),
+                rationale=row.get("rationale", ""),
+            )
+            seeded.append({"candidate_id": cid, "target": target, "therapy": compound,
+                           **({"novelty_score": novelty["novelty_score"]} if novelty else {})})
+            existing.add(cid)
+
+        rollup = {
+            "source": source,
+            "seeded": len(seeded),
+            "skipped_exists": len(skipped),
+            "rejected": len(rejected),
+            "dry_run": dry_run,
+        }
+        manifest = RunManifestRecord(
+            manifest_type="candidate_generation",
+            status="completed",
+            title=f"Candidate generation — {len(seeded)} new ({source})"[:500],
+            created_by=submitted_by or "candidate_generator",
+            candidate_ids=[s["candidate_id"] for s in seeded][:200],
+            output_refs={"rollup": rollup, "seeded": seeded, "skipped": skipped, "rejected": rejected},
+            metadata={"source": source, "max_new": max_new, "require_resolvable": require_resolvable},
+        )
+        if persist and not dry_run:
+            self.upsert_run_manifest(manifest)
+        return manifest
+
+    # --- Phase B / Unit 3: the no-compute contribution path (candidate proposals) -----------------
+    def submit_candidate_proposal(
+        self,
+        submitted_by: str,
+        *,
+        candidate_id: str,
+        title: str,
+        rationale: str = "",
+        targets: list[str] | None = None,
+        candidate_therapies: list[str] | None = None,
+        evidence_refs: list[str] | None = None,
+        biomarkers: list[str] | None = None,
+    ) -> PublicCandidateRecord:
+        """A collaborator PROPOSES a candidate/hypothesis to test — the no-compute contribution mode.
+        It enters as a 'proposed' public candidate (NOT validation-ready; zero compute spent),
+        attributed to the submitter, awaiting an operator decision. Proposing is open (a revoked
+        principal is refused); the operator review + running it are the gates, and any run is
+        operator-only spend. Returns the proposed candidate record."""
+        principal = self.resolve_principal(submitted_by)
+        if principal is not None and principal.status == "revoked":
+            raise CollaboratorAccessError(f"principal '{submitted_by}' is revoked and cannot submit proposals.")
+        content_hash = hashlib.sha256(f"proposal|{candidate_id}|{title}".encode("utf-8")).hexdigest()[:40]
+        # A proposal is lightweight — no snapshot yet. Operator approval (decide_candidate_proposal)
+        # seeds the first real snapshot when it makes the candidate validation-ready.
+        record = PublicCandidateRecord(
+            candidate_id=candidate_id, title=title, public_status="proposed",
+            evidence_refs=list(evidence_refs or []), targets=list(targets or []),
+            candidate_therapies=list(candidate_therapies or []), biomarkers=list(biomarkers or []),
+            content_hash=content_hash,
+            metadata={"proposal": {"proposed_by": submitted_by, "rationale": rationale}},
+        )
+        return self.repository.upsert_public_candidate(record)
+
+    def list_candidate_proposals(self, *, limit: int = 200) -> list[PublicCandidateRecord]:
+        """Collaborator-submitted candidate proposals awaiting (or past) an operator decision."""
+        lib = self.list_public_candidates(PublicCandidateLibraryRequest(limit=limit))
+        return [
+            c for c in lib.candidates
+            if isinstance(c.metadata, dict) and "proposal" in c.metadata
+        ]
+
+    def decide_candidate_proposal(
+        self,
+        candidate_id: str,
+        *,
+        approved_by: str,
+        approve: bool,
+        note: str | None = None,
+    ) -> PublicCandidateRecord | None:
+        """Operator decides a collaborator's proposal (operator-gated via `promote_candidate`). Approve
+        → seed it validation-ready (the operator may then run it on our compute — operator-only spend);
+        reject → archive it with a recorded reason. Returns the resulting candidate, or None if absent.
+        NEVER auto-runs: approval only makes it RUNNABLE; dispatch stays a separate operator action."""
+        self._authorize(approved_by, "promote_candidate")
+        record = self.get_public_candidate(candidate_id)
+        if record is None:
+            return None
+        if not approve:
+            archived = record.model_copy(
+                update={
+                    "public_status": "archived",
+                    "metadata": {
+                        **record.metadata,
+                        "proposal_decision": {"by": approved_by, "approved": False, "note": note},
+                    },
+                }
+            )
+            return self.repository.upsert_public_candidate(archived)
+        proposal = record.metadata.get("proposal", {}) if isinstance(record.metadata, dict) else {}
+        self.seed_validation_ready_candidate(
+            candidate_id, title=record.title, evidence_refs=record.evidence_refs,
+            targets=record.targets, candidate_therapies=record.candidate_therapies,
+            biomarkers=record.biomarkers, rationale=proposal.get("rationale", ""),
+        )
+        return self.get_public_candidate(candidate_id)
+
     def list_public_candidates(
         self,
         request: PublicCandidateLibraryRequest | None = None,
@@ -1685,11 +2009,13 @@ class HSAResearchService:
         contact: str | None = None,
         scopes: list[str] | None = None,
         public_key: str | None = None,
+        auth_subject: str | None = None,
         note: str | None = None,
     ) -> CollaboratorRecord:
         """Register (or update) a trusted principal. Re-registering an existing principal updates
         it in place (same collaborator_id), so this is idempotent on the principal slug. An optional
-        Ed25519 public_key (hex) lets anyone verify capsules this principal signs."""
+        Ed25519 public_key (hex) lets anyone verify capsules this principal signs; auth_subject links
+        the principal to its external login identity (WorkOS user id)."""
         existing = self.repository.get_collaborator_by_principal(principal.strip())
         record = CollaboratorRecord(
             collaborator_id=existing.collaborator_id if existing else uuid4(),
@@ -1699,6 +2025,7 @@ class HSAResearchService:
             contact=contact,
             scopes=scopes or [],  # type: ignore[arg-type]
             public_key=public_key or (existing.public_key if existing else None),
+            auth_subject=auth_subject or (existing.auth_subject if existing else None),
             note=note,
         )
         return self.repository.upsert_collaborator(record)
@@ -1728,6 +2055,87 @@ class HSAResearchService:
             return None
         return self.repository.upsert_collaborator(record.model_copy(update={"status": "revoked"}))
 
+    # --- Phase B: semi-open collaborator lifecycle (apply -> operator approves -> scoped key) ------
+    def request_collaborator_access(
+        self,
+        *,
+        principal: str,
+        name: str,
+        public_key: str,
+        contact: str | None = None,
+        auth_subject: str | None = None,
+        note: str | None = None,
+    ) -> CollaboratorRecord:
+        """An applicant requests access (semi-open). Creates a PENDING collaborator: it holds no
+        effective scopes (has_scope() is False until active), so a pending applicant can do nothing
+        until an operator approves. A public_key is required up front — it is what their signed
+        contributions will later verify against. Idempotent on principal; re-applying updates the
+        pending record (a revoked/active principal is not silently reset — re-approval is explicit)."""
+        if not (public_key or "").strip():
+            raise ValueError("a collaborator application requires an Ed25519 public_key")
+        existing = self.repository.get_collaborator_by_principal(principal.strip())
+        # SECURITY: self-service may only create a new applicant or update a still-PENDING one. It must
+        # NEVER mutate an existing active/revoked principal — else anyone could re-apply as an active
+        # principal to swap its public key (account takeover) or demote an operator. Key rotation / role
+        # / re-activation on an existing principal is operator-gated (register/approve/revoke).
+        if existing is not None and existing.status != "pending":
+            raise CollaboratorAccessError(
+                f"principal '{principal}' already exists (status={existing.status}); self-service "
+                f"application cannot change an existing principal's key, role, or status — that is "
+                f"operator-gated."
+            )
+        record = CollaboratorRecord(
+            collaborator_id=existing.collaborator_id if existing else uuid4(),
+            principal=principal,
+            name=name,
+            role="collaborator",
+            scopes=[],  # granted on approval
+            status="pending",  # a fresh or re-submitted application is always pending until approved
+            public_key=public_key,
+            contact=contact,
+            auth_subject=auth_subject,  # stable WorkOS user id captured from the applicant's session
+            note=note,
+        )
+        return self.repository.upsert_collaborator(record)
+
+    def resolve_collaborator_by_auth_subject(self, auth_subject: str | None) -> CollaboratorRecord | None:
+        """Map a logged-in external identity (WorkOS user id) to its twog collaborator. This is the
+        web boundary's account→principal link: a session resolves to a `principal` via this, which then
+        feeds the existing _authorize + scope checks. Returns None if unmapped (→ no access)."""
+        subject = (auth_subject or "").strip()
+        if not subject:
+            return None
+        for record in self.repository.list_collaborators(limit=1000):
+            if record.auth_subject == subject:
+                return record
+        return None
+
+    def approve_collaborator(
+        self,
+        collaborator_id: UUID,
+        *,
+        approved_by: str,
+        scopes: list[str] | None = None,
+        role: str = "collaborator",
+    ) -> CollaboratorRecord | None:
+        """Operator approves a pending applicant → status active with scopes (default: the collaborator
+        capability set — lease/compute/capsule, never the write gate). Operator-gated: the approver
+        must hold `promote_candidate` (an operator-only scope), so collaborators cannot approve peers.
+        Returns None if the collaborator does not exist."""
+        self._authorize(approved_by, "promote_candidate")
+        record = self.repository.get_collaborator(collaborator_id)
+        if record is None:
+            return None
+        approved = record.model_copy(
+            update={
+                "status": "active",
+                "role": role,  # type: ignore[arg-type]
+                "scopes": scopes if scopes is not None else default_scopes_for_role(role),  # type: ignore[arg-type]
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        return self.repository.upsert_collaborator(approved)
+
     def _authorize(self, principal: str | None, scope: str) -> None:
         """Enforce the Phase 4 access layer at a write-gate point. A REGISTERED principal must be
         active and hold the scope; an unregistered/legacy actor (e.g. "twog_operator") is allowed —
@@ -1735,7 +2143,12 @@ class HSAResearchService:
         Opting a principal into the collaborator registry is what constrains them."""
         record = self.resolve_principal(principal)
         if record is None:
-            return  # unregistered/legacy actor — trusted by default
+            if self.require_registered_principals:  # Phase B deny-unknown: registration is mandatory
+                raise CollaboratorAccessError(
+                    f"principal '{principal}' is not registered; '{scope}' requires a registered, "
+                    f"active collaborator (deny-unknown access is enabled)."
+                )
+            return  # unregistered/legacy actor — trusted by default (solo-operator model)
         if not record.has_scope(scope):  # type: ignore[arg-type]
             raise CollaboratorAccessError(
                 f"principal '{record.principal}' (role={record.role}, status={record.status}) "
@@ -1768,24 +2181,29 @@ class HSAResearchService:
         ws = self.repository.get_research_workspace(workspace_id)
         if ws is None:
             return None
-        if self.workspace_lease_active(ws) and ws.leased_by != principal and not steal:
-            raise WorkspaceLeaseError(
-                f"workspace {workspace_id} is leased by '{ws.leased_by}' until "
-                f"{ws.lease_expires_at.isoformat()}"
-            )
         holder = self.resolve_principal(principal)
-        gate_policy = (
-            "external_collaborator" if holder is not None and holder.role != "operator" else ws.gate_policy
+        # None gate_policy = keep the workspace's existing policy (operator leases stay as-is); a
+        # non-operator collaborator lease re-gates the workspace to external_collaborator.
+        gate_policy = "external_collaborator" if (holder is not None and holder.role != "operator") else None
+        # Atomic acquire: the repository guards on the row's CURRENT lease state, so two concurrent
+        # acquirers cannot both win (no double-grant) — the previous read-check-write had a TOCTOU race.
+        acquired = self.repository.acquire_workspace_lease(
+            workspace_id,
+            principal,
+            lease_expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds),
+            gate_policy=gate_policy,
+            steal=steal,
         )
-        updated = ws.model_copy(
-            update={
-                "leased_by": principal,
-                "lease_expires_at": datetime.now(UTC) + timedelta(seconds=ttl_seconds),
-                "status": "active",
-                "gate_policy": gate_policy,
-            }
+        if acquired is not None:
+            return acquired
+        # could not acquire: the workspace still exists, so it is held by another unexpired lease
+        current = self.repository.get_research_workspace(workspace_id)
+        if current is None:
+            return None
+        raise WorkspaceLeaseError(
+            f"workspace {workspace_id} is leased by '{current.leased_by}' until "
+            f"{current.lease_expires_at.isoformat() if current.lease_expires_at else 'n/a'}"
         )
-        return self.repository.upsert_research_workspace(updated)
 
     def release_workspace(
         self,
@@ -1832,11 +2250,106 @@ class HSAResearchService:
             manifest["candidate_id"] = candidate_id
         return manifest
 
+    def describe_contribution_modes(self) -> list[dict[str, Any]]:
+        """The first-class answer to 'what can a collaborator DO in a sandbox?'. Every contribution is
+        an ARTIFACT admitted ONLY by passing the gate for its kind — the operator never bypasses the
+        gate. Compute is the collaborator's (BYOC, Unit 2) or operator-run; nothing is auto-promoted."""
+        return [
+            {
+                "mode": "evidence_capsule",
+                "what": "Run a falsification test in a science lane and contribute the signed result.",
+                "artifact": "ProofCapsule (Ed25519-signed)",
+                "produced_on": "your own compute (BYOC — Phase B Unit 2) or operator-run",
+                "admission_gate": "confound + provenance audit → operator accept/promote (never auto-promoted)",
+                "entry_point": "submit_external_proof_capsule",
+            },
+            {
+                "mode": "target_library_entry",
+                "what": "Verify a NEW docking target (redock its native ligand) to grow the shared verified catalog.",
+                "artifact": "verified target entry + redock evidence (spyrmsd ≤ 2 Å AND PoseBusters-valid)",
+                "produced_on": "your own compute (BYOC — Phase B Unit 2)",
+                "admission_gate": "the redock QC gate re-checked → operator accept",
+                "entry_point": "(Unit 2)",
+            },
+            {
+                "mode": "candidate_proposal",
+                "what": "Propose a new candidate / hypothesis worth testing (no compute needed).",
+                "artifact": "candidate proposal",
+                "produced_on": "n/a",
+                "admission_gate": "operator review queue → operator runs it (operator-only spend)",
+                "entry_point": "(Unit 3 / B5)",
+            },
+            {
+                "mode": "new_lane",
+                "what": "Contribute a brand-new validation lane as a container that honors the lane contract.",
+                "artifact": "lane container (digest-pinned)",
+                "produced_on": "your own compute",
+                "admission_gate": "contract-conformance + provenance (advanced, later)",
+                "entry_point": "(future)",
+            },
+        ]
+
+    def open_collaborator_sandbox(
+        self,
+        principal: str,
+        workspace_id: UUID,
+        *,
+        validation_type: str,
+        candidate_id: str | None = None,
+        ttl_seconds: int = 3600,
+    ) -> dict[str, Any] | None:
+        """Open an isolated sandbox for an ACTIVE collaborator. Leases the (operator-provisioned)
+        workspace to them — which seals it as external_collaborator (its capsules then require operator
+        accept/promote) — and returns the lane sandbox manifest + the contribution modes they can use.
+        Pending / revoked / unregistered principals are denied (the sandbox is collaborator-only). The
+        bundle deliberately carries NO operator secrets (no database_secret_ref). Returns None if the
+        workspace does not exist."""
+        collaborator = self.resolve_principal(principal)
+        if collaborator is None or collaborator.status != "active":
+            raise CollaboratorAccessError(
+                f"principal '{principal}' is not an active collaborator; cannot open a sandbox."
+            )
+        leased = self.lease_workspace(workspace_id, principal, ttl_seconds=ttl_seconds)
+        if leased is None:
+            return None
+        return {
+            "workspace_id": str(leased.workspace_id),
+            "candidate_id": candidate_id,
+            "leased_by": leased.leased_by,
+            "lease_expires_at": leased.lease_expires_at.isoformat() if leased.lease_expires_at else None,
+            "gate_policy": leased.gate_policy,  # external_collaborator — the write gate stays operator-held
+            "sandbox": self.describe_sandbox_environment(validation_type, candidate_id=candidate_id),
+            "contribution_modes": self.describe_contribution_modes(),
+        }
+
     def submit_proof_capsule(
         self,
         request: ProofCapsuleSubmitRequest,
+        *,
+        external_submission: bool = False,
     ) -> ProofCapsuleSubmitResult:
-        return submit_proof_capsule(self.repository, request)
+        return submit_proof_capsule(self.repository, request, external_submission=external_submission)
+
+    def submit_external_proof_capsule(
+        self,
+        request: ProofCapsuleSubmitRequest,
+    ) -> ProofCapsuleSubmitResult:
+        """The Phase B entry point for a capsule produced on a collaborator's OWN compute (BYOC). It
+        must clear the authenticated-submit gate: the submitter must be a registered, active
+        collaborator holding the `submit_capsule` scope, currently hold the target workspace's lease,
+        and sign the capsule's content_hash with the Ed25519 key matching their registered public_key.
+        Validity (is the science right?) remains the job of the confound/provenance auditors + the
+        terminal human accept/promote gate — this proves WHO produced it and that it is bound to a
+        leased sandbox. Operator-hosted compute uses submit_proof_capsule (no signature required)."""
+        return submit_proof_capsule(self.repository, request, external_submission=True)
+
+    def capsule_content_hash_for_submission(self, request: ProofCapsuleSubmitRequest) -> str:
+        """The content_hash a BYOC collaborator signs over before calling submit_external_proof_capsule
+        (the gate recomputes + verifies the same value). The collaborator supplies work_packet_id /
+        candidate_snapshot_hash explicitly so what they sign equals what the gate checks."""
+        from .proof_capsules import capsule_content_hash
+
+        return capsule_content_hash(request)
 
     # --- Cryptographic provenance: tamper-evident lineage + signatures --------------------------
     def sign_capsule_content(self, content_hash: str, private_key_hex: str) -> str:
@@ -2116,15 +2629,22 @@ class HSAResearchService:
         proposal = self.propose_next_falsification(candidate_id, lane_allowlist=lane_allowlist)
         if proposal is None:
             return None
-        if proposal.proposed is None:
+        # The RUNNABLE test space is exhausted when there is no proposal, OR — on a REAL runner — when
+        # the best remaining proposal has no resolved inputs (inputs_ready=False). Dispatching an
+        # inputs-unready plan on a real runner just burns the proposal cost and produces no capsule
+        # (the no-op rounds that made every real candidate read 'underpowered/max_rounds'), so we
+        # terminate cleanly instead. The mock runner fabricates signals WITHOUT inputs, so it still
+        # exercises inputs-unready lanes — its behavior is unchanged.
+        proposed = proposal.proposed
+        if proposed is None or (runner_kind != "mock" and not proposed.inputs_ready):
             return FalsificationRoundResult(
                 candidate_id=candidate_id,
-                blockers=proposal.blockers,
+                blockers=[*proposal.blockers, "inputs_unresolved"] if proposed is not None else proposal.blockers,
                 errors=["no_runnable_proposal"],
                 agent_run_id=proposal.agent_run_id,
             )
 
-        plan = proposal.proposed
+        plan = proposed
         prereg = self.register_falsification_test(plan, submitted_by=submitted_by)
         flow = self.run_compute_validation_flow(
             candidate_id, prereg.queue_item_id, runner_kind=runner_kind, submitted_by=submitted_by
@@ -2221,6 +2741,108 @@ class HSAResearchService:
             leading_hypothesis_status=status,  # type: ignore[arg-type]
             total_est_cost_usd=total_cost,
         )
+
+    def run_falsification_campaign(
+        self,
+        candidate_ids: list[str] | None = None,
+        *,
+        max_rounds: int = 3,
+        budget_usd_per_candidate: float = 0.50,
+        campaign_budget_usd: float = 2.0,
+        max_candidates: int | None = None,
+        lane_allowlist: list[str] | None = None,
+        runner_kind: str = "mock",
+        submitted_by: str | None = None,
+        persist: bool = True,
+    ) -> RunManifestRecord:
+        """Run the autonomous falsification loop across a roster (budget-capped) and persist a durable
+        aggregate report as a RunManifestRecord(manifest_type='falsification_campaign'). NEVER
+        auto-promotes (every round's loop is terminal-gated). If candidate_ids is None, selects all
+        validation-ready candidates."""
+        if candidate_ids is None:
+            lib = self.list_public_candidates(PublicCandidateLibraryRequest(limit=500))
+            raw = [c.candidate_id for c in lib.candidates if c.validation_ready is True]
+        else:
+            raw = list(candidate_ids)
+        seen: set[str] = set()
+        ordered = [c for c in raw if not (c in seen or seen.add(c))]  # dedup, preserve order
+
+        rows: list[dict[str, Any]] = []
+        terminal_reasons: dict[str, int] = {}
+        status_counts: dict[str, int] = {}
+        job_ids: list[UUID] = []
+        running_cost = 0.0
+        processed = 0
+        budget_exhausted = False
+
+        for cid in ordered:
+            if max_candidates is not None and processed >= max_candidates:
+                break
+            if running_cost >= campaign_budget_usd:
+                budget_exhausted = True
+                break
+            result = self.run_falsification_loop(
+                cid,
+                max_rounds=max_rounds,
+                budget_usd=budget_usd_per_candidate,
+                lane_allowlist=lane_allowlist,
+                runner_kind=runner_kind,
+                submitted_by=submitted_by,
+            )
+            if result is None:
+                rows.append({"candidate_id": cid, "skipped": "candidate_not_found"})
+                continue
+            running_cost += float(result.total_est_cost_usd)
+            terminal_reasons[result.terminal_reason] = terminal_reasons.get(result.terminal_reason, 0) + 1
+            status_counts[result.leading_hypothesis_status] = (
+                status_counts.get(result.leading_hypothesis_status, 0) + 1
+            )
+            round_jobs = [r.compute_job_id for r in result.rounds if r.compute_job_id]
+            job_ids.extend(round_jobs)
+            rows.append(
+                {
+                    "candidate_id": result.candidate_id,
+                    "terminal_reason": result.terminal_reason,
+                    "leading_hypothesis_status": result.leading_hypothesis_status,
+                    "rounds_run": result.rounds_run,
+                    "total_est_cost_usd": float(result.total_est_cost_usd),
+                    "promoted": bool(result.promoted),
+                    "capsule_ids": [str(r.capsule_id) for r in result.rounds if r.capsule_id],
+                    "compute_job_ids": [str(j) for j in round_jobs],
+                }
+            )
+            processed += 1
+
+        rollup = {
+            "candidates_selected": len(ordered),
+            "candidates_processed": processed,
+            "total_est_cost_usd": round(running_cost, 4),
+            "budget_exhausted": budget_exhausted,
+            "any_promoted": any(bool(r.get("promoted")) for r in rows),
+            "terminal_reasons": terminal_reasons,
+            "leading_hypothesis_status": status_counts,
+        }
+        manifest = RunManifestRecord(
+            manifest_type="falsification_campaign",
+            status="completed",
+            title=f"Falsification campaign — {processed} candidate(s), runner={runner_kind}"[:500],
+            created_by=submitted_by or "falsification_campaign",
+            candidate_ids=[r["candidate_id"] for r in rows][:200],
+            compute_job_ids=job_ids[:200],
+            output_refs={"rollup": rollup, "rows": rows},
+            metadata={
+                "runner_kind": runner_kind,
+                "budgets": {
+                    "per_candidate_usd": budget_usd_per_candidate,
+                    "campaign_usd": campaign_budget_usd,
+                    "max_rounds": max_rounds,
+                    "max_candidates": max_candidates,
+                },
+            },
+        )
+        if persist:
+            self.upsert_run_manifest(manifest)
+        return manifest
 
     # --- Confound Auditor pre-gate (increment 3) -----------------------------------------------
     def _confound_audit_dict(self, capsule: ProofCapsuleRecord) -> dict[str, Any]:
@@ -2378,7 +3000,18 @@ class HSAResearchService:
             if capsule is None:
                 return None
             prov = self._provenance_audit_dict(capsule)
-            if not prov["ok"]:
+            # Foreign compute (BYOC container) shifts trust onto the signature: a capsule claiming a
+            # container job is acceptable ONLY if it is cryptographically signed by the runner (its
+            # registered key). Operator-hosted capsules don't require a signature here (trust = our infra).
+            job = self._resolve_claimed_compute_job(capsule)
+            is_foreign = job is not None and getattr(job, "runner_kind", None) == "container"
+            sig_valid = True
+            if is_foreign:
+                sig_valid = bool(self.verify_capsule_provenance(capsule).get("signature_valid"))
+            if not prov["ok"] or not sig_valid:
+                mismatches = list(prov["mismatches"])
+                if not sig_valid:
+                    mismatches.append("foreign_capsule_signature_invalid")
                 blocked = capsule.model_copy(
                     update={
                         "metadata": {
@@ -2386,8 +3019,9 @@ class HSAResearchService:
                             "provenance_gate": {
                                 "status": "blocked",
                                 "verdict": prov["status"],
-                                "mismatches": prov["mismatches"],
-                                "reason": prov["rationale"],
+                                "mismatches": mismatches,
+                                "reason": prov["rationale"]
+                                + ("" if sig_valid else " Foreign (container) capsule lacks a valid signature."),
                                 "reviewer": reviewer,
                             },
                         }

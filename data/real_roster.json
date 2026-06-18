@@ -1,0 +1,39 @@
+{
+  "version": "real-roster-v1",
+  "_doc": "The real campaign roster (canine HSA <-> human AS). Each candidate is seeded validation-ready by scripts/seed_real_roster.py. Docking candidates resolve their receptor from the curated verified target_library (by target) + PubChem ligand; the omics crux carries inline Megquier expression+strata (omics_source=megquier) so the REAL run_omics_review engine runs. Nothing here is auto-promoted.",
+  "candidates": [
+    {
+      "candidate_id": "alpelisib-pi3ka",
+      "title": "Alpelisib (PI3Ka inhibitor) for PIK3CA-driven hemangiosarcoma",
+      "targets": ["PIK3CA"],
+      "candidate_therapies": ["alpelisib"],
+      "biomarkers": ["PIK3CA mutation"],
+      "evidence_refs": ["PMID:31889578", "GSE95183", "PRJNA562916"],
+      "lanes": ["docking"],
+      "omics_source": null,
+      "rationale": "PIK3CA is recurrently mutated in canine HSA; alpelisib is an approved PI3Ka inhibitor. Falsify target engagement by docking into the verified PI3Ka pocket."
+    },
+    {
+      "candidate_id": "toceranib-vegfr2",
+      "title": "Toceranib (VEGFR2/KDR inhibitor) for angiogenesis-driven hemangiosarcoma",
+      "targets": ["KDR"],
+      "candidate_therapies": ["toceranib"],
+      "biomarkers": ["VEGFR2 expression", "tumor angiogenesis"],
+      "evidence_refs": ["PMID:19365060", "GSE95183"],
+      "lanes": ["docking"],
+      "omics_source": null,
+      "rationale": "Hemangiosarcoma is a vascular tumor; toceranib (Palladia) is the clinical canine VEGFR-TKI. Falsify KDR engagement by docking (requires a redock-verified VEGFR2 entry in the library)."
+    },
+    {
+      "candidate_id": "pik3ca-immunosuppression-crux",
+      "title": "Is the PIK3CA-mutant HSA subset immunosuppressed? (TME deconvolution crux)",
+      "targets": ["PIK3CA"],
+      "candidate_therapies": ["LNP-mRNA-IL12 program"],
+      "biomarkers": ["TME immune composition", "tumor purity"],
+      "evidence_refs": ["GSE95183", "PRJNA562916", "PMID:39709507"],
+      "lanes": ["omics"],
+      "omics_source": "megquier",
+      "rationale": "Falsification-first omics crux: test whether PIK3CA-mutant tumors carry an immunosuppressive TME signature, with the tumor-purity confound control (the catch the project rests on)."
+    }
+  ]
+}

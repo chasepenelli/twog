@@ -1,8 +1,9 @@
 """Increment 6b: the autonomous falsification-loop scheduler (Dagster).
 
-A STOPPED-by-default hourly schedule materializes `falsification_loop_report`, which runs budget-capped
-falsification campaigns for VALIDATION-READY public candidates. It NEVER promotes — a refuting/neutral
-outcome terminates without promotion (the Megquier shape); the human write-gate stays terminal.
+A RUNNING-by-default hourly schedule materializes `falsification_loop_report`, which (optionally)
+generates NEW dockable candidates and then runs budget-capped falsification campaigns for
+VALIDATION-READY public candidates. It NEVER promotes — a refuting/neutral outcome terminates without
+promotion (the Megquier shape); the human write-gate stays terminal.
 
 CI-safe: no daemon, no GPU, no cloud. The loop runs with runner_kind="mock".
 """
@@ -52,6 +53,18 @@ def _materialize(repo, config, *, with_checks=False):
         resources={"research_repository": _resource(repo)},
         run_config={"ops": {"falsification_loop_report": {"config": config}}},
     )
+
+
+# ---- 0. the generate→dock wiring: generation runs as part of the tick ------------------------
+def test_loop_tick_runs_generation_when_enabled(tmp_path):
+    repo = _repo(tmp_path, "gen")
+    # generate=True flips the autonomous idea flow on. With the mock runner no network resolver is
+    # set, so nothing seeds (inputs unresolvable) — but generation RAN, proving the wiring path.
+    result = _materialize(repo, {"enabled": True, "dry_run": False, "runner_kind": "mock", "generate": True})
+    assert result.success
+    report = result.asset_value("falsification_loop_report")
+    assert report["generation"]["ran"] is True
+    assert report["any_promoted"] is False  # generation never promotes
 
 
 # ---- 1. a real loop tick never promotes -------------------------------------------------------
@@ -152,7 +165,8 @@ def test_definitions_register_falsification_loop():
     assert assets_module.falsification_loop_job is not None
     schedule = assets_module.falsification_loop_hourly_schedule
     assert schedule is not None
-    assert schedule.default_status == dg.DefaultScheduleStatus.STOPPED
+    # RUNNING by default: the autonomous generate→dock cycle is switched on (was STOPPED pre-launch).
+    assert schedule.default_status == dg.DefaultScheduleStatus.RUNNING
     assert schedule.cron_schedule == "0 * * * *"
 
     defs = assets_module.defs

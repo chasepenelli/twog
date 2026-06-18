@@ -340,7 +340,7 @@ ResearchWorkspaceGatePolicy = Literal["trusted_operator", "external_collaborator
 # principal holds; an operator holds all, a collaborator may run the middle (lease/compute/capsule)
 # but NOT the write-gate actions (accept/promote).
 CollaboratorRole = Literal["operator", "collaborator"]
-CollaboratorStatus = Literal["active", "revoked"]
+CollaboratorStatus = Literal["pending", "active", "revoked"]  # pending = applied, awaiting operator approval
 CollaboratorScope = Literal[
     "lease_workspace",
     "submit_compute",
@@ -626,7 +626,8 @@ ValidationRequestQueueStatus = Literal[
 ]
 
 ComputeRunnerKind = Literal[
-    "local", "dagster", "external", "mock", "modal", "checkpoint", "modal_checkpoint"
+    "local", "dagster", "external", "mock", "modal", "checkpoint", "modal_checkpoint",
+    "container",  # Phase B BYOC: a digest-pinned lane container on a collaborator's own backend
 ]
 ComputeProfile = Literal["cpu", "gpu", "gpu_a10", "gpu_l4", "gpu_a100", "gpu_h100", "unknown"]
 ComputeJobStatus = Literal[
@@ -648,6 +649,8 @@ RunManifestKind = Literal[
     "mcp_invocation",
     "public_candidate_snapshot",
     "compute_job",
+    "falsification_campaign",
+    "candidate_generation",
     "reward_sync",
     "manual",
 ]
@@ -4820,6 +4823,7 @@ class CollaboratorRecord(StrictBaseModel):
     scopes: list[CollaboratorScope] = Field(default_factory=list)
     status: CollaboratorStatus = "active"
     public_key: str | None = Field(default=None, max_length=128)  # Ed25519 pubkey (hex) — verifies their signed capsules
+    auth_subject: str | None = Field(default=None, max_length=255)  # stable external auth id (WorkOS user id) this principal logs in as
     note: str | None = Field(default=None, max_length=1000)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

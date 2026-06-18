@@ -88,3 +88,32 @@ def test_dispatched_control_marks_confound_controlled(tmp_path):
     capsule_id = result.rounds[0].capsule_id
     capsule = repo.get_proof_capsule(capsule_id)
     assert capsule.payload.get("controls_confound") == "tumor_purity"
+
+
+# ---- a REAL runner must not dispatch a proposal whose inputs don't resolve --------------------
+def test_real_runner_does_not_dispatch_inputs_unready_proposal(tmp_path):
+    """The termination fix: on a real runner (modal/local), the best remaining proposal having
+    inputs_ready=False means the RUNNABLE test space is exhausted — the round reports
+    no_runnable_proposal WITHOUT dispatching (no no-op round, no compute job, no capsule). The mock
+    runner still dispatches the same candidate (it fabricates signals without real inputs)."""
+    repo = SQLiteResearchRepository(tmp_path / "ir.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    # target NOT in the curated library + no lane_inputs + no network resolvers -> every lane is
+    # inputs_unresolved, so the planner's best proposal is flagged inputs_ready=False.
+    service.seed_validation_ready_candidate(
+        "vr-no-inputs", title="No resolvable inputs", evidence_refs=["x"], targets=["ZZZ_NO_STRUCTURE"]
+    )
+
+    rnd_real = service.run_falsification_round("vr-no-inputs", runner_kind="modal")
+    assert rnd_real.plan is None  # not dispatched
+    assert "no_runnable_proposal" in rnd_real.errors
+    assert rnd_real.compute_job_id is None and rnd_real.capsule_id is None
+
+    # the loop then terminates cleanly (no wasted rounds capping out at max_rounds)
+    loop = service.run_falsification_loop("vr-no-inputs", runner_kind="modal", max_rounds=3)
+    assert loop.terminal_reason == "no_runnable_proposal"
+    assert loop.rounds_run == 0  # nothing was runnable, so nothing ran
+
+    # under mock, the SAME candidate still produces a dispatched plan (inputs not needed)
+    rnd_mock = service.run_falsification_round("vr-no-inputs", runner_kind="mock")
+    assert rnd_mock.plan is not None

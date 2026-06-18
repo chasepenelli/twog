@@ -13,6 +13,11 @@ dependencies = [
     "cryptography>=42,<46",
 ]
 
+[project.optional-dependencies]
+# Write-only RO-Crate export (src/.../rocrate_export.py). Lazily imported + off the dispatch/gate hot
+# path, so it stays an opt-in extra — the core install stays lean and skips rocrate's transitive deps.
+rocrate = ["rocrate>=0.13,<1"]
+
 [dependency-groups]
 dev = [
     "dagster-dg-cli",

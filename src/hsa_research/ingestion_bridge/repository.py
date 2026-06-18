@@ -391,6 +391,21 @@ class ResearchRepository(Protocol):
     def upsert_research_workspace(self, record: ResearchWorkspaceRecord) -> ResearchWorkspaceRecord:
         """Persist an isolated research workspace allocation record."""
 
+    def acquire_workspace_lease(
+        self,
+        workspace_id: UUID,
+        principal: str,
+        *,
+        lease_expires_at: datetime,
+        gate_policy: str | None = None,
+        steal: bool = False,
+    ) -> ResearchWorkspaceRecord | None:
+        """ATOMICALLY acquire/renew a lease iff it is currently free, expired, already held by
+        `principal`, or `steal` is set — via a single conditional write guarded on the row's CURRENT
+        lease state (so two concurrent acquirers cannot both win). `gate_policy` (when given) is set on
+        acquisition; None keeps the existing policy. Returns the updated record on success, or None if
+        the workspace does not exist OR the lease is held by another principal (contended)."""
+
     def get_research_workspace(self, workspace_id: UUID) -> ResearchWorkspaceRecord | None:
         """Return a persisted research workspace."""
 
@@ -1599,6 +1614,39 @@ class InMemoryResearchRepository:
             )
         self.research_workspaces[record.workspace_id] = record
         return record
+
+    def acquire_workspace_lease(
+        self,
+        workspace_id: UUID,
+        principal: str,
+        *,
+        lease_expires_at: datetime,
+        gate_policy: str | None = None,
+        steal: bool = False,
+    ) -> ResearchWorkspaceRecord | None:
+        existing = self.research_workspaces.get(workspace_id)
+        if existing is None:
+            return None
+        now = datetime.now(UTC)
+        held_by_other = (
+            existing.leased_by is not None
+            and existing.leased_by != principal
+            and existing.lease_expires_at is not None
+            and existing.lease_expires_at > now
+        )
+        if held_by_other and not steal:
+            return None  # contended — caller distinguishes from missing via get_research_workspace
+        updated = existing.model_copy(
+            update={
+                "leased_by": principal,
+                "lease_expires_at": lease_expires_at,
+                "status": "active",
+                "gate_policy": gate_policy or existing.gate_policy,
+                "updated_at": now,
+            }
+        )
+        self.research_workspaces[workspace_id] = updated
+        return updated
 
     def get_research_workspace(self, workspace_id: UUID) -> ResearchWorkspaceRecord | None:
         return self.research_workspaces.get(workspace_id)

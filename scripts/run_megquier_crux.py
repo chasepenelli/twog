@@ -21,42 +21,9 @@ import numpy as np
 
 from hsa_research.ingestion_bridge.omics_review import mann_whitney
 
-GSE_URL = ("https://ftp.ncbi.nlm.nih.gov/geo/series/GSE95nnn/GSE95183/suppl/"
-           "GSE95183_fpkms_hemangiosarcoma.txt.gz")
-MATRIX = "data/GSE95183_fpkms.txt.gz"
-
-PANELS = {
-    "Immune_broad": ["PTPRC", "CD3E", "CD8A", "CD68", "CD163", "FOXP3", "IFNG", "GZMB"],
-    "M2_TAM": ["CD163", "MRC1", "MSR1", "CSF1R"],
-    "Cytotoxic_effector": ["CD8A", "PRF1", "GZMK", "GZMA"],
-    "IFNg_hallmark": ["IFNG", "STAT1", "IRF1", "GBP1", "CXCL10", "IDO1", "TAP1", "B2M", "JAK2"],
-    "Proliferation": ["MKI67", "PCNA", "TOP2A", "CCNB1", "CCNA2", "BUB1", "FOXM1", "CDK1"],
-    "Angiogenesis": ["VEGFA", "KDR", "FLT1", "ANGPT2", "DLL4", "TEK", "ESM1", "CD34", "NOTCH4"],
-}
-ENDO = ["PECAM1", "VWF", "CDH5", "KDR"]
-
-
-def ensure_matrix() -> None:
-    if not os.path.exists(MATRIX):
-        os.makedirs("data", exist_ok=True)
-        urllib.request.urlretrieve(GSE_URL, MATRIX)
-
-
-def load_expression(strata: dict, ens2sym: dict) -> tuple[list[str], dict, set]:
-    with gzip.open(MATRIX, "rt") as fh:
-        header = fh.readline().rstrip("\n").split("\t")
-        ci = {c: i for i, c in enumerate(header)}
-        samples = [s for s in strata if s in ci]
-        expr = {s: {} for s in samples}
-        found: set[str] = set()
-        for line in fh:
-            p = line.rstrip("\n").split("\t")
-            if p[0] in ens2sym:
-                sym = ens2sym[p[0]]
-                found.add(sym)
-                for s in samples:
-                    expr[s][sym] = math.log2(float(p[ci[s]]) + 1.0)
-    return samples, expr, found
+# Megquier load helpers now live in the package (the canonical home, reused by the campaign omics
+# bridge real_roster.build_megquier_omics_inputs) — imported here to avoid duplication.
+from hsa_research.ingestion_bridge.real_roster import ENDO, PANELS, ensure_matrix, load_expression
 
 
 def parse_estimate_purity(pdf_path: str) -> dict:

@@ -1728,6 +1728,7 @@ def main() -> None:
             "mcp_invocation",
             "public_candidate_snapshot",
             "compute_job",
+            "falsification_campaign",
             "reward_sync",
             "manual",
         ],
@@ -2456,6 +2457,40 @@ def main() -> None:
     ingest_scrape.add_argument("--min-parser-confidence", type=float, default=0.3, help="Minimum parser confidence")
     ingest_scrape.add_argument("--approved-by", default=None, help="Required to promote scrape records")
     ingest_scrape.add_argument("--approval-note", default=None, help="Optional approval note")
+
+    # --- Phase B: semi-open collaborator lifecycle ------------------------------------------------
+    collaborator_keygen = subparsers.add_parser(
+        "collaborator-keygen", help="Generate an Ed25519 keypair (the private key stays with the applicant)"
+    )
+    collaborator_keygen.add_argument("--principal", default=None, help="Optional label echoed back")
+
+    collaborator_apply = subparsers.add_parser(
+        "collaborator-apply", help="Apply for collaborator access — creates a pending record (semi-open)"
+    )
+    collaborator_apply.add_argument("--principal", required=True, help="Stable actor slug, e.g. j.doe")
+    collaborator_apply.add_argument("--name", required=True)
+    collaborator_apply.add_argument("--public-key", required=True, help="Ed25519 public key (hex)")
+    collaborator_apply.add_argument("--contact", default=None)
+    collaborator_apply.add_argument("--auth-subject", default=None, help="External login identity (WorkOS user id)")
+    collaborator_apply.add_argument("--note", default=None)
+
+    collaborators_cmd = subparsers.add_parser("collaborators", help="List collaborators (filter by status/role)")
+    collaborators_cmd.add_argument("--status", default=None, choices=["pending", "active", "revoked"])
+    collaborators_cmd.add_argument("--role", default=None, choices=["operator", "collaborator"])
+    collaborators_cmd.add_argument("--limit", type=int, default=100)
+
+    collaborator_approve = subparsers.add_parser(
+        "collaborator-approve", help="Operator: approve a pending applicant (grants scopes, status->active)"
+    )
+    collaborator_approve.add_argument("--collaborator-id", required=True)
+    collaborator_approve.add_argument("--approved-by", required=True, help="Operator principal")
+    collaborator_approve.add_argument("--role", default="collaborator", choices=["operator", "collaborator"])
+    collaborator_approve.add_argument(
+        "--scope", action="append", default=[], help="Scope to grant; repeat. Default: role defaults."
+    )
+
+    collaborator_revoke = subparsers.add_parser("collaborator-revoke", help="Revoke a collaborator's access")
+    collaborator_revoke.add_argument("--collaborator-id", required=True)
 
     args = parser.parse_args()
     repo = SQLiteResearchRepository(args.db) if args.db else build_sql_repository()
@@ -4028,6 +4063,37 @@ def main() -> None:
                 approval_note=args.approval_note,
             )
         ).model_dump(mode="json")
+    elif args.command == "collaborator-keygen":
+        from . import provenance
+
+        private_key, public_key = provenance.generate_keypair()
+        output = {
+            "principal": args.principal,
+            "public_key": public_key,
+            "private_key": private_key,
+            "warning": "Keep private_key SECRET (it signs your contributions). Register only the public_key.",
+        }
+    elif args.command == "collaborator-apply":
+        output = HSAResearchService(repo).request_collaborator_access(
+            principal=args.principal, name=args.name, public_key=args.public_key,
+            contact=args.contact, auth_subject=args.auth_subject, note=args.note,
+        ).model_dump(mode="json")
+    elif args.command == "collaborators":
+        output = [
+            c.model_dump(mode="json")
+            for c in HSAResearchService(repo).list_collaborators(
+                role=args.role, status=args.status, limit=args.limit
+            )
+        ]
+    elif args.command == "collaborator-approve":
+        record = HSAResearchService(repo).approve_collaborator(
+            UUID(args.collaborator_id), approved_by=args.approved_by, role=args.role,
+            scopes=args.scope or None,
+        )
+        output = record.model_dump(mode="json") if record else {"error": "collaborator not found"}
+    elif args.command == "collaborator-revoke":
+        record = HSAResearchService(repo).revoke_collaborator(UUID(args.collaborator_id))
+        output = record.model_dump(mode="json") if record else {"error": "collaborator not found"}
     else:  # pragma: no cover - argparse prevents this path
         raise ValueError(f"Unsupported command: {args.command}")
 
