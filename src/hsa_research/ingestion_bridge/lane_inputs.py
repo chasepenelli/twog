@@ -94,27 +94,29 @@ def _resolve_docking_from_library(
     targets = getattr(candidate, "targets", []) or []
     therapies = getattr(candidate, "candidate_therapies", []) or []
 
-    def refuse(missing: str) -> LaneInputResolution:
+    def refuse(reason: str, missing: list[str]) -> LaneInputResolution:
+        # `missing` is config-KEY NAMES only (a clean checklist); the human explanation rides `notes`.
         return LaneInputResolution(
-            lane="docking", config_key=config_key, resolved=False, missing=[missing], source="curated_library"
+            lane="docking", config_key=config_key, resolved=False, missing=missing,
+            notes=reason, source="curated_library",
         )
 
     if not targets:
-        return refuse("candidate.targets is empty")
+        return refuse("candidate.targets is empty", ["target"])
     target = targets[0]
     entry = _tl.get_entry(lib, target)
     if not entry or not entry.get("verified"):
-        return refuse(f"no redock-verified target_library entry for '{target}'")
+        return refuse(f"no redock-verified target_library entry for '{target}'", ["receptor_pdb"])
     if not therapies:
-        return refuse("candidate.candidate_therapies is empty")
+        return refuse("candidate.candidate_therapies is empty", ["ligand_smiles"])
     if resolvers is None:
-        return refuse("no SMILES resolver (PubChem) injected")
+        return refuse("no SMILES resolver (PubChem) injected", ["ligand_smiles"])
     smiles = resolvers.compound_smiles(therapies[0])
     if not smiles:
-        return refuse(f"PubChem SMILES not found for therapy '{therapies[0]}'")
+        return refuse(f"PubChem SMILES not found for therapy '{therapies[0]}'", ["ligand_smiles"])
     config = _tl.curated_docking_config(lib, target, ligand_smiles=smiles, ligand_name=therapies[0])
     if config is None:
-        return refuse(f"verified library entry for '{target}' is missing a prepared receptor/box")
+        return refuse(f"verified library entry for '{target}' is missing a prepared receptor/box", ["receptor_pdb"])
     return LaneInputResolution(
         lane="docking", config_key=config_key, resolved=True, config=config, source="curated_library"
     )
@@ -152,8 +154,14 @@ def resolve(candidate: Any, lane: str, *, resolvers: Any = None, target_library:
             source="candidate.metadata",
         )
 
-    first = _REQUIRED_KEY_SETS.get(lane, [()])[0]
-    missing = [key for key in first if cfg.get(key) in (None, "", [], {})]
+    # Report the keyset CLOSEST to satisfied (fewest missing keys) so the operator sees the easiest
+    # completion path — never blindly the first keyset (omics has 3 alternatives: expression+strata,
+    # matrix_path+strata_path, or datasets).
+    keysets = _REQUIRED_KEY_SETS.get(lane) or [()]
+    missing = min(
+        ([key for key in ks if cfg.get(key) in (None, "", [], {})] for ks in keysets),
+        key=len,
+    )
     return LaneInputResolution(
         lane=lane, config_key=config_key, resolved=False, config=dict(cfg), missing=missing, source="candidate.metadata"
     )

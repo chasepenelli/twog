@@ -5449,6 +5449,11 @@ class PublicCandidateRecord(StrictBaseModel):
     title: str = Field(min_length=3, max_length=500)
     summary: str = Field(default="", max_length=3000)
     rationale_md: str = Field(default="", max_length=6000)
+    # Grounded reasoning carried even on the no-committee campaign path (deterministically composed from
+    # the candidate's own compound/target/rationale/biomarkers — a HYPOTHESIS, never a finding). Lets the
+    # MoonshotRubric reasoning spine be non-empty without an LLM. None when not yet populated.
+    mechanism: str | None = Field(default=None, max_length=1500)
+    translational_path: str | None = Field(default=None, max_length=2000)
     public_status: PublicCandidateStatus = "draft"
     visibility: PublicCandidateVisibility = "private"
     therapy_idea_id: UUID | None = None
@@ -7170,7 +7175,8 @@ class LaneInputResolution(StrictBaseModel):
     config_key: str = Field(min_length=1, max_length=100)  # the validation_request.metadata key the lane reads
     resolved: bool
     config: dict[str, Any] = Field(default_factory=dict)
-    missing: list[str] = Field(default_factory=list, max_length=20)
+    missing: list[str] = Field(default_factory=list, max_length=20)  # missing CONFIG KEY NAMES only (a checklist)
+    notes: str = Field(default="", max_length=500)  # human reason a lane is unresolved (prose, NOT a key name)
     source: str = Field(default="", max_length=200)
 
 
@@ -7255,11 +7261,64 @@ class RubricLaneInputs(StrictBaseModel):
     md_schedule: MDScheduleSpec | None = None  # populated ONLY for lane == "md"
 
 
+class RubricPremise(StrictBaseModel):
+    """The grounded 'because of A' the moonshot rests on. Every field traces to a real therapy-idea /
+    candidate input — NEVER fabricated. When the upstream thesis states no mechanism/rationale,
+    `is_specified=False` and `basis='premise_unstated…'` so the gap is shown honestly, not invented.
+    `strength` is the idea's stated evidence tier VERBATIM (never upgraded — the verdict ceiling)."""
+
+    claim: str = Field(default="", max_length=1000)
+    basis: str = Field(default="", max_length=1500)
+    supports_quality: str = Field(default="", max_length=600)
+    strength: Literal["high", "medium", "low", "unknown"] = "unknown"
+    is_specified: bool = False
+
+
+class TestInterpretation(StrictBaseModel):
+    """Pre-committed reading of EVERY outcome of a lane test (anti-HARKing). Each string is composed from
+    the lane's own pre-registered KillCriterion + the grounded mechanism. Vocabulary is locked to
+    supports/refutes/neutral; `supports` is always capped 'unaudited — never accepted as proof'."""
+
+    supports: str = Field(default="", max_length=800)
+    refutes: str = Field(default="", max_length=800)
+    neutral: str = Field(default="", max_length=800)
+
+
+class RubricInferenceLink(StrictBaseModel):
+    """One link in the falsification-first inference chain: if THIS lane survives its kill criterion, what
+    the moonshot is then entitled to do (proceed / conclude). `if_broken` restates the lane's REAL kill
+    criterion as the refutation that breaks the chain here. Conjunctive-survival, single-refutation-kills:
+    survival of earlier links never rescues a later refutation."""
+
+    step: int = Field(ge=1, le=50)
+    from_lanes: list[FalsificationLane] = Field(default_factory=list, max_length=8)
+    infers: str = Field(default="", max_length=1000)
+    if_broken: str = Field(default="", max_length=800)
+
+
+class RubricExpectedPayoff(StrictBaseModel):
+    """The conclusion the program is trying to EARN — the 'if it works, we can expect P, next step N'
+    clause, composed from idea.translational_path + next_experiments. `caveat` is a FIXED string pinning
+    the ceiling at survived_known_confounds (never 'proven'). `is_specified=False` with an honest
+    fallback when no upstream translational path exists."""
+
+    if_survives: str = Field(default="", max_length=1500)
+    translational_claim: str = Field(default="", max_length=1200)
+    next_step: str = Field(default="", max_length=800)
+    value_of_information: float | None = Field(default=None, ge=0.0, le=1.0)
+    is_specified: bool = False
+    caveat: str = Field(
+        default="survived_known_confounds, never proven; the operator write-gate is terminal.",
+        max_length=600,
+    )
+
+
 class RubricLaneTest(StrictBaseModel):
     """One ordered step in the test plan: a lane + its PRE-REGISTERED KillCriterion (reused verbatim
-    from the planner's FalsificationPlan — the anti-p-hacking lock) + inputs + standing. Projected from
-    FalsificationPlan with the non-deterministic plan_id/created_at STRIPPED so the rubric is
-    hash-stable and safe to inject into the content-hashed snapshot payload."""
+    from the planner's FalsificationPlan — the anti-p-hacking lock) + inputs + standing + the grounded
+    reasoning that makes it a STEP IN AN ARGUMENT (what quality it probes, why it bears on the thesis,
+    what every outcome means). Projected from FalsificationPlan with the non-deterministic
+    plan_id/created_at STRIPPED so the rubric is hash-stable and safe to inject into the snapshot."""
 
     order: int = Field(ge=1, le=50)
     lane: FalsificationLane
@@ -7278,6 +7337,11 @@ class RubricLaneTest(StrictBaseModel):
     inputs: RubricLaneInputs
     rank_rationale: str = Field(default="", max_length=2000)
     novelty_note: str = Field(default="", max_length=1000)
+    # Reasoning spine (grounded; empty/honest when the thesis is silent) — what makes a test an ARGUMENT
+    mechanistic_premise: str = Field(default="", max_length=1500)
+    probes: list[str] = Field(default_factory=list, max_length=8)
+    why_it_bears: str = Field(default="", max_length=1200)
+    interpretation: TestInterpretation = Field(default_factory=TestInterpretation)
 
 
 class RubricInputsRollup(StrictBaseModel):
@@ -7349,6 +7413,12 @@ class MoonshotRubric(StrictBaseModel):
     moonshot_gate: dict[str, Any] = Field(default_factory=dict)  # VERBATIM _public_candidate_moonshot_gate dict
     moonshot_grade: bool = False
     moonshot_score: float = Field(default=0.0, ge=0.0)
+    # (1b) Reasoning spine — the grounded scientific ARGUMENT (because of A → test X/Y/Z → expect P).
+    # Every field is composed deterministically from real inputs; empty/honest when the thesis is silent.
+    mechanistic_premise: str = Field(default="", max_length=3000)
+    premises: list[RubricPremise] = Field(default_factory=list, max_length=12)
+    inference_chain: list[RubricInferenceLink] = Field(default_factory=list, max_length=12)
+    expected_payoff: RubricExpectedPayoff = Field(default_factory=RubricExpectedPayoff)
     # (2)-(3) Targets + compounds needed
     targets_needed: list[RubricTarget] = Field(default_factory=list, max_length=50)
     compounds_needed: list[RubricCompound] = Field(default_factory=list, max_length=50)

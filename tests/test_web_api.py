@@ -60,6 +60,38 @@ def test_public_unknown_id_is_404(tmp_path):
     assert dispatch(service, method="GET", path=f"/public/campaigns/{uuid4()}", principal=None)[0] == 404
 
 
+def test_public_candidate_rubric_route(tmp_path):
+    """The public rubric route serves the pre-registered MoonshotRubric (no auth) for a published
+    moonshot, and 404s for an unknown candidate or one with no rubric."""
+    from hsa_research.ingestion_bridge.contracts import (
+        PublicCandidateGenerateRequest, TherapyIdea, TherapyIdeaRecord,
+    )
+
+    service, *_ = _setup(tmp_path)
+    idea = TherapyIdea(
+        title="Cross-species PI3Ka strategy", hypothesis="Alpelisib engages PI3Ka across the canine-HSA × human-AS axis.",
+        rationale="Mutation-selective PI3Ka inhibition; cross-species precision strategy.",
+        candidate_therapies=["alpelisib"], targets=["PIK3CA"], biomarkers=["PIK3CA mutation"],
+        evidence_refs=["PMID:1", "PMID:2", "PMID:3"], evidence_strength="high",
+        risks=["alpelisib hyperglycemia in dogs"], next_experiments=["dock against verified PIK3CA pocket"],
+        priority_score=0.9,
+    )
+    service.repository.upsert_therapy_idea(
+        TherapyIdeaRecord(idea=idea, topic="PI3Ka", status="ready_for_promotion", score=0.9))
+    res = service.generate_public_candidate_snapshot(
+        PublicCandidateGenerateRequest(therapy_idea_id=idea.idea_id, require_moonshot_grade=True, persist=True))
+    assert res.candidate is not None, f"moonshot must publish; errors={res.errors}"
+    cid = res.candidate.candidate_id
+
+    status, rubric = dispatch(service, method="GET", path=f"/public/candidates/{cid}/rubric", principal=None)
+    assert status == 200
+    assert rubric["title"] and rubric["test_plan"] and rubric["promotion"]["auto_promotable"] is False
+    assert rubric["targets_needed"][0]["verification"] == "verified"  # PIK3CA is in the verified library
+    assert rubric["has_falsifiable_plan"] is True
+
+    assert dispatch(service, method="GET", path="/public/candidates/does-not-exist/rubric", principal=None)[0] == 404
+
+
 def test_me_returns_principal(tmp_path):
     service, _operator, collaborator = _setup(tmp_path)
     status, payload = dispatch(service, method="GET", path="/me", principal=collaborator)

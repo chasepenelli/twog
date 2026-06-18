@@ -83,6 +83,36 @@ def test_generate_seeds_runnable_candidate(tmp_path, verified_library):
     assert res.resolved is True
 
 
+def test_generated_candidate_carries_grounded_reasoning(tmp_path, verified_library):
+    """Ground-at-source: a no-committee generated candidate carries deterministic, HYPOTHESIS-framed
+    mechanism + conditional translational_path, so its MoonshotRubric spine reads grounded (not unstated)."""
+    service = _service(tmp_path)
+    seed = _seed_file(tmp_path, [{"compound": "copanlisib", "target": "PIK3CA", "evidence_refs": ["curate:x"],
+                                  "biomarkers": ["PIK3CA mutation"],
+                                  "rationale": "PIK3CA is recurrently mutated in canine HSA."}])
+    service.generate_candidate_ideas(source="curated_seed", seed_path=seed)
+    cand = service.get_public_candidate("copanlisib-pik3ca")
+    assert cand.mechanism and "copanlisib" in cand.mechanism and "PIK3CA" in cand.mechanism
+    assert "hypothesized" in cand.mechanism  # a HYPOTHESIS, never asserted as a finding
+    assert cand.translational_path and "treatment candidate to advance" in cand.translational_path
+    # the rubric spine is now grounded for a generated candidate (not 'premise_unstated')
+    r = service.build_moonshot_rubric("copanlisib-pik3ca")
+    assert r.premises[0].is_specified is True
+    assert not any("reasoning_unstated_upstream" in n for n in r.assembly_notes)
+    assert "copanlisib" in next(t for t in r.test_plan if t.lane == "docking").probes[0]
+
+
+def test_compose_candidate_reasoning_is_grounded_and_conditional():
+    mech, tp = candidate_generator.compose_candidate_reasoning(
+        compound="copanlisib", target="PIK3CA", rationale="recurrently mutated.", biomarkers=["PIK3CA mutation"])
+    assert mech == "copanlisib is hypothesized to engage PIK3CA; recurrently mutated."
+    # translational_path is the bare CONSEQUENT (the payoff) — conditionality is supplied by the rubric wrapper
+    assert tp == "the copanlisib-PIK3CA pairing becomes a mutation-selective treatment candidate to advance in the PIK3CA mutation-defined subset"
+    # empty inputs still yield grounded, non-fabricated text (never invents a target/finding)
+    mech2, tp2 = candidate_generator.compose_candidate_reasoning(compound="", target="")
+    assert mech2 == "the compound is hypothesized to engage the target"
+
+
 def test_unresolvable_therapy_is_rejected_not_seeded(tmp_path, verified_library):
     service = _service(tmp_path, known={})  # resolver knows no SMILES
     seed = _seed_file(tmp_path, [{"compound": "copanlisib", "target": "PIK3CA"}])

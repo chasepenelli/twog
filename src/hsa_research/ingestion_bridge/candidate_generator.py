@@ -66,3 +66,28 @@ def pairs_from_claims(claims: list[Any], verified_targets: set[str]) -> list[dic
 def title_for(compound: str, target: str) -> str:
     """Human-readable falsification title for a generated candidate."""
     return f"Falsify: does {compound} engage {target} in canine HSA × human angiosarcoma?"
+
+
+def compose_candidate_reasoning(
+    *, compound: str, target: str, rationale: str = "", biomarkers: list[str] | None = None
+) -> tuple[str, str]:
+    """Deterministic, entity-grounded reasoning for the no-committee campaign path — so a generated
+    candidate carries a real (if modest) mechanistic premise + translational payoff the MoonshotRubric
+    spine can surface, instead of reading 'premise_unstated'. Pure string ops over what the row already
+    owns (NEVER invents a target/SMILES/finding). The mechanism states a HYPOTHESIS, not a result, and
+    the translational path is explicitly CONDITIONAL ('If … holds and the axis replicates …') so it
+    cannot overclaim. Clearly less rich than committee-authored idea.mechanism — by design."""
+    compound = (compound or "the compound").strip()
+    target = (target or "the target").strip()
+    bms = [str(b).strip() for b in (biomarkers or []) if str(b).strip()]
+    mechanism = f"{compound} is hypothesized to engage {target}"
+    if rationale and rationale.strip():
+        mechanism = f"{mechanism}; {rationale.strip()}"
+    subset = f" in the {', '.join(bms)}-defined subset" if bms else ""
+    # The CONSEQUENT only (the payoff we'd be entitled to expect). The conditionality + ceiling are
+    # supplied by the rubric's expected_payoff wrapper ("If all lanes survive …") + the fixed caveat, so
+    # writing the path as a bare consequent avoids a double-"If" and still cannot overclaim.
+    translational_path = (
+        f"the {compound}-{target} pairing becomes a mutation-selective treatment candidate to advance{subset}"
+    )
+    return mechanism[:1500], translational_path[:2000]

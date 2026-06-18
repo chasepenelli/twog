@@ -103,6 +103,201 @@ def present_candidate(rec: PublicCandidateRecord) -> dict[str, Any]:
     }
 
 
+def _present_kill_criterion(kc: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Flatten a KillCriterion dict to the display shape (the anti-p-hacking pre-registered threshold)."""
+    if not isinstance(kc, dict):
+        return None
+    return {
+        "metric": kc.get("metric"),
+        "comparator": kc.get("comparator"),
+        "threshold": kc.get("threshold"),
+        "kills_on": kc.get("observed_signal_kills"),
+        "rationale": _truncate(str(kc.get("rationale") or ""), 200),
+    }
+
+
+def present_rubric(rubric: dict[str, Any]) -> dict[str, Any]:
+    """The published MoonshotRubric (snapshot payload['moonshot_rubric']) -> the front-end MoonshotRubric:
+    the pre-registered "whole shabang" — thesis + moonshot-gate verdict, targets with 3-state docking
+    verification, compounds with SMILES-resolution status, the ordered per-lane test plan (each with its
+    pre-registered kill criterion, standing, maturity, and the MD schedule for the md lane), the honest
+    inputs readiness rollup, confounds to audit, the cross-species replication test, and the never-auto
+    promotion bar. Pure projection — answers "this capsule is not just a question; here is exactly what
+    the moonshot must show and how it will be tested." Defensive over a plain dict (degrades gracefully)."""
+    r = rubric or {}
+    gate = r.get("moonshot_gate") or {}
+
+    targets = [
+        {
+            "target": t.get("target"),
+            "role": t.get("role"),
+            "verification": t.get("verification"),  # verified | unverified | absent (the docking spend gate)
+            "uniprot": t.get("uniprot"),
+            "pdb_id": t.get("pdb_id"),
+            "chain": t.get("chain"),
+            "redock_rmsd": t.get("redock_rmsd"),
+            "cocrystal_ligand_code": t.get("cocrystal_ligand_code"),
+        }
+        for t in (r.get("targets_needed") or [])
+    ]
+    compounds = [
+        {
+            "name": c.get("name"),
+            "role": c.get("role"),
+            "smiles": c.get("smiles"),
+            "readiness": c.get("readiness"),  # resolved | needs_verification | missing (NEVER fabricated)
+            "resolution_source": c.get("resolution_source"),
+            "intended_targets": list(c.get("intended_targets") or []),
+        }
+        for c in (r.get("compounds_needed") or [])
+    ]
+
+    def _lane_test(t: dict[str, Any]) -> dict[str, Any]:
+        ins = t.get("inputs") or {}
+        md = ins.get("md_schedule")
+        interp = t.get("interpretation") or {}
+        return {
+            "order": t.get("order"),
+            "lane": t.get("lane"),
+            "objective": _truncate(str(t.get("test_objective") or ""), 220),
+            "standing": t.get("standing"),  # untested | queued | supports_unaudited | refuted | controlled
+            "maturity": t.get("maturity"),  # smoke (<=1000 MD steps) | production
+            "inputs_ready": bool(t.get("inputs_ready")),
+            "is_proposed": bool(t.get("is_proposed")),  # the genuine NEXT test to run
+            "autonomously_runnable": bool(t.get("autonomously_runnable")),
+            "est_cost_usd": t.get("est_cost_usd"),
+            "value_of_information": t.get("value_of_information"),
+            "kill_criterion": _present_kill_criterion(t.get("kill_criterion")),
+            "expected_signal_if_alive": t.get("expected_signal_if_alive"),
+            "addresses_confound": (t.get("addresses_confound") or {}).get("kind") if t.get("addresses_confound") else None,
+            # reasoning spine: what this lane PROBES + why it bears on the thesis + the pre-committed reading
+            "probes": list(t.get("probes") or []),
+            "why_it_bears": _truncate(str(t.get("why_it_bears") or ""), 360),
+            "interpretation": {
+                "supports": _truncate(str(interp.get("supports") or ""), 360),
+                "refutes": _truncate(str(interp.get("refutes") or ""), 360),
+                "neutral": _truncate(str(interp.get("neutral") or ""), 360),
+            },
+            "inputs": {
+                "readiness": ins.get("readiness"),
+                "resolution_source": ins.get("resolution_source"),
+                "required_keys": list(ins.get("required_keys") or []),
+                "missing": list(ins.get("missing") or []),
+                "md_schedule": (
+                    {
+                        "simulation_steps": md.get("simulation_steps"),
+                        "temperature": md.get("temperature"),
+                        "ph": md.get("ph"),
+                        "force_field": md.get("force_field"),
+                        "solvent_model": md.get("solvent_model"),
+                        "equilibration": _truncate(str(md.get("equilibration") or ""), 400),
+                        "preparation_method": _truncate(str(md.get("preparation_method") or ""), 400),
+                    }
+                    if isinstance(md, dict)
+                    else None
+                ),
+            },
+        }
+
+    rollup = r.get("inputs_rollup") or {}
+    confounds = r.get("confounds") or {}
+    cross = r.get("cross_species") or {}
+    promo = r.get("promotion") or {}
+
+    def _flags(items: Any) -> list[dict[str, Any]]:
+        return [{"kind": f.get("kind"), "status": f.get("status"), "control_lane": f.get("control_lane")}
+                for f in (items or [])]
+
+    premises = [
+        {
+            "claim": _truncate(str(p.get("claim") or ""), 300),
+            "basis": _truncate(str(p.get("basis") or ""), 400),
+            "supports_quality": _truncate(str(p.get("supports_quality") or ""), 220),
+            "strength": p.get("strength", "unknown"),
+            "is_specified": bool(p.get("is_specified")),
+        }
+        for p in (r.get("premises") or [])
+    ]
+    inference_chain = [
+        {
+            "step": link.get("step"),
+            "from_lanes": list(link.get("from_lanes") or []),
+            "infers": _truncate(str(link.get("infers") or ""), 360),
+            "if_broken": _truncate(str(link.get("if_broken") or ""), 360),
+        }
+        for link in (r.get("inference_chain") or [])
+    ]
+    payoff = r.get("expected_payoff") or {}
+
+    return {
+        "rubric_version": r.get("rubric_version", "moonshot-rubric-v1"),
+        "candidate_id": r.get("candidate_id"),
+        "title": r.get("title"),
+        "thesis": _truncate(str(r.get("thesis") or ""), 600),
+        # reasoning spine: premise ("because of A") → inference chain → expected payoff
+        "mechanistic_premise": _truncate(str(r.get("mechanistic_premise") or ""), 600),
+        "premises": premises,
+        "inference_chain": inference_chain,
+        "expected_payoff": {
+            "if_survives": _truncate(str(payoff.get("if_survives") or ""), 400),
+            "translational_claim": _truncate(str(payoff.get("translational_claim") or ""), 300),
+            "next_step": _truncate(str(payoff.get("next_step") or ""), 240),
+            "value_of_information": payoff.get("value_of_information"),
+            "is_specified": bool(payoff.get("is_specified")),
+            "caveat": _truncate(str(payoff.get("caveat") or ""), 240),
+        },
+        "moonshot_grade": bool(r.get("moonshot_grade")),
+        "moonshot_score": r.get("moonshot_score"),
+        "moonshot_gate": {
+            "passed": bool(gate.get("passed")),
+            "weighted_score": gate.get("weighted_score"),
+            "reasons": list(gate.get("reasons") or [])[:8],
+            "blockers": list(gate.get("blockers") or []),
+        },
+        "net_signal": r.get("net_signal", "none"),
+        "net_confidence": r.get("net_confidence", 0.0),
+        "signalful_capsule_count": r.get("signalful_capsule_count", 0),
+        "has_falsifiable_plan": bool(r.get("has_falsifiable_plan")),
+        "ready_to_run": bool(r.get("ready_to_run")),
+        "runnable_lanes": list(r.get("runnable_lanes") or []),
+        "targets_needed": targets,
+        "compounds_needed": compounds,
+        "test_plan": [_lane_test(t) for t in (r.get("test_plan") or [])],
+        "inputs_rollup": {
+            "resolved_lanes": list(rollup.get("resolved_lanes") or []),
+            "needs_verification_lanes": list(rollup.get("needs_verification_lanes") or []),
+            "missing_lanes": list(rollup.get("missing_lanes") or []),
+            "ready_to_run_lanes": list(rollup.get("ready_to_run_lanes") or []),
+            "blockers": list(rollup.get("blockers") or [])[:20],
+        },
+        "confounds": {
+            "open": _flags(confounds.get("open_confounds")),
+            "controlled": _flags(confounds.get("controlled_confounds")),
+            "audit_policy": _truncate(str(confounds.get("audit_policy") or ""), 400),
+        },
+        "cross_species": {
+            "species": list(cross.get("species") or []),
+            "disease_context": cross.get("disease_context"),
+            "replication_axis": _truncate(str(cross.get("replication_axis") or ""), 400),
+            "replication_lane": cross.get("replication_lane"),
+            "orthogonal_cohort_required": bool(cross.get("orthogonal_cohort_required")),
+            "kill_criterion": _present_kill_criterion(cross.get("kill_criterion")),
+            "evidence_to_date": list(cross.get("evidence_to_date") or []),
+        },
+        "promotion": {
+            "auto_promotable": False,  # typed invariant — never auto-promoted
+            "required_surviving_lanes": list(promo.get("required_surviving_lanes") or []),
+            "required_confounds_controlled": list(promo.get("required_confounds_controlled") or []),
+            "cross_species_replication_required": bool(promo.get("cross_species_replication_required", True)),
+            "min_signalful_capsules": promo.get("min_signalful_capsules", 2),
+            "statement": _truncate(str(promo.get("statement") or ""), 600),
+        },
+        "evidence_anchors": list(r.get("evidence_anchors") or []),
+        "risks": list(r.get("risks") or []),
+        "assembly_notes": list(r.get("assembly_notes") or []),
+    }
+
+
 def present_manifest(rec: RunManifestRecord) -> dict[str, Any]:
     """RunManifestRecord -> the front-end RunManifest (campaign report). rollup/rows live in
     output_refs verbatim and already match the display shape; we surface title + ran_at + runner."""

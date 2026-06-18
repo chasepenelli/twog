@@ -4,8 +4,8 @@
  * API-CLIENT owns lib/api/*.
  */
 
-import type { Candidate } from "@/lib/types/domain";
-import { MOCK_CANDIDATES } from "@/lib/mocks/fixtures";
+import type { Candidate, MoonshotRubric } from "@/lib/types/domain";
+import { MOCK_CANDIDATES, MOCK_RUBRICS } from "@/lib/mocks/fixtures";
 import { ApiError, USE_MOCKS, mock, request } from "./config";
 
 /** List all candidates (mix of validation_ready). */
@@ -25,4 +25,22 @@ export async function get(
     return mock(found);
   }
   return request<Candidate>(`/public/candidates/${candidate_id}`, { signal });
+}
+
+/**
+ * The pre-registered MoonshotRubric for a candidate — the "whole shabang" of what the moonshot must
+ * show and how it will be tested. Returns null when the candidate carries no rubric (e.g. a
+ * non-moonshot-grade candidate), so callers can simply skip the section rather than error.
+ */
+export async function rubric(
+  candidate_id: string,
+  signal?: AbortSignal,
+): Promise<MoonshotRubric | null> {
+  if (USE_MOCKS) return mock(MOCK_RUBRICS[candidate_id] ?? null);
+  try {
+    return await request<MoonshotRubric>(`/public/candidates/${candidate_id}/rubric`, { signal });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
 }

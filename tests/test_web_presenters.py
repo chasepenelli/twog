@@ -97,6 +97,136 @@ def test_present_candidate_maps_public_fields():
     assert out["targets"] == ["PIK3CA"]
 
 
+def _rubric_dict(**over):
+    """A minimal-but-valid MoonshotRubric content_payload() shape (what rides snapshot.payload)."""
+    base = {
+        "rubric_version": "moonshot-rubric-v1",
+        "candidate_id": "alpelisib-pik3ca",
+        "title": "Alpelisib × PIK3CA",
+        "thesis": "Alpelisib engages PI3Ka across the canine-HSA × human-AS axis.",
+        "moonshot_gate": {"passed": True, "weighted_score": 0.9, "reasons": ["evidence_anchor_present"], "blockers": []},
+        "moonshot_grade": True,
+        "moonshot_score": 0.9,
+        "mechanistic_premise": "alpelisib is hypothesized to engage PIK3CA; mutation-selective PI3Kα inhibition.",
+        "premises": [
+            {"claim": "alpelisib is hypothesized to engage PIK3CA", "basis": "cross-species precision strategy",
+             "supports_quality": "mutation-selective inhibition", "strength": "medium", "is_specified": True},
+        ],
+        "inference_chain": [
+            {"step": 1, "from_lanes": ["docking"], "infers": "If docking survives, treat the mechanism as live and proceed to omics.",
+             "if_broken": "A refuting docking readout (gnina_cnn_affinity < 4.0) breaks the chain at step 1."},
+            {"step": 2, "from_lanes": ["omics"], "infers": "If omics survives, the claim has survived_known_confounds.",
+             "if_broken": "A refuting cross-species axis breaks the chain at step 2."},
+        ],
+        "expected_payoff": {
+            "if_survives": "If all lanes survive, the PIK3CA-mutant subset becomes a treatment candidate to advance.",
+            "translational_claim": "a mutation-selective treatment candidate to advance",
+            "next_step": "confirm the axis in an orthogonal cohort", "value_of_information": 0.65,
+            "is_specified": True, "caveat": "survived_known_confounds, never proven; the operator write-gate is terminal.",
+        },
+        "net_signal": "supports",
+        "net_confidence": 0.42,
+        "signalful_capsule_count": 1,
+        "has_falsifiable_plan": True,
+        "ready_to_run": False,
+        "runnable_lanes": ["docking", "omics"],
+        "targets_needed": [
+            {"target": "PIK3CA", "role": "primary", "verification": "verified", "uniprot": "P42336",
+             "pdb_id": "4JPS", "chain": "A", "redock_rmsd": 1.8, "cocrystal_ligand_code": "1E8"},
+        ],
+        "compounds_needed": [
+            {"name": "alpelisib", "role": "lead", "smiles": "CC1=...", "readiness": "resolved",
+             "resolution_source": "pubchem", "intended_targets": ["PIK3CA"]},
+        ],
+        "test_plan": [
+            {"order": 1, "lane": "docking", "validation_type": "docking", "test_objective": "Dock alpelisib vs PIK3CA.",
+             "kill_criterion": {"metric": "gnina_cnn_affinity", "comparator": "<", "threshold": 4.0,
+                                "observed_signal_kills": "refutes", "rationale": "No measurable engagement refutes."},
+             "expected_signal_if_alive": "supports", "addresses_confound": None, "est_cost_usd": 0.1,
+             "value_of_information": 0.8, "inputs_ready": True, "is_proposed": True, "autonomously_runnable": True,
+             "maturity": "production", "standing": "queued",
+             "probes": ["Can the modeled pose let alpelisib occupy the site at PIK3CA (PDB 4JPS)?"],
+             "why_it_bears": "This lane interrogates mutation-selective PI3Kα inhibition — the docking precondition.",
+             "interpretation": {"supports": "Consistent with engagement; remains unaudited — never accepted as proof.",
+                                "refutes": "Observed gnina_cnn_affinity < 4.0 -> refutes target-mediated action.",
+                                "neutral": "Inconclusive; belief unmoved."},
+             "inputs": {"lane": "docking", "config_key": "docking", "readiness": "resolved",
+                        "resolution_source": "curated_library", "required_keys": ["receptor_pdb", "ligand_smiles"],
+                        "present_keys": ["receptor_pdb", "ligand_smiles"], "missing": [], "md_schedule": None}},
+            {"order": 2, "lane": "md", "validation_type": "md", "test_objective": "MD smoke for pose stability.",
+             "kill_criterion": {"metric": "ligand_pocket_rmsd_nm", "comparator": ">", "threshold": 0.5,
+                                "observed_signal_kills": "refutes", "rationale": "Drift refutes a stable binder."},
+             "expected_signal_if_alive": "supports", "addresses_confound": None, "est_cost_usd": 0.2,
+             "value_of_information": 0.5, "inputs_ready": False, "is_proposed": False, "autonomously_runnable": True,
+             "maturity": "smoke", "standing": "untested",
+             "inputs": {"lane": "md", "config_key": "compute_input", "readiness": "missing", "resolution_source": "",
+                        "required_keys": ["protein_pdb", "compound_smiles"], "present_keys": [], "missing": ["protein_pdb"],
+                        "md_schedule": {"simulation_steps": 1000, "temperature": 300.0, "ph": 7.4,
+                                        "force_field": "amber14", "solvent_model": "tip3p",
+                                        "equilibration": "minimize -> NVT -> NPT", "preparation_method": "apo + pose"}}},
+        ],
+        "inputs_rollup": {"resolved_lanes": ["docking"], "needs_verification_lanes": [], "missing_lanes": ["md"],
+                          "ready_to_run_lanes": ["docking"], "per_lane_missing": {"md": ["protein_pdb"]},
+                          "blockers": ["md: protein_pdb"]},
+        "confounds": {"open_confounds": [{"kind": "tumor_purity", "status": "open", "control_lane": "omics"}],
+                      "controlled_confounds": [], "audit_policy": "No supports until controls survive."},
+        "cross_species": {"species": ["canine", "human"], "disease_context": "canine HSA × human AS",
+                          "replication_axis": "PI3Ka activation axis", "replication_lane": "omics",
+                          "orthogonal_cohort_required": True, "kill_criterion": None, "evidence_to_date": []},
+        "promotion": {"auto_promotable": False, "required_surviving_lanes": ["docking", "md"],
+                      "required_confounds_controlled": ["tumor_purity"], "cross_species_replication_required": True,
+                      "min_signalful_capsules": 2, "statement": "Promote only if every lane survives. Never auto."},
+        "evidence_anchors": ["PMID:1", "PMID:2"],
+        "risks": ["alpelisib hyperglycemia in dogs"],
+        "assembly_notes": [],
+    }
+    base.update(over)
+    return base
+
+
+def test_present_rubric_projects_whole_shabang():
+    out = present.present_rubric(_rubric_dict())
+    assert out["title"] == "Alpelisib × PIK3CA"
+    assert out["moonshot_grade"] is True and out["has_falsifiable_plan"] is True
+    # targets carry the 3-state docking verification (the spend gate)
+    assert out["targets_needed"][0]["verification"] == "verified"
+    assert out["targets_needed"][0]["pdb_id"] == "4JPS"
+    # compounds carry SMILES-resolution status, never fabricated
+    assert out["compounds_needed"][0]["readiness"] == "resolved"
+    # ordered test plan with flattened kill criteria + standings
+    tp = out["test_plan"]
+    assert [t["order"] for t in tp] == [1, 2]
+    assert tp[0]["kill_criterion"]["metric"] == "gnina_cnn_affinity"
+    assert tp[0]["kill_criterion"]["kills_on"] == "refutes"
+    assert tp[0]["standing"] == "queued" and tp[0]["is_proposed"] is True
+    # the md lane carries its pre-registered MD SCHEDULE + smoke maturity flag
+    md = tp[1]
+    assert md["maturity"] == "smoke"
+    assert md["inputs"]["md_schedule"]["simulation_steps"] == 1000
+    # promotion is NEVER auto-satisfiable (typed invariant)
+    assert out["promotion"]["auto_promotable"] is False
+    # confounds + cross-species + rollup all surface
+    assert out["confounds"]["open"][0]["kind"] == "tumor_purity"
+    assert out["cross_species"]["replication_lane"] == "omics"
+    assert out["inputs_rollup"]["ready_to_run_lanes"] == ["docking"]
+    # reasoning spine: premise → per-test probes/interpretation → inference chain → payoff
+    assert out["premises"][0]["is_specified"] is True and out["premises"][0]["strength"] == "medium"
+    assert "alpelisib" in out["mechanistic_premise"]
+    assert tp[0]["probes"] and "PIK3CA" in tp[0]["probes"][0]
+    assert tp[0]["why_it_bears"] and "gnina_cnn_affinity" in tp[0]["interpretation"]["refutes"]
+    assert [link["step"] for link in out["inference_chain"]] == [1, 2]
+    assert all(link["if_broken"] for link in out["inference_chain"])  # falsification-first
+    assert out["expected_payoff"]["is_specified"] is True
+    assert "never proven" in out["expected_payoff"]["caveat"]
+
+
+def test_present_rubric_degrades_on_empty_dict():
+    out = present.present_rubric({})
+    assert out["promotion"]["auto_promotable"] is False  # invariant holds even with no data
+    assert out["test_plan"] == [] and out["targets_needed"] == []
+    assert out["moonshot_grade"] is False and out["has_falsifiable_plan"] is False
+
+
 def test_present_engine_state_counts_signals_from_capsules():
     caps = [
         _capsule(payload={"signal": "supports"}),

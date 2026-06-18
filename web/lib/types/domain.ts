@@ -187,6 +187,184 @@ export interface ProofCapsule {
 }
 
 // ---------------------------------------------------------------------------
+// Moonshot rubric — the pre-registered "whole shabang" behind a candidate
+// ---------------------------------------------------------------------------
+
+/** A pre-registered kill criterion (the anti-p-hacking threshold), flattened for display. */
+export interface RubricKillCriterion {
+  metric: string;
+  comparator: string;
+  threshold: string | number;
+  /** The signal that KILLS the hypothesis if observed (usually "refutes"). */
+  kills_on: string;
+  rationale: string;
+}
+
+/** A protein the moonshot needs, with its 3-state docking-verification status (the spend gate). */
+export interface RubricTarget {
+  target: string;
+  role: string;
+  /** verified = in redock-passed library; unverified = in library, not passed; absent = not curated. */
+  verification: "verified" | "unverified" | "absent";
+  uniprot?: string | null;
+  pdb_id?: string | null;
+  chain?: string | null;
+  redock_rmsd?: number | null;
+  cocrystal_ligand_code?: string | null;
+}
+
+/** A ligand the moonshot needs, with SMILES-resolution status (NEVER fabricated). */
+export interface RubricCompound {
+  name: string;
+  role: string;
+  smiles?: string | null;
+  readiness: "resolved" | "needs_verification" | "missing";
+  resolution_source: string;
+  intended_targets: string[];
+}
+
+/** The MD protocol the moonshot pre-registers (present even when inputs are unresolved). */
+export interface RubricMDSchedule {
+  simulation_steps: number;
+  temperature: number;
+  ph?: number | null;
+  force_field?: string | null;
+  solvent_model?: string | null;
+  equilibration: string;
+  preparation_method: string;
+}
+
+/** Pre-committed reading of every outcome of a lane test (anti-HARKing); vocabulary supports/refutes/neutral. */
+export interface RubricInterpretation {
+  supports: string;
+  refutes: string;
+  neutral: string;
+}
+
+/** One ordered step in the test plan: a lane + its pre-registered kill criterion + standing + the grounded
+ *  reasoning that makes it a STEP IN AN ARGUMENT (what it probes, why it bears, what each outcome means). */
+export interface RubricLaneTest {
+  order: number;
+  lane: string;
+  objective: string;
+  standing: "untested" | "queued" | "supports_unaudited" | "refuted" | "controlled";
+  maturity: "smoke" | "production";
+  inputs_ready: boolean;
+  is_proposed: boolean;
+  autonomously_runnable: boolean;
+  est_cost_usd?: number;
+  value_of_information?: number;
+  kill_criterion: RubricKillCriterion | null;
+  expected_signal_if_alive: string;
+  /** The confound kind this test audits, if any. */
+  addresses_confound?: string | null;
+  /** The specific qualities of the target/mechanism this lane interrogates. */
+  probes: string[];
+  /** Why this lane bears on the thesis — restates the lane's own kill-criterion rationale. */
+  why_it_bears?: string;
+  interpretation: RubricInterpretation;
+  inputs: {
+    readiness: "resolved" | "needs_verification" | "missing";
+    resolution_source?: string;
+    required_keys: string[];
+    missing: string[];
+    md_schedule: RubricMDSchedule | null;
+  };
+}
+
+/** The grounded "because of A" the moonshot rests on. is_specified=false when the thesis states none. */
+export interface RubricPremise {
+  claim: string;
+  basis: string;
+  supports_quality?: string;
+  /** The idea's stated evidence tier, VERBATIM — never upgraded (the verdict ceiling). */
+  strength: "high" | "medium" | "low" | "unknown";
+  is_specified: boolean;
+}
+
+/** One link in the falsification-first inference chain (conjunctive-survival / single-refutation-kills). */
+export interface RubricInferenceLink {
+  step: number;
+  from_lanes: string[];
+  infers: string;
+  /** The refutation (the lane's real kill criterion) that breaks the chain HERE. */
+  if_broken: string;
+}
+
+/** The conclusion the program is trying to EARN — capped at survived_known_confounds. */
+export interface RubricExpectedPayoff {
+  if_survives: string;
+  translational_claim: string;
+  next_step: string;
+  value_of_information?: number | null;
+  is_specified: boolean;
+  /** Fixed ceiling string: "survived_known_confounds, never proven; …". */
+  caveat: string;
+}
+
+export interface RubricConfoundFlag {
+  kind: string;
+  status: "open" | "controlled" | "unauditable";
+  control_lane?: string | null;
+}
+
+/** The pre-registered "whole shabang": what a moonshot must show and exactly how it will be tested. */
+export interface MoonshotRubric {
+  rubric_version: string;
+  candidate_id: string;
+  title: string;
+  thesis: string;
+  /** Reasoning spine: the grounded "because of A" premise the argument opens on. */
+  mechanistic_premise: string;
+  premises: RubricPremise[];
+  /** The line of reasoning: if X survives, proceed to Y… (single refutation kills it). */
+  inference_chain: RubricInferenceLink[];
+  /** What it would mean if the whole chain survives — capped at survived_known_confounds. */
+  expected_payoff: RubricExpectedPayoff;
+  moonshot_grade: boolean;
+  moonshot_score?: number;
+  moonshot_gate: { passed: boolean; weighted_score?: number; reasons: string[]; blockers: string[] };
+  net_signal: "supports" | "refutes" | "neutral" | "none";
+  net_confidence: number;
+  signalful_capsule_count: number;
+  has_falsifiable_plan: boolean;
+  ready_to_run: boolean;
+  runnable_lanes: string[];
+  targets_needed: RubricTarget[];
+  compounds_needed: RubricCompound[];
+  test_plan: RubricLaneTest[];
+  inputs_rollup: {
+    resolved_lanes: string[];
+    needs_verification_lanes: string[];
+    missing_lanes: string[];
+    ready_to_run_lanes: string[];
+    blockers: string[];
+  };
+  confounds: { open: RubricConfoundFlag[]; controlled: RubricConfoundFlag[]; audit_policy: string };
+  cross_species: {
+    species: string[];
+    disease_context?: string;
+    replication_axis: string;
+    replication_lane?: string | null;
+    orthogonal_cohort_required: boolean;
+    kill_criterion: RubricKillCriterion | null;
+    evidence_to_date: string[];
+  };
+  promotion: {
+    /** Typed invariant — NEVER auto-promoted. */
+    auto_promotable: false;
+    required_surviving_lanes: string[];
+    required_confounds_controlled: string[];
+    cross_species_replication_required: boolean;
+    min_signalful_capsules: number;
+    statement: string;
+  };
+  evidence_anchors: string[];
+  risks: string[];
+  assembly_notes: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Verified-target catalog
 // ---------------------------------------------------------------------------
 

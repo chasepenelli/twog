@@ -119,6 +119,15 @@ def dispatch(
                 if rec is None:
                     raise ApiError(404, "candidate not found")
                 return 200, _present.present_candidate(rec)
+            if len(pub) == 3 and pub[0] == "candidates" and pub[2] == "rubric":
+                rec = service.get_public_candidate(pub[1])
+                if rec is None:
+                    raise ApiError(404, "candidate not found")
+                rubric = service.get_public_candidate_rubric(pub[1])
+                if rubric is None:
+                    # candidate exists but carries no moonshot rubric (e.g. published non-moonshot-grade)
+                    raise ApiError(404, "no moonshot rubric for this candidate")
+                return 200, _present.present_rubric(rubric)
             raise ApiError(404, f"no public route for /{'/'.join(seg)}")
 
         # ---- identity --------------------------------------------------------------------------

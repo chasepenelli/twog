@@ -16,6 +16,7 @@
 import type {
   Candidate,
   Collaborator,
+  MoonshotRubric,
   ProofCapsule,
   RunManifest,
   SandboxBundle,
@@ -123,6 +124,165 @@ export const MOCK_CANDIDATES: Candidate[] = [
     targets: ["BRAF"],
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Moonshot rubrics — the pre-registered "whole shabang" per candidate, keyed by
+// candidate_id. A capsule detail page shows its candidate's rubric, so the reader
+// sees the full falsification program a capsule is one receipt from.
+// ---------------------------------------------------------------------------
+
+export const MOCK_RUBRICS: Record<string, MoonshotRubric> = {
+  cand_pik3ca_immunosuppr: {
+    rubric_version: "moonshot-rubric-v1",
+    candidate_id: "cand_pik3ca_immunosuppr",
+    title: "PIK3CA activation drives tumor-microenvironment immunosuppression",
+    thesis:
+      "Alpelisib engages mutant PI3Kα across the canine-HSA × human-AS axis; the PIK3CA-mutant subset is " +
+      "immunosuppressed and should respond to mutation-selective inhibition.",
+    mechanistic_premise:
+      "alpelisib is hypothesized to engage PIK3CA; mutation-selective PI3Kα inhibition is the load-bearing assumption.",
+    premises: [
+      {
+        claim: "alpelisib is hypothesized to engage PIK3CA",
+        basis: "Mutation-selective PI3Kα inhibition; cross-species precision strategy (canine HSA × human AS).",
+        supports_quality: "mutation-selective inhibition at the PIK3CA pocket",
+        strength: "medium",
+        is_specified: true,
+      },
+    ],
+    inference_chain: [
+      {
+        step: 1, from_lanes: ["docking"],
+        infers: "If docking survives (engagement at PIK3CA/4JPS), treat mutation-selective inhibition as live and proceed to omics.",
+        if_broken: "A refuting docking readout (gnina_cnn_affinity < 4.0) breaks the chain at step 1; the leading claim dies — any single refutation is sufficient.",
+      },
+      {
+        step: 2, from_lanes: ["omics"],
+        infers: "If the cross-species axis replicates, every pre-registered necessary condition has survived its kill criterion -> the claim has survived_known_confounds.",
+        if_broken: "A refuting cross-species axis (cross_species_axis_direction signal_is refutes) breaks the chain at step 2; engagement without replication is not the thesis.",
+      },
+      {
+        step: 3, from_lanes: ["md"],
+        infers: "If MD survives, the docked pose is stable rather than a single-pose artifact.",
+        if_broken: "A refuting MD readout (ligand_pocket_rmsd_nm > 0.5) breaks the chain at step 3.",
+      },
+    ],
+    expected_payoff: {
+      if_survives:
+        "If all lanes survive their pre-registered kill criteria and the open confounds (tumor_purity) are controlled, the PIK3CA-mutant canine-HSA × human-AS subset becomes a mutation-selective treatment candidate worth advancing.",
+      translational_claim: "a mutation-selective treatment candidate worth advancing",
+      next_step: "Confirm the cross-species axis in an orthogonal mutant-vs-WT cohort.",
+      value_of_information: 0.73,
+      is_specified: true,
+      caveat: "survived_known_confounds, never proven; the operator write-gate is terminal.",
+    },
+    moonshot_grade: true,
+    moonshot_score: 0.9,
+    moonshot_gate: {
+      passed: true,
+      weighted_score: 0.9,
+      reasons: ["frontier_weighted_score>=0.80", "evidence_anchor_present", "mechanism_targets_and_therapy_defined"],
+      blockers: [],
+    },
+    net_signal: "supports",
+    net_confidence: 0.38,
+    signalful_capsule_count: 1,
+    has_falsifiable_plan: true,
+    ready_to_run: true,
+    runnable_lanes: ["docking", "md", "omics"],
+    targets_needed: [
+      { target: "PIK3CA", role: "primary", verification: "verified", uniprot: "P42336", pdb_id: "4JPS", chain: "A", redock_rmsd: 1.8, cocrystal_ligand_code: "1E8" },
+    ],
+    compounds_needed: [
+      { name: "alpelisib", role: "lead", smiles: "CC(C)(C(=O)NC1=CN=C(C=C1)C(F)(F)F)N", readiness: "resolved", resolution_source: "pubchem", intended_targets: ["PIK3CA"] },
+    ],
+    test_plan: [
+      {
+        order: 1, lane: "docking", objective: "Dock alpelisib against the verified PIK3CA pocket to test engagement.",
+        standing: "supports_unaudited", maturity: "production", inputs_ready: true, is_proposed: false,
+        autonomously_runnable: true, est_cost_usd: 0.1, value_of_information: 0.8,
+        kill_criterion: { metric: "gnina_cnn_affinity", comparator: "<", threshold: 4.0, kills_on: "refutes", rationale: "No measurable engagement refutes target-mediated action." },
+        expected_signal_if_alive: "supports", addresses_confound: null,
+        probes: ["Can the modeled pose let alpelisib occupy the site at PIK3CA (PDB 4JPS) that mutation-selective PI3Kα inhibition requires?"],
+        why_it_bears: "This lane interrogates mutation-selective PI3Kα inhibition — the docking precondition the thesis depends on. No measurable engagement refutes target-mediated action.",
+        interpretation: {
+          supports: "Consistent with mutation-selective PI3Kα inhibition; the mechanism stays live but remains unaudited — never accepted as proof.",
+          refutes: "Observed gnina_cnn_affinity < 4.0 -> no measurable engagement refutes target-mediated action. The target-mediated story for alpelisib collapses here.",
+          neutral: "Inconclusive; belief unmoved — the lane does not license the next inference link.",
+        },
+        inputs: { readiness: "resolved", resolution_source: "curated_library", required_keys: ["receptor_pdb", "ligand_smiles"], missing: [], md_schedule: null },
+      },
+      {
+        order: 2, lane: "omics", objective: "Audit the tumor-purity confound before trusting the supporting omics signal.",
+        standing: "queued", maturity: "production", inputs_ready: true, is_proposed: true,
+        autonomously_runnable: true, est_cost_usd: 0.02, value_of_information: 0.9,
+        kill_criterion: { metric: "cross_species_axis_direction", comparator: "signal_is", threshold: "refutes", kills_on: "refutes", rationale: "A refuting cross-species axis kills the translational claim." },
+        expected_signal_if_alive: "supports", addresses_confound: "tumor_purity",
+        probes: ["Does the PIK3CA mutation axis move in the SAME direction across canine HSA × human AS?"],
+        why_it_bears: "This lane interrogates the cross-species replication the whole moonshot rests on — and is where the tumor_purity confound lives. A refuting axis kills the translational claim.",
+        interpretation: {
+          supports: "Consistent with the cross-species axis; remains unaudited (tumor_purity not yet controlled) — never accepted as proof.",
+          refutes: "Observed cross_species_axis_direction signal_is refutes -> a refuting axis kills the translational claim, even if every binding lane survived.",
+          neutral: "Inconclusive (neutral); the axis is not established — belief unmoved.",
+        },
+        inputs: { readiness: "resolved", resolution_source: "candidate.metadata", required_keys: ["expression", "strata"], missing: [], md_schedule: null },
+      },
+      {
+        order: 3, lane: "md", objective: "MD smoke to probe binding-pose stability of the docked complex.",
+        standing: "untested", maturity: "smoke", inputs_ready: false, is_proposed: false,
+        autonomously_runnable: true, est_cost_usd: 0.25, value_of_information: 0.5,
+        kill_criterion: { metric: "ligand_pocket_rmsd_nm", comparator: ">", threshold: 0.5, kills_on: "refutes", rationale: "If the ligand drifts out of the pocket under MD, it is not a stable binder." },
+        expected_signal_if_alive: "supports", addresses_confound: null,
+        probes: ["Does the docked alpelisib-PIK3CA pose stay seated under dynamics (ligand_pocket_rmsd_nm <= 0.5) — stable engagement vs a single-pose artifact?"],
+        why_it_bears: "This lane interrogates whether engagement is stable rather than a single-pose docking artifact. If the ligand drifts out of the pocket under MD, it is not a stable binder.",
+        interpretation: {
+          supports: "Pose did not drift within the <=1000-step smoke window; this is NOT binding-pose-stability evidence and cannot be read as engagement confirmation.",
+          refutes: "Observed ligand_pocket_rmsd_nm > 0.5 -> the ligand drifts out of the pocket; it is not a stable binder. The target-mediated story for alpelisib collapses here.",
+          neutral: "Inconclusive; belief unmoved — the lane does not license the next inference link.",
+        },
+        inputs: {
+          readiness: "missing", resolution_source: "", required_keys: ["protein_pdb", "compound_smiles"], missing: ["protein_pdb"],
+          md_schedule: {
+            simulation_steps: 1000, temperature: 300.0, ph: 7.4, force_field: "protein=amber14; ligand=worker_default_openff_or_gaff",
+            solvent_model: "tip3p",
+            equilibration: "minimize -> NVT 100ps @300K (heavy-atom restrained) -> NPT 100ps (1 bar, restraints released) -> production sampling.",
+            preparation_method: "Apo receptor = the verified structure's chain (waters/ions/HETATM stripped); ligand placed by the docking lane's top pose; protonation at pH 7.4.",
+          },
+        },
+      },
+    ],
+    inputs_rollup: {
+      resolved_lanes: ["docking", "omics"], needs_verification_lanes: [], missing_lanes: ["md"],
+      ready_to_run_lanes: ["docking", "omics"], blockers: ["md: protein_pdb"],
+    },
+    confounds: {
+      open: [{ kind: "tumor_purity", status: "open", control_lane: "omics" }],
+      controlled: [],
+      audit_policy: "No `supports` signal may be accepted until every open confound has a surviving control. The best attainable verdict is 'survived_known_confounds', never 'true'.",
+    },
+    cross_species: {
+      species: ["canine", "human"], disease_context: "canine hemangiosarcoma and human angiosarcoma",
+      replication_axis: "PIK3CA-mutant immunosuppression axis, replicated canine HSA → human AS",
+      replication_lane: "omics", orthogonal_cohort_required: true,
+      kill_criterion: { metric: "cross_species_axis_direction", comparator: "signal_is", threshold: "refutes", kills_on: "refutes", rationale: "A refuting cross-species expression axis kills the translational claim." },
+      evidence_to_date: ["GSE95183 canine cohort AUC trend"],
+    },
+    promotion: {
+      auto_promotable: false,
+      required_surviving_lanes: ["docking", "md", "omics"],
+      required_confounds_controlled: ["tumor_purity"],
+      cross_species_replication_required: true,
+      min_signalful_capsules: 2,
+      statement:
+        "Promote only if every test-plan lane survives its pre-registered kill criterion, all open confounds " +
+        "are controlled, the cross-species axis replicates in an orthogonal cohort, and an operator accepts the " +
+        "resulting capsules. Never auto-promoted.",
+    },
+    evidence_anchors: ["cap_pik3ca_supports", "doc_megquier_cohort"],
+    risks: ["alpelisib hyperglycemia in dogs", "sparse canine PIK3CA-mutant cohorts"],
+    assembly_notes: [],
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Proof capsules (carry confound + provenance verdicts)

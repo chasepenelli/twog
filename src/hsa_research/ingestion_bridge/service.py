@@ -1460,6 +1460,21 @@ class HSAResearchService:
     def get_public_candidate(self, candidate_id: str) -> PublicCandidateRecord | None:
         return self.repository.get_public_candidate(candidate_id)
 
+    def get_public_candidate_rubric(self, candidate_id: str) -> dict[str, Any] | None:
+        """The pre-registered MoonshotRubric folded into this candidate's LATEST published snapshot
+        (payload['moonshot_rubric']). This is the published, content-hashed pre-registration — read it
+        from the snapshot rather than re-deriving, so the public surface shows exactly what was committed.
+        Returns None if the candidate / its snapshot / the rubric is absent (e.g. a non-moonshot candidate
+        published with require_moonshot_grade=False)."""
+        candidate = self.repository.get_public_candidate(candidate_id)
+        if candidate is None or candidate.latest_snapshot_id is None:
+            return None
+        snapshot = self.repository.get_public_candidate_snapshot(candidate.latest_snapshot_id)
+        if snapshot is None:
+            return None
+        rubric = (snapshot.payload or {}).get("moonshot_rubric")
+        return rubric if isinstance(rubric, dict) else None
+
     def seed_validation_ready_candidate(
         self,
         candidate_id: str,
@@ -1472,13 +1487,17 @@ class HSAResearchService:
         lane_inputs: dict[str, Any] | None = None,
         decisive_questions: list[str] | None = None,
         rationale: str = "",
+        mechanism: str | None = None,
+        translational_path: str | None = None,
         public_status: str = "evidence_supported",
         ready: bool = True,
     ):
         """Seed a real, honestly-validation-ready public candidate (snapshot + record + a
         validation-ready decision), then run the real readiness gate so `validation_ready` is set by the
         assessor — NOT by fiat. Builds a campaign roster without a therapy-idea pipeline. Idempotent on
-        candidate_id (upserts). `lane_inputs` rides on metadata['lane_inputs']. Returns the readiness."""
+        candidate_id (upserts). `lane_inputs` rides on metadata['lane_inputs']. `mechanism`/
+        `translational_path` (deterministically composed by the caller from the row's own compound/target/
+        rationale) ground the MoonshotRubric reasoning spine on the no-committee path. Returns the readiness."""
         content_hash = hashlib.sha256(f"{candidate_id}|{title}".encode("utf-8")).hexdigest()[:40]
         snapshot = PublicCandidateSnapshot(
             candidate_id=candidate_id, content_hash=content_hash, title=title,
@@ -1492,6 +1511,7 @@ class HSAResearchService:
                 evidence_refs=list(evidence_refs) if ready else [],
                 targets=list(targets or []), candidate_therapies=list(candidate_therapies or []),
                 biomarkers=list(biomarkers or []),
+                rationale_md=rationale or "", mechanism=mechanism, translational_path=translational_path,
                 content_hash=content_hash, latest_snapshot_id=snapshot.snapshot_id,
                 metadata={"lane_inputs": lane_inputs} if lane_inputs else {},
             )
@@ -1667,6 +1687,14 @@ class HSAResearchService:
                                **({"novelty_score": novelty["novelty_score"]} if novelty else {})})
                 existing.add(cid)
                 continue
+            # Ground-at-source: compose a HYPOTHESIS-framed mechanism + conditional translational_path
+            # from the row's own (compound, target, rationale, biomarkers) — a row may also carry explicit
+            # mechanism/translational_path keys (e.g. from the curated seed JSON), which win. So a
+            # generated candidate's MoonshotRubric spine reads grounded, not 'premise_unstated'.
+            _mech, _tp = candidate_generator.compose_candidate_reasoning(
+                compound=compound, target=target,
+                rationale=row.get("rationale", ""), biomarkers=list(row.get("biomarkers") or []),
+            )
             self.seed_validation_ready_candidate(
                 cid,
                 title=candidate_generator.title_for(compound, target),
@@ -1675,6 +1703,8 @@ class HSAResearchService:
                 candidate_therapies=[compound],
                 biomarkers=list(row.get("biomarkers") or []),
                 rationale=row.get("rationale", ""),
+                mechanism=row.get("mechanism") or _mech,
+                translational_path=row.get("translational_path") or _tp,
             )
             seeded.append({"candidate_id": cid, "target": target, "therapy": compound,
                            **({"novelty_score": novelty["novelty_score"]} if novelty else {})})
@@ -2440,6 +2470,7 @@ class HSAResearchService:
         model_profile: str = "falsification_planner",
         full_plan: bool = False,
         candidate_record: "PublicCandidateRecord | None" = None,
+        log_provenance: bool = True,
     ) -> FalsificationPlannerResult | None:
         """Autonomous discovery (read-only): read the candidate's signed proof-capsule ledger and
         propose the next cheapest test that could KILL the leading hypothesis, pre-registering the
@@ -2477,11 +2508,16 @@ class HSAResearchService:
                 cost_fn=self._estimate_lane_cost,
                 ruled_out=ruled_out,
                 inputs_unresolved=inputs_unresolved,
+                include_tested=full_plan,
             )
             if not provider_configured and "no_compute_provider" not in result.blockers:
                 result = result.model_copy(update={"blockers": [*result.blockers, "no_compute_provider"]})
             return result
 
+        if not log_provenance:
+            # No-provenance mode (e.g. rubric assembly inside snapshot generation) — run the pure planner
+            # directly, skipping the durable agent_run write. Content/hash are unaffected.
+            return _run()
         return AgentRunner(self.repository).run(
             agent_name="active_falsification_planner",
             model_profile=model_profile,
@@ -2532,7 +2568,21 @@ class HSAResearchService:
         from .contracts import MDScheduleSpec, RubricLaneInputs
 
         keysets = lane_inputs._REQUIRED_KEY_SETS.get(lane) or []
-        required = list(keysets[0]) if keysets else []
+        cfg = res.config or {}
+        # required_keys: if resolved, the keyset this candidate ACTUALLY satisfied; else the union of all
+        # alternative keys (deduped, order-preserving) so no satisfaction path is hidden (omics has 3).
+        satisfied = next(
+            (ks for ks in keysets if all(cfg.get(k) not in (None, "", [], {}) for k in ks)),
+            None,
+        )
+        if satisfied is not None:
+            required = list(satisfied)
+        else:
+            required = []
+            for ks in keysets:
+                for k in ks:
+                    if k not in required:
+                        required.append(k)
         readiness = "resolved" if res.resolved else "missing"
         if not res.resolved and lane == "docking" and candidate.targets:
             entry = _tl.get_entry(lib, candidate.targets[0])
@@ -2571,15 +2621,28 @@ class HSAResearchService:
                 per_missing[rl.lane] = list(rl.inputs.missing)
             if r == "resolved" and rl.inputs_ready:
                 ready.append(rl.lane)
+
+        def _dedup(xs: list[str]) -> list[str]:
+            # order-preserving dedup — a lane can appear in test_plan more than once (e.g. an omics test
+            # plus an omics confound-audit), but each rollup list must name it once (keeps the hash stable).
+            seen: set[str] = set()
+            out: list[str] = []
+            for x in xs:
+                if x not in seen:
+                    seen.add(x)
+                    out.append(x)
+            return out
+
         blockers = list(planner_blockers)
         blockers += [f"{lane}: {', '.join(miss)}" for lane, miss in per_missing.items()]
-        blockers += [f"docking_target_unverified" for lane in needs_ver if lane == "docking"]
+        blockers += ["docking_target_unverified" for lane in _dedup(needs_ver) if lane == "docking"]
         return RubricInputsRollup(
-            resolved_lanes=resolved, needs_verification_lanes=needs_ver, missing_lanes=missing,
-            ready_to_run_lanes=ready, per_lane_missing=per_missing, blockers=blockers,
+            resolved_lanes=_dedup(resolved), needs_verification_lanes=_dedup(needs_ver),
+            missing_lanes=_dedup(missing), ready_to_run_lanes=_dedup(ready),
+            per_lane_missing=per_missing, blockers=blockers,
         )
 
-    def build_moonshot_rubric(self, candidate_id: str, *, min_moonshot_score: float = 0.8, lane_allowlist: list[str] | None = None, candidate_record: "PublicCandidateRecord | None" = None, attach_default_resolver: bool = True):
+    def build_moonshot_rubric(self, candidate_id: str, *, min_moonshot_score: float = 0.8, lane_allowlist: list[str] | None = None, candidate_record: "PublicCandidateRecord | None" = None, attach_default_resolver: bool = False, log_provenance: bool = True):
         """Assemble the pre-registered MoonshotRubric for a candidate — the full spec of WHAT the
         moonshot wants to see and HOW it must be tested (targets+proteins, compounds+SMILES, the ordered
         per-lane test plan with pre-registered kill criteria, the MD schedule, the inputs checklist,
@@ -2590,6 +2653,9 @@ class HSAResearchService:
         from . import target_library as _tl
         from .contracts import (
             ConfoundPlan, CrossSpeciesPlan, MoonshotRubric, PromotionCriteria, RubricCompound, RubricLaneTest,
+        )
+        from .falsification_planner import (
+            compose_expected_payoff, compose_inference_chain, compose_lane_reasoning, compose_premise, mech_short,
         )
 
         candidate = candidate_record or self.get_public_candidate(candidate_id)
@@ -2615,20 +2681,57 @@ class HSAResearchService:
         else:
             notes.append("no_therapy_idea_linked: moonshot gate not evaluable from the candidate alone")
 
+        # Reasoning-spine inputs — resolved from the idea (preferred) then the candidate's grounded
+        # fields (the no-committee campaign path). The reasoning fields live on the TherapyIdea inside the
+        # TherapyIdeaRecord (idea.idea.*). mech uses ONLY a real mechanism field (never the rationale);
+        # premise_specified is True only when the SOURCE actually stated a mechanism/rationale, so an
+        # absent thesis renders an honest 'premise_unstated' rather than fabricated prose.
+        idea_obj = idea.idea if idea else None
+        idea_mechanism = (idea_obj.mechanism if idea_obj else None) or candidate.mechanism or ""
+        idea_rationale = (idea_obj.rationale if idea_obj else None) or candidate.rationale_md or ""
+        claim_fallback = (idea_obj.hypothesis if idea_obj else None) or candidate.summary or ""
+        evidence_strength = idea_obj.evidence_strength if idea_obj else "unknown"
+        premise_specified = bool(idea_obj and (idea_obj.mechanism or idea_obj.rationale)) or bool(candidate.mechanism)
+        translational_path = (idea_obj.translational_path if idea_obj else None) or candidate.translational_path or ""
+        next_experiment = idea_obj.next_experiments[0] if (idea_obj and idea_obj.next_experiments) else ""
+        _bms = sorted(idea_obj.biomarkers) if (idea_obj and idea_obj.biomarkers) else sorted(candidate.biomarkers)
+        biomarker = _bms[0] if _bms else None
+        mech = mech_short(idea_mechanism)
+        mechanistic_premise_str = (
+            (idea_obj.mechanism if idea_obj else None) or (idea_obj.rationale if idea_obj else None)
+            or candidate.mechanism or candidate.rationale_md or candidate.summary or ""
+        )
+        if idea_obj is None and not candidate.mechanism and not candidate.rationale_md:
+            notes.append("reasoning_unstated_upstream")
+
         # full_plan=True → EVERY runnable lane gets a pre-registered plan (the complete intended test
         # plan, not just what remains untested) — already-tested lanes still appear, marked by outcome.
-        planner = self.propose_next_falsification(candidate_id, lane_allowlist=lane_allowlist, full_plan=True, candidate_record=candidate)
+        planner = self.propose_next_falsification(candidate_id, lane_allowlist=lane_allowlist, full_plan=True, candidate_record=candidate, log_provenance=log_provenance)
         belief = planner.belief_state if planner else None
         plans = [p for p in (([planner.proposed] if (planner and planner.proposed) else []) + (list(planner.alternatives) if planner else [])) if p]
         runnable = list(planner.runnable_lanes) if planner else []
         # per-lane outcome from the signed ledger (to mark each test's standing) + controlled confounds
         ledger = self.list_proof_capsules(ProofCapsuleLibraryRequest(candidate_id=candidate_id, limit=200)).capsules
+        # Per-lane signal mirrors distill_belief_state's authoritative source: ONLY compute_artifact
+        # capsules carry a run signal; key on validation_type (fall back to target.section) and accept
+        # only real lanes. Latest-WINS by explicit timestamp — never trust ledger iteration order, so a
+        # later 'supports' correctly supersedes an earlier 'refutes' (and vice-versa) in the snapshot.
+        from .falsification_planner import _LANE_MEMBERS, _SIGNAL_PACKET_TYPES
         lane_signal: dict[str, str] = {}
+        lane_latest: dict[str, Any] = {}
         for c in ledger:
-            section = (c.target.section if c.target else None) or (c.payload or {}).get("validation_type")
-            sig = (c.payload or {}).get("signal")
-            if section and sig:
-                lane_signal[section] = sig  # latest wins (ledger order)
+            if getattr(c, "packet_type", None) not in _SIGNAL_PACKET_TYPES:
+                continue
+            payload = c.payload or {}
+            section = payload.get("validation_type") or (c.target.section if c.target else None)
+            sig = payload.get("signal")
+            if section not in _LANE_MEMBERS or not sig:
+                continue
+            ts = getattr(c, "updated_at", None) or getattr(c, "created_at", None)
+            prev = lane_latest.get(section)
+            if section not in lane_latest or (ts is not None and (prev is None or ts >= prev)):
+                lane_signal[section] = sig
+                lane_latest[section] = ts
         caught = {e.confound for e in self.get_failure_corpus(candidate_id) if e.kind == "caught_confound" and e.confound}
         # the genuine NEXT-to-run = first untested lane whose inputs are ready (VOI-ranked order)
         queued_idx = next(
@@ -2641,6 +2744,12 @@ class HSAResearchService:
         targets_needed = [self._rubric_target(t, lib, role=("primary" if i == 0 else "orthogonal")) for i, t in enumerate(candidate.targets)]
         if "docking" in runnable and not any(t.verification == "verified" for t in targets_needed):
             notes.append("no_verified_docking_target: the docking spend-gate will refuse real GPU")
+
+        # Entities the reasoning prose is grounded in (the compound/target the candidate NAMES) — constant
+        # across lanes, computed once.
+        tgt = targets_needed[0].target if targets_needed else (candidate.targets[0] if candidate.targets else "the target")
+        pdb = targets_needed[0].pdb_id if targets_needed else None
+        cmpd = candidate.candidate_therapies[0] if candidate.candidate_therapies else "the compound"
 
         # (4)/(5) Ordered test plan — project each plan (strip plan_id/created_at), attach inputs + MD schedule
         smiles_seen: dict[str, tuple] = {}
@@ -2660,14 +2769,22 @@ class HSAResearchService:
             sig = lane_signal.get(plan.lane)
             if is_proposed:
                 standing = "queued"
+            elif plan.addresses_confound is not None:
+                # A confound-audit test's standing is its OWN audit state — NEVER the audited lane's
+                # signal (else an untested purity control inherits 'supports' and reads as done).
+                standing = "controlled" if plan.addresses_confound.kind in caught else "untested"
             elif sig == "supports":
                 standing = "supports_unaudited"  # tested + supports, but unaudited until confounds clear
             elif sig == "refutes":
                 standing = "refuted"
-            elif plan.addresses_confound is not None and plan.addresses_confound.kind in caught:
-                standing = "controlled"
             else:
                 standing = "untested"
+            # Reasoning spine: grounded probes / why-it-bears / pre-committed interpretation for THIS lane,
+            # composed from the named compound+target+biomarker + the lane's OWN pre-registered kill criterion.
+            probes, why_it_bears, interpretation = compose_lane_reasoning(
+                lane=plan.lane, compound=cmpd, target=tgt, pdb_id=pdb, biomarker=biomarker,
+                kill_criterion=plan.kill_criterion, mechanism_short=mech, maturity=maturity,
+            )
             test_plan.append(RubricLaneTest(
                 order=i + 1, lane=plan.lane, validation_type=plan.validation_type, test_objective=plan.test_objective,
                 kill_criterion=plan.kill_criterion, expected_signal_if_alive=plan.expected_signal_if_alive,
@@ -2676,6 +2793,7 @@ class HSAResearchService:
                 is_proposed=is_proposed, autonomously_runnable=autonomously, maturity=maturity,
                 standing=standing, inputs=lane_proj,
                 rank_rationale=plan.rank_rationale, novelty_note=plan.novelty_note,
+                mechanistic_premise=mech, probes=probes, why_it_bears=why_it_bears, interpretation=interpretation,
             ))
 
         # (3) Compounds — names from the candidate; SMILES ONLY from what the resolver surfaced (+ native cocrystals)
@@ -2691,16 +2809,58 @@ class HSAResearchService:
 
         # (6) rollup · (7) confounds (open vs controlled via the failure corpus) · (8) cross-species (real omics KC)
         rollup = self._rubric_inputs_rollup(test_plan, list(planner.blockers) if planner else [])
+        from .contracts import ConfoundFlag
         open_cf = list(belief.open_confounds) if belief else []
+        # distill_belief_state DROPS a confound from open_confounds the instant it is controlled, so a
+        # successfully-audited confound would otherwise vanish from BOTH lists. Re-surface each caught
+        # kind as an explicit 'controlled' flag, sourced from the failure corpus independently of belief.
+        # (defensive construction: ConfoundFlag.kind is a Literal; skip corpus values outside it.)
+        controlled_cf: list = []
+        for k in sorted(caught):
+            try:
+                controlled_cf.append(ConfoundFlag(kind=k, status="controlled", control_lane="omics"))
+            except Exception:
+                continue
         confounds = ConfoundPlan(
             open_confounds=[c for c in open_cf if c.kind not in caught],
-            controlled_confounds=[c for c in open_cf if c.kind in caught],
+            controlled_confounds=controlled_cf,
         )
         omics_kc = next((rl.kill_criterion for rl in test_plan if rl.lane == "omics"), None)
         cross = CrossSpeciesPlan(
-            replication_axis=(candidate.summary or "")[:2000], kill_criterion=omics_kc,
+            # the REASONED payoff axis, not a summary echo (idea/candidate translational_path → mechanism → summary)
+            replication_axis=(translational_path or idea_mechanism or candidate.summary or "")[:2000], kill_criterion=omics_kc,
             replication_lane=("omics" if omics_kc else None),
             evidence_to_date=[r for r in candidate.evidence_refs if ("cross" in r.lower() or "auc" in r.lower())],
+        )
+        # Reasoning spine: the premise ('because of A'), the inference chain (one link per lane in VOI
+        # order — conjunctive-survival / single-refutation-kills), and the earned payoff ('if it works, P').
+        premise = compose_premise(
+            mechanism=idea_mechanism, rationale=idea_rationale, claim_fallback=claim_fallback,
+            evidence_strength=evidence_strength, is_specified=premise_specified,
+        )
+        # The inference chain reads as a coherent argument, NOT the planner's raw VOI order: one link per
+        # distinct lane in a logical sequence (engagement → orthogonal check → stability → cross-species
+        # translation) so the terminal survived_known_confounds conclusion lands on the omics keystone.
+        _chain_order = ["docking", "cofolding", "md", "omics"]
+        _seen_lane: set[str] = set()
+        chain_lanes: list = []
+        for ln in _chain_order:
+            rl = next((t for t in test_plan if t.lane == ln), None)
+            if rl is not None and ln not in _seen_lane:
+                chain_lanes.append(rl)
+                _seen_lane.add(ln)
+        for t in test_plan:  # any lane outside the canonical list, in test_plan order
+            if t.lane not in _seen_lane:
+                chain_lanes.append(t)
+                _seen_lane.add(t.lane)
+        inference_chain = compose_inference_chain(
+            [(rl.lane, rl.expected_signal_if_alive, rl.kill_criterion) for rl in chain_lanes],
+            target=tgt, mechanism_short=mech, translational_path=translational_path,
+            payoff_specified=bool(translational_path),
+        )
+        expected_payoff = compose_expected_payoff(
+            translational_path=translational_path, next_experiment=next_experiment,
+            mechanism_short=mech, vois=[rl.value_of_information for rl in test_plan],
         )
         # (11) promotion — typed, never auto-satisfiable
         promotion = PromotionCriteria(
@@ -2719,6 +2879,8 @@ class HSAResearchService:
             candidate_id=candidate_id, title=candidate.title, candidate_snapshot_hash=candidate.content_hash,
             thesis=(candidate.summary or (belief.leading_hypothesis if belief else "")), rationale_md=candidate.rationale_md,
             moonshot_gate=gate, moonshot_grade=grade, moonshot_score=score,
+            mechanistic_premise=mechanistic_premise_str[:3000], premises=[premise],
+            inference_chain=inference_chain, expected_payoff=expected_payoff,
             targets_needed=targets_needed, compounds_needed=compounds, test_plan=test_plan, runnable_lanes=runnable,
             inputs_rollup=rollup, confounds=confounds, cross_species=cross, evidence_anchors=list(candidate.evidence_refs),
             risks=[*candidate.risk_flags, *(planner.blockers if planner else [])], promotion=promotion,
@@ -2727,7 +2889,20 @@ class HSAResearchService:
             signalful_capsule_count=(belief.signalful_capsule_count if belief else 0),
             planner_blockers=(list(planner.blockers) if planner else []),
             ready_to_run=bool(grade and rollup.ready_to_run_lanes),
-            has_falsifiable_plan=any(rl.kill_criterion for rl in test_plan), assembly_notes=notes,
+            # Substantive (NOT a tautology): a real pre-registered plan requires at least one lane test
+            # AND a concrete way to actually run one — EITHER a named target that exists in the
+            # verified-or-unverified library (docking is obtainable) OR at least one lane whose inputs
+            # are non-"missing" (e.g. a cross-species OMICS test with real expression+strata attached —
+            # the project's core thesis, which needs no curated docking structure). A hollow score-passing
+            # thesis with a hallucinated target ("MADEUPGENE": absent target AND every lane unresolved)
+            # therefore fails the publication HARD-FAIL gate. The target-presence clause keeps the
+            # no-resolver publication path working for a verified target whose SMILES isn't resolved yet
+            # (still falsifiable-in-principle); readiness is reported honestly+separately in inputs_rollup.
+            has_falsifiable_plan=bool(test_plan) and (
+                any(t.verification != "absent" for t in targets_needed)
+                or any(rl.inputs.readiness != "missing" for rl in test_plan)
+            ),
+            assembly_notes=notes,
         )
         return rubric.model_copy(update={"rubric_hash": _public_candidate_content_hash(rubric.content_payload())})
 
@@ -8828,10 +9003,11 @@ def _generate_public_candidate_snapshot(
         moonshot_rubric = HSAResearchService(repository).build_moonshot_rubric(
             candidate_id, min_moonshot_score=request.min_moonshot_score,
             candidate_record=_rubric_candidate, attach_default_resolver=False,
+            log_provenance=False,  # snapshot generation is read-shaped; don't write 4 agent_run rows per call
         )
     except Exception:  # the rubric is provenance, never crashes publication — degrade to "no rubric"
         moonshot_rubric = None
-    if request.require_moonshot_grade and not (moonshot_rubric and moonshot_rubric.has_falsifiable_plan and moonshot_rubric.test_plan):
+    if request.require_moonshot_grade and not (moonshot_rubric and moonshot_rubric.has_falsifiable_plan):
         return PublicCandidateSnapshotResult(
             moonshot_gate=moonshot_gate,
             errors=["public_candidate_requires_moonshot_grade", "missing_falsification_rubric"],

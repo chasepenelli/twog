@@ -1,7 +1,9 @@
 import Link from "next/link";
 
 import { api } from "@/lib/api";
-import type { GateVerdict, ProofCapsule } from "@/lib/types/domain";
+import type { GateVerdict, MoonshotRubric, ProofCapsule } from "@/lib/types/domain";
+
+import { MoonshotRubricView } from "./_components/moonshot-rubric";
 
 const SIG_LABEL: Record<string, string> = { supports: "SUPPORTS", refutes: "REFUTES", neutral: "NEUTRAL" };
 
@@ -44,6 +46,13 @@ export default async function CapsulePage({ params }: { params: { capsuleId: str
   const c = capsule;
   const confound = gateLine("confound-control", c.confound_verdict);
   const provenance = gateLine("provenance", c.provenance_verdict);
+
+  let rubric: MoonshotRubric | null = null;
+  try {
+    rubric = await api.candidates.rubric(c.candidate_id);
+  } catch {
+    rubric = null; // the rubric is enrichment; never block the capsule view on it
+  }
 
   return (
     <div className="wrap" style={{ paddingTop: 48, maxWidth: 860 }}>
@@ -117,8 +126,18 @@ export default async function CapsulePage({ params }: { params: { capsuleId: str
         </p>
       </Section>
 
-      <Section label="Candidate">
+      <Section label={rubric ? "The moonshot behind this capsule" : "Candidate"}>
         <span className="mono" style={{ fontSize: 14 }}>{c.candidate_id}</span>
+        {rubric ? (
+          <>
+            <p className="muted" style={{ fontSize: 14, marginTop: 12, maxWidth: "62ch", lineHeight: 1.6 }}>
+              This capsule is one receipt from a larger, pre-registered falsification program. The rubric below
+              is the &ldquo;whole shabang&rdquo;: the thesis, the proteins and compounds it needs, and the ordered
+              test plan — each step locked to a kill criterion <em>before</em> it runs.
+            </p>
+            <MoonshotRubricView rubric={rubric} />
+          </>
+        ) : null}
       </Section>
     </div>
   );
