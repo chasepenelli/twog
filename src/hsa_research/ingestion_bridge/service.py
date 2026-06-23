@@ -2430,6 +2430,65 @@ class HSAResearchService:
         caps = self.repository.list_proof_capsules(candidate_id=candidate_id, limit=500)
         return provenance.merkle_root([c.content_hash for c in caps])
 
+    def public_capsule_provenance(self, capsule_id: "UUID | str") -> dict[str, Any] | None:
+        """The verifiable provenance bundle for a capsule — everything needed to RE-DERIVE trust WITHOUT
+        trusting us: the recomputable content_hash, the Ed25519 signature + the signer's public key + the
+        verification verdict, the hash-linked lineage chain (proof of change), and the deterministic
+        provenance-audit checks. Every value is independently recomputable (provenance.verify is pure;
+        the content_hash is a pure function of public content). Read-only. None if the capsule is absent."""
+        from uuid import UUID as _UUID
+
+        from . import provenance_auditor
+
+        cid = capsule_id if isinstance(capsule_id, _UUID) else _UUID(str(capsule_id))
+        caps = self.list_proof_capsules(ProofCapsuleLibraryRequest(capsule_id=cid, limit=1)).capsules
+        if not caps:
+            return None
+        cap = caps[0]
+        base = self.verify_capsule_provenance(cap)
+        signer = self.resolve_principal(cap.submitted_by) if cap.submitted_by else None
+        chain: dict[str, Any] = {}
+        if cap.candidate_id:
+            versions = self.repository.list_proof_capsules(candidate_id=cap.candidate_id, limit=200)
+            chain = self.verify_capsule_lineage(versions)
+        # Deterministic provenance audit — only when the capsule CLAIMS a compute job (BYOC/foreign compute).
+        audit: dict[str, Any] | None = None
+        job_id = (cap.payload or {}).get("compute_job_id")
+        if job_id:
+            try:
+                job = self.repository.get_compute_job(_UUID(str(job_id)))
+                verdict = provenance_auditor.audit(cap, job)
+                audit = {
+                    "status": verdict.get("status"),
+                    "checks_passed": list(verdict.get("checks_passed") or []),
+                    "mismatches": list(verdict.get("mismatches") or []),
+                }
+            except Exception:
+                audit = None
+        return {
+            "capsule_id": base["capsule_id"],
+            "content_hash": base["content_hash"],
+            "hashing": (
+                "sha256 over the capsule's canonical JSON content (signature, lineage and submitter "
+                "EXCLUDED) — recompute it to verify the content is unaltered."
+            ),
+            "signed": base["signed"],
+            "signature": cap.signature,
+            "signer": base["signer"],
+            "signer_public_key": (signer.public_key if signer else None),
+            "signature_valid": base["signature_valid"],
+            "lineage": {
+                "index": base["lineage_index"],
+                "parent_content_hash": base["parent_content_hash"],
+                "chain_ok": chain.get("ok"),
+                "versions": chain.get("versions"),
+            },
+            "audit": audit,  # None for in-engine (custodial) capsules that claim no foreign compute job
+            "pipeline": ["fold (run the lane)", "hash (content_hash)", "sign (Ed25519)",
+                         "attest (provenance + confound audit)", "pin (lineage + snapshot)"],
+            "verifiable": bool(base["content_hash"]),
+        }
+
     def list_proof_capsules(
         self,
         request: ProofCapsuleLibraryRequest | None = None,
@@ -8003,6 +8062,28 @@ class HSAResearchService:
             limit=limit,
         )
 
+    def list_compute_jobs(
+        self,
+        *,
+        status: str | None = None,
+        runner_kind: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ComputeJobRecord]:
+        """Recent compute jobs (the GPU lanes), newest-first — powers the live activity feed + the honest
+        online/idle signal. Read-only pass-through to the repository."""
+        return self.repository.list_compute_jobs(status=status, runner_kind=runner_kind, limit=limit)
+
+    def list_public_candidate_decision_events(
+        self,
+        *,
+        candidate_id: str | None = None,
+        limit: int | None = 100,
+    ) -> list["PublicCandidateDecisionEvent"]:
+        """Recent public-candidate decision events (proposed / advanced / held / snapshot_generated …),
+        newest-first — the richest activity-stream primitive (each links its agent_run / compute_job /
+        capsule). Read-only pass-through."""
+        return self.repository.list_public_candidate_decision_events(candidate_id=candidate_id, limit=limit)
+
     def create_agent_run_review(self, record: AgentRunReviewRecord) -> AgentRunReviewRecord:
         return self.repository.create_agent_run_review(record)
 
@@ -8997,6 +9078,10 @@ def _generate_public_candidate_snapshot(
         biomarkers=list(therapy_idea.biomarkers),
         candidate_therapies=list(therapy_idea.candidate_therapies),
         evidence_refs=list(therapy_idea.evidence_refs),
+        # carry the persisted candidate's curated/PINNED lane_inputs (resolved SMILES / receptor / sequence)
+        # so the rubric reflects what has actually been resolved — deterministically, from stored values,
+        # never a live fetch at build time (the publication hash stays stable).
+        metadata=(candidate.metadata if candidate else {}),
     )
     moonshot_rubric = None
     try:

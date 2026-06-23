@@ -53,23 +53,69 @@ def _seed(db_path: pathlib.Path) -> str:
         raise SystemExit(f"moonshot did not publish; errors={res.errors}")
     cid = res.candidate.candidate_id
 
-    # A supporting docking capsule so the candidate shows on /evidence and links to its rubric.
-    repo.upsert_proof_capsule(ProofCapsuleRecord(
+    # A supporting docking capsule with a REAL content-hash + Ed25519 signature from a registered "lab",
+    # so the provenance surface demonstrates a verifiable, re-derivable receipt (not a placeholder hash).
+    from hsa_research.ingestion_bridge import provenance
+    from hsa_research.ingestion_bridge.contracts import ProofCapsuleProducer, ProofCapsuleSubmitRequest
+
+    priv, pub = provenance.generate_keypair()
+    svc.register_collaborator(principal="demo-structural-lab", name="Demo Structural Lab",
+                              public_key=pub, auth_subject="demo-structural-lab")
+    producer = ProofCapsuleProducer(producer_type="agent", name="twog_compute")
+    target = ProofCapsuleTarget(section="docking")
+    summary = ProofCapsuleSummary(
+        title="Falsify: alpelisib for PIK3CA-driven HSA",
+        finding="gnina docked alpelisib against verified PIK3CA (4JPS): CNN affinity 6.1. Signal: supports.",
+        why_it_matters="Dock the compound to test whether it engages the proposed PI3Kα pocket.",
+        limitations=["docking is an estimate, not measured binding", "unaudited until the tumor-purity confound clears"],
+    )
+    payload = {"signal": "supports", "confidence": 0.8, "validation_type": "docking", "provenance_flag": "pass"}
+    req = ProofCapsuleSubmitRequest(
         workspace_id=res.candidate.trace_id, checkout_manifest_hash="sha256:" + "d" * 24,
         candidate_id=cid, packet_type="compute_artifact", requested_action="docking_or_md_review",
-        status="submitted",
-        target=ProofCapsuleTarget(section="docking"),
-        summary=ProofCapsuleSummary(
-            title="Falsify: alpelisib for PIK3CA-driven HSA",
-            finding="gnina docked alpelisib against verified PIK3CA (4JPS): CNN affinity 6.1. Signal: supports.",
-            why_it_matters="Dock the compound to test whether it engages the proposed PI3Kα pocket.",
-            limitations=["docking is an estimate, not measured binding", "unaudited until the tumor-purity confound clears"],
-        ),
-        payload={"signal": "supports", "confidence": 0.8, "validation_type": "docking", "provenance_flag": "pass"},
-        content_hash="e" * 40,
+        producer=producer, target=target, summary=summary, payload=payload, submitted_by="demo-structural-lab",
+    )
+    chash = svc.capsule_content_hash_for_submission(req)  # the canonical hash anyone can recompute
+    repo.upsert_proof_capsule(ProofCapsuleRecord(
+        workspace_id=req.workspace_id, checkout_manifest_hash=req.checkout_manifest_hash,
+        candidate_id=cid, packet_type="compute_artifact", requested_action="docking_or_md_review",
+        status="submitted", producer=producer, target=target, summary=summary, payload=payload,
+        content_hash=chash, signature=provenance.sign(chash, priv), submitted_by="demo-structural-lab",
     ))
+
+    # RESOLVE → PIN → DISPLAY: retrieve the molecular inputs once (PubChem SMILES, UniProt sequence) + the
+    # curated redock-verified PIK3CA receptor, and PIN them onto the candidate so the rubric renders them
+    # RESOLVED — deterministically, from stored values, never a live fetch at rubric-build/hash time.
+    from hsa_research.ingestion_bridge import input_resolvers as _ir, target_library as _tl
+
+    _ALPELISIB_SMILES = "CC1=C(SC(=N1)NC(=O)N2CCCC2C(=O)N)C3=CC(=NC=C3)C(C)(C)C(F)(F)F"  # offline fallback
+    resolvers = _ir.NetworkInputResolvers()
+    try:
+        smiles = resolvers.compound_smiles("alpelisib") or _ALPELISIB_SMILES
+    except Exception:
+        smiles = _ALPELISIB_SMILES
+    try:
+        sequence = resolvers.protein_sequence("PIK3CA")
+    except Exception:
+        sequence = None
+    lib = _tl.load_target_library()
+    dock_cfg = _tl.curated_docking_config(lib, "PIK3CA", ligand_smiles=smiles, ligand_name="alpelisib") or {}
+    lane_inputs: dict = {"docking": dock_cfg} if dock_cfg else {}
+    if sequence:
+        lane_inputs["cofolding"] = {"protein_sequence": sequence, "ligand_smiles": smiles,
+                                    "ligand_name": "alpelisib", "target": "PIK3CA"}
+    if dock_cfg.get("receptor_pdb"):
+        lane_inputs["md"] = {"protein_pdb": dock_cfg["receptor_pdb"], "compound_smiles": smiles}
+    cand = repo.get_public_candidate(cid)
+    repo.upsert_public_candidate(
+        cand.model_copy(update={"metadata": {**(cand.metadata or {}), "lane_inputs": lane_inputs}})
+    )
+    print(f"  resolved+pinned: SMILES {smiles[:36]}…  receptor {len(dock_cfg.get('receptor_pdb',''))} chars"
+          f"  sequence {len(sequence) if sequence else 0} aa")
+
     # Re-publish (idempotent): the rebuilt rubric now SEES the supporting docking capsule + the resulting
-    # open tumor-purity confound, so the docking lane reads "supports · unaudited" and the audit is queued.
+    # open tumor-purity confound (docking reads "supports · unaudited", the audit is queued) AND the pinned
+    # molecular inputs (SMILES/receptor/sequence resolved, not "missing").
     svc.generate_public_candidate_snapshot(
         PublicCandidateGenerateRequest(therapy_idea_id=idea.idea_id, require_moonshot_grade=True, persist=True))
     print(f"seeded: candidate={cid}  (open its capsule on /evidence to see the rubric)")

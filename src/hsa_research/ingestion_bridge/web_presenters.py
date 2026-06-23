@@ -88,6 +88,16 @@ def present_capsule(rec: ProofCapsuleRecord) -> dict[str, Any]:
         out["confidence"] = float(payload["confidence"])
     if isinstance(prov, str) and prov in {"pass", "fail", "pending", "unknown"}:
         out["provenance_verdict"] = prov
+    # Provenance-forward: the verifiable anchors (recomputable content_hash, the hash-linked edit chain,
+    # who produced it, what pinned inputs it's bound to) — so the receipt is re-derivable, not just stated.
+    out["content_hash"] = rec.content_hash
+    if rec.parent_content_hash:
+        out["parent_content_hash"] = rec.parent_content_hash
+    out["lineage_index"] = rec.lineage_index
+    if rec.submitted_by:
+        out["submitted_by"] = rec.submitted_by
+    if rec.candidate_snapshot_hash:
+        out["candidate_snapshot_hash"] = rec.candidate_snapshot_hash
     return out
 
 
@@ -352,7 +362,7 @@ def present_engine_state(
         for c in capsules
         if isinstance((c.payload or {}).get("redock_rmsd"), (int, float))
     ]
-    best_rmsd = f"{min(rmsds):.2f} Å" if rmsds else "1.80 Å"
+    best_rmsd = f"{min(rmsds):.2f} Å" if rmsds else "—"  # honest: no fabricated "1.80 Å" when no real redock
     return {
         "online": True,
         "context": ENGINE_CONTEXT,
@@ -368,4 +378,89 @@ def present_engine_state(
         },
         "loop": [dict(s) for s in ENGINE_LOOP],
         "lanes": lanes,
+    }
+
+
+def _iso(ts: Any) -> str | None:
+    try:
+        return ts.isoformat() if ts is not None else None
+    except Exception:
+        return None
+
+
+def _status_str(s: Any) -> str:
+    v = getattr(s, "value", s)
+    return str(v) if v is not None else "unknown"
+
+
+def present_activity_feed(
+    *,
+    agent_runs: list[Any] | None = None,
+    compute_jobs: list[Any] | None = None,
+    capsules: list[ProofCapsuleRecord] | None = None,
+    manifests: list[RunManifestRecord] | None = None,
+    limit: int = 40,
+) -> dict[str, Any]:
+    """Merge the engine's time-ordered ledgers into ONE reverse-chronological activity stream — agents
+    reacting, GPU lanes dispatching, evidence capsules landing, campaigns running — with HONEST status and
+    an idle/online signal derived from REAL job state (the engine genuinely idles $0 when out of runnable
+    work, so 'idle' is the common, honest state — never faked as busy). Pure projection over fetched
+    records; mock-runner jobs are labelled 'mock (CI)' so simulated activity is never passed off as GPU."""
+    events: list[dict[str, Any]] = []
+
+    for j in (compute_jobs or []):
+        runner = getattr(j, "runner_kind", None)
+        lane = getattr(j, "validation_type", None)
+        profile = getattr(j, "compute_profile", None)
+        runner_label = "mock (CI)" if runner == "mock" else (runner or "—")
+        events.append({
+            "type": "compute",
+            "occurred_at": _iso(getattr(j, "updated_at", None) or getattr(j, "created_at", None)),
+            "status": _status_str(getattr(j, "status", None)),
+            "title": f"{lane or 'compute'} lane · {runner_label}" + (f"/{profile}" if profile else ""),
+            "candidate_id": getattr(j, "candidate_id", None),
+            "lane": lane,
+        })
+
+    for a in (agent_runs or []):
+        events.append({
+            "type": "agent",
+            "occurred_at": _iso(getattr(a, "completed_at", None) or getattr(a, "started_at", None) or getattr(a, "created_at", None)),
+            "status": _status_str(getattr(a, "status", None)),
+            "title": f"{getattr(a, 'agent_name', 'agent')} · {_status_str(getattr(a, 'status', None))}",
+        })
+
+    for c in (capsules or []):
+        payload = getattr(c, "payload", None) or {}
+        sig = payload.get("signal")
+        section = (c.target.section if getattr(c, "target", None) else None) or payload.get("validation_type") or "evidence"
+        events.append({
+            "type": "capsule",
+            "occurred_at": _iso(getattr(c, "updated_at", None) or getattr(c, "created_at", None)),
+            "status": _status_str(getattr(c, "status", None)),
+            "title": f"capsule · {sig if sig in _VALID_SIGNALS else 'evidence'} · {section}",
+            "signal": sig if sig in _VALID_SIGNALS else None,
+            "candidate_id": getattr(c, "candidate_id", None),
+            "capsule_id": str(getattr(c, "capsule_id", "")) or None,
+        })
+
+    for m in (manifests or []):
+        events.append({
+            "type": "campaign",
+            "occurred_at": _iso(getattr(m, "created_at", None)),
+            "status": _status_str(getattr(m, "status", None)),
+            "title": getattr(m, "title", None) or "falsification campaign",
+        })
+
+    events = [e for e in events if e["occurred_at"]]
+    events.sort(key=lambda e: e["occurred_at"], reverse=True)  # ISO-UTC sorts lexically == chronologically
+
+    running = [j for j in (compute_jobs or []) if _status_str(getattr(j, "status", None)) in ("queued", "submitted", "running")]
+    idle = len(running) == 0
+    return {
+        "events": events[:limit],
+        "running_jobs": len(running),
+        "idle": idle,
+        "idle_reason": "idle — out of runnable work ($0)" if idle else None,
+        "last_event_at": events[0]["occurred_at"] if events else None,
     }

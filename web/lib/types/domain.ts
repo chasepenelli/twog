@@ -184,6 +184,44 @@ export interface ProofCapsule {
   limitations?: string[];
   /** Who produced it (principal / lab), for attribution. */
   produced_by?: string;
+  /** The recomputable content hash (integrity anchor). */
+  content_hash?: string | null;
+  /** Hash-linked edit chain. */
+  parent_content_hash?: string | null;
+  lineage_index?: number | null;
+  /** The principal that produced + signed it. */
+  submitted_by?: string;
+  /** The pinned candidate snapshot this capsule is bound to. */
+  candidate_snapshot_hash?: string | null;
+}
+
+/**
+ * The verifiable provenance bundle for a capsule — everything needed to RE-DERIVE trust without
+ * trusting the operator: a recomputable content hash, the Ed25519 signature + signer public key +
+ * verification verdict, the hash-linked lineage chain, and the deterministic provenance-audit checks.
+ */
+export interface CapsuleProvenance {
+  capsule_id: string;
+  content_hash: string | null;
+  /** Plain-language description of how to recompute the content hash. */
+  hashing: string;
+  signed: boolean;
+  signature: string | null;
+  signer: string | null;
+  /** The signer's Ed25519 public key (hex) — anyone can verify the signature with it. */
+  signer_public_key: string | null;
+  signature_valid: boolean;
+  lineage: {
+    index: number | null;
+    parent_content_hash: string | null;
+    chain_ok: boolean | null;
+    versions: number | null;
+  };
+  /** Deterministic provenance-audit verdict; null for in-engine (custodial) capsules. */
+  audit: { status?: string; checks_passed: string[]; mismatches: string[] } | null;
+  /** The fold → hash → sign → attest → pin pipeline, as labels. */
+  pipeline: string[];
+  verifiable: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,4 +459,31 @@ export interface EngineState {
   };
   loop: LoopStep[];
   lanes: ComputeLaneState[];
+}
+
+// ---------------------------------------------------------------------------
+// Live engine feed — the REAL activity ledger (not a scripted narration)
+// ---------------------------------------------------------------------------
+
+/** One real event from the engine's ledgers: an agent reacting, a GPU lane dispatching, an evidence
+ *  capsule landing, or a campaign running. Carries the record's actual status + timestamp. */
+export interface ActivityEvent {
+  type: "compute" | "agent" | "capsule" | "campaign";
+  occurred_at: string | null;
+  status: string;
+  title: string;
+  candidate_id?: string | null;
+  lane?: string | null;
+  signal?: "supports" | "refutes" | "neutral" | null;
+  capsule_id?: string | null;
+}
+
+/** The merged, reverse-chronological activity feed + an HONEST idle/online signal derived from real job
+ *  state (the engine genuinely idles $0 when out of runnable work). */
+export interface ActivityFeed {
+  events: ActivityEvent[];
+  running_jobs: number;
+  idle: boolean;
+  idle_reason: string | null;
+  last_event_at: string | null;
 }

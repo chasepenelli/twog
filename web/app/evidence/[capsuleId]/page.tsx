@@ -1,9 +1,10 @@
 import Link from "next/link";
 
 import { api } from "@/lib/api";
-import type { GateVerdict, MoonshotRubric, ProofCapsule } from "@/lib/types/domain";
+import type { CapsuleProvenance, GateVerdict, MoonshotRubric, ProofCapsule } from "@/lib/types/domain";
 
 import { MoonshotRubricView } from "./_components/moonshot-rubric";
+import { ProvenancePanel } from "./_components/provenance-panel";
 
 const SIG_LABEL: Record<string, string> = { supports: "SUPPORTS", refutes: "REFUTES", neutral: "NEUTRAL" };
 
@@ -52,6 +53,13 @@ export default async function CapsulePage({ params }: { params: { capsuleId: str
     rubric = await api.candidates.rubric(c.candidate_id);
   } catch {
     rubric = null; // the rubric is enrichment; never block the capsule view on it
+  }
+
+  let provBundle: CapsuleProvenance | null = null;
+  try {
+    provBundle = await api.capsules.provenance(c.capsule_id);
+  } catch {
+    provBundle = null;
   }
 
   return (
@@ -112,18 +120,8 @@ export default async function CapsulePage({ params }: { params: { capsuleId: str
         </p>
       </Section>
 
-      <Section label="Provenance">
-        <div style={{ display: "flex", gap: 9, flexWrap: "wrap", alignItems: "center" }}>
-          {c.signature
-            ? <span className="badge b-blue">✓ signed · {c.signature}</span>
-            : <span className="badge b-muted">custodial</span>}
-          <span className="mono muted" style={{ fontSize: 13 }}>produced by {c.produced_by ?? "twog engine"}</span>
-        </div>
-        <p className="muted" style={{ fontSize: 13.5, marginTop: 12, maxWidth: "60ch" }}>
-          {c.signature
-            ? "Cryptographically signed by an outside lab on their own compute — anyone can verify it came from them, unaltered."
-            : "Produced in-engine (custodial) — not yet countersigned by an external lab. Custodial is normal, not a defect."}
-        </p>
+      <Section label="Provenance — verify / re-derive this result">
+        <ProvenancePanel prov={provBundle} producedBy={c.produced_by} />
       </Section>
 
       <Section label={rubric ? "The moonshot behind this capsule" : "Candidate"}>

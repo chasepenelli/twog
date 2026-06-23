@@ -46,6 +46,16 @@ def test_public_routes_need_no_auth(tmp_path):
     assert isinstance(dispatch(service, method="GET", path="/public/capsules", principal=None)[1], list)
 
 
+def test_public_activity_feed_route(tmp_path):
+    """The live engine feed serves with no auth and reports an honest idle/online signal."""
+    service, *_ = _setup(tmp_path)
+    status, feed = dispatch(service, method="GET", path="/public/activity", principal=None)
+    assert status == 200
+    assert {"events", "idle", "running_jobs", "last_event_at"} <= set(feed)
+    assert isinstance(feed["events"], list)
+    assert feed["idle"] is True and feed["running_jobs"] == 0  # empty engine -> honestly idle
+
+
 def test_public_state_has_display_contract(tmp_path):
     service, *_ = _setup(tmp_path)
     _, state = dispatch(service, method="GET", path="/public/state", principal=None)
@@ -90,6 +100,47 @@ def test_public_candidate_rubric_route(tmp_path):
     assert rubric["has_falsifiable_plan"] is True
 
     assert dispatch(service, method="GET", path="/public/candidates/does-not-exist/rubric", principal=None)[0] == 404
+
+
+def test_public_capsule_provenance_route(tmp_path):
+    """The public provenance route returns a verifiable bundle (recomputable hash + Ed25519 verdict +
+    lineage) for a real signed capsule — and 404s for an unknown capsule."""
+    from hsa_research.ingestion_bridge import provenance as _prov
+    from hsa_research.ingestion_bridge.contracts import (
+        ProofCapsuleProducer, ProofCapsuleRecord, ProofCapsuleSubmitRequest, ProofCapsuleSummary, ProofCapsuleTarget,
+    )
+
+    service, *_ = _setup(tmp_path)
+    priv, pub = _prov.generate_keypair()
+    service.register_collaborator(principal="lab", name="Lab", public_key=pub, auth_subject="lab")
+    summary = ProofCapsuleSummary(title="dock alpelisib", finding="cnn affinity 6.1 — supports",
+                                  why_it_matters="tests target engagement", limitations=["estimate, not measured"])
+    target = ProofCapsuleTarget(section="docking")
+    producer = ProofCapsuleProducer(producer_type="agent", name="twog_compute")
+    req = ProofCapsuleSubmitRequest(
+        workspace_id=uuid4(), checkout_manifest_hash="sha256:" + "d" * 24, candidate_id="cand-x",
+        packet_type="compute_artifact", requested_action="docking_or_md_review",
+        producer=producer, target=target, summary=summary,
+        payload={"signal": "supports", "validation_type": "docking"}, submitted_by="lab",
+    )
+    chash = service.capsule_content_hash_for_submission(req)
+    cap = ProofCapsuleRecord(
+        workspace_id=req.workspace_id, checkout_manifest_hash=req.checkout_manifest_hash, candidate_id="cand-x",
+        packet_type="compute_artifact", requested_action="docking_or_md_review", status="submitted",
+        producer=producer, target=target, summary=summary, payload=req.payload,
+        content_hash=chash, signature=_prov.sign(chash, priv), submitted_by="lab",
+    )
+    service.repository.upsert_proof_capsule(cap)
+
+    status, bundle = dispatch(service, method="GET", path=f"/public/capsules/{cap.capsule_id}/provenance", principal=None)
+    assert status == 200
+    assert bundle["content_hash"] == chash
+    assert bundle["signed"] is True and bundle["signature_valid"] is True
+    assert bundle["signer"] == "lab" and bundle["signer_public_key"] == pub
+    assert bundle["lineage"]["chain_ok"] is True
+    assert bundle["verifiable"] is True
+
+    assert dispatch(service, method="GET", path=f"/public/capsules/{uuid4()}/provenance", principal=None)[0] == 404
 
 
 def test_me_returns_principal(tmp_path):

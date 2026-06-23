@@ -3,7 +3,7 @@ import Link from "next/link";
 import { api } from "@/lib/api";
 import { LiveLoop } from "@/components/state/live-loop";
 import { LiveAgo } from "@/components/state/live-ago";
-import { LiveThink } from "@/components/state/live-think";
+import { LiveActivity } from "@/components/state/live-activity";
 
 export const metadata = { title: "Research state" };
 
@@ -54,9 +54,9 @@ export default async function StatePage() {
           </div>
         </div>
         <div>
-          <LiveThink />
+          <LiveActivity variant="dark" />
           <div className="mono muted" style={{ fontSize: 11.5, letterSpacing: "0.04em", marginTop: 12, textAlign: "center" }}>
-            live trace · the loop runs autonomously, refusing inputs it can't verify
+            live ledger · real engine activity — idle at $0 until there&rsquo;s a falsifiable test to run
           </div>
         </div>
       </div>

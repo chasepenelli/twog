@@ -6,6 +6,8 @@ these projections. No DB / HTTP. Records are built minimally but validly to mirr
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 from hsa_research.ingestion_bridge import web_presenters as present
@@ -49,6 +51,16 @@ def test_present_capsule_projects_display_fields():
     assert out["provenance_verdict"] == "pass"
     assert out["produced_by"] == "twog_compute"
     assert out["limitations"] == ["docking is an estimate, not measured binding"]
+
+
+def test_present_capsule_surfaces_provenance_anchors():
+    """The widened receipt carries the verifiable anchors (content_hash + lineage) so it's re-derivable."""
+    out = present.present_capsule(_capsule(content_hash="sha256:abc", lineage_index=2,
+                                           parent_content_hash="sha256:par", submitted_by="lab"))
+    assert out["content_hash"] == "sha256:abc"
+    assert out["lineage_index"] == 2
+    assert out["parent_content_hash"] == "sha256:par"
+    assert out["submitted_by"] == "lab"
 
 
 def test_present_capsule_defends_bad_signal_and_missing_optionals():
@@ -225,6 +237,33 @@ def test_present_rubric_degrades_on_empty_dict():
     assert out["promotion"]["auto_promotable"] is False  # invariant holds even with no data
     assert out["test_plan"] == [] and out["targets_needed"] == []
     assert out["moonshot_grade"] is False and out["has_falsifiable_plan"] is False
+
+
+def test_present_activity_feed_merges_reverse_chron_and_is_honest_about_idle():
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    jobs = [SimpleNamespace(runner_kind="modal", validation_type="docking", compute_profile="gpu_a100",
+                            status="completed", candidate_id="c1", updated_at=t0, created_at=t0)]
+    runs = [SimpleNamespace(agent_name="active_falsification_planner", status="completed",
+                            completed_at=t0.replace(hour=2), started_at=t0, created_at=t0)]
+    caps = [SimpleNamespace(payload={"signal": "refutes"}, target=SimpleNamespace(section="omics"),
+                            status="submitted", candidate_id="c1", capsule_id="cap1",
+                            updated_at=t0.replace(hour=3), created_at=t0)]
+    mans = [SimpleNamespace(title="campaign — 3 candidates", status="completed", created_at=t0.replace(hour=1))]
+    feed = present.present_activity_feed(agent_runs=runs, compute_jobs=jobs, capsules=caps, manifests=mans)
+    # merged reverse-chron: capsule(03:00) > agent(02:00) > campaign(01:00) > compute(00:00)
+    assert [e["type"] for e in feed["events"]] == ["capsule", "agent", "campaign", "compute"]
+    assert feed["events"][0]["signal"] == "refutes"
+    # no running job -> HONEST idle ($0), never faked busy
+    assert feed["idle"] is True and feed["running_jobs"] == 0 and "$0" in feed["idle_reason"]
+
+
+def test_present_activity_feed_busy_and_mock_is_labelled():
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    jobs = [SimpleNamespace(runner_kind="mock", validation_type="docking", compute_profile="cpu",
+                            status="running", candidate_id="c1", updated_at=t0, created_at=t0)]
+    feed = present.present_activity_feed(compute_jobs=jobs)
+    assert feed["idle"] is False and feed["running_jobs"] == 1
+    assert "mock (CI)" in feed["events"][0]["title"]  # simulated activity is never passed off as real GPU
 
 
 def test_present_engine_state_counts_signals_from_capsules():

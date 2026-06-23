@@ -103,6 +103,22 @@ def dispatch(
                 if not caps:
                     raise ApiError(404, "capsule not found")
                 return 200, _present.present_capsule(caps[0])
+            if len(pub) == 3 and pub[0] == "capsules" and pub[2] == "provenance":
+                bundle = service.public_capsule_provenance(UUID(pub[1]))
+                if bundle is None:
+                    raise ApiError(404, "capsule not found")
+                return 200, bundle  # already display-shaped + independently verifiable
+            if pub == ["activity"]:
+                # the live engine feed — merged reverse-chron, honest idle/online from real job state
+                feed = _present.present_activity_feed(
+                    agent_runs=service.list_agent_runs(limit=25),
+                    compute_jobs=service.list_compute_jobs(limit=25),
+                    capsules=service.list_proof_capsules(
+                        ProofCapsuleLibraryRequest(statuses=list(_present.PUBLIC_CAPSULE_STATUSES), limit=25)
+                    ).capsules,
+                    manifests=service.list_run_manifests(manifest_type="falsification_campaign", limit=10),
+                )
+                return 200, feed
             if pub == ["campaigns"]:
                 mans = service.list_run_manifests(manifest_type="falsification_campaign", limit=100)
                 return 200, [_present.present_manifest(m) for m in mans]

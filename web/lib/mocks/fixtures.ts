@@ -15,6 +15,7 @@
 
 import type {
   Candidate,
+  CapsuleProvenance,
   Collaborator,
   MoonshotRubric,
   ProofCapsule,
@@ -371,6 +372,33 @@ export const MOCK_CAPSULES: ProofCapsule[] = [
     produced_by: "twog engine",
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Verifiable provenance bundles (keyed by capsule_id) — the "re-derive this" surface
+// ---------------------------------------------------------------------------
+
+export const MOCK_CAPSULE_PROVENANCE: Record<string, CapsuleProvenance> = {
+  cap_pik3ca_supports: {
+    capsule_id: "cap_pik3ca_supports",
+    content_hash: "sha256:a39298c4a4f21a1e55ea1c9f981d6d51954204c03a08d5d5b2e0bae6a379a9ac",
+    hashing:
+      "sha256 over the capsule's canonical JSON content (signature, lineage and submitter EXCLUDED) — recompute it to verify the content is unaltered.",
+    signed: true,
+    signature: "ed25519:9f3a…kestrel",
+    signer: "fraserlab",
+    signer_public_key: "e5da5a6c9b4459480446d1ea0f1c7b2a8d3e4f5061728394a5b6c7d8e9f00112",
+    signature_valid: true,
+    lineage: { index: 0, parent_content_hash: null, chain_ok: true, versions: 1 },
+    audit: {
+      status: "verified",
+      checks_passed: ["candidate_id", "validation_type", "container_image_digest_pinned", "compute_job_completed"],
+      mismatches: [],
+    },
+    pipeline: ["fold (run the lane)", "hash (content_hash)", "sign (Ed25519)",
+               "attest (provenance + confound audit)", "pin (lineage + snapshot)"],
+    verifiable: true,
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Campaign / RunManifest (rollup proves any_promoted=false)

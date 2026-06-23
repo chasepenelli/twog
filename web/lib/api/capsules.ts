@@ -6,8 +6,8 @@
  * API-CLIENT owns lib/api/*.
  */
 
-import type { ProofCapsule } from "@/lib/types/domain";
-import { MOCK_CAPSULES } from "@/lib/mocks/fixtures";
+import type { CapsuleProvenance, ProofCapsule } from "@/lib/types/domain";
+import { MOCK_CAPSULES, MOCK_CAPSULE_PROVENANCE } from "@/lib/mocks/fixtures";
 import { ApiError, USE_MOCKS, mock, request } from "./config";
 
 /** List capsules for the public EVIDENCE surface (presented; no auth). */
@@ -20,6 +20,24 @@ export async function list(signal?: AbortSignal): Promise<ProofCapsule[]> {
 export async function get(capsule_id: string, signal?: AbortSignal): Promise<ProofCapsule> {
   if (USE_MOCKS) return mock(findOrFirst(capsule_id));
   return request<ProofCapsule>(`/public/capsules/${capsule_id}`, { signal });
+}
+
+/**
+ * The verifiable provenance bundle for a capsule — content hash, Ed25519 signature + signer public key
+ * + verdict, lineage chain, audit checks. Powers the "verify / re-derive this result" surface. Returns
+ * null when the capsule is unknown, so callers can degrade gracefully.
+ */
+export async function provenance(
+  capsule_id: string,
+  signal?: AbortSignal,
+): Promise<CapsuleProvenance | null> {
+  if (USE_MOCKS) return mock(MOCK_CAPSULE_PROVENANCE[capsule_id] ?? null);
+  try {
+    return await request<CapsuleProvenance>(`/public/capsules/${capsule_id}/provenance`, { signal });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
 }
 
 /** List only capsules still pending the operator's accept/promote decision. */
