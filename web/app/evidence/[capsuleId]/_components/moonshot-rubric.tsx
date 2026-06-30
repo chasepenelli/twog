@@ -222,8 +222,15 @@ export function MoonshotRubricView({ rubric }: { rubric: MoonshotRubric }) {
   return (
     <div className="panel" style={{ padding: "26px 24px", marginTop: 14 }}>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        {badge(r.moonshot_grade ? "b-green" : "b-muted", r.moonshot_grade ? "moonshot-grade" : "not moonshot-grade")}
-        {typeof r.moonshot_score === "number" ? badge("b-blue", `score ${r.moonshot_score.toFixed(2)}`) : null}
+        {/* Only show the moonshot-grade verdict when a thesis was actually graded. The autonomous roster
+            is "under test", not "failed" — leading with "not moonshot-grade · 0.0" would undercut a real,
+            falsifiable candidate the engine is actively interrogating. */}
+        {r.gradable
+          ? <>
+              {badge(r.moonshot_grade ? "b-green" : "b-muted", r.moonshot_grade ? "moonshot-grade" : "not moonshot-grade")}
+              {typeof r.moonshot_score === "number" ? badge("b-blue", `score ${r.moonshot_score.toFixed(2)}`) : null}
+            </>
+          : badge("b-blue", "active candidate · under test")}
         <span className={`sig ${r.net_signal === "none" ? "neutral" : r.net_signal} mono`} style={{ fontSize: 12.5 }}>
           net {r.net_signal} · {Math.round(r.net_confidence * 100)}%
         </span>

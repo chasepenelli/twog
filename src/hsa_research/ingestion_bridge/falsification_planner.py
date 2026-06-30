@@ -99,18 +99,24 @@ def compose_premise(
 ) -> RubricPremise:
     """The grounded 'because of A'. `is_specified` (computed by the caller from whether the SOURCE stated
     a mechanism/rationale, not a fallback) gates honest 'premise_unstated'. `strength` is the idea's
-    stated tier VERBATIM — never upgraded (the verdict ceiling)."""
+    stated tier VERBATIM — never upgraded (the verdict ceiling). `basis`/`supports_quality` only carry
+    text that ADDS to the claim — when the only grounding is the bare hypothesis (the roster case), they
+    stay empty rather than echoing the claim sentence three times."""
     ms = mech_short(mechanism)
-    basis = (
-        (rationale or mechanism)
-        if is_specified
-        else "premise_unstated — no upstream mechanism/rationale; treat as hypothesis-only"
-    )
+    claim = (ms or claim_fallback or "").strip()
+    if not is_specified:
+        basis = "premise_unstated — no upstream mechanism/rationale; treat as hypothesis-only"
+    else:
+        # the rationale is the 'why' ONLY when it's real and distinct from the claim/mechanism — else
+        # it would just repeat the claim, so leave basis empty (the UI then shows the claim alone).
+        r = (rationale or "").strip()
+        basis = r if (r and r != claim and r != (mechanism or "").strip()) else ""
+    supports_quality = ms.strip() if ms.strip() and ms.strip() != claim else ""  # never echo the claim
     strength = evidence_strength if evidence_strength in ("high", "medium", "low", "unknown") else "unknown"
     return RubricPremise(
-        claim=(ms or claim_fallback or "")[:1000],
-        basis=(basis or "")[:1500],
-        supports_quality=ms[:600],
+        claim=claim[:1000],
+        basis=basis[:1500],
+        supports_quality=supports_quality[:600],
         strength=strength,
         is_specified=is_specified,
     )

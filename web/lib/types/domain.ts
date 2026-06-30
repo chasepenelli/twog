@@ -359,6 +359,8 @@ export interface MoonshotRubric {
   inference_chain: RubricInferenceLink[];
   /** What it would mean if the whole chain survives — capped at survived_known_confounds. */
   expected_payoff: RubricExpectedPayoff;
+  /** Whether a thesis existed to grade. False for the autonomous roster (never graded, not "failed"). */
+  gradable: boolean;
   moonshot_grade: boolean;
   moonshot_score?: number;
   moonshot_gate: { passed: boolean; weighted_score?: number; reasons: string[]; blockers: string[] };

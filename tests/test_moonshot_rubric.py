@@ -316,6 +316,35 @@ def test_spine_premise_composed_from_entities_when_no_thesis_mechanism(tmp_path)
     assert "alpelisib" in dock.probes[0]
 
 
+def test_spine_premise_no_triplicate_echo(tmp_path):
+    """#2: with only entities (no rationale), the premise carries ONE grounded claim — basis and
+    supports_quality stay empty rather than echoing the same sentence three times."""
+    svc = _svc(tmp_path)
+    svc.seed_validation_ready_candidate("c-echo", title="echo", evidence_refs=["curate:x"],
+                                        targets=["PIK3CA"], candidate_therapies=["alpelisib"])
+    p = svc.build_moonshot_rubric("c-echo").premises[0]
+    assert p.is_specified is True
+    assert "alpelisib is hypothesized to engage PIK3CA" in p.claim
+    assert p.basis == "" and p.supports_quality == ""  # no echo of the claim
+
+
+def test_test_plan_in_canonical_order(tmp_path):
+    """#3: the displayed test plan follows the canonical logical order (docking → cofolding → md → omics)
+    consistent with the inference chain — not the planner's VOI order — and `order` is renumbered to it."""
+    svc = _svc(tmp_path)
+    svc.seed_validation_ready_candidate("c-order", title="order", evidence_refs=["curate:x"],
+                                        targets=["PIK3CA"], candidate_therapies=["alpelisib"])
+    r = svc.build_moonshot_rubric("c-order")
+    canon = {"docking": 0, "cofolding": 1, "md": 2, "omics": 3}
+    idxs = [canon.get(t.lane, 9) for t in r.test_plan]
+    assert idxs == sorted(idxs)  # non-decreasing canonical order
+    assert [t.order for t in r.test_plan] == list(range(1, len(r.test_plan) + 1))  # renumbered to display
+    assert len({t.order for t in r.test_plan}) == len(r.test_plan)  # orders strictly unique (tie-break invariant)
+    # the inference chain leads with docking and ends on the omics keystone — same logical order
+    chain_lanes = [link.from_lanes[0] for link in r.inference_chain if link.from_lanes]
+    assert chain_lanes[0] == "docking" and chain_lanes[-1] == "omics"
+
+
 def test_spine_premise_unstated_when_no_entities(tmp_path):
     """When a candidate names NO compound or NO target, there is nothing real to ground a premise on —
     the spine renders an HONEST 'premise_unstated' marker rather than inventing one."""

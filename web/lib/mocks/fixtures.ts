@@ -177,6 +177,7 @@ export const MOCK_RUBRICS: Record<string, MoonshotRubric> = {
       is_specified: true,
       caveat: "survived_known_confounds, never proven; the operator write-gate is terminal.",
     },
+    gradable: true,
     moonshot_grade: true,
     moonshot_score: 0.9,
     moonshot_gate: {

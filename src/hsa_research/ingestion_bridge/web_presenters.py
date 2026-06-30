@@ -256,6 +256,10 @@ def present_rubric(rubric: dict[str, Any]) -> dict[str, Any]:
             "is_specified": bool(payoff.get("is_specified")),
             "caveat": _truncate(str(payoff.get("caveat") or ""), 240),
         },
+        # gradable = the candidate had a thesis the moonshot gate could score. False for the autonomous
+        # roster (no therapy idea) — so the UI shows "under test" + falsifiable-plan/standing instead of
+        # an undercutting "not moonshot-grade · score 0.0" that only means "never graded".
+        "gradable": bool(gate),
         "moonshot_grade": bool(r.get("moonshot_grade")),
         "moonshot_score": r.get("moonshot_score"),
         "moonshot_gate": {

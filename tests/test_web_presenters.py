@@ -200,6 +200,7 @@ def test_present_rubric_projects_whole_shabang():
     out = present.present_rubric(_rubric_dict())
     assert out["title"] == "Alpelisib × PIK3CA"
     assert out["moonshot_grade"] is True and out["has_falsifiable_plan"] is True
+    assert out["gradable"] is True  # a thesis was graded (non-empty moonshot_gate)
     # targets carry the 3-state docking verification (the spend gate)
     assert out["targets_needed"][0]["verification"] == "verified"
     assert out["targets_needed"][0]["pdb_id"] == "4JPS"
@@ -232,11 +233,23 @@ def test_present_rubric_projects_whole_shabang():
     assert "never proven" in out["expected_payoff"]["caveat"]
 
 
+def test_present_rubric_failed_grade_stays_gradable():
+    """A graded-but-FAILED candidate (non-empty gate, passed=False) stays gradable=True -> the UI shows
+    'not moonshot-grade', NEVER the soft 'active candidate · under test' (reserved for never-graded roster
+    candidates where the gate dict is empty). Locks the never-graded vs graded-and-failed distinction."""
+    out = present.present_rubric(_rubric_dict(
+        moonshot_gate={"passed": False, "blockers": ["frontier_weighted_score_below_0.80"], "reasons": []},
+        moonshot_grade=False, moonshot_score=0.4))
+    assert out["gradable"] is True  # non-empty gate => graded (even though it failed)
+    assert out["moonshot_grade"] is False  # => header shows "not moonshot-grade", not "under test"
+
+
 def test_present_rubric_degrades_on_empty_dict():
     out = present.present_rubric({})
     assert out["promotion"]["auto_promotable"] is False  # invariant holds even with no data
     assert out["test_plan"] == [] and out["targets_needed"] == []
     assert out["moonshot_grade"] is False and out["has_falsifiable_plan"] is False
+    assert out["gradable"] is False  # no gate -> "under test", not an undercutting "not moonshot-grade"
 
 
 def test_present_activity_feed_merges_reverse_chron_and_is_honest_about_idle():

@@ -2875,6 +2875,15 @@ class HSAResearchService:
                 mechanistic_premise=mech, probes=probes, why_it_bears=why_it_bears, interpretation=interpretation,
             ))
 
+        # Display the plan in the SAME canonical logical order as the inference chain (engagement →
+        # orthogonal check → stability → cross-species translation), so the two sections read consistently
+        # instead of the planner's VOI order fighting the chain's order. is_proposed (the VOI-next test)
+        # rides on each entry, so reordering for display preserves which test is genuinely queued next;
+        # `order` is renumbered to the display position. Same-lane ties keep their VOI order.
+        _CANON = {"docking": 0, "cofolding": 1, "md": 2, "omics": 3}
+        test_plan.sort(key=lambda t: (_CANON.get(t.lane, 9), t.order))
+        test_plan = [t.model_copy(update={"order": i + 1}) for i, t in enumerate(test_plan)]
+
         # (3) Compounds — names from the candidate; SMILES ONLY from what the resolver surfaced (+ native cocrystals)
         compounds = [RubricCompound(
             name=n, role="lead", smiles=smiles_seen.get(n, (None, "unresolved"))[0],
