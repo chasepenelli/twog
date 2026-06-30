@@ -305,7 +305,7 @@ def run_api_server(
     dispatch. CORS-enabled for the Next.js origin. The verifier is injected so the WorkOS SDK is only
     needed at the deployment that actually runs this (tests exercise dispatch/resolution directly)."""
     import json
-    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class Handler(BaseHTTPRequestHandler):
         def _principal(self) -> CollaboratorRecord | None:
@@ -351,4 +351,6 @@ def run_api_server(
         def log_message(self, *args: Any) -> None:  # quiet by default
             pass
 
-    HTTPServer((host, port), Handler).serve_forever()
+    # Threaded so the front-end's periodic polls (e.g. the live ledger) don't serialize behind one
+    # another and reset the connection — each request gets its own short-lived per-request service/conn.
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
