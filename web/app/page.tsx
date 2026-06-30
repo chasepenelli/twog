@@ -4,10 +4,11 @@ import { api } from "@/lib/api";
 import { LiveLoop } from "@/components/state/live-loop";
 import { LiveAgo } from "@/components/state/live-ago";
 import { LiveActivity } from "@/components/state/live-activity";
+import { LaneTrack } from "@/components/evidence/lane-track";
+import { deriveLaneTrack, publicQuestion, verdictOf, VERDICT_META } from "@/lib/evidence/verdict";
 
 export const metadata = { title: "Research state" };
 
-const SIG_LABEL: Record<string, string> = { supports: "SUPPORTS", refutes: "REFUTES", neutral: "NEUTRAL" };
 const STRIPE: Record<string, string> = { supports: "var(--green)", refutes: "var(--red)", neutral: "var(--muted)" };
 const LANE_BADGE: Record<string, { cls: string; mark: string }> = {
   verified: { cls: "b-green", mark: "✓" }, running: { cls: "b-blue", mark: "•" }, failed: { cls: "b-red", mark: "✗" },
@@ -30,6 +31,11 @@ export default async function StatePage() {
   const engine = await api.engine.state();
   const capsules = await api.capsules.list().catch(() => []);
   const latest = capsules.slice(0, 3);
+  // enrich each card with its candidate's plain verdict + how-far-tested tracker (a few fetches; the
+  // list is short). The card still links to the capsule's full story.
+  const rubrics = await Promise.all(
+    latest.map((c) => api.candidates.rubric(c.candidate_id).catch(() => null)),
+  );
 
   return (
     <div className="wrap" style={{ paddingTop: 48 }}>
@@ -69,11 +75,12 @@ export default async function StatePage() {
         open and re-check for yourself.
       </p>
 
-      {/* legend */}
+      {/* legend — the tracker vocabulary used in the cards below */}
       <div className="mono" style={{ display: "flex", flexWrap: "wrap", gap: "10px 22px", marginTop: 28, padding: "14px 18px", border: "1px solid var(--line)", borderRadius: 13, fontSize: 12.5, color: "var(--muted)", background: "var(--soft)" }}>
-        <span><span style={{ color: "var(--accent)" }}>lit step</span> — running now</span>
-        <span><span style={{ color: "var(--green)" }}>✓</span> verified — double-checked a second way</span>
-        <span><span style={{ color: "var(--green)" }}>●</span> verdict — supports / refutes / neutral</span>
+        <span><span style={{ color: "var(--green)" }}>✓</span> held — survived a test</span>
+        <span><span style={{ color: "var(--accent)" }}>●</span> checking now</span>
+        <span><span style={{ color: "var(--muted)" }}>○</span> not yet</span>
+        <span><span style={{ color: "var(--red)" }}>✕</span> ruled out — the idea was disproven</span>
       </div>
 
       {/* WHERE IT STANDS */}
@@ -132,24 +139,41 @@ export default async function StatePage() {
         </div>
       </section>
 
-      {/* LATEST PROOF */}
+      {/* WHAT IT'S WORKING ON */}
       <section className="sec sec-line">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 10 }}>
-          <h2 className="h2" style={{ margin: 0 }}>Latest proof</h2>
-          <Link href="/evidence" className="mono accent" style={{ fontSize: 13 }}>see all evidence →</Link>
+          <h2 className="h2" style={{ margin: 0 }}>What it's working on</h2>
+          <Link href="/evidence" className="mono accent" style={{ fontSize: 13 }}>see everything →</Link>
         </div>
         <p className="muted" style={{ fontSize: 15.5, margin: "10px 0 24px", maxWidth: "60ch" }}>
-          Each result is a proof capsule: the claim, the verdict, the confidence, and its limits, sealed and
-          signed so anyone can re-open and check it. Refuting evidence counts the same as support.
+          Each idea is a real drug against a real target, tested one step at a time. Open any one to see how
+          far it&rsquo;s gotten — and why a result that survives means something.
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {latest.map((c) => (
-            <Link key={c.capsule_id} href={`/evidence/${c.capsule_id}`} className="panel" style={{ display: "block", padding: "24px 26px", borderLeft: `3px solid ${STRIPE[c.signal] ?? "var(--line)"}` }}>
-              <span className={`sig ${c.signal} mono`} style={{ fontSize: 12.5, letterSpacing: "0.14em" }}>{SIG_LABEL[c.signal] ?? c.signal}</span>
-              <div style={{ fontSize: 19, fontWeight: 700, letterSpacing: "-0.02em", marginTop: 9, maxWidth: "52ch" }}>{c.claim ?? c.candidate_id}</div>
-              {c.plain ? <div className="muted" style={{ marginTop: 7, fontSize: 14.5, maxWidth: "56ch" }}>{c.plain}</div> : null}
-            </Link>
-          ))}
+          {latest.map((c, i) => {
+            const rubric = rubrics[i];
+            const verdict = VERDICT_META[verdictOf(rubric)];
+            const steps = deriveLaneTrack(rubric);
+            const question = publicQuestion(rubric?.title, c.claim ?? c.candidate_id);
+            return (
+              <Link
+                key={c.capsule_id}
+                href={`/evidence/${c.capsule_id}`}
+                className="panel"
+                style={{ display: "block", padding: "24px 26px", borderLeft: `3px solid ${STRIPE[c.signal] ?? "var(--line)"}` }}
+              >
+                <span className={`badge ${verdict.tone}`} style={{ fontSize: 11.5 }}>{verdict.label}</span>
+                <div style={{ fontSize: 19, fontWeight: 700, letterSpacing: "-0.02em", margin: "10px 0 0", maxWidth: "52ch" }}>
+                  {question}
+                </div>
+                {steps.length ? (
+                  <div style={{ marginTop: 14 }}><LaneTrack steps={steps} variant="compact" /></div>
+                ) : c.plain ? (
+                  <div className="muted" style={{ marginTop: 8, fontSize: 14.5, maxWidth: "56ch" }}>{c.plain}</div>
+                ) : null}
+              </Link>
+            );
+          })}
         </div>
       </section>
 
