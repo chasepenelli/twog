@@ -266,6 +266,16 @@ def test_present_activity_feed_busy_and_mock_is_labelled():
     assert "mock (CI)" in feed["events"][0]["title"]  # simulated activity is never passed off as real GPU
 
 
+def test_present_activity_feed_counts_approved_as_in_flight():
+    """A job that's 'approved' (post-gate, pre-dispatch) is work-in-progress — NOT idle. Surfaced by the
+    first real Modal campaign, where docks sat in 'approved' and the feed wrongly read idle."""
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    jobs = [SimpleNamespace(runner_kind="modal", validation_type="docking", compute_profile="gpu_a100",
+                            status="approved", candidate_id="c1", updated_at=t0, created_at=t0)]
+    feed = present.present_activity_feed(compute_jobs=jobs)
+    assert feed["idle"] is False and feed["running_jobs"] == 1
+
+
 def test_present_engine_state_counts_signals_from_capsules():
     caps = [
         _capsule(payload={"signal": "supports"}),

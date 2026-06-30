@@ -455,7 +455,10 @@ def present_activity_feed(
     events = [e for e in events if e["occurred_at"]]
     events.sort(key=lambda e: e["occurred_at"], reverse=True)  # ISO-UTC sorts lexically == chronologically
 
-    running = [j for j in (compute_jobs or []) if _status_str(getattr(j, "status", None)) in ("queued", "submitted", "running")]
+    # in-flight = a job committed to run but not yet terminal. 'approved' is post-gate / pre-dispatch —
+    # genuinely work-in-progress (NOT idle). 'needs_approval' is excluded (awaiting the human gate).
+    _ACTIVE = ("approved", "queued", "submitted", "running")
+    running = [j for j in (compute_jobs or []) if _status_str(getattr(j, "status", None)) in _ACTIVE]
     idle = len(running) == 0
     return {
         "events": events[:limit],
