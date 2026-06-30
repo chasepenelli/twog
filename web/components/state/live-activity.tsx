@@ -82,8 +82,8 @@ export function LiveActivity({ variant = "light" }: { variant?: "light" | "dark"
             {idle ? "idle · $0" : `running · ${running}`}
           </span>
         </div>
-        <div style={{ padding: "16px 18px 20px", minHeight: 286, display: "flex", flexDirection: "column", gap: 11,
-                      fontSize: 13.5, lineHeight: 1.5 }}>
+        <div style={{ padding: "16px 18px 20px", height: 340, overflowY: "auto", display: "flex", flexDirection: "column",
+                      gap: 11, fontSize: 13.5, lineHeight: 1.5 }}>
           {err && !feed ? <div style={{ color: "#8a8f98" }}>activity feed unavailable</div> : null}
           {events.map((e, i) => {
             const tag = DARK_TAG[e.type] ?? DARK_TAG.agent;
@@ -116,7 +116,7 @@ export function LiveActivity({ variant = "light" }: { variant?: "light" | "dark"
           {idle ? (feed?.idle_reason ?? "IDLE — OUT OF RUNNABLE WORK ($0)") : `RUNNING · ${running} job${running === 1 ? "" : "s"}`}
         </span>
       </div>
-      <div>
+      <div style={{ maxHeight: 420, overflowY: "auto" }}>
         {events.map((e, i) => {
           const badge = LIGHT_BADGE[e.type] ?? LIGHT_BADGE.agent;
           return (

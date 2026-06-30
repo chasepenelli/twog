@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 
+from hsa_research.ingestion_bridge.input_catalog import CatalogResolvers, InputCatalog
 from hsa_research.ingestion_bridge.input_resolvers import NetworkInputResolvers
 from hsa_research.ingestion_bridge.postgres_store import PostgresResearchRepository
 from hsa_research.ingestion_bridge.service import HSAResearchService
@@ -26,7 +27,8 @@ def main() -> None:
     url = _database_url()
     print(f"Neon: {url.split('@')[-1].split('/')[0]}", flush=True)
     svc = HSAResearchService(PostgresResearchRepository(url, seed=False))
-    svc.input_resolvers = NetworkInputResolvers()  # live PubChem SMILES so docking inputs can resolve
+    # read-through catalog so resolved SMILES/sequences are reused (resolve-once) and persisted
+    svc.input_resolvers = CatalogResolvers(NetworkInputResolvers(), InputCatalog())
 
     print(
         f"campaign: runner=modal · lanes=[docking] · max_rounds={MAX_ROUNDS} · "
