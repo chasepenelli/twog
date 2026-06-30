@@ -1461,19 +1461,24 @@ class HSAResearchService:
         return self.repository.get_public_candidate(candidate_id)
 
     def get_public_candidate_rubric(self, candidate_id: str) -> dict[str, Any] | None:
-        """The pre-registered MoonshotRubric folded into this candidate's LATEST published snapshot
-        (payload['moonshot_rubric']). This is the published, content-hashed pre-registration — read it
-        from the snapshot rather than re-deriving, so the public surface shows exactly what was committed.
-        Returns None if the candidate / its snapshot / the rubric is absent (e.g. a non-moonshot candidate
-        published with require_moonshot_grade=False)."""
+        """The pre-registered MoonshotRubric for a candidate, as a display dict. PREFERS the version
+        folded into the candidate's latest published snapshot (the content-hashed pre-registration —
+        exactly what was committed). FALLS BACK to deriving it on demand for candidates that carry no
+        stored rubric (e.g. the autonomously-generated roster), so the grounded reasoning spine renders
+        for EVERY candidate, not just snapshot-published moonshots. The derive path is deterministic and
+        read-only: no provenance writes (log_provenance=False), no network resolver (hash-stable, fast) —
+        roster candidates carry pinned mechanism/translational_path, so the premise/inference/payoff still
+        ground. Returns None only when the candidate itself does not exist."""
         candidate = self.repository.get_public_candidate(candidate_id)
-        if candidate is None or candidate.latest_snapshot_id is None:
+        if candidate is None:
             return None
-        snapshot = self.repository.get_public_candidate_snapshot(candidate.latest_snapshot_id)
-        if snapshot is None:
-            return None
-        rubric = (snapshot.payload or {}).get("moonshot_rubric")
-        return rubric if isinstance(rubric, dict) else None
+        if candidate.latest_snapshot_id is not None:
+            snapshot = self.repository.get_public_candidate_snapshot(candidate.latest_snapshot_id)
+            stored = (snapshot.payload or {}).get("moonshot_rubric") if snapshot else None
+            if isinstance(stored, dict):
+                return stored
+        built = self.build_moonshot_rubric(candidate_id, log_provenance=False)
+        return built.content_payload() if built is not None else None
 
     def seed_validation_ready_candidate(
         self,
@@ -2755,12 +2760,27 @@ class HSAResearchService:
         next_experiment = idea_obj.next_experiments[0] if (idea_obj and idea_obj.next_experiments) else ""
         _bms = sorted(idea_obj.biomarkers) if (idea_obj and idea_obj.biomarkers) else sorted(candidate.biomarkers)
         biomarker = _bms[0] if _bms else None
+        # Derive-on-demand grounding: when NO thesis/candidate mechanism is stored (e.g. the autonomously-
+        # generated roster, whose mechanism predates the ground-at-source composer), compose a HYPOTHESIS-
+        # framed premise from the candidate's OWN named entities (compound + target + biomarkers) so the
+        # reasoning spine grounds for EVERY candidate. Deterministic + read-only; never fabricates biology
+        # (it states a hypothesis over real entities, framed 'X is hypothesized to engage Y').
+        if not idea_mechanism and candidate.candidate_therapies and candidate.targets:
+            from .candidate_generator import compose_candidate_reasoning
+            _m, _tp = compose_candidate_reasoning(
+                compound=candidate.candidate_therapies[0], target=candidate.targets[0],
+                rationale=(candidate.rationale_md or candidate.summary or ""), biomarkers=list(candidate.biomarkers),
+            )
+            idea_mechanism = _m
+            translational_path = translational_path or _tp
+            premise_specified = True  # grounded in the candidate's real named entities, framed as a hypothesis
+            notes.append("premise_composed_from_candidate_entities")
         mech = mech_short(idea_mechanism)
         mechanistic_premise_str = (
-            (idea_obj.mechanism if idea_obj else None) or (idea_obj.rationale if idea_obj else None)
-            or candidate.mechanism or candidate.rationale_md or candidate.summary or ""
+            idea_mechanism or (idea_obj.rationale if idea_obj else None)
+            or candidate.rationale_md or candidate.summary or ""
         )
-        if idea_obj is None and not candidate.mechanism and not candidate.rationale_md:
+        if not idea_mechanism and not candidate.rationale_md:
             notes.append("reasoning_unstated_upstream")
 
         # full_plan=True → EVERY runnable lane gets a pre-registered plan (the complete intended test

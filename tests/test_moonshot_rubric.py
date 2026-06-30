@@ -300,20 +300,34 @@ def test_spine_grounded_from_candidate_mechanism(tmp_path):
     assert "survived_known_confounds" in r.expected_payoff.caveat
 
 
-def test_spine_premise_unstated_when_no_reasoning(tmp_path):
-    """When the thesis states no mechanism/rationale, the spine renders an HONEST 'premise_unstated'
-    marker + a reasoning_unstated_upstream note — it never fabricates biology."""
+def test_spine_premise_composed_from_entities_when_no_thesis_mechanism(tmp_path):
+    """A candidate with a named compound+target but no authored mechanism (the autonomous-roster case)
+    gets a HYPOTHESIS-framed premise composed from its OWN entities — grounded, never fabricated biology,
+    so the spine renders for every candidate rather than reading 'unstated'."""
     svc = _svc(tmp_path)
     svc.seed_validation_ready_candidate("c-bare", title="bare candidate", evidence_refs=["curate:x"],
                                         targets=["PIK3CA"], candidate_therapies=["alpelisib"])
     r = svc.build_moonshot_rubric("c-bare")
+    assert r.premises[0].is_specified is True
+    assert "alpelisib is hypothesized to engage PIK3CA" in r.premises[0].claim  # grounded hypothesis, not invented
+    assert r.premises[0].strength == "unknown"  # honest — no evidence tier without a thesis
+    assert any("premise_composed_from_candidate_entities" in n for n in r.assembly_notes)
+    dock = next(t for t in r.test_plan if t.lane == "docking")
+    assert "alpelisib" in dock.probes[0]
+
+
+def test_spine_premise_unstated_when_no_entities(tmp_path):
+    """When a candidate names NO compound or NO target, there is nothing real to ground a premise on —
+    the spine renders an HONEST 'premise_unstated' marker rather than inventing one."""
+    from hsa_research.ingestion_bridge.contracts import PublicCandidateRecord
+
+    svc = _svc(tmp_path)
+    bare = PublicCandidateRecord(candidate_id="c-empty", title="no entities", targets=["PIK3CA"],
+                                 candidate_therapies=[])  # a target but no compound -> nothing to compose
+    r = svc.build_moonshot_rubric("c-empty", candidate_record=bare)
     assert r.premises[0].is_specified is False
     assert "premise_unstated" in r.premises[0].basis
     assert any("reasoning_unstated_upstream" in n for n in r.assembly_notes)
-    # probes stay entity-grounded (name the compound/target) but carry NO invented mechanism clause
-    dock = next(t for t in r.test_plan if t.lane == "docking")
-    assert "alpelisib" in dock.probes[0]
-    assert "requires" not in dock.probes[0]  # the 'that <mechanism> requires' clause is omitted, not faked
 
 
 def test_spine_vocabulary_is_falsification_first(tmp_path):
