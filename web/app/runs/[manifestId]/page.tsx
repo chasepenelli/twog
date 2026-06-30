@@ -63,8 +63,7 @@ export default async function RunReportPage({ params }: { params: { manifestId: 
             return <span key={k} className={`badge ${o.cls}`}>{n} {o.label.toLowerCase()}</span>;
           })}
           <span className="mono muted" style={{ fontSize: 12.5, marginLeft: 4 }}>
-            {rollup.candidates_processed}/{rollup.candidates_selected} run · ${rollup.total_est_cost_usd.toFixed(2)} spent
-            {rollup.budget_exhausted ? " · budget reached" : ""}
+            {rollup.candidates_processed}/{rollup.candidates_selected} run
           </span>
         </div>
       </Section>
@@ -84,7 +83,6 @@ export default async function RunReportPage({ params }: { params: { manifestId: 
                 </div>
                 <p className="muted" style={{ fontSize: 14.5, marginTop: 7, maxWidth: "60ch" }}>{row.plain ?? o.gloss}</p>
                 <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
-                  <span className="mono muted" style={{ fontSize: 12.5 }}>${row.total_est_cost_usd.toFixed(2)}</span>
                   {row.capsule_ids.length ? (
                     <span style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                       {row.capsule_ids.map((cid) => (

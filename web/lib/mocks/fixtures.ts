@@ -202,7 +202,7 @@ export const MOCK_RUBRICS: Record<string, MoonshotRubric> = {
       {
         order: 1, lane: "docking", objective: "Dock alpelisib against the verified PIK3CA pocket to test engagement.",
         standing: "supports_unaudited", maturity: "production", inputs_ready: true, is_proposed: false,
-        autonomously_runnable: true, est_cost_usd: 0.1, value_of_information: 0.8,
+        autonomously_runnable: true, value_of_information: 0.8,
         kill_criterion: { metric: "gnina_cnn_affinity", comparator: "<", threshold: 4.0, kills_on: "refutes", rationale: "No measurable engagement refutes target-mediated action." },
         expected_signal_if_alive: "supports", addresses_confound: null,
         probes: ["Can the modeled pose let alpelisib occupy the site at PIK3CA (PDB 4JPS) that mutation-selective PI3Kα inhibition requires?"],
@@ -217,7 +217,7 @@ export const MOCK_RUBRICS: Record<string, MoonshotRubric> = {
       {
         order: 2, lane: "omics", objective: "Audit the tumor-purity confound before trusting the supporting omics signal.",
         standing: "queued", maturity: "production", inputs_ready: true, is_proposed: true,
-        autonomously_runnable: true, est_cost_usd: 0.02, value_of_information: 0.9,
+        autonomously_runnable: true, value_of_information: 0.9,
         kill_criterion: { metric: "cross_species_axis_direction", comparator: "signal_is", threshold: "refutes", kills_on: "refutes", rationale: "A refuting cross-species axis kills the translational claim." },
         expected_signal_if_alive: "supports", addresses_confound: "tumor_purity",
         probes: ["Does the PIK3CA mutation axis move in the SAME direction across canine HSA × human AS?"],
@@ -232,7 +232,7 @@ export const MOCK_RUBRICS: Record<string, MoonshotRubric> = {
       {
         order: 3, lane: "md", objective: "MD smoke to probe binding-pose stability of the docked complex.",
         standing: "untested", maturity: "smoke", inputs_ready: false, is_proposed: false,
-        autonomously_runnable: true, est_cost_usd: 0.25, value_of_information: 0.5,
+        autonomously_runnable: true, value_of_information: 0.5,
         kill_criterion: { metric: "ligand_pocket_rmsd_nm", comparator: ">", threshold: 0.5, kills_on: "refutes", rationale: "If the ligand drifts out of the pocket under MD, it is not a stable binder." },
         expected_signal_if_alive: "supports", addresses_confound: null,
         probes: ["Does the docked alpelisib-PIK3CA pose stay seated under dynamics (ligand_pocket_rmsd_nm <= 0.5) — stable engagement vs a single-pose artifact?"],
@@ -414,8 +414,6 @@ export const MOCK_CAMPAIGNS: RunManifest[] = [
     rollup: {
       candidates_selected: 4,
       candidates_processed: 3,
-      total_est_cost_usd: 0.42,
-      budget_exhausted: false,
       any_promoted: false,
       terminal_reasons: {
         hypothesis_standing: 2,
@@ -433,7 +431,6 @@ export const MOCK_CAMPAIGNS: RunManifest[] = [
         candidate_id: "cand_pik3ca_immunosuppr",
         terminal_reason: "hypothesis_standing",
         leading_hypothesis_status: "standing",
-        total_est_cost_usd: 0.11,
         capsule_ids: ["cap_pik3ca_supports"],
         plain: "The immunosuppression story was killed, but the reframed PIK3CA\u2192endothelial claim held up.",
       },
@@ -441,7 +438,6 @@ export const MOCK_CAMPAIGNS: RunManifest[] = [
         candidate_id: "cand_kdr_angiogenesis",
         terminal_reason: "hypothesis_standing",
         leading_hypothesis_status: "standing",
-        total_est_cost_usd: 0.18,
         capsule_ids: ["cap_kdr_supports", "cap_kdr_neutral"],
         plain: "VEGFR2 engagement survived docking; the expression-only angle stayed inconclusive.",
       },
@@ -449,15 +445,13 @@ export const MOCK_CAMPAIGNS: RunManifest[] = [
         candidate_id: "cand_mtor_alpelisib_synergy",
         terminal_reason: "provenance_gate_failed",
         leading_hypothesis_status: "refuted",
-        total_est_cost_usd: 0.13,
         capsule_ids: ["cap_mtor_refutes"],
-        plain: "The proposed mTOR structure failed its trust check \u2014 refused before any compute was spent.",
+        plain: "The proposed mTOR structure failed its trust check \u2014 refused before any compute ran on it.",
       },
       {
         candidate_id: "cand_braf_osteosarcoma",
         terminal_reason: "underpowered_skipped",
         leading_hypothesis_status: "underpowered",
-        total_est_cost_usd: 0,
         capsule_ids: [],
         plain: "No runnable test resolved for BRAF this round \u2014 it is queued, not yet attempted.",
       },
@@ -471,8 +465,6 @@ export const MOCK_CAMPAIGNS: RunManifest[] = [
     rollup: {
       candidates_selected: 2,
       candidates_processed: 2,
-      total_est_cost_usd: 0.27,
-      budget_exhausted: true,
       any_promoted: false,
       terminal_reasons: {
         hypothesis_standing: 1,
@@ -488,14 +480,12 @@ export const MOCK_CAMPAIGNS: RunManifest[] = [
         candidate_id: "cand_kdr_angiogenesis",
         terminal_reason: "hypothesis_standing",
         leading_hypothesis_status: "standing",
-        total_est_cost_usd: 0.15,
         capsule_ids: ["cap_kdr_supports"],
       },
       {
         candidate_id: "cand_mtor_alpelisib_synergy",
         terminal_reason: "budget_exhausted",
         leading_hypothesis_status: "refuted",
-        total_est_cost_usd: 0.12,
         capsule_ids: ["cap_mtor_refutes"],
       },
     ],
@@ -581,7 +571,7 @@ export const MOCK_TARGET_LIBRARY: TargetLibraryEntry[] = [
     target_id: "tgt_mtor",
     gene: "MTOR",
     verdict: "refused",
-    note: "Pose verification failed (PoseBusters); refused at spend gate — bad MTOR pose.",
+    note: "Pose verification failed (PoseBusters); refused at the input-verification gate — bad MTOR pose.",
     candidate_refs: ["cand_mtor_alpelisib_synergy"],
   },
 ];

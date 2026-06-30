@@ -23,7 +23,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { usd, humanize } from "../_lib/format";
+import { humanize } from "../_lib/format";
 import { useAsync } from "../_lib/use-async";
 import { PageHeader } from "../_components/page-header";
 import { AsyncSection } from "../_components/async-section";
@@ -54,7 +54,6 @@ export default function CampaignsPage() {
                   <TableHead>Campaign</TableHead>
                   <TableHead>Runner</TableHead>
                   <TableHead>Processed</TableHead>
-                  <TableHead>Est. cost</TableHead>
                   <TableHead>Promoted</TableHead>
                   <TableHead className="w-8" />
                 </TableRow>
@@ -76,14 +75,6 @@ export default function CampaignsPage() {
                     <TableCell className="tabular-nums">
                       {m.rollup.candidates_processed}/
                       {m.rollup.candidates_selected}
-                    </TableCell>
-                    <TableCell className="tabular-nums">
-                      {usd(m.rollup.total_est_cost_usd)}
-                      {m.rollup.budget_exhausted && (
-                        <Badge variant="warning" className="ml-2">
-                          Budget exhausted
-                        </Badge>
-                      )}
                     </TableCell>
                     <TableCell>
                       <Badge variant="success" className="gap-1">

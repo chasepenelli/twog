@@ -56,7 +56,7 @@ export default async function StatePage() {
         <div>
           <LiveActivity variant="dark" />
           <div className="mono muted" style={{ fontSize: 11.5, letterSpacing: "0.04em", marginTop: 12, textAlign: "center" }}>
-            live ledger · real engine activity — idle at $0 until there&rsquo;s a falsifiable test to run
+            live ledger · real engine activity — idle until there&rsquo;s a falsifiable test to run
           </div>
         </div>
       </div>
@@ -113,7 +113,7 @@ export default async function StatePage() {
         <p className="muted" style={{ fontSize: 15.5, margin: "-4px 0 24px", maxWidth: "60ch" }}>
           Four kinds of experiment, in parallel — each result re-checked a second way before it counts. And
           it won't run on a bad input: one structure missed its own physics check by 5.91 Å and was turned
-          away before a cent of compute was spent.
+          away before any compute ran on it.
         </p>
         <div className="panel">
           <table>
@@ -153,7 +153,7 @@ export default async function StatePage() {
         </div>
       </section>
 
-      {/* closing band — dark, so the inked live-think panel reads as a deliberate motif, not a one-off */}
+      {/* closing band — dark, so the inked live-activity ledger reads as a deliberate motif, not a one-off */}
       <div
         style={{
           marginTop: 88,

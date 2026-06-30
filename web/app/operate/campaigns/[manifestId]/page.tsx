@@ -34,7 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { StatusPill } from "@/components/ui/status-pill";
-import { usd, humanize } from "../../_lib/format";
+import { humanize } from "../../_lib/format";
 import { useAsync } from "../../_lib/use-async";
 import { AsyncSection } from "../../_components/async-section";
 
@@ -100,12 +100,6 @@ export default function CampaignReportPage({
                 value={`${m.rollup.candidates_processed}/${m.rollup.candidates_selected}`}
                 sub="processed / selected"
               />
-              <RollupStat
-                label="Estimated cost"
-                value={usd(m.rollup.total_est_cost_usd)}
-                sub={m.rollup.budget_exhausted ? "budget exhausted" : "within budget"}
-                tone={m.rollup.budget_exhausted ? "warning" : "default"}
-              />
               <RollupStat label="Promoted" value="0" sub="invariant" tone="success" />
               <RollupStat
                 label="Refuted"
@@ -168,8 +162,7 @@ export default function CampaignReportPage({
               <CardHeader>
                 <CardTitle>Per-candidate outcomes</CardTitle>
                 <CardDescription>
-                  Terminal reason, hypothesis status, and cost for each
-                  candidate in the run.
+                  Terminal reason and hypothesis status for each candidate in the run.
                 </CardDescription>
               </CardHeader>
               <CardContent className="p-0">
@@ -180,7 +173,6 @@ export default function CampaignReportPage({
                       <TableHead>Hypothesis</TableHead>
                       <TableHead>Terminal reason</TableHead>
                       <TableHead>Capsules</TableHead>
-                      <TableHead className="text-right">Cost</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -213,9 +205,6 @@ export default function CampaignReportPage({
                               {row.capsule_ids.length}
                             </Badge>
                           )}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {usd(row.total_est_cost_usd)}
                         </TableCell>
                       </TableRow>
                     ))}

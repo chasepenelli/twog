@@ -7,7 +7,7 @@ import type { ActivityFeed } from "@/lib/types/domain";
 
 /* LiveActivity — the REAL engine ledger (replaces the old curated "watch it think" script). Polls
    /public/activity and renders the merged reverse-chron stream of what the engine ACTUALLY did, with
-   real statuses + an HONEST idle/online indicator ($0 when there's no runnable work — never faked busy).
+   real statuses + an HONEST idle/online indicator (idle when there's no runnable work — never faked busy).
    `variant="dark"` is the terminal-style hero panel; "light" is the in-page section. */
 
 const LIGHT_BADGE: Record<string, { cls: string; label: string }> = {
@@ -79,7 +79,7 @@ export function LiveActivity({ variant = "light" }: { variant?: "light" | "dark"
                          color: idle ? "#8a8f98" : "#3ec27a" }}>
             <i style={{ width: 8, height: 8, borderRadius: "50%", display: "inline-block",
                         background: idle ? "#4a4a4a" : "#3ec27a" }} />
-            {idle ? "idle · $0" : `running · ${running}`}
+            {idle ? "idle" : `running · ${running}`}
           </span>
         </div>
         <div style={{ padding: "16px 18px 20px", height: 340, overflowY: "auto", display: "flex", flexDirection: "column",
@@ -97,7 +97,7 @@ export function LiveActivity({ variant = "light" }: { variant?: "light" | "dark"
           })}
           {feed && events.length === 0 && !err ? (
             <div style={{ color: "#8a8f98" }}>
-              idle — out of runnable work ($0). The loop spends nothing until there&rsquo;s a falsifiable test to run.
+              idle — no runnable work. The loop waits until there&rsquo;s a falsifiable test to run.
             </div>
           ) : null}
         </div>
@@ -113,7 +113,7 @@ export function LiveActivity({ variant = "light" }: { variant?: "light" | "dark"
         <span style={{ width: 8, height: 8, borderRadius: "50%", display: "inline-block",
                        background: idle ? "var(--muted)" : "var(--green)" }} />
         <span className="mono" style={{ fontSize: 12, letterSpacing: "0.12em", color: idle ? "var(--muted)" : "var(--green)" }}>
-          {idle ? (feed?.idle_reason ?? "IDLE — OUT OF RUNNABLE WORK ($0)") : `RUNNING · ${running} job${running === 1 ? "" : "s"}`}
+          {idle ? (feed?.idle_reason ?? "IDLE — NO RUNNABLE WORK") : `RUNNING · ${running} job${running === 1 ? "" : "s"}`}
         </span>
       </div>
       <div style={{ maxHeight: 420, overflowY: "auto" }}>
@@ -130,7 +130,7 @@ export function LiveActivity({ variant = "light" }: { variant?: "light" | "dark"
           );
         })}
         {feed && events.length === 0 ? (
-          <div className="muted" style={{ fontSize: 13 }}>No recent activity — the engine is idle ($0) until there&rsquo;s runnable work.</div>
+          <div className="muted" style={{ fontSize: 13 }}>No recent activity — the engine is idle until there&rsquo;s runnable work.</div>
         ) : null}
       </div>
     </div>

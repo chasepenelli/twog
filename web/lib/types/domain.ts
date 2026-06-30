@@ -108,12 +108,10 @@ export interface Candidate {
 // Campaigns (RunManifest) — a falsification run over selected candidates
 // ---------------------------------------------------------------------------
 
-/** Aggregate outcome of a campaign. `any_promoted` is ALWAYS false. */
+/** Aggregate outcome of a campaign. `any_promoted` is ALWAYS false. (Cost/spend is not surfaced publicly.) */
 export interface CampaignRollup {
   candidates_selected: number;
   candidates_processed: number;
-  total_est_cost_usd: number;
-  budget_exhausted: boolean;
   /** Invariant: nothing auto-promotes. */
   any_promoted: false;
   /** Map of terminal_reason -> count. */
@@ -127,7 +125,6 @@ export interface CampaignRow {
   candidate_id: string;
   terminal_reason: string;
   leading_hypothesis_status: string;
-  total_est_cost_usd: number;
   capsule_ids: string[];
   /** Candidate-specific plain-language outcome (avoids identical boilerplate per status). */
   plain?: string;
@@ -290,7 +287,6 @@ export interface RubricLaneTest {
   inputs_ready: boolean;
   is_proposed: boolean;
   autonomously_runnable: boolean;
-  est_cost_usd?: number;
   value_of_information?: number;
   kill_criterion: RubricKillCriterion | null;
   expected_signal_if_alive: string;

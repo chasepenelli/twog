@@ -48,9 +48,6 @@ function RunCard({ r }: { r: RunManifest }) {
       </div>
       <div style={{ display: "flex", gap: 9, flexWrap: "wrap", alignItems: "center", marginTop: 14 }}>
         <span className="badge b-blue">✓ nothing auto-promoted</span>
-        <span className="mono muted" style={{ fontSize: 12.5 }}>
-          ${rollup.total_est_cost_usd.toFixed(2)} spent{rollup.budget_exhausted ? " · budget reached" : ""}
-        </span>
       </div>
     </Link>
   );

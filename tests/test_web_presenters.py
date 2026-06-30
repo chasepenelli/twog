@@ -266,8 +266,9 @@ def test_present_activity_feed_merges_reverse_chron_and_is_honest_about_idle():
     # merged reverse-chron: capsule(03:00) > agent(02:00) > campaign(01:00) > compute(00:00)
     assert [e["type"] for e in feed["events"]] == ["capsule", "agent", "campaign", "compute"]
     assert feed["events"][0]["signal"] == "refutes"
-    # no running job -> HONEST idle ($0), never faked busy
-    assert feed["idle"] is True and feed["running_jobs"] == 0 and "$0" in feed["idle_reason"]
+    # no running job -> HONEST idle, never faked busy (no pricing surfaced on the public site)
+    assert feed["idle"] is True and feed["running_jobs"] == 0 and "no runnable work" in feed["idle_reason"]
+    assert "$" not in feed["idle_reason"]
 
 
 def test_present_activity_feed_busy_and_mock_is_labelled():

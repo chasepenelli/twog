@@ -4,15 +4,6 @@
  * OPERATE owns app/operate/*.
  */
 
-/** Render a USD amount with cents (campaign costs are tiny — keep the cents). */
-export function usd(amount: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount);
-}
 
 /** Humanize a snake_case backend token, e.g. "provenance_gate_failed". */
 export function humanize(token: string): string {

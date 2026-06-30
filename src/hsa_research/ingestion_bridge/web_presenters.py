@@ -175,8 +175,7 @@ def present_rubric(rubric: dict[str, Any]) -> dict[str, Any]:
             "inputs_ready": bool(t.get("inputs_ready")),
             "is_proposed": bool(t.get("is_proposed")),  # the genuine NEXT test to run
             "autonomously_runnable": bool(t.get("autonomously_runnable")),
-            "est_cost_usd": t.get("est_cost_usd"),
-            "value_of_information": t.get("value_of_information"),
+            "value_of_information": t.get("value_of_information"),  # 0-1 prioritization score (not a price)
             "kill_criterion": _present_kill_criterion(t.get("kill_criterion")),
             "expected_signal_if_alive": t.get("expected_signal_if_alive"),
             "addresses_confound": (t.get("addresses_confound") or {}).get("kind") if t.get("addresses_confound") else None,
@@ -318,7 +317,13 @@ def present_manifest(rec: RunManifestRecord) -> dict[str, Any]:
     refs = rec.output_refs or {}
     rollup = dict(refs.get("rollup") or {})
     rollup.setdefault("any_promoted", False)
-    rows = [dict(r) for r in (refs.get("rows") or [])]
+    rollup.pop("total_est_cost_usd", None)  # cost/spend is not surfaced on the public site
+    rollup.pop("budget_exhausted", None)
+    rows = []
+    for r in (refs.get("rows") or []):
+        row = dict(r)
+        row.pop("total_est_cost_usd", None)  # drop per-candidate cost too
+        rows.append(row)
     return {
         "manifest_id": str(rec.manifest_id),
         "runner_kind": (rec.metadata or {}).get("runner_kind", "modal"),
@@ -468,6 +473,6 @@ def present_activity_feed(
         "events": events[:limit],
         "running_jobs": len(running),
         "idle": idle,
-        "idle_reason": "idle — out of runnable work ($0)" if idle else None,
+        "idle_reason": "idle — no runnable work" if idle else None,
         "last_event_at": events[0]["occurred_at"] if events else None,
     }

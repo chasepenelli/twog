@@ -267,7 +267,7 @@ export function MoonshotRubricView({ rubric }: { rubric: MoonshotRubric }) {
       <InferenceChainBlock chain={r.inference_chain} />
 
       {(r.inputs_rollup.ready_to_run_lanes.length || r.inputs_rollup.missing_lanes.length || r.inputs_rollup.blockers.length) ? (
-        <Block label="INPUTS READINESS (the spend gate — only ready lanes may dispatch real GPU)">
+        <Block label="INPUTS READINESS (only verified-input lanes may dispatch real GPU)">
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {r.inputs_rollup.ready_to_run_lanes.map((l) => badge("b-green", `ready: ${l}`, `rdy-${l}`))}
             {r.inputs_rollup.needs_verification_lanes.map((l) => badge("b-amber", `needs verification: ${l}`, `nv-${l}`))}
