@@ -86,6 +86,12 @@ body:has(.v4-shell) > footer { display: none !important; }
 .v4-hud__status span { padding: 0.55rem 0.9rem; border-right: 1px solid var(--line); white-space: nowrap; }
 .v4-hud__status span:last-child { border-right: 0; margin-left: auto; color: var(--bone); }
 .v4-hud__status .glyph { color: var(--faint); }
+/* hero HUD live "last result" pill */
+.v4-latest { display: inline-flex; align-items: center; gap: 0.5rem; }
+.v4-latest__k { color: var(--faint); }
+.v4-latest__k::after { content: ' ·'; }
+.v4-latest__exp { color: var(--bone); }
+.v4-latest .v2-stamp { transform: none; font-size: 0.56rem; }
 
 .v4-hud__body { display: grid; grid-template-columns: 1fr auto; gap: 1.5rem; padding: 1.4rem 1.5rem 1.6rem; align-items: center; }
 .v4-eyebrow { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.22em; text-transform: uppercase; color: var(--bone-dim); margin: 0 0 0.9rem; }
