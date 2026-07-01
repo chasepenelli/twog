@@ -8,6 +8,7 @@ import StepsScroller from '@/components/v2/StepsScroller';
 import { PortalGlyph } from '@/components/v2/PortalGlyph';
 import { Placeholder } from '@/components/v2/Placeholder';
 import { ProofStamp } from '@/components/v2/ProofStamp';
+import { HeroLatest } from '@/components/v2/HeroLatest';
 
 // /v4 — dark retro-terminal "boot sequence" (Nifty Portal homage), full page. Positive hero: PROOF.
 // top marquee = the primitives (instruction set); bottom = the positive promise.
@@ -49,7 +50,7 @@ export default function V4() {
             <span className="glyph">✳</span>
             <span>Engine</span>
             <span className="glyph">▦</span>
-            <span>Run a4c2036</span>
+            <span><HeroLatest /></span>
           </div>
           <div className="v4-hud__body">
             <div className="v4-hud__lead">
