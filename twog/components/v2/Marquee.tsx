@@ -47,9 +47,12 @@ export default function Marquee({
         },
       });
       tick = () => {
-        speed += (target - speed) * 0.08;
-        target += (1 - target) * 0.04; // decay back to baseline
+        speed += (target - speed) * 0.07;
+        target += (1 - target) * 0.028; // slower decay → a longer, organic coast-to-stop
         tl.timeScale(speed);
+        // subtle motion-blur while moving fast, tapering to none at rest
+        const blur = Math.min(1.4, (speed - 1) * 0.9);
+        track.style.filter = blur > 0.06 ? `blur(${blur.toFixed(2)}px)` : '';
       };
       gsap.ticker.add(tick);
       // ensure cleanup of the ScrollTrigger via context revert
@@ -58,6 +61,7 @@ export default function Marquee({
 
     return () => {
       if (tick) gsap.ticker.remove(tick);
+      track.style.filter = '';
       ctx.revert();
     };
   }, [dir]);

@@ -147,6 +147,21 @@ export default function LiveLedger() {
 
   const replay = () => { setReplayDone(false); setShown(0); };
 
+  // ── staggered cascade the first time the ledger scrolls into view ───────────
+  const sectionRef = useRef<HTMLElement>(null);
+  const [inView, setInView] = useState(false);
+  useEffect(() => {
+    const el = sectionRef.current;
+    if (!el) return;
+    if (prefersReducedMotion()) { setInView(true); return; }
+    const io = new IntersectionObserver(
+      (entries) => { if (entries[0]?.isIntersecting) { setInView(true); io.disconnect(); } },
+      { threshold: 0.15 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+
   // ── derive what to render ───────────────────────────────────────────────────
   let rows: LedgerEvent[];
   let badge: 'LIVE' | 'IDLE' | 'REPLAY';
@@ -172,7 +187,8 @@ export default function LiveLedger() {
 
   return (
     <section
-      className="v2-ledger"
+      ref={sectionRef}
+      className={`v2-ledger${inView ? ' v2-ledger--in' : ''}`}
       aria-label="TWOG live ledger"
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
