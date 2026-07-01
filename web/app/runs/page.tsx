@@ -6,9 +6,9 @@ import type { RunManifest } from "@/lib/types/domain";
 export const metadata = { title: "Runs" };
 
 const OUTCOME: Record<string, { cls: string; label: string }> = {
-  standing: { cls: "b-green", label: "standing" },
-  refuted: { cls: "b-red", label: "refuted" },
-  underpowered: { cls: "b-amber", label: "underpowered" },
+  standing: { cls: "b-green", label: "still standing" },
+  refuted: { cls: "b-red", label: "ruled out" },
+  underpowered: { cls: "b-amber", label: "needs more testing" },
 };
 
 function outcomeChips(status: Record<string, number>) {
@@ -70,9 +70,9 @@ export default async function RunsPage() {
         className="mono"
         style={{ display: "flex", flexWrap: "wrap", gap: "10px 22px", marginTop: 30, padding: "16px 18px", border: "1px solid var(--line)", borderRadius: 13, fontSize: 12.5, color: "var(--muted)", background: "var(--soft)" }}
       >
-        <span><span style={{ color: "var(--green)" }}>●</span> standing — survived every test</span>
-        <span><span style={{ color: "var(--red)" }}>●</span> refuted — a kill-criterion was met</span>
-        <span><span style={{ color: "var(--amber)" }}>●</span> underpowered — ran out of runnable tests</span>
+        <span><span style={{ color: "var(--green)" }}>●</span> still standing — survived every test</span>
+        <span><span style={{ color: "var(--red)" }}>●</span> ruled out — disproven</span>
+        <span><span style={{ color: "var(--amber)" }}>●</span> needs more testing — no verdict yet</span>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 28, marginTop: 32 }}>

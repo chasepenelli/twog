@@ -4,9 +4,9 @@ import { api } from "@/lib/api";
 import type { CampaignRow, RunManifest } from "@/lib/types/domain";
 
 const OUTCOME: Record<string, { cls: string; label: string; gloss: string; stripe: string }> = {
-  standing: { cls: "b-green", label: "STANDING", gloss: "Survived every falsification test the engine could run.", stripe: "var(--green)" },
-  refuted: { cls: "b-red", label: "REFUTED", gloss: "A pre-registered kill-criterion was met — the idea was disproven.", stripe: "var(--red)" },
-  underpowered: { cls: "b-amber", label: "UNDERPOWERED", gloss: "Ran out of runnable tests before a verdict — needs more.", stripe: "var(--amber)" },
+  standing: { cls: "b-green", label: "STILL STANDING", gloss: "Survived every test the engine could run — nothing proven, but nothing has broken it yet.", stripe: "var(--green)" },
+  refuted: { cls: "b-red", label: "RULED OUT", gloss: "A pre-registered test disproved it — the idea was ruled out.", stripe: "var(--red)" },
+  underpowered: { cls: "b-amber", label: "NEEDS MORE TESTING", gloss: "Tested as far as its inputs allowed; no verdict yet — more lanes still to run.", stripe: "var(--amber)" },
 };
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
