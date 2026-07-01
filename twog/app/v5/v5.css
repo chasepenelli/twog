@@ -1,0 +1,118 @@
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&display=swap");
+
+/* /v5 — homage to Vaayu (vaayu.tech): editorial climate-tech. Muted warm concrete + cream + deep
+   olive-green, ONE electric chartreuse-lime used as a highlighter on key words, a high-contrast
+   Fraunces serif for display + IBM Plex Sans for body, terrazzo speckle texture. TWOG content. */
+
+.v5-shell {
+  --bg: #cfc9bc;          /* warm concrete */
+  --paper: #f1ece1;       /* cream card */
+  --ink: #1b1a16;         /* charcoal */
+  --mute: #6d685c;
+  --line: rgba(27, 26, 22, 0.16);
+  --forest: #2a3326;      /* deep olive-green panel */
+  --lime: #c7e21a;        /* electric chartreuse highlight */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --serif: "Fraunces", Georgia, "Times New Roman", serif;
+
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+.v5-shell ::selection { background: var(--lime); color: var(--ink); }
+
+/* suppress the site's global nav/footer for a clean editorial canvas (preview-only) */
+body:has(.v5-shell) { background: #cfc9bc; }
+body:has(.v5-shell) > header,
+body:has(.v5-shell) > footer { display: none !important; }
+
+/* terrazzo / data-dot speckle motif */
+.v5-speckle {
+  background-image:
+    radial-gradient(circle at 50% 50%, rgba(27,26,22,0.22) 1px, transparent 1.6px),
+    radial-gradient(circle at 50% 50%, rgba(27,26,22,0.14) 1px, transparent 1.6px);
+  background-size: 13px 13px, 19px 19px;
+  background-position: 0 0, 7px 9px;
+}
+
+/* ── top bar ────────────────────────────────────────────────────────── */
+.v5-top { max-width: 1240px; margin: 0 auto; padding: 1.4rem 1.6rem; display: flex; align-items: center; justify-content: space-between; }
+.v5-logo { font-family: var(--serif); font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; }
+.v5-top nav { display: flex; gap: 1.6rem; }
+.v5-top nav a { font-size: 0.86rem; color: var(--ink); text-decoration: none; opacity: 0.75; }
+.v5-top nav a:hover { opacity: 1; }
+
+/* ── buttons ────────────────────────────────────────────────────────── */
+.v5-btn {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  font-size: 0.86rem; font-weight: 500;
+  padding: 0.72rem 1.3rem; border-radius: 999px;
+  border: 1px solid var(--ink); text-decoration: none; color: var(--ink);
+  transition: transform 160ms var(--ease), background 160ms;
+}
+.v5-btn:hover { transform: translateY(-2px); }
+.v5-btn--lime { background: var(--lime); border-color: var(--ink); }
+.v5-btn--ghost { background: transparent; }
+.v5-btn--ghost:hover { background: rgba(27,26,22,0.06); }
+
+/* ── hero ───────────────────────────────────────────────────────────── */
+.v5-hero { max-width: 1240px; margin: 0 auto; padding: clamp(2rem, 5vw, 4.5rem) 1.6rem clamp(3rem, 7vw, 6rem); display: grid; grid-template-columns: 1.15fr 0.85fr; gap: clamp(2rem, 5vw, 4.5rem); align-items: center; }
+.v5-eyebrow { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--mute); margin: 0 0 1.2rem; display: inline-flex; align-items: center; gap: 0.6rem; }
+.v5-eyebrow::before { content: ''; width: 22px; height: 1px; background: var(--ink); }
+.v5-display {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: clamp(2.5rem, 5.6vw, 5rem);
+  line-height: 1.02;
+  letter-spacing: -0.015em;
+  margin: 0;
+}
+.v5-display .it { font-style: italic; font-weight: 400; }
+.v5-mark {
+  background: var(--lime); color: var(--ink);
+  padding: 0 0.1em; border-radius: 3px;
+  box-decoration-break: clone; -webkit-box-decoration-break: clone;
+}
+.v5-sub { font-size: 1.12rem; line-height: 1.55; color: var(--mute); max-width: 46ch; margin: 1.7rem 0 0; }
+.v5-actions { display: flex; flex-wrap: wrap; gap: 0.7rem; margin-top: 2rem; }
+
+.v5-hero__media { position: relative; }
+.v5-hero__media .v3-ph { aspect-ratio: 4 / 5; }
+.v5-badge {
+  position: absolute; left: -1.1rem; bottom: -1.1rem;
+  width: 116px; height: 116px; border-radius: 50%;
+  background: var(--lime); color: var(--ink);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+  font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; line-height: 1.4;
+  transform: rotate(-8deg); border: 1px solid var(--ink);
+}
+.v5-badge strong { font-size: 0.82rem; }
+
+/* placeholder (cream, framed) */
+.v5-shell .v3-ph {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  border: 1px solid var(--ink); border-radius: 6px; color: var(--mute); text-align: center;
+  background: var(--paper); width: 100%; overflow: hidden;
+}
+.v5-shell .v3-ph__id { font-family: var(--font-mono); font-weight: 600; color: var(--ink); font-size: 0.85rem; letter-spacing: 0.14em; }
+.v5-shell .v3-ph__label { font-size: 0.85rem; }
+.v5-shell .v3-ph__ratio { font-family: var(--font-mono); font-size: 0.68rem; opacity: 0.6; }
+
+/* ── value band (the "calculate and reduce" equivalent) ─────────────── */
+.v5-value { background: var(--forest); color: var(--paper); }
+.v5-value__inner { max-width: 1240px; margin: 0 auto; padding: clamp(3.5rem, 8vw, 6.5rem) 1.6rem; display: grid; grid-template-columns: 1fr 1fr; gap: clamp(2rem, 5vw, 4rem); align-items: end; }
+.v5-value h2 { font-family: var(--serif); font-weight: 500; font-size: clamp(2rem, 4.4vw, 3.4rem); line-height: 1.05; letter-spacing: -0.015em; margin: 0; max-width: 16ch; }
+.v5-value h2 .v5-mark { color: var(--ink); }
+.v5-value__steps { display: flex; flex-direction: column; gap: 0; border-top: 1px solid rgba(241,236,225,0.22); }
+.v5-value__steps li { list-style: none; display: grid; grid-template-columns: auto 1fr; gap: 1rem; padding: 1.05rem 0; border-bottom: 1px solid rgba(241,236,225,0.22); }
+.v5-value__steps code { font-family: var(--font-mono); font-size: 0.8rem; color: var(--lime); }
+.v5-value__steps strong { font-weight: 500; }
+.v5-value__steps span.d { color: rgba(241,236,225,0.7); font-size: 0.92rem; }
+
+@media (max-width: 860px) {
+  .v5-hero, .v5-value__inner { grid-template-columns: 1fr; }
+  .v5-top nav { display: none; }
+}
