@@ -1,0 +1,60 @@
+/* /v3 — the "Portal" landing. Reuses v2.css (imported first, scoped to .v2-shell) and adds the three
+   new archetypes: kinetic marquee band, editorial split, footer stamp + the placeholder slots. */
+
+/* ── KINETIC MARQUEE (archetype B) ──────────────────────────────────── */
+.v2-marquee { overflow: hidden; border-top: 1px solid var(--line-2); border-bottom: 1px solid var(--line-2); padding: 1.5rem 0; background: var(--bg); }
+.v2-marquee--ink { background: var(--ink); border-color: var(--ink); }
+.v2-marquee__track { display: inline-flex; white-space: nowrap; will-change: transform; }
+.v2-marquee__track span {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(2rem, 7vw, 6rem);
+  letter-spacing: -0.02em;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+}
+.v2-marquee__track span::after { content: '/'; margin: 0 0.5em; color: var(--faint); font-weight: 400; }
+.v2-marquee--ink .v2-marquee__track span { color: var(--bg); }
+.v2-marquee--ink .v2-marquee__track span::after { color: var(--mute); }
+.v2-marquee--outline .v2-marquee__track span { color: transparent; -webkit-text-stroke: 1.4px var(--ink); }
+.v2-marquee--outline .v2-marquee__track span::after { -webkit-text-stroke: 0; color: var(--faint); }
+
+/* ── EDITORIAL SPLIT (archetype E) ──────────────────────────────────── */
+.v3-split { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: clamp(2rem, 6vw, 5rem); align-items: center; }
+.v3-split__copy h2 { font-family: var(--font-display); font-weight: 600; font-size: clamp(2rem, 5.2vw, 3.6rem); line-height: 1.0; letter-spacing: -0.025em; margin: 1rem 0 0; }
+.v3-split__copy .lead { font-size: 1.1rem; line-height: 1.55; color: var(--mute); max-width: 46ch; margin: 1.2rem 0 0; }
+.v3-split__media { width: 100%; }
+
+/* ── INDEX/MANIFEST head + molecule slot (archetype D) ──────────────── */
+.v3-ledger-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 2rem; }
+.v3-ledger-head .v3-ph { width: 96px; flex: none; }
+
+/* ── PLACEHOLDER slots ──────────────────────────────────────────────── */
+.v3-ph {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  border: 1.5px dashed var(--line-2);
+  border-radius: 4px;
+  color: var(--mute);
+  text-align: center;
+  background: repeating-linear-gradient(45deg, #fafafa, #fafafa 9px, #ffffff 9px, #ffffff 18px);
+}
+.v3-ph__id { font-family: var(--font-mono); font-weight: 600; color: var(--ink); font-size: 0.85rem; letter-spacing: 0.14em; }
+.v3-ph__label { font-size: 0.85rem; }
+.v3-ph__ratio { font-family: var(--font-mono); font-size: 0.68rem; color: var(--faint); }
+
+/* ── FOOTER stamp ───────────────────────────────────────────────────── */
+.v3-footer { text-align: center; padding: clamp(3.5rem, 9vh, 7rem) 1.5rem; border-top: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; gap: 1.3rem; }
+.v3-footer .v2-stamp { transform: rotate(-3deg) scale(1.1); }
+.v3-footer p { font-family: var(--font-mono); font-size: 0.8rem; color: var(--mute); margin: 0; }
+.v3-footer__links { display: flex; flex-wrap: wrap; gap: 1.4rem; justify-content: center; }
+.v3-footer__links a { font-family: var(--font-mono); font-size: 0.78rem; color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--ink); padding-bottom: 1px; }
+.v3-footer__links a:hover { opacity: 0.6; }
+
+@media (max-width: 860px) {
+  .v3-split { grid-template-columns: 1fr; }
+  .v3-ledger-head { flex-direction: column; align-items: flex-start; }
+  .v3-ledger-head .v3-ph { display: none; }
+}
