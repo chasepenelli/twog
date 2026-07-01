@@ -14,6 +14,7 @@ function candidateLabel(cid: string): string {
   return `${parts.join("-")} × ${target.toUpperCase()}`;
 }
 
+export const dynamic = "force-dynamic"; // live Neon data per request
 /** Verdict for a candidate from its capsules' real signals: a single refuting result rules it out. */
 function verdictFrom(caps: ProofCapsule[]): Verdict {
   if (caps.some((c) => c.signal === "refutes")) return "ruled-out";

@@ -16,6 +16,7 @@ import { ProvenancePanel } from "./_components/provenance-panel";
    getPrincipal() returns null when WorkOS isn't wired (public by default) and honors DEV_AUTH_BYPASS for
    local preview; ?view=public lets a signed-in member preview the public teaser. */
 
+export const dynamic = "force-dynamic"; // live Neon data per request
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <section style={{ padding: "26px 0", borderTop: "1px solid var(--line)" }}>

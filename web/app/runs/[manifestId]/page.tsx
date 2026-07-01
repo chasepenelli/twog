@@ -18,6 +18,7 @@ function Section({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
+export const dynamic = "force-dynamic"; // live Neon data per request
 export default async function RunReportPage({ params }: { params: { manifestId: string } }) {
   let run: RunManifest | null = null;
   try {

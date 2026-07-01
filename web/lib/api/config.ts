@@ -62,6 +62,8 @@ export async function request<T>(
       headers: body ? { "Content-Type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined,
       signal,
+      // always hit the live backend — never serve a stale Next.js fetch cache (these are live results)
+      cache: "no-store",
     });
   } catch (err) {
     throw new ApiError(

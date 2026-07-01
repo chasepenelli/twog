@@ -18,6 +18,7 @@ function outcomeChips(status: Record<string, number>) {
   });
 }
 
+export const dynamic = "force-dynamic"; // live Neon data per request
 function dominantStripe(status: Record<string, number>): string {
   if ((status.refuted ?? 0) > 0) return "var(--red)";
   if ((status.standing ?? 0) > 0) return "var(--green)";

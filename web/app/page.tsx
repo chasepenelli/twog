@@ -4,10 +4,12 @@ import { api } from "@/lib/api";
 import { LiveLoop } from "@/components/state/live-loop";
 import { LiveAgo } from "@/components/state/live-ago";
 import { LiveActivity } from "@/components/state/live-activity";
+import { ThisWeekStrip } from "@/components/state/this-week-strip";
 import { LaneTrack } from "@/components/evidence/lane-track";
 import { deriveLaneTrack, publicQuestion, verdictOf, VERDICT_META } from "@/lib/evidence/verdict";
 
 export const metadata = { title: "Research state" };
+export const dynamic = "force-dynamic"; // reflect live Neon state (sweep counts, verdicts) per request
 
 const STRIPE: Record<string, string> = { supports: "var(--green)", refutes: "var(--red)", neutral: "var(--muted)" };
 const LANE_BADGE: Record<string, { cls: string; mark: string }> = {
@@ -36,6 +38,17 @@ export default async function StatePage() {
   const rubrics = await Promise.all(
     latest.map((c) => api.candidates.rubric(c.candidate_id).catch(() => null)),
   );
+  // the latest sweep drives the hero strip (real numbers; the negative controls it killed to test itself)
+  const campaigns = await api.campaigns.list().catch(() => []);
+  const sweep = campaigns[0]?.rollup?.leading_hypothesis_status ?? {};
+  const ruledOut = sweep.refuted ?? engine.headline.hypothesesFalsified;
+  const stillStanding = sweep.standing ?? engine.headline.validatedResults;
+  const refutedNames = (campaigns[0]?.rows ?? [])
+    .filter((r) => r.leading_hypothesis_status === "refuted")
+    .map((r) => r.candidate_id.split("-")[0]);
+  // prefer the planted negative controls (ethanol/aspirin) for the "it tests itself" line; else the first refuted
+  const controls = refutedNames.filter((n) => ["ethanol", "aspirin"].includes(n));
+  const struck = (controls.length ? controls : refutedNames).slice(0, 2);
 
   return (
     <div className="wrap" style={{ paddingTop: 48 }}>
@@ -51,37 +64,31 @@ export default async function StatePage() {
             Watch a research engine <span className="em">try to be wrong.</span>
           </h1>
           <p className="lede" style={{ marginTop: 22 }}>
-            It poses a hypothesis, runs real GPU compute to attack it, and keeps only what survives —
-            pointed at the cancer dogs and people share. <span className="em">No human in the loop.</span>
+            A dog you love is fine — running, eating, herself — until the afternoon she goes down and
+            doesn&rsquo;t get up, and the scan shows the cancer was already everywhere. Hemangiosarcoma gives
+            almost no warning, and it&rsquo;s the same disease that takes people. So we built one engine to
+            hunt both, and gave it a single rule: <span className="em">never pretend.</span>
           </p>
           <div style={{ marginTop: 30, display: "flex", gap: 14, flexWrap: "wrap" }}>
-            <Link href="/evidence" className="btn solid">Inspect the evidence →</Link>
-            <Link href="/runs" className="btn ghost">See full runs</Link>
+            <Link href="/evidence" className="btn solid">See what it&rsquo;s found →</Link>
+            <Link href="/runs" className="btn ghost">How it works</Link>
           </div>
         </div>
         <div>
+          <ThisWeekStrip ruledOut={ruledOut} stillStanding={stillStanding} struck={struck} />
           <LiveActivity variant="dark" />
           <div className="mono muted" style={{ fontSize: 11.5, letterSpacing: "0.04em", marginTop: 12, textAlign: "center" }}>
-            live ledger · real engine activity — idle until there&rsquo;s a falsifiable test to run
+            live ledger · real engine activity — idle until there&rsquo;s a test that could prove something wrong
           </div>
         </div>
       </div>
 
-      {/* ORIENTATION — what you're looking at */}
-      <p style={{ fontSize: 17, lineHeight: 1.6, color: "#333", maxWidth: "62ch", marginTop: 52 }}>
-        That stream is the engine running. Below you'll see <strong>where it stands</strong>, the five-step
-        loop it runs to attack each idea, the kinds of experiment turning in parallel, and the evidence it
-        has produced. Every result is a <strong>proof capsule</strong> — a sealed, signed record you can
-        open and re-check for yourself.
+      {/* STAKES — the intellectual hook, one calm beat after the heavy hero */}
+      <p className="serif" style={{ fontSize: "clamp(20px,2.4vw,30px)", lineHeight: 1.35, letterSpacing: "-0.01em", color: "var(--ink)", maxWidth: "24ch", marginTop: 64 }}>
+        Dogs get this cancer, and they get it <span className="em" style={{ fontStyle: "italic" }}>fast.</span> So an
+        engine that tests drug ideas around the clock can reach an answer sooner than a human trial ever
+        could. Helping them is how we get to help us.
       </p>
-
-      {/* legend — the tracker vocabulary used in the cards below */}
-      <div className="mono" style={{ display: "flex", flexWrap: "wrap", gap: "10px 22px", marginTop: 28, padding: "14px 18px", border: "1px solid var(--line)", borderRadius: 13, fontSize: 12.5, color: "var(--muted)", background: "var(--soft)" }}>
-        <span><span style={{ color: "var(--green)" }}>✓</span> held — survived a test</span>
-        <span><span style={{ color: "var(--accent)" }}>●</span> checking now</span>
-        <span><span style={{ color: "var(--muted)" }}>○</span> not yet</span>
-        <span><span style={{ color: "var(--red)" }}>✕</span> ruled out — the idea was disproven</span>
-      </div>
 
       {/* WHERE IT STANDS */}
       <section className="sec" style={{ paddingTop: 52 }}>
