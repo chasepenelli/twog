@@ -10,7 +10,8 @@
     "sync:candidates": "node scripts/sync-public-candidates.mjs",
     "export:candidates": "node scripts/export-public-candidates-from-neon.mjs",
     "check:candidate-manifests": "node scripts/check-public-candidate-manifests.mjs",
-    "db:migrate": "node scripts/apply-neon-migrations.mjs"
+    "db:migrate": "node scripts/apply-neon-migrations.mjs",
+    "smoke:contrib": "node scripts/smoke-contribution-lane.mjs"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
