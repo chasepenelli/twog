@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
+import { getCandidate as getLiveCandidate, asPublicCandidateDetail } from '@/lib/public-candidates-live';
 import {
-  getCandidate,
   publicCandidateEvidenceBundlePath,
   publicCandidatePayloadPath,
   shortHash,
@@ -15,9 +15,9 @@ export async function GET(
   { params }: { params: Promise<{ candidateId: string }> }
 ) {
   const { candidateId } = await params;
-  const candidate = getCandidate(candidateId);
+  const lean = await getLiveCandidate(candidateId);
 
-  if (!candidate) {
+  if (!lean) {
     return NextResponse.json(
       {
         error: 'public_candidate_not_found',
@@ -32,6 +32,7 @@ export async function GET(
     );
   }
 
+  const candidate = asPublicCandidateDetail(lean);
   const record = candidate.candidate;
   const contentHash = record.content_hash ?? candidate.latest_snapshot?.content_hash ?? null;
 

@@ -5,6 +5,7 @@ import '../../v4/v4.css';
 import '../../v2/v2.css';
 import '../../detail.css';
 import { ProofStamp } from '@/components/v2/ProofStamp';
+import { ContributeForm } from '@/components/v4/ContributeForm';
 import { getCandidate } from '@/lib/public-candidates-live';
 import { getCapsulesForCandidate } from '@/lib/public-capsules';
 import { findRunForCandidate } from '@/lib/public-runs';
@@ -126,6 +127,15 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
             Every idea and every result is hashed so anyone can re-derive it. Want a drug or target put to the
             test? <Link href="/involved#suggest" style={{ color: 'var(--bone)' }}>Suggest one →</Link>
           </p>
+        </section>
+
+        <section className="v4-sec2">
+          <div className="v4-dh2">Contribute to this idea</div>
+          <p className="v4-lead" style={{ marginBottom: '1.4rem' }}>
+            Have evidence, a critique, a replication, or compute to add? Submit a bounded packet — it’s queued
+            for human review and never changes the record on its own.
+          </p>
+          <ContributeForm candidateId={candidate.candidate_id} />
         </section>
       </div>
     </div>

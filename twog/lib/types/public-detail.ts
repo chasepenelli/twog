@@ -66,6 +66,7 @@ export interface Provenance {
 // these shapes stay lean and surface richer narrative fields only when they're actually populated.
 export interface CandidateCore {
   candidate_id: string;
+  display_id: string | null; // human id (e.g. TWOG-…); null for the autonomous slug roster
   title: string; // raw, e.g. "Falsify: does carvedilol engage KDR …?"
   question: string; // publicQuestion(title) — the plain-language ask
   targets: string[];

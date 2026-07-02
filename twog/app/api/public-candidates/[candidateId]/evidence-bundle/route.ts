@@ -1,15 +1,15 @@
 import { NextResponse } from 'next/server';
 import { buildPublicEvidenceBundle } from '@/lib/public-evidence-bundle';
-import { getCandidate } from '@/lib/public-candidates';
+import { getCandidate as getLiveCandidate, asPublicCandidateDetail } from '@/lib/public-candidates-live';
 
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ candidateId: string }> }
 ) {
   const { candidateId } = await params;
-  const candidate = getCandidate(candidateId);
+  const lean = await getLiveCandidate(candidateId);
 
-  if (!candidate) {
+  if (!lean) {
     return NextResponse.json(
       {
         error: 'public_candidate_not_found',
@@ -24,6 +24,7 @@ export async function GET(
     );
   }
 
+  const candidate = asPublicCandidateDetail(lean);
   const stableId = candidate.candidate.candidate_id;
 
   return NextResponse.json(buildPublicEvidenceBundle(candidate), {

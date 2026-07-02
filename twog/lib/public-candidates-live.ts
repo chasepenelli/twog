@@ -7,12 +7,14 @@
 import { neonRows } from './neon';
 import { publicQuestion, verdictFromCapsules } from './verdict';
 import type { CandidateCore, CandidateDetail, CandidateSummary, Verdict } from './types/public-detail';
+import type { PublicCandidateDetail } from './public-candidates';
 
 const PUBLIC_STATUSES = ['submitted', 'accepted', 'promoted'];
 const VERDICT_ORDER: Record<Verdict, number> = { 'still-standing': 0, 'needs-more': 1, 'ruled-out': 2 };
 
 type Row = {
   candidate_id: string;
+  display_id: string | null;
   title: string | null;
   public_status: string | null;
   content_hash: string | null;
@@ -36,6 +38,7 @@ function core(row: Row): CandidateCore {
   const title = row.title ?? p.title ?? '';
   return {
     candidate_id: row.candidate_id,
+    display_id: row.display_id ?? (typeof p.display_id === 'string' ? p.display_id : null),
     title,
     question: publicQuestion(title, row.candidate_id),
     targets: strArr(p.targets),
@@ -47,7 +50,7 @@ function core(row: Row): CandidateCore {
   };
 }
 
-const SELECT = `select candidate_id, title, public_status, content_hash, priority_score, candidate_kind, updated_at, payload from public_candidates`;
+const SELECT = `select candidate_id, display_id, title, public_status, content_hash, priority_score, candidate_kind, updated_at, payload from public_candidates`;
 
 /** Every public idea, with a verdict derived from its capsule signals. Sorted still-standing → needs-more → ruled-out, then priority. */
 export async function listCandidates(limit = 200): Promise<CandidateSummary[]> {
@@ -66,6 +69,34 @@ export async function listCandidates(limit = 200): Promise<CandidateSummary[]> {
   return rows
     .map((row) => ({ ...core(row), verdict: verdictByCand.get(row.candidate_id) ?? ('needs-more' as Verdict) }))
     .sort((a, b) => VERDICT_ORDER[a.verdict] - VERDICT_ORDER[b.verdict] || (b.priority_score ?? 0) - (a.priority_score ?? 0));
+}
+
+/** Adapt a lean live candidate into the legacy PublicCandidateDetail shape so the contribution-intake
+ *  helpers (createCandidateContribution / buildPublicEvidenceBundle / publicCandidateAuditTrail) can
+ *  validate + build against live Neon candidates. The autonomous roster has no snapshot/decisions, so
+ *  those degrade to empty — the intake only needs candidate_id + content_hash. */
+export function asPublicCandidateDetail(c: CandidateDetail): PublicCandidateDetail {
+  return {
+    candidate: {
+      candidate_id: c.candidate_id,
+      display_id: c.display_id ?? undefined,
+      title: c.title,
+      summary: c.summary,
+      public_status: c.public_status ?? undefined,
+      candidate_kind: c.kind ?? undefined,
+      targets: c.targets,
+      biomarkers: c.biomarkers,
+      evidence_refs: c.evidence_refs,
+      priority_score: c.priority_score ?? undefined,
+      content_hash: c.content_hash ?? undefined,
+      updated_at: c.updated_at ?? undefined,
+      rationale_md: c.rationale_md,
+      metadata: {},
+    },
+    latest_snapshot: null,
+    decision_events: [],
+    run_manifest: null,
+  };
 }
 
 /** One idea by candidate_id (or display_id), case-insensitive. Lean detail; narrative fields only if populated. */
