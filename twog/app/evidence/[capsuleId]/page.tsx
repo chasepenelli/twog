@@ -9,6 +9,7 @@ import { EmailGate } from '@/components/v4/EmailGate';
 import { MoonshotRubricView } from './_components/MoonshotRubricView';
 import { ProvenancePanel } from './_components/ProvenancePanel';
 import { getCapsule, getCapsulesForCandidate, getProvenance } from '@/lib/public-capsules';
+import { findRunForCandidate } from '@/lib/public-runs';
 import { verdictFromCapsules, VERDICT_META, STAMP_FOR, prettyCandidate, publicQuestion } from '@/lib/verdict';
 import { getViewer } from '@/lib/gate';
 
@@ -31,10 +32,11 @@ export default async function CapsuleDetail({
   const cap = await getCapsule(capsuleId);
   if (!cap) notFound();
 
-  const [siblings, prov, viewer] = await Promise.all([
+  const [siblings, prov, viewer, run] = await Promise.all([
     getCapsulesForCandidate(cap.candidate_id),
     getProvenance(capsuleId),
     getViewer(view),
+    findRunForCandidate(cap.candidate_id),
   ]);
   const track = siblings.length ? siblings : [cap];
   const verdict = verdictFromCapsules(track);
@@ -55,7 +57,8 @@ export default async function CapsuleDetail({
 
         <div style={{ display: 'flex', gap: '0.7rem', alignItems: 'center', flexWrap: 'wrap' }}>
           <ProofStamp verdict={STAMP_FOR[verdict]} />
-          <span className="v4-chip">{prettyCandidate(cap.candidate_id)}</span>
+          <Link href={`/candidates/${cap.candidate_id}`} className="v4-chip">{prettyCandidate(cap.candidate_id)} →</Link>
+          {run ? <Link href={`/runs/${run.manifest_id}`} className="v4-chip">from this run →</Link> : null}
         </div>
         <h1 className="v4-dh1">We asked: {question}</h1>
 

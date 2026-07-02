@@ -53,3 +53,20 @@ export async function getRun(manifestId: string): Promise<RunManifest | null> {
   );
   return rows[0] ? shapeRun(rows[0].payload) : null;
 }
+
+/** The most-recent run whose rows tested this candidate, for candidate/evidence → run cross-links.
+ *  Uses a jsonb containment match on output_refs.rows; null when no run references the candidate. */
+export async function findRunForCandidate(candidateId: string): Promise<{ manifest_id: string; title: string } | null> {
+  if (!candidateId) return null;
+  const rows = await neonRows<{ payload: Record<string, any> }>(
+    `select payload from run_manifests
+       where manifest_type = 'falsification_campaign'
+         and payload->'output_refs'->'rows' @> $1::jsonb
+       order by created_at desc
+       limit 1`,
+    [JSON.stringify([{ candidate_id: candidateId }])],
+  );
+  if (!rows[0]) return null;
+  const run = shapeRun(rows[0].payload);
+  return { manifest_id: run.manifest_id, title: run.title };
+}

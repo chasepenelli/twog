@@ -1,366 +1,133 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { CandidateContributionPanel } from '@/components/CandidateContributionPanel';
-import {
-  formatPublicDate,
-  getCandidate,
-  LiteratureRecord,
-  publicCandidates,
-  publicCandidateAuditTrail,
-  publicCandidateEvidenceBundlePath,
-  publicCandidatePayloadPath,
-  readableKind,
-  shortHash,
-} from '@/lib/public-candidates';
+import { connection } from 'next/server';
+import '../../v4/v4.css';
+import '../../v2/v2.css';
+import '../../detail.css';
+import { ProofStamp } from '@/components/v2/ProofStamp';
+import { getCandidate } from '@/lib/public-candidates-live';
+import { getCapsulesForCandidate } from '@/lib/public-capsules';
+import { findRunForCandidate } from '@/lib/public-runs';
+import { verdictFromCapsules, VERDICT_META, STAMP_FOR, prettyCandidate } from '@/lib/verdict';
 
-export function generateStaticParams() {
-  return publicCandidates.flatMap(({ candidate }) => [
-    { candidateId: candidate.candidate_id },
-    ...(candidate.display_id ? [{ candidateId: candidate.display_id.toLowerCase() }] : []),
-  ]);
-}
-
-function referenceGroup(item: LiteratureRecord): string {
-  if (item.evidence_kind?.includes('target_expression')) return 'Canine target expression';
-  if (item.evidence_kind?.includes('direct_canine')) return 'Canine disease evidence';
-  if (item.evidence_kind?.includes('human')) return 'Human analog evidence';
-  return 'Supporting context';
-}
-
-function uniqueGroups(literature: LiteratureRecord[]): string[] {
-  return Array.from(new Set(literature.map(referenceGroup)));
-}
-
-function identifiersLine(item: LiteratureRecord): string {
-  return Object.entries(item.identifiers ?? {})
-    .filter(([, value]) => value)
-    .map(([key, value]) => `${key.toUpperCase()}: ${value}`)
-    .join(' / ');
-}
-
-function compactList(values?: string[], limit = 4): string[] {
-  return (values ?? []).filter(Boolean).slice(0, limit);
-}
+// Lean, live candidate record (an "idea": drug × target) read from Neon public_candidates. Shares the
+// candidate_id namespace with evidence + runs, so the cross-links below resolve directly. Narrative
+// sections render only when the payload actually carries them.
 
 export async function generateMetadata({ params }: { params: Promise<{ candidateId: string }> }) {
   const { candidateId } = await params;
-  const detail = getCandidate(candidateId);
+  const c = await getCandidate(candidateId);
   return {
-    title: detail ? `${detail.candidate.display_id ?? detail.candidate.candidate_id} — TWOG Candidate` : 'TWOG Candidate',
-    description: detail?.candidate.summary ?? 'TWOG public candidate record.',
+    title: c ? `${prettyCandidate(c.candidate_id)} — TWOG` : 'TWOG Candidate',
+    description: c?.question ?? 'A real drug against a real target — tested in the open.',
   };
 }
 
 export default async function CandidateDetailPage({ params }: { params: Promise<{ candidateId: string }> }) {
+  await connection(); // Next 16: read live per request
   const { candidateId } = await params;
-  const detail = getCandidate(candidateId);
-  if (!detail) notFound();
 
-  const candidate = detail.candidate;
-  const snapshot = detail.latest_snapshot;
-  const payload = snapshot?.payload;
-  const rationale = payload?.rationale;
-  const evidence = payload?.evidence;
-  const literature = payload?.literature ?? [];
-  const decisions = detail.decision_events ?? [];
-  const validationDecision = evidence?.validation_decisions?.[0];
-  const displayId = candidate.display_id ?? candidate.candidate_id;
-  const referenceGroups = uniqueGroups(literature);
-  const payloadPath = publicCandidatePayloadPath(candidate.candidate_id);
-  const evidenceBundlePath = publicCandidateEvidenceBundlePath(candidate.candidate_id);
-  const auditTrail = publicCandidateAuditTrail(detail);
+  const candidate = await getCandidate(candidateId);
+  if (!candidate) notFound();
+
+  const [capsules, run] = await Promise.all([
+    getCapsulesForCandidate(candidate.candidate_id),
+    findRunForCandidate(candidate.candidate_id),
+  ]);
+  const verdict = verdictFromCapsules(capsules);
+  const meta = VERDICT_META[verdict];
+  const firstCapsule = capsules[0]?.capsule_id;
 
   return (
-    <div className="site-shell page-shell">
-      <section className="candidate-hero candidate-story-hero">
-        <div className="candidate-hero-copy">
-          <p className="section-kicker">{displayId} / technical story</p>
-          <h1>{candidate.title}</h1>
-          <p>{candidate.summary}</p>
-          <div className="candidate-status-strip" aria-label="Candidate record status">
-            <span>{readableKind(candidate.public_status)}</span>
-            <span>{readableKind(candidate.candidate_kind)}</span>
-            <span>score {candidate.priority_score ?? 'pending'}</span>
-            <span>hash {shortHash(candidate.content_hash ?? snapshot?.content_hash)}</span>
-          </div>
+    <div className="v4-shell">
+      <div className="v4-grain" />
+      <div className="v4-detail">
+        <nav className="v4-dnav">
+          <Link href="/candidates" className="v4-dnav__home">Candidates</Link>
+          <Link href="/evidence">Evidence</Link>
+          <Link href="/runs">Runs</Link>
+          <span className="v4-dnav__spacer" />
+          <Link href="/involved">Get involved</Link>
+        </nav>
+
+        <div style={{ display: 'flex', gap: '0.7rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <ProofStamp verdict={STAMP_FOR[verdict]} />
+          <span className="v4-chip">{prettyCandidate(candidate.candidate_id)}</span>
         </div>
-        <aside className="candidate-record-card">
-          <span className="lab-label">Record state</span>
-          <strong>{displayId}</strong>
-          <dl>
-            <div>
-              <dt>Updated</dt>
-              <dd>{formatPublicDate(candidate.updated_at)}</dd>
-            </div>
-            <div>
-              <dt>Evidence strength</dt>
-              <dd>{readableKind(evidence?.evidence_strength)}</dd>
-            </div>
-            <div>
-              <dt>Validation ready</dt>
-              <dd>{validationDecision?.validation_ready ? 'yes' : 'not yet'}</dd>
-            </div>
-            <div>
-              <dt>Program signal</dt>
-              <dd>{readableKind(validationDecision?.broader_program_signal)}</dd>
-            </div>
-          </dl>
-        </aside>
-      </section>
+        <h1 className="v4-dh1">{candidate.question}</h1>
 
-      <section className="candidate-technical-story">
-        <article className="candidate-story-main">
-          <div className="story-chapter">
-            <p className="section-kicker">01 / Technical thesis</p>
-            <h2>Why this candidate exists</h2>
-            <p className="story-lede">{rationale?.hypothesis ?? candidate.summary}</p>
-            {(rationale?.rationale_md ?? candidate.rationale_md) ? (
-              <p>{rationale?.rationale_md ?? candidate.rationale_md}</p>
-            ) : null}
+        <section className="v4-sec2">
+          <div className="v4-dh2">What we’re testing</div>
+          <div className="v4-prov__badges">
+            {candidate.targets.map((t) => <span key={t} className="v4-chip">target · {t}</span>)}
+            {candidate.biomarkers.map((b) => <span key={b} className="v4-chip">{b}</span>)}
+            {!candidate.targets.length && !candidate.biomarkers.length ? <span className="v4-chip">—</span> : null}
           </div>
-
-          <div className="story-chapter">
-            <p className="section-kicker">02 / Mechanistic argument</p>
-            <h2>The mechanism the system is trying to test</h2>
-            {rationale?.mechanism ? <p>{rationale.mechanism}</p> : null}
-            {rationale?.translational_path ? (
-              <p className="story-note">
-                <span>Proposed path</span>
-                {rationale.translational_path}
-              </p>
-            ) : null}
-          </div>
-
-          <div className="story-chapter">
-            <p className="section-kicker">03 / Evidence interpretation</p>
-            <h2>What the evidence currently supports</h2>
-            <p>
-              The page treats these references as an argument map, not a verdict. Each
-              record below explains what part of the candidate story it supports and
-              where the signal still needs stronger source-traceable evidence.
-            </p>
-            <div className="evidence-claim-grid">
-              {literature.map((item) => (
-                <article className="evidence-claim" key={item.ref}>
-                  <div>
-                    <strong>{item.ref}</strong>
-                    <span>{referenceGroup(item)}</span>
-                  </div>
-                  <h3>{item.title}</h3>
-                  <p>{item.supports}</p>
-                </article>
-              ))}
-            </div>
-          </div>
-        </article>
-
-        <aside className="candidate-story-rail">
-          <article>
-            <p className="section-kicker">Targets</p>
-            <div className="tag-grid">
-              {(candidate.targets ?? []).map((target) => (
-                <span key={target}>{target}</span>
-              ))}
-              {(candidate.biomarkers ?? []).map((biomarker) => (
-                <span key={biomarker}>{biomarker}</span>
-              ))}
-              {(candidate.candidate_therapies ?? []).map((therapy) => (
-                <span key={therapy}>{therapy}</span>
-              ))}
-            </div>
-          </article>
-
-          <article>
-            <p className="section-kicker">Current limits</p>
-            <ul className="compact-list">
-              {compactList(evidence?.risks ?? candidate.risk_flags, 5).map((risk) => (
-                <li key={risk}>{risk}</li>
-              ))}
-            </ul>
-          </article>
-
-          <article>
-            <p className="section-kicker">Would change confidence</p>
-            <ul className="compact-list">
-              {compactList(validationDecision?.confidence_changers, 4).map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </article>
-        </aside>
-      </section>
-
-      <section className="candidate-layout">
-        <article className="record-panel wide technical-readout-panel">
-          <p className="section-kicker">Next technical readouts</p>
-          <h2>What would make this record more convincing</h2>
-          <ul className="compact-list technical-readout-list">
-            {(evidence?.next_experiments ?? []).map((experiment) => (
-              <li key={experiment}>{experiment}</li>
-            ))}
-          </ul>
-        </article>
-
-        <article className="record-panel wide">
-          <p className="section-kicker">Pipeline receipt</p>
-          <h2>Run manifest and audit trail</h2>
-          <p>
-            This receipt links the public snapshot back to the pipeline run that produced it.
-            It is meant for audit and reproduction: the record keeps the candidate hash,
-            method version, source run, and attached compute records together.
-          </p>
-          <div className="audit-receipt-grid">
-            <div>
-              <span>Run manifest</span>
-              <code>{auditTrail.run_manifest_id ?? 'pending hosted export'}</code>
-            </div>
-            <div>
-              <span>Trace</span>
-              <code>{auditTrail.trace_id ?? 'pending hosted export'}</code>
-            </div>
-            <div>
-              <span>Dagster run</span>
-              <code>{auditTrail.dagster_run_id ?? 'not recorded'}</code>
-            </div>
-            <div>
-              <span>Commit</span>
-              <code>{shortHash(auditTrail.commit_sha)}</code>
-            </div>
-            <div>
-              <span>Snapshot</span>
-              <code>
-                v{auditTrail.snapshot_version ?? 'pending'} / {shortHash(auditTrail.content_hash)}
-              </code>
-            </div>
-            <div>
-              <span>Compute records</span>
-              <code>{auditTrail.compute_job_ids.length}</code>
-            </div>
-          </div>
-          {!auditTrail.has_manifest ? (
-            <p className="audit-note">
-              This static export is missing a complete manifest receipt. The hosted generator
-              now writes trace IDs and run manifests; the next strict Neon export must include
-              both before this candidate can ship as audit-ready.
-            </p>
+          {candidate.summary ? <p className="v4-lead">{candidate.summary}</p> : null}
+          {candidate.mechanism ? (
+            <p className="v4-note"><strong style={{ color: 'var(--bone)' }}>Mechanism.</strong> {candidate.mechanism}</p>
           ) : null}
-        </article>
+        </section>
 
-        <article className="record-panel wide">
-          <p className="section-kicker">Decision log</p>
-          <div className="decision-list">
-            {decisions.map((event) => (
-              <div className="decision-row" key={`${event.action}-${event.occurred_at}`}>
-                <strong>{readableKind(event.action)}</strong>
-                <span>{formatPublicDate(event.occurred_at)}</span>
-                <p>{event.rationale_md}</p>
+        <section className="v4-sec2">
+          <div className="v4-dh2">Where it stands — {meta.label}</div>
+          <p className="v4-lead">{meta.gloss}</p>
+          <p className="v4-note">
+            Status on the engine: <strong style={{ color: 'var(--bone)' }}>{(candidate.public_status ?? 'open').replace(/_/g, ' ')}</strong>
+            {candidate.validation_ready ? ' · validation-ready' : ''}. Nothing here is promoted automatically —
+            a human holds the final call.
+          </p>
+        </section>
+
+        <section className="v4-sec2">
+          <div className="v4-dh2">Follow the trail</div>
+          <div className="v4-cards">
+            {firstCapsule ? (
+              <Link href={`/evidence/${firstCapsule}`} className="v4-card">
+                <div className="v4-card__row">
+                  <span className="v4-card__title">See the evidence →</span>
+                  <span className="v4-badge v4-badge--ok">{capsules.length} test{capsules.length === 1 ? '' : 's'}</span>
+                </div>
+                <div className="v4-card__meta">the pre-registered tests, verdict, and signed provenance</div>
+              </Link>
+            ) : (
+              <div className="v4-card" style={{ opacity: 0.6 }}>
+                <div className="v4-card__row"><span className="v4-card__title">Evidence pending</span></div>
+                <div className="v4-card__meta">no published capsule for this idea yet</div>
               </div>
-            ))}
+            )}
+            {run ? (
+              <Link href={`/runs/${run.manifest_id}`} className="v4-card">
+                <div className="v4-card__row"><span className="v4-card__title">View the run →</span></div>
+                <div className="v4-card__meta">the campaign that tested this idea — {run.title}</div>
+              </Link>
+            ) : null}
           </div>
-        </article>
-      </section>
+        </section>
 
-      <section className="reference-dossier">
-        <div className="section-heading layered-heading" data-layer="REFERENCES">
-          <p className="section-kicker">Reference dossier</p>
-          <h2>Compartmentalized evidence, identifiers, and provenance.</h2>
-          <p>
-            The short citation labels above are expanded here into source compartments.
-            Each record carries the claim it supports, identifiers, provenance, and duplicate
-            handling so the public page can be audited without decoding internal refs.
+        {candidate.evidence_refs.length ? (
+          <section className="v4-sec2">
+            <div className="v4-dh2">Grounded in</div>
+            <div className="v4-prov__badges">
+              {candidate.evidence_refs.map((r) => <span key={r} className="v4-chip">{r.replace(/^curate:/, '')}</span>)}
+            </div>
+          </section>
+        ) : null}
+
+        <section className="v4-sec2">
+          <div className="v4-dh2">How we know it’s real</div>
+          <div className="v4-prov__badges">
+            {candidate.content_hash ? (
+              <span className="v4-chip">content-addressed · {candidate.content_hash.slice(0, 16)}…</span>
+            ) : null}
+            {candidate.updated_at ? <span className="v4-chip">updated {candidate.updated_at}</span> : null}
+          </div>
+          <p className="v4-note">
+            Every idea and every result is hashed so anyone can re-derive it. Want a drug or target put to the
+            test? <Link href="/involved#suggest" style={{ color: 'var(--bone)' }}>Suggest one →</Link>
           </p>
-        </div>
-
-        <div className="reference-groups">
-          {referenceGroups.map((group) => (
-            <section className="reference-group" key={group}>
-              <div className="reference-group-heading">
-                <span>{group}</span>
-                <strong>{literature.filter((item) => referenceGroup(item) === group).length}</strong>
-              </div>
-              <div className="reference-card-stack">
-                {literature
-                  .filter((item) => referenceGroup(item) === group)
-                  .map((item) => (
-                    <article className="reference-card" key={`${group}-${item.ref}`}>
-                      <div className="reference-card-head">
-                        <strong>{item.ref}</strong>
-                        <span>{item.publication_year ?? formatPublicDate(item.published_at)}</span>
-                      </div>
-                      <h3>
-                        {item.source_url ? (
-                          <a href={item.source_url} target="_blank" rel="noopener noreferrer">
-                            {item.title}
-                          </a>
-                        ) : (
-                          item.title
-                        )}
-                      </h3>
-                      <p>{item.supports}</p>
-                      <div className="reference-meta-grid">
-                        <span>Source / {readableKind(item.source_key)}</span>
-                        <span>Kind / {readableKind(item.evidence_kind)}</span>
-                        <span>Resolved / {item.resolved ? 'yes' : 'no'}</span>
-                        <span>Duplicates / {item.dedupe?.duplicate_count ?? 0}</span>
-                      </div>
-                      <div className="reference-identifiers">
-                        <span>{identifiersLine(item) || 'No public identifiers recorded'}</span>
-                        <span>
-                          Objects / {(item.provenance?.research_object_ids ?? []).length} · Chunks /{' '}
-                          {(item.provenance?.chunk_ids ?? []).length}
-                        </span>
-                      </div>
-                    </article>
-                  ))}
-              </div>
-            </section>
-          ))}
-        </div>
-      </section>
-
-      <CandidateContributionPanel
-        candidateId={candidate.candidate_id}
-        displayId={displayId}
-        payloadPath={payloadPath}
-        snapshotHash={shortHash(candidate.content_hash ?? snapshot?.content_hash)}
-      />
-
-      <section className="record-panel method-callout">
-        <p className="section-kicker">Reproducibility</p>
-        <h2>Snapshot generated with {payload?.reproducibility?.pipeline_version ?? snapshot?.pipeline_version ?? 'record method'}</h2>
-        <p>
-          This public record is an inspection artifact, not a clinical recommendation.
-          The method page explains how candidate snapshots, citation refs, decision logs,
-          content hashes, and public JSON payloads are produced.
-        </p>
-        <div className="payload-receipt">
-          <span>Public payload</span>
-          <code>{payloadPath}</code>
-          <p>
-            This endpoint returns the candidate metadata, latest snapshot, expanded
-            references, decision events, and reproducibility fields used to render this page.
-          </p>
-        </div>
-        <div className="payload-receipt">
-          <span>Evidence bundle</span>
-          <code>{evidenceBundlePath}</code>
-          <p>
-            This checkout packet adds source-document compartments, chunk provenance,
-            artifact manifests, and the MD/compute reproducibility contract for follow-up work.
-          </p>
-        </div>
-        <div className="method-actions">
-          <Link href="/methods/candidate-record-v1" className="record-link">
-            Read method
-          </Link>
-          <a href={payloadPath} className="record-link">
-            Open JSON payload
-          </a>
-          <a href={evidenceBundlePath} className="record-link">
-            Open evidence bundle
-          </a>
-        </div>
-      </section>
+        </section>
+      </div>
     </div>
   );
 }

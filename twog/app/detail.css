@@ -63,6 +63,8 @@
 .v4-rrow__meta { font-family: var(--font-mono); font-size: 0.66rem; color: var(--faint); letter-spacing: 0.05em; }
 .v4-rrow a { color: var(--bone-dim); text-decoration: none; }
 .v4-rrow a:hover { color: var(--bone); }
+.v4-rrow a.v4-rrow__name { color: var(--bone); }
+.v4-rrow a.v4-rrow__name:hover { color: #fff; }
 
 /* trust banner */
 .v4-trust { border: 1px solid var(--line-2); border-left: 3px solid var(--bone); border-radius: 3px; padding: 1rem 1.2rem; }

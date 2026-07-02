@@ -60,3 +60,32 @@ export interface Provenance {
   signature_valid: boolean | null;
   lineage_index: number | null;
 }
+
+// A public candidate (an "idea": drug × target) read live from Neon public_candidates. The autonomous
+// falsification roster is lean — title (the question), targets, biomarkers, evidence_refs, status — so
+// these shapes stay lean and surface richer narrative fields only when they're actually populated.
+export interface CandidateCore {
+  candidate_id: string;
+  title: string; // raw, e.g. "Falsify: does carvedilol engage KDR …?"
+  question: string; // publicQuestion(title) — the plain-language ask
+  targets: string[];
+  biomarkers: string[];
+  public_status: string | null;
+  validation_ready: boolean;
+  priority_score: number | null;
+  kind: string | null;
+}
+
+export interface CandidateSummary extends CandidateCore {
+  verdict: Verdict; // derived from this candidate's capsule signals (still-standing / ruled-out / needs-more)
+}
+
+export interface CandidateDetail extends CandidateCore {
+  evidence_refs: string[];
+  content_hash: string | null;
+  updated_at: string | null;
+  // optional narrative — present only if non-empty in the payload (most autonomous candidates omit these)
+  summary?: string;
+  mechanism?: string;
+  rationale_md?: string;
+}

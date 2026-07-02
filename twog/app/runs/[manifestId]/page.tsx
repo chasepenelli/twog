@@ -64,7 +64,7 @@ export default async function RunDetail({ params }: { params: Promise<{ manifest
               return (
                 <div key={row.candidate_id} className="v4-rrow" style={{ ['--spine' as string]: stripe } as React.CSSProperties}>
                   <div className="v4-rrow__top">
-                    <span className="v4-rrow__name">{prettyCandidate(row.candidate_id)}</span>
+                    <Link href={`/candidates/${row.candidate_id}`} className="v4-rrow__name">{prettyCandidate(row.candidate_id)}</Link>
                     <span className={`v4-badge v4-badge--${meta.tone}`}>{meta.label}</span>
                   </div>
                   <div className="v4-rrow__meta" style={{ marginTop: '0.4rem' }}>

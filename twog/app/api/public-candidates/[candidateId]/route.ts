@@ -1,34 +1,27 @@
 import { NextResponse } from 'next/server';
-import { getCandidate } from '@/lib/public-candidates';
+import { getCandidate } from '@/lib/public-candidates-live';
+
+// Live public-candidate payload (reads Neon public_candidates via the graceful reader).
+export const runtime = 'nodejs';
 
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ candidateId: string }> }
 ) {
   const { candidateId } = await params;
-  const candidate = getCandidate(candidateId);
+  const candidate = await getCandidate(candidateId);
 
   if (!candidate) {
     return NextResponse.json(
-      {
-        error: 'public_candidate_not_found',
-        candidateId,
-      },
-      {
-        status: 404,
-        headers: {
-          'Cache-Control': 's-maxage=300, stale-while-revalidate',
-        },
-      }
+      { error: 'public_candidate_not_found', candidateId },
+      { status: 404, headers: { 'Cache-Control': 's-maxage=60, stale-while-revalidate' } }
     );
   }
 
-  const stableId = candidate.candidate.candidate_id;
-
   return NextResponse.json(candidate, {
     headers: {
-      'Cache-Control': 's-maxage=300, stale-while-revalidate',
-      'Content-Disposition': `inline; filename="${stableId}.json"`,
+      'Cache-Control': 's-maxage=60, stale-while-revalidate',
+      'Content-Disposition': `inline; filename="${candidate.candidate_id}.json"`,
     },
   });
 }
