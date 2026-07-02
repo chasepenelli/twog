@@ -132,3 +132,33 @@
 .v4-form__actions button:hover:not(:disabled) { transform: translateY(-1px); background: #fff; }
 .v4-form__actions button:disabled { opacity: 0.6; cursor: default; }
 .v4-form__err { margin: 0; padding-left: 1.1rem; color: var(--kill); font-size: 0.82rem; line-height: 1.5; }
+
+/* operator triage board */
+.v4-triage { padding-top: 1.2rem; padding-bottom: 1.2rem; }
+.v4-triage__meta { font-family: var(--font-mono); font-size: 0.68rem; color: var(--faint); letter-spacing: 0.04em;
+  display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: baseline; margin-top: 0.45rem; }
+.v4-triage__meta a { color: var(--bone-dim); text-decoration: none; }
+.v4-triage__meta a:hover { color: var(--bone); }
+.v4-triage__rec { display: flex; gap: 0.6rem; align-items: baseline; flex-wrap: wrap; margin-top: 0.7rem; }
+.v4-triage__reason { color: var(--bone-dim); font-size: 0.82rem; }
+.v4-triage__more { margin-top: 0.7rem; }
+.v4-triage__more > summary { font-family: var(--font-mono); font-size: 0.66rem; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--faint); cursor: pointer; }
+.v4-triage__more > summary:hover { color: var(--bone-dim); }
+.v4-triage__p { color: var(--bone-dim); font-size: 0.9rem; line-height: 1.55; margin: 0.6rem 0 0; }
+.v4-triage__p strong { color: var(--bone); }
+.v4-triage__notes { font-family: var(--font-mono); font-size: 0.72rem; color: var(--faint); white-space: pre-wrap;
+  margin: 0.7rem 0 0; padding: 0.6rem 0.8rem; border: 1px solid var(--line); border-radius: 3px; background: var(--bg); }
+.v4-triage__act { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-top: 0.9rem; }
+.v4-triage__act select, .v4-triage__act input { background: var(--bg); border: 1px solid var(--line-2); border-radius: 2px;
+  color: var(--bone); font-family: var(--font-mono); font-size: 0.78rem; padding: 0.45rem 0.6rem; }
+.v4-triage__act select { appearance: none; cursor: pointer; }
+.v4-triage__act input { flex: 1 1 140px; min-width: 120px; }
+.v4-triage__act button { font-family: var(--font-mono); font-size: 0.76rem; color: var(--bg); background: var(--bone);
+  border: 1px solid var(--bone); border-radius: 2px; padding: 0.45rem 0.9rem; cursor: pointer; white-space: nowrap;
+  transition: transform 160ms var(--ease), background 160ms var(--ease); }
+.v4-triage__act button:hover:not(:disabled) { transform: translateY(-1px); background: #fff; }
+.v4-triage__act button:disabled { opacity: 0.6; cursor: default; }
+.v4-triage__logout { background: none; border: 0; color: var(--bone-dim); font-family: var(--font-mono);
+  font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; padding: 0; }
+.v4-triage__logout:hover { color: var(--bone); }

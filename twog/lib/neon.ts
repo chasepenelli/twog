@@ -42,3 +42,11 @@ export async function neonRows<T = Record<string, unknown>>(sql: string, params:
     return [];
   }
 }
+
+/** Run a write/query that MUST surface errors (throws on misconfig/failure). Use for operator writes
+ *  where the caller needs to distinguish success from failure (unlike neonRows, which swallows). */
+export async function neonWrite<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+  if (!isNeonConfigured()) throw new Error('neon_not_configured');
+  const res = await neonPool().query(sql, params);
+  return res.rows as T[];
+}
