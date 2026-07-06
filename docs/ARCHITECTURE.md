@@ -386,3 +386,37 @@ A non-operator record is **silently stripped** of the two write-gate scopes by t
 **Gotchas.**
 - **CI is offline + deterministic.** Tests use the `mock` runner and never hit the network (PubChem/RCSB/UniProt live only in `input_resolvers.py`, mocked in tests) or Modal. Keep new logic pure/injectable so it stays testable without GPU or network.
 - A test that seeds a value the engine never emits (e.g. signal `"refuted"`) gives false confidence — assert against the real vocabulary (`refutes`). This was the exact RO-Crate trap.
+
+---
+
+## 17. Current state (2026-07) — the live twog.bio app, contribute lane, triage board
+
+> §11 above describes the **older `web/` app (Next 14)** — the gated operator/collaborator *reference* app, which is **localhost-only, never deployed**. Since then, the **public product moved to a new app: `twog/` (Next 16 + React 19), which IS what serves `twog.bio`.** This section is the source of truth for what's live.
+
+**Two front-ends, one Neon.** `web/` = the older Next 14 app (operator console, WorkOS scaffold — not deployed). `twog/` = the live Next 16 "v4" dark proof-engine site on twog.bio. Both read the **same Neon DB**. The `twog/` app reads Neon **directly via `pg`** (`twog/lib/neon.ts` `neonRows`/`neonWrite`, graceful []-on-failure), NOT via the Railway engine API — so the data surfaces are live even though the Railway API is unshipped.
+
+**Live public surfaces (twog.bio, `twog/app/`):**
+- `/` → the v4 "PROOF" landing (`app/v4/page.tsx`, promoted to home; old landing at `/legacy`). Hero HUD, live ledger, marquees.
+- `/candidates` (+ `/[candidateId]`) → every idea (drug × target) read live from Neon `public_candidates` (`lib/public-candidates-live.ts`), verdict from capsule signals, cross-linked to evidence + runs.
+- `/evidence` (+ `/[capsuleId]`) → proof capsules (`lib/public-capsules.ts`); **two-tier**: public teaser always, deep tier (rubric + provenance) behind an **email gate** (`twog_email` cookie via `/api/subscribe`, `lib/gate.ts`).
+- `/runs` (+ `/[manifestId]`) → falsification campaigns + rollups (`lib/public-runs.ts`, `findRunForCandidate`).
+- `/involved` → the Get-Involved ladder + Suggest form (`/api/suggestions` → Neon `public_suggestions`).
+
+**Verdict model (`lib/verdict.ts`):** capsule signal `refutes`→`ruled-out`, `supports`→`still-standing`, else `needs-more`. Ceiling is "still standing" — never "proven".
+
+**The Contribute lane (the hands-on rung):**
+- Public intake: `ContributeForm` (`components/v4/ContributeForm.tsx`) → `POST /api/public-candidates/[id]/contributions` → Neon `candidate_contribution_intake` (`lib/candidate-contributions.ts`). Validates against **live** candidates (`asPublicCandidateDetail` adapter). **Env-gated `TWOG_CONTRIBUTIONS_OPEN` (default PAUSED → 503).** Pre-go-live gate: add per-IP rate limiting.
+- Operator triage board: **`/operate`** (`app/operate/`), **passphrase-gated** (`TWOG_OPERATOR_TOKEN`, `lib/operator-gate.ts`, constant-time compare, httpOnly cookie — a **stopgap until WorkOS**). `lib/contribution-triage.ts` is a **faithful TS port** of the engine's `src/hsa_research/ingestion_bridge/candidate_contribution_intake.py` (same statuses, same `promoted_queue_id` format `candidate_contribution:{id}:{route}`, same review-note append) — so the twog board and the engine/Dagster path write identical shapes. Board **only routes, never publishes**. The canonical home is the `web/` `/operate` console + engine `triage_candidate_contributions()`; same Neon table → no data migration when it migrates.
+- Smoke test: `twog/scripts/smoke-contribution-lane.mjs` (`npm run smoke:contrib`) — intake + gate + all 7 triage transitions vs the engine contract; env-driven, self-cleaning.
+
+**Deploy:** `twog.bio` = the **`twog` Vercel project** (rootDir `twog`), deployed **manually** via `vercel build --prod` + `vercel deploy --prebuilt --prod` from the `moonshot-rubric` working tree (NOT git auto-deploy). Prod env vars set: `NEON_DATABASE_URL`, `TWOG_OPERATOR_TOKEN`. The full launch (v4 site + contribute lane + triage + inc8 engine spine) is in **open PR #29 (`moonshot-rubric` → `main`)**, which diverges from `origin/main` (a lighter v4 landed earlier via PR #28) — landing it needs a rebase.
+
+**Known seams (honest gaps):**
+- **Railway engine API not deployed** → the homepage "watch the engine work" ledger polls `/api/ledger` → engine `/public/activity`, which is unreachable in prod → falls back to **REPLAY** (`source:"unreachable"`). Deploying Railway makes it truly live.
+- **WorkOS stubbed** → operator/collaborator write routes 401; the twog `/operate` passphrase is the interim gate.
+- **Boltz-2 co-folding + OpenMM MD are scaffolds** (in-code warnings) — only **gnina docking + omics** carry defensible signal; keep the others out of any confidence framing.
+- Public intake + the operator board are both **env-gated OFF by default**.
+
+**In progress — the Research Director Agent (Option 3, 2026-07):** a net-new engine agent (`ResearchDirectorAgent`, reusing `agent_runner.py` + `frontier_research_policy.py`) that reads the proof ledger + validation-ready roster + failure corpus + confound verdicts and emits grounded, re-derivable **`DecisionLog`** records (which candidate next, why, confidence, cost) — every claim **must cite a real `capsule_id`/target** or be rejected. Surfaced on a new live **`/orchestration`** reasoning feed. Hard **$20 API cost gate** built before the first paid call (per always-confirm-spend). This is the "watch a frontier model direct the science, grounded" surface.
+
+**Key `twog/` file map:** `lib/{neon,verdict,gate,public-runs,public-capsules,public-candidates-live,candidate-contributions,contribution-triage,operator-gate}.ts` · `app/{v4,candidates,evidence,runs,involved,operate}/` · `app/api/{subscribe,suggestions,ledger,public-candidates/*,operator/*}/` · `components/v4/*` · `app/detail.css` (the v4-dark design system) · `scripts/*.mjs`.
