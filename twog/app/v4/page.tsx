@@ -133,6 +133,7 @@ export default function V4() {
         <ProofStamp verdict="survived" size="lg" />
         <p>TWOG — proof, not promises. Built in public.</p>
         <div className="v4-footer__links">
+          <Link href="/orchestration">The director</Link>
           <Link href="/runs">Runs</Link>
           <Link href="/evidence">Evidence</Link>
           <Link href="/candidates">Records</Link>

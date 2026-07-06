@@ -1,0 +1,20 @@
+/* The director / orchestration feed — decision cards over the v4-dark detail system. */
+
+.v4-dir { padding-top: 1.2rem; padding-bottom: 1.2rem; }
+.v4-dir__head { display: flex; align-items: baseline; gap: 0.8rem; }
+.v4-dir__rank { font-family: var(--font-display); font-weight: 700; font-size: 1.2rem; color: var(--faint);
+  min-width: 1.6rem; line-height: 1; }
+.v4-dir__title { flex: 1; font-family: var(--font-display); font-weight: 600; font-size: 1.08rem;
+  letter-spacing: -0.01em; color: var(--bone); line-height: 1.25; }
+.v4-dir__chips { display: flex; gap: 0.45rem; flex-wrap: wrap; align-items: center; margin: 0.7rem 0 0 2.4rem; }
+.v4-chip--mod { color: var(--bone); border-color: var(--line-2); text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.6rem; }
+.v4-dir__why { color: var(--bone-dim); font-size: 0.92rem; line-height: 1.55; margin: 0.7rem 0 0 2.4rem; max-width: 70ch; }
+.v4-dir__cites { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; margin: 0.8rem 0 0 2.4rem;
+  font-family: var(--font-mono); font-size: 0.66rem; color: var(--faint); letter-spacing: 0.04em; }
+.v4-dir__cites > span { text-transform: uppercase; letter-spacing: 0.1em; }
+.v4-dir__cites a { color: var(--bone-dim); text-decoration: none; }
+.v4-dir__cites a:hover { color: var(--bone); }
+
+@media (max-width: 620px) {
+  .v4-dir__chips, .v4-dir__why, .v4-dir__cites { margin-left: 0; }
+}
