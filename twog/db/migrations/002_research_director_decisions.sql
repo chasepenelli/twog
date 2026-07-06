@@ -11,7 +11,7 @@ create table if not exists research_director_decisions (
   target text,                                   -- e.g. KDR / PIK3CA
   action_kind text not null,                     -- propose_frontier | deprioritize | next_test | escalate | needs_input
   modality text,                                 -- frontier modality for propose_frontier (stapled_peptide, peptide_protac, degrader, molecular_glue, base_edit, prime_edit, car_t, mrna_vaccine, adc, covalent, allele_specific, synthetic_lethality)
-  testable_now boolean,                          -- does this fit the current compute lanes (peptides/degraders dock; gene-edits/cell-therapy/mRNA don't)
+  testable_now boolean,                          -- true ONLY for a genuine small-molecule pocket binder (real tool compound) vs a redock-verified target; degraders/peptides/glues/biologics/gene-edits are NOT dockable by gnina and are proposals until designed
   decision text not null,                        -- the recommended action, in plain language
   rationale text not null,                       -- grounded reasoning (cites the evidence)
   confidence double precision,                   -- 0..1 (never certainty)
