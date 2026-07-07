@@ -17,7 +17,7 @@ const BOTTOM = ['Real proof', 'Tested in the open', 'Worth believing', 'Proof en
 const CLOSE = ['Real proof', 'Worth believing', 'Tested in the open', 'Built in public', 'Starting with dogs'];
 
 const LADDER = [
-  ['Watch', 'Watch', 'Open the live ledger and see the engine run. No signup.', 'Watch it work →', '#ledger'],
+  ['Watch', 'Watch', 'Watch the engine work through a real run, step by step. No signup.', 'Watch it work →', '#ledger'],
   ['Follow', '1 click', 'Get the next result in your inbox when an experiment resolves.', 'Follow the build →', 'https://pushingc.substack.com/subscribe'],
   ['Suggest', 'Low', 'Name a drug, a target, or a question. We’ll put it to the test in public.', 'Suggest something →', '/involved#suggest'],
   ['Contribute', 'Hands on', 'Inspect a real record, pressure-test a result, return structured work.', 'Inspect records →', '/candidates'],

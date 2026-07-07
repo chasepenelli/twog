@@ -4,6 +4,7 @@ import '../../v4/v4.css';
 import '../../v2/v2.css';
 import '../../detail.css';
 import { ProofStamp } from '@/components/v2/ProofStamp';
+import { SiteNav } from '@/components/v4/SiteNav';
 import { LaneTrack } from '@/components/v4/LaneTrack';
 import { EmailGate } from '@/components/v4/EmailGate';
 import { MoonshotRubricView } from './_components/MoonshotRubricView';
@@ -48,12 +49,7 @@ export default async function CapsuleDetail({
     <div className="v4-shell">
       <div className="v4-grain" />
       <div className="v4-detail">
-        <nav className="v4-dnav">
-          <Link href="/evidence" className="v4-dnav__home">Evidence</Link>
-          <Link href="/runs">Runs</Link>
-          <span className="v4-dnav__spacer" />
-          <Link href="/involved">Get involved</Link>
-        </nav>
+        <SiteNav back={{ href: '/evidence', label: 'Evidence' }} />
 
         <div style={{ display: 'flex', gap: '0.7rem', alignItems: 'center', flexWrap: 'wrap' }}>
           <ProofStamp verdict={STAMP_FOR[verdict]} />
@@ -83,7 +79,12 @@ export default async function CapsuleDetail({
             <p className="v4-note"><strong style={{ color: 'var(--bone)' }}>Readout.</strong> {cap.readout}</p>
           ) : null}
           {typeof cap.confidence === 'number' ? (
-            <p className="v4-note">Confidence so far: {Math.round(cap.confidence * 100)}% — never proof.</p>
+            <p className="v4-note">
+              Confidence so far: {Math.round(cap.confidence * 100)}% — never proof.
+              {verdict === 'still-standing' && cap.confidence < 0.5
+                ? ' It survived the cheap lane(s) run so far; confidence stays low until deeper lanes run.'
+                : ''}
+            </p>
           ) : null}
         </section>
 

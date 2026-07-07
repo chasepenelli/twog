@@ -4,6 +4,7 @@ import '../v4/v4.css';
 import '../v2/v2.css';
 import '../detail.css';
 import './orchestration.css';
+import { SiteNav } from '@/components/v4/SiteNav';
 import { listDecisions, summarize } from '@/lib/research-director';
 
 export const metadata = {
@@ -35,14 +36,7 @@ export default async function OrchestrationPage() {
     <div className="v4-shell">
       <div className="v4-grain" />
       <div className="v4-detail v4-detail--wide">
-        <nav className="v4-dnav">
-          <Link href="/" className="v4-dnav__home">twog</Link>
-          <Link href="/candidates">Candidates</Link>
-          <Link href="/evidence">Evidence</Link>
-          <Link href="/runs">Runs</Link>
-          <span className="v4-dnav__spacer" />
-          <Link href="/involved">Get involved</Link>
-        </nav>
+        <SiteNav />
 
         <p className="v4-kick">The director · what to test next</p>
         <h1 className="v4-dh1">Where the engine points next.</h1>

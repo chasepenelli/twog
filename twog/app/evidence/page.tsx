@@ -4,9 +4,10 @@ import '../v4/v4.css';
 import '../v2/v2.css';
 import '../detail.css';
 import { ProofStamp } from '@/components/v2/ProofStamp';
+import { SiteNav } from '@/components/v4/SiteNav';
 import { listCapsules } from '@/lib/public-capsules';
 import { verdictFromCapsules, VERDICT_META, STAMP_FOR, prettyCandidate } from '@/lib/verdict';
-import type { Verdict } from '@/lib/types/public-detail';
+import type { Capsule, Verdict } from '@/lib/types/public-detail';
 
 export const metadata = {
   title: 'Evidence — TWOG',
@@ -14,6 +15,14 @@ export const metadata = {
 };
 
 const ORDER: Record<Verdict, number> = { 'still-standing': 0, 'needs-more': 1, 'ruled-out': 2 };
+
+// The card must open the capsule that SET the verdict, not just the newest one, so the stamp and the
+// destination readout agree.
+function repCapsule(list: Capsule[], verdict: Verdict): Capsule {
+  if (verdict === 'ruled-out') return list.find((c) => c.signal === 'refutes') ?? list[0];
+  if (verdict === 'still-standing') return list.find((c) => c.signal === 'supports') ?? list[0];
+  return list[0];
+}
 
 export default async function EvidencePage() {
   await connection(); // Next 16: read live per request (pg reads aren't auto-detected as dynamic)
@@ -27,19 +36,17 @@ export default async function EvidencePage() {
     byCand.set(c.candidate_id, arr);
   }
   const cards = [...byCand.entries()]
-    .map(([cid, list]) => ({ cid, list, verdict: verdictFromCapsules(list), rep: list[0] }))
+    .map(([cid, list]) => {
+      const verdict = verdictFromCapsules(list);
+      return { cid, list, verdict, rep: repCapsule(list, verdict) };
+    })
     .sort((a, b) => ORDER[a.verdict] - ORDER[b.verdict]);
 
   return (
     <div className="v4-shell">
       <div className="v4-grain" />
       <div className="v4-detail">
-        <nav className="v4-dnav">
-          <Link href="/" className="v4-dnav__home">twog</Link>
-          <Link href="/runs">Runs</Link>
-          <span className="v4-dnav__spacer" />
-          <Link href="/involved">Get involved</Link>
-        </nav>
+        <SiteNav />
 
         <p className="v4-kick">Evidence</p>
         <h1 className="v4-dh1">Every idea, and how it’s holding up.</h1>

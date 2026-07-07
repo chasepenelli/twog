@@ -5,6 +5,7 @@ import '../../v4/v4.css';
 import '../../v2/v2.css';
 import '../../detail.css';
 import { ProofStamp } from '@/components/v2/ProofStamp';
+import { SiteNav } from '@/components/v4/SiteNav';
 import { ContributeForm } from '@/components/v4/ContributeForm';
 import { getCandidate } from '@/lib/public-candidates-live';
 import { getCapsulesForCandidate } from '@/lib/public-capsules';
@@ -43,13 +44,7 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
     <div className="v4-shell">
       <div className="v4-grain" />
       <div className="v4-detail">
-        <nav className="v4-dnav">
-          <Link href="/candidates" className="v4-dnav__home">Candidates</Link>
-          <Link href="/evidence">Evidence</Link>
-          <Link href="/runs">Runs</Link>
-          <span className="v4-dnav__spacer" />
-          <Link href="/involved">Get involved</Link>
-        </nav>
+        <SiteNav back={{ href: '/candidates', label: 'Candidates' }} />
 
         <div style={{ display: 'flex', gap: '0.7rem', alignItems: 'center', flexWrap: 'wrap' }}>
           <ProofStamp verdict={STAMP_FOR[verdict]} />

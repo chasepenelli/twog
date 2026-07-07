@@ -3,6 +3,7 @@ import '../v4/v4.css';
 import '../v2/v2.css';
 import '../detail.css';
 import './involved.css';
+import { SiteNav } from '@/components/v4/SiteNav';
 import { SuggestForm } from '@/components/v4/SuggestForm';
 import { EmailGate } from '@/components/v4/EmailGate';
 
@@ -12,7 +13,7 @@ export const metadata = {
 };
 
 const RUNGS: [string, string, string, string, string][] = [
-  ['Watch', 'no signup', 'Open the live ledger and watch the engine work — every propose, lock, dock, and verdict.', 'Watch it work →', '/'],
+  ['Watch', 'no signup', 'Watch the engine work through a real run — every propose, lock, dock, and verdict.', 'Watch it work →', '/'],
   ['Follow', '1 click', 'Get the next result in your inbox when an experiment resolves.', 'Follow the build →', 'https://pushingc.substack.com/subscribe'],
   ['Suggest', 'low', 'Name a drug, a target, or a question. We’ll put it to the test in public.', 'Suggest below ↓', '#suggest'],
   ['Contribute', 'hands on', 'Inspect a real record, pressure-test a result, return structured work.', 'Inspect the records →', '/candidates'],
@@ -24,12 +25,7 @@ export default function InvolvedPage() {
     <div className="v4-shell">
       <div className="v4-grain" />
       <div className="v4-detail">
-        <nav className="v4-dnav">
-          <Link href="/" className="v4-dnav__home">twog</Link>
-          <Link href="/runs">Runs</Link>
-          <Link href="/evidence">Evidence</Link>
-          <span className="v4-dnav__spacer" />
-        </nav>
+        <SiteNav />
 
         <p className="v4-kick">Get involved</p>
         <h1 className="v4-dh1">Pick your altitude.</h1>

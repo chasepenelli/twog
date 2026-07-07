@@ -3,6 +3,7 @@ import { connection } from 'next/server';
 import '../v4/v4.css';
 import '../v2/v2.css';
 import '../detail.css';
+import { SiteNav } from '@/components/v4/SiteNav';
 import { listRuns } from '@/lib/public-runs';
 
 export const metadata = {
@@ -17,12 +18,7 @@ export default async function RunsPage() {
     <div className="v4-shell">
       <div className="v4-grain" />
       <div className="v4-detail">
-        <nav className="v4-dnav">
-          <Link href="/" className="v4-dnav__home">twog</Link>
-          <Link href="/evidence">Evidence</Link>
-          <span className="v4-dnav__spacer" />
-          <Link href="/involved">Get involved</Link>
-        </nav>
+        <SiteNav />
 
         <p className="v4-kick">Runs</p>
         <h1 className="v4-dh1">What we tried to kill.</h1>

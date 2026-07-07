@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import '../../v4/v4.css';
 import '../../v2/v2.css';
 import '../../detail.css';
+import { SiteNav } from '@/components/v4/SiteNav';
 import { getRun } from '@/lib/public-runs';
 import { STATUS_META, prettyCandidate } from '@/lib/verdict';
 
@@ -16,12 +17,7 @@ export default async function RunDetail({ params }: { params: Promise<{ manifest
     <div className="v4-shell">
       <div className="v4-grain" />
       <div className="v4-detail v4-detail--wide">
-        <nav className="v4-dnav">
-          <Link href="/runs" className="v4-dnav__home">Runs</Link>
-          <Link href="/evidence">Evidence</Link>
-          <span className="v4-dnav__spacer" />
-          <Link href="/involved">Get involved</Link>
-        </nav>
+        <SiteNav back={{ href: '/runs', label: 'Runs' }} />
 
         <p className="v4-kick">Run</p>
         <h1 className="v4-dh1">{run.title}</h1>
