@@ -11,6 +11,7 @@ import {
   CANDIDATE_CONTRIBUTIONS_PAUSED,
   CANDIDATE_CONTRIBUTIONS_PAUSED_MESSAGE,
 } from '@/lib/public-contribution-status';
+import { rateLimit } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 
@@ -69,6 +70,19 @@ export async function POST(
         message: CANDIDATE_CONTRIBUTIONS_PAUSED_MESSAGE,
       },
       { status: 503 }
+    );
+  }
+
+  // Per-IP throttle so one source can't flood the review queue. Best-effort (fails open on a DB hiccup).
+  const rl = await rateLimit({ scope: 'contribute', request, limit: 4, windowSec: 600 });
+  if (!rl.ok) {
+    return NextResponse.json(
+      {
+        error: 'rate_limited',
+        message: 'You’ve submitted a few contributions already — give it a few minutes before sending more.',
+        retry_after: rl.retryAfterSec,
+      },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec) } }
     );
   }
 

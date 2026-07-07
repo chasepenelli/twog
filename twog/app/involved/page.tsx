@@ -6,6 +6,7 @@ import './involved.css';
 import { SiteNav } from '@/components/v4/SiteNav';
 import { SuggestForm } from '@/components/v4/SuggestForm';
 import { EmailGate } from '@/components/v4/EmailGate';
+import { CANDIDATE_CONTRIBUTIONS_PAUSED } from '@/lib/public-contribution-status';
 
 export const metadata = {
   title: 'Get involved — TWOG',
@@ -50,6 +51,15 @@ export default function InvolvedPage() {
             </article>
           ))}
         </div>
+
+        <p className="v4-note" style={{ marginTop: '1.4rem' }}>
+          <span className={`v4-badge v4-badge--${CANDIDATE_CONTRIBUTIONS_PAUSED ? 'run' : 'ok'}`}>
+            {CANDIDATE_CONTRIBUTIONS_PAUSED ? 'check-in paused' : 'check-in open'}
+          </span>{' '}
+          {CANDIDATE_CONTRIBUTIONS_PAUSED
+            ? 'Structured contribution check-in is paused while we tighten the review path — suggestions below are always open, and every candidate’s record stays open to inspect.'
+            : 'Structured contribution check-in is open — add a bounded packet on any candidate page. Everything is queued for human review and never changes the record on its own.'}
+        </p>
 
         <section className="v4-sec2" id="suggest">
           <div className="v4-dh2">Suggest an experiment</div>

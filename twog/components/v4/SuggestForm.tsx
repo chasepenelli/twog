@@ -1,14 +1,15 @@
 'use client';
 
-// "Suggest an experiment" — name a drug, target, or question; optional email to hear the result.
-// Posts to /api/suggestions. Public, no account.
+// "Suggest an experiment" — name a drug, target, or question; optional email so we can reach out.
+// Posts to /api/suggestions. Public, no account. We log every suggestion; results show up on the ledger.
 
 import { useState } from 'react';
 
 export function SuggestForm() {
   const [idea, setIdea] = useState('');
   const [email, setEmail] = useState('');
-  const [state, setState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle');
+  const [state, setState] = useState<'idle' | 'busy' | 'done' | 'error' | 'rate'>('idle');
+  const [ref, setRef] = useState<string | null>(null);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,7 +20,13 @@ export function SuggestForm() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ idea, email }),
       });
+      if (r.status === 429) {
+        setState('rate');
+        return;
+      }
+      const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error('failed');
+      setRef(typeof j?.id === 'string' ? j.id : null);
       setState('done');
     } catch {
       setState('error');
@@ -29,7 +36,8 @@ export function SuggestForm() {
   if (state === 'done') {
     return (
       <div className="v4-suggest__done">
-        Got it — thank you. If you left an email, we’ll tell you when it goes to the test.
+        Logged — thank you. We read every suggestion and put the strongest to the test in public; watch the
+        ledger to see what runs. {ref ? <span className="v4-mono">ref {ref.slice(0, 8)}</span> : null}
       </div>
     );
   }
@@ -48,7 +56,7 @@ export function SuggestForm() {
       <div className="v4-suggest__row">
         <input
           type="email"
-          placeholder="email (optional — to hear the result)"
+          placeholder="email (optional — so we can follow up)"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           disabled={state === 'busy'}
@@ -59,6 +67,9 @@ export function SuggestForm() {
         </button>
       </div>
       {state === 'error' && <p className="v4-gate__err">Something went wrong — try again.</p>}
+      {state === 'rate' && (
+        <p className="v4-gate__err">You’ve sent a few already — give it a few minutes, then try again.</p>
+      )}
     </form>
   );
 }
