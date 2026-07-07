@@ -1,0 +1,7 @@
+/* v4-dark architecture surface — grid of loop/testing nodes over the shared detail system. */
+.v4-arch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0.9rem; margin-top: 1.4rem; }
+.v4-arch-node { border: 1px solid var(--line); border-radius: 4px; background: var(--panel); padding: 1.1rem 1.2rem; }
+.v4-arch-node > code { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.1em; color: var(--faint); }
+.v4-arch-node__head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 0.5rem; }
+.v4-arch-node__head strong { font-family: var(--font-display); font-weight: 600; font-size: 1.02rem; color: var(--bone); letter-spacing: -0.01em; }
+.v4-arch-node p { color: var(--bone-dim); font-size: 0.88rem; line-height: 1.5; margin: 0; }

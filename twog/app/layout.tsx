@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
-import Nav from '@/components/Nav';
-import Footer from '@/components/Footer';
+import { GlobalNav, GlobalFooter } from '@/components/SiteChrome';
 import SmoothScroll from '@/components/SmoothScroll';
 
 export const metadata: Metadata = {
@@ -24,9 +23,9 @@ export default function RootLayout({
     <html lang="en">
       <body>
         <SmoothScroll>
-          <Nav />
+          <GlobalNav />
           <main>{children}</main>
-          <Footer />
+          <GlobalFooter />
         </SmoothScroll>
       </body>
     </html>
