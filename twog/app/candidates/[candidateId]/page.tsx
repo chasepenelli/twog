@@ -75,7 +75,7 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
           <p className="v4-lead">{meta.gloss}</p>
           <p className="v4-note">
             Status on the engine: <strong style={{ color: 'var(--bone)' }}>{(candidate.public_status ?? 'open').replace(/_/g, ' ')}</strong>
-            {candidate.validation_ready ? ' · validation-ready' : ''}. Nothing here is promoted automatically —
+            {candidate.validation_ready && verdict !== 'ruled-out' ? ' · validation-ready' : ''}. Nothing here is promoted automatically —
             a human holds the final call.
           </p>
         </section>
@@ -87,7 +87,7 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
               <Link href={`/evidence/${firstCapsule}`} className="v4-card">
                 <div className="v4-card__row">
                   <span className="v4-card__title">See the evidence →</span>
-                  <span className="v4-badge v4-badge--ok">{capsules.length} test{capsules.length === 1 ? '' : 's'}</span>
+                  <span className={`v4-badge v4-badge--${meta.tone}`}>{capsules.length} test{capsules.length === 1 ? '' : 's'}</span>
                 </div>
                 <div className="v4-card__meta">the pre-registered tests, verdict, and signed provenance</div>
               </Link>
@@ -132,8 +132,8 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
         <section className="v4-sec2">
           <div className="v4-dh2">Contribute to this idea</div>
           <p className="v4-lead" style={{ marginBottom: '1.4rem' }}>
-            Have evidence, a critique, a replication, or compute to add? Submit a bounded packet — it’s queued
-            for human review and never changes the record on its own.
+            Have evidence, a critique, a replication, or compute to add? When contributor check-in is open you
+            can submit a bounded packet — queued for human review, and it never changes the record on its own.
           </p>
           <ContributeForm candidateId={candidate.candidate_id} />
         </section>

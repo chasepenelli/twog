@@ -47,13 +47,23 @@ export const STATUS_META: Record<string, { label: string; tone: 'ok' | 'ko' | 'r
   underpowered: { label: 'needs more testing', tone: 'run' },
 };
 
-/** "carvedilol-vegfr2" → "carvedilol × VEGFR2" (last token is the target). */
+// Slug target token → display gene. Only these count as a real "× TARGET"; anything else is not forced
+// into drug×target form (avoids "pik3ca × IMMUNOSUPPRESSION" and the invalid gene "PI3KA").
+const TARGET_DISPLAY: Record<string, string> = {
+  pi3ka: 'PIK3CA', pik3ca: 'PIK3CA', kdr: 'KDR', vegfr2: 'VEGFR2', mtor: 'MTOR',
+};
+
+/** "carvedilol-vegfr2" → "carvedilol × VEGFR2"; "alpelisib-pi3ka" → "alpelisib × PIK3CA".
+ *  Non-drug×target slugs (e.g. "pik3ca-immunosuppression-crux") become a readable label, not a fake target. */
 export function prettyCandidate(id: string): string {
   if (!id) return id;
-  const parts = id.replace(/-(auto|demo|crux)$/i, '').split('-');
-  if (parts.length < 2) return id;
-  const target = parts.pop()!;
-  return `${parts.join('-')} × ${target.toUpperCase()}`;
+  const cleaned = id.replace(/-(auto|demo|crux)$/i, '');
+  const parts = cleaned.split('-');
+  const last = parts[parts.length - 1]?.toLowerCase() ?? '';
+  if (parts.length >= 2 && TARGET_DISPLAY[last]) {
+    return `${parts.slice(0, -1).join('-')} × ${TARGET_DISPLAY[last]}`;
+  }
+  return cleaned.replace(/-/g, ' ');
 }
 
 /** A plain-language question for a candidate/capsule (best-effort). */

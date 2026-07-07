@@ -12,6 +12,15 @@ import type { PublicCandidateDetail } from './public-candidates';
 const PUBLIC_STATUSES = ['submitted', 'accepted', 'promoted'];
 const VERDICT_ORDER: Record<Verdict, number> = { 'still-standing': 0, 'needs-more': 1, 'ruled-out': 2 };
 
+// Keep demo/auto duplicates + non-oncology negative-control fixtures out of the PUBLIC grid (they still
+// resolve on a direct /candidates/[id] link). e.g. alpelisib-pi3ka-demo/-auto, aspirin/ethanol-*-auto.
+const FIXTURE_CONTROLS = new Set(['aspirin', 'ethanol']);
+function isFixtureCandidate(id: string): boolean {
+  if (/-(demo|auto)$/i.test(id)) return true;
+  const head = id.split('-')[0].toLowerCase();
+  return FIXTURE_CONTROLS.has(head);
+}
+
 type Row = {
   candidate_id: string;
   display_id: string | null;
@@ -67,6 +76,7 @@ export async function listCandidates(limit = 200): Promise<CandidateSummary[]> {
     verdictByCand.set(s.candidate_id, verdictFromCapsules((s.signals ?? []).map((signal) => ({ signal }))));
   }
   return rows
+    .filter((row) => !isFixtureCandidate(row.candidate_id))
     .map((row) => ({ ...core(row), verdict: verdictByCand.get(row.candidate_id) ?? ('needs-more' as Verdict) }))
     .sort((a, b) => VERDICT_ORDER[a.verdict] - VERDICT_ORDER[b.verdict] || (b.priority_score ?? 0) - (a.priority_score ?? 0));
 }

@@ -3,9 +3,12 @@ export const CONTACT_MAILTO = `mailto:${CONTACT_EMAIL}`;
 
 export const NAV_LINKS = [
   { href: '/candidates', label: 'Candidates' },
+  { href: '/evidence', label: 'Evidence' },
+  { href: '/runs', label: 'Runs' },
+  { href: '/orchestration', label: 'The director' },
   { href: '/methods', label: 'Methods' },
   { href: '/architecture', label: 'Architecture' },
-  { href: '/#contact', label: 'Contact' },
+  { href: CONTACT_MAILTO, label: 'Contact' },
 ] as const;
 
 export const DISCOVERY_TYPES: Record<string, { label: string; icon: string }> = {

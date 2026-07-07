@@ -49,7 +49,9 @@ export default async function CandidatesPage() {
                   style={{ ['--spine' as string]: stripe } as React.CSSProperties}
                 >
                   <div className="v4-card__row">
-                    <span className="v4-card__title">{prettyCandidate(c.candidate_id)}</span>
+                    <span className="v4-card__title">
+                      {c.title && !/^falsify/i.test(c.title) ? c.title : prettyCandidate(c.candidate_id)}
+                    </span>
                     <ProofStamp verdict={STAMP_FOR[c.verdict]} />
                   </div>
                   <div className="v4-card__meta">
