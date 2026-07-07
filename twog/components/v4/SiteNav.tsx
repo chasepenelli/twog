@@ -11,6 +11,8 @@ export function SiteNav({ back }: { back?: { href: string; label: string } } = {
       <Link href="/evidence">Evidence</Link>
       <Link href="/runs">Runs</Link>
       <Link href="/orchestration">The director</Link>
+      <Link href="/methods">Methods</Link>
+      <Link href="/architecture">Architecture</Link>
       <span className="v4-dnav__spacer" />
       <Link href="/involved">Get involved</Link>
     </nav>

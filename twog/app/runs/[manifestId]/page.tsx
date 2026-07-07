@@ -56,28 +56,41 @@ export default async function RunDetail({ params }: { params: Promise<{ manifest
           <div className="v4-dh2">
             What we tried to kill — {run.rollup.candidates_processed}/{run.rollup.candidates_selected} run
           </div>
-          <div className="v4-rows">
-            {run.rows.map((row) => {
-              const meta = STATUS_META[row.leading_hypothesis_status] ?? { label: row.leading_hypothesis_status, tone: 'run' as const };
-              const stripe = meta.tone === 'ko' ? 'var(--kill)' : meta.tone === 'ok' ? 'var(--bone)' : 'var(--line-2)';
-              const cap = row.capsule_ids[0];
-              return (
-                <div key={row.candidate_id} className="v4-rrow" style={{ ['--spine' as string]: stripe } as React.CSSProperties}>
-                  <div className="v4-rrow__top">
-                    <Link href={`/candidates/${row.candidate_id}`} className="v4-rrow__name">{prettyCandidate(row.candidate_id)}</Link>
-                    <span className={`v4-badge v4-badge--${meta.tone}`}>{meta.label}</span>
-                  </div>
-                  <div className="v4-rrow__meta" style={{ marginTop: '0.4rem' }}>
-                    {cap ? (
-                      <Link href={`/evidence/${cap}`}>open the evidence →</Link>
-                    ) : (
-                      <span>terminal: {row.terminal_reason.replace(/_/g, ' ')} — no capsule to show</span>
-                    )}
-                  </div>
+          {(() => {
+            const tested = run.rows.filter((r) => r.capsule_ids[0]);
+            const untested = run.rows.filter((r) => !r.capsule_ids[0]);
+            return (
+              <>
+                <div className="v4-rows">
+                  {tested.map((row) => {
+                    const meta = STATUS_META[row.leading_hypothesis_status] ?? { label: row.leading_hypothesis_status, tone: 'run' as const };
+                    const stripe = meta.tone === 'ko' ? 'var(--kill)' : meta.tone === 'ok' ? 'var(--bone)' : 'var(--line-2)';
+                    return (
+                      <div key={row.candidate_id} className="v4-rrow" style={{ ['--spine' as string]: stripe } as React.CSSProperties}>
+                        <div className="v4-rrow__top">
+                          <Link href={`/candidates/${row.candidate_id}`} className="v4-rrow__name">{prettyCandidate(row.candidate_id)}</Link>
+                          <span className={`v4-badge v4-badge--${meta.tone}`}>{meta.label}</span>
+                        </div>
+                        <div className="v4-rrow__meta" style={{ marginTop: '0.4rem' }}>
+                          <Link href={`/evidence/${row.capsule_ids[0]}`}>open the evidence →</Link>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
+                {tested.length === 0 ? (
+                  <p className="v4-lead v4-muted">No candidate in this run produced a testable result.</p>
+                ) : null}
+                {untested.length ? (
+                  <p className="v4-note" style={{ marginTop: '1.2rem' }}>
+                    <strong style={{ color: 'var(--bone-dim)' }}>{untested.length} more candidate{untested.length === 1 ? '' : 's'}</strong> had no
+                    runnable proposal — nothing was tested (no verified inputs to dispatch). That refusal is the spend
+                    gate working, not a result.
+                  </p>
+                ) : null}
+              </>
+            );
+          })()}
         </section>
       </div>
     </div>

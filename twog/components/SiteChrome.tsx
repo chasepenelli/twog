@@ -4,10 +4,10 @@ import { usePathname } from 'next/navigation';
 import Nav from './Nav';
 import Footer from './Footer';
 
-// The old LIGHT global chrome now renders only on the remaining light pages (methods, until they're
-// reskinned). Every v4-dark surface brings its own <SiteNav> — this stops the double header/footer and
-// the light-chrome-over-dark-hero. Once all pages are v4-dark, delete this + the light Nav/Footer.
-const LIGHT_ROUTES = ['/methods'];
+// Every page is now v4-dark with its own <SiteNav>, so the old LIGHT global Nav/Footer render nowhere
+// (LIGHT_ROUTES empty). Kept as a gate in case a light page is reintroduced; Nav.tsx/Footer.tsx are now
+// otherwise unused.
+const LIGHT_ROUTES: string[] = [];
 function isLight(pathname: string): boolean {
   return LIGHT_ROUTES.some((r) => pathname === r || pathname.startsWith(r + '/'));
 }
