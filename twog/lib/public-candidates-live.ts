@@ -65,15 +65,21 @@ const SELECT = `select candidate_id, display_id, title, public_status, content_h
 export async function listCandidates(limit = 200): Promise<CandidateSummary[]> {
   const [rows, sigRows] = await Promise.all([
     neonRows<Row>(`${SELECT} order by priority_score desc nulls last, updated_at desc limit $1`, [limit]),
-    neonRows<{ candidate_id: string; signals: (string | null)[] }>(
-      `select candidate_id, jsonb_agg(payload->'payload'->>'signal') as signals
+    neonRows<{ candidate_id: string; caps: { signal: string | null; held: boolean }[] }>(
+      // Carry the confound-gate block alongside the signal so a gate-blocked "supports" (unauditable)
+      // doesn't count as still-standing — mirrors verdictFromCapsules + shapeCapsule.
+      `select candidate_id, jsonb_agg(jsonb_build_object(
+                'signal', payload->'payload'->>'signal',
+                'held', coalesce(payload->'metadata'->'confound_gate'->>'status','') = 'blocked'
+                        or coalesce(payload->'metadata'->'confound_gate'->>'verdict','') = 'unauditable'
+              )) as caps
          from proof_capsules where status = any($1) group by candidate_id`,
       [PUBLIC_STATUSES],
     ),
   ]);
   const verdictByCand = new Map<string, Verdict>();
   for (const s of sigRows) {
-    verdictByCand.set(s.candidate_id, verdictFromCapsules((s.signals ?? []).map((signal) => ({ signal }))));
+    verdictByCand.set(s.candidate_id, verdictFromCapsules(s.caps ?? []));
   }
   return rows
     .filter((row) => !isFixtureCandidate(row.candidate_id))

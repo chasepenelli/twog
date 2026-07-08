@@ -43,6 +43,8 @@ export interface Capsule {
   why_it_matters: string;
   limitations: string[];
   cross_species: string | null; // public cross-species caveat for structure lanes (human ortholog used)
+  held: boolean; // blocked at the confound gate (unauditable) — not confirmed evidence
+  held_reason: string | null; // why it's held (e.g. missing pose-instability control)
   confidence: number | null;
   content_hash: string | null;
   preregistration: Record<string, unknown> | null; // falsification_preregistration (the locked kill-criterion)

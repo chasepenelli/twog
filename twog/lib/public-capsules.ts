@@ -44,6 +44,10 @@ function shapeCapsule(row: Row): Capsule {
   const inner = p.payload ?? {};
   const summary = p.summary ?? {};
   const validation_type = inner.validation_type ?? null;
+  // Confound gate: a capsule the engine could not accept (missing controls) is stamped
+  // metadata.confound_gate.status='blocked' / verdict='unauditable'. It is NOT confirmed evidence.
+  const gate = p.metadata?.confound_gate ?? null;
+  const held = gate?.status === 'blocked' || gate?.verdict === 'unauditable';
   return {
     capsule_id: row.capsule_id,
     candidate_id: row.candidate_id,
@@ -58,6 +62,8 @@ function shapeCapsule(row: Row): Capsule {
     // A dedicated, PUBLIC (ungated) caveat for structure lanes — see crossSpeciesNote. Kept out of the
     // member-gated `limitations` list so every visitor sees it.
     cross_species: crossSpeciesNote(validation_type, row.candidate_id),
+    held,
+    held_reason: held ? (gate?.reason ?? 'Held at the confound gate pending controls.') : null,
     confidence: typeof inner.confidence === 'number' ? inner.confidence : null,
     content_hash: p.content_hash ?? null,
     preregistration: inner.falsification_preregistration ?? null,

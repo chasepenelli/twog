@@ -34,9 +34,13 @@ export function verdictFromSignal(signal: string | null | undefined): Verdict {
   return 'needs-more';
 }
 
-export function verdictFromCapsules(caps: { signal: string | null }[]): Verdict {
+// A capsule "held" at the confound gate (verdict=unauditable / status=blocked — e.g. a docking
+// "supports" still missing its pose-instability control) is NOT confirmed evidence: it must not read as
+// still-standing. Refutes still rules out; only a NON-held supports keeps an idea standing; a held
+// supports (with nothing else) falls to needs-more — the honest "held pending controls" reading.
+export function verdictFromCapsules(caps: { signal: string | null; held?: boolean }[]): Verdict {
   if (caps.some((c) => c.signal === 'refutes')) return 'ruled-out';
-  if (caps.some((c) => c.signal === 'supports')) return 'still-standing';
+  if (caps.some((c) => c.signal === 'supports' && !c.held)) return 'still-standing';
   return 'needs-more';
 }
 

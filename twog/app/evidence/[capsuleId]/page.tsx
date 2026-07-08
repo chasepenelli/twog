@@ -80,6 +80,13 @@ export default async function CapsuleDetail({
         <section className="v4-sec2">
           <div className="v4-dh2">Where it stands — {meta.label}</div>
           <p className="v4-lead">{meta.gloss}</p>
+          {cap.held ? (
+            <p className="v4-note">
+              <strong style={{ color: 'var(--bone)' }}>Held at the confound gate.</strong> {cap.held_reason}{' '}
+              Until that control runs, a positive signal here can still be an artifact, so it is <em>not</em> accepted
+              as evidence and does not count as still-standing.
+            </p>
+          ) : null}
           {cap.readout ? (
             <p className="v4-note"><strong style={{ color: 'var(--bone)' }}>Readout.</strong> {cap.readout}</p>
           ) : null}
