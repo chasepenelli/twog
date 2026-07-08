@@ -102,6 +102,47 @@ def frontier_modality_matches(text: str) -> dict[str, list[str]]:
     return matches
 
 
+# Map a candidate's text to the Stage-0 DESIGN lanes it implies (lane_inputs._DESIGN_STAGE0_LANES).
+# Grouped by the real INPUT SHAPE a test would need, not by marketing label: PROTAC/glue/degrader → a
+# ternary-complex design (degrader_design); peptides / de-novo binders / the ADC target-engagement arm →
+# binder_design; base/prime edits → genome_edit; CAR-T/TCR-T → cell_therapy; neoantigen vaccines →
+# mrna_vaccine. Self-contained term set (the policy's FRONTIER_MODALITY_TERMS has no gene-edit cluster).
+_DESIGN_LANE_TERMS: dict[str, tuple[str, ...]] = {
+    "degrader_design": (
+        "protac", "peptide protac", "molecular glue", "targeted protein degradation", "degrader",
+    ),
+    "binder_design": (
+        "stapled peptide", "hydrocarbon stapled", "cell-penetrating peptide", "targeting peptide",
+        "directed peptide", "de novo binder", "de-novo binder", "minibinder", "peptide strategy",
+        "antibody-drug conjugate", "antibody drug conjugate", "adc", "targeting antibody",
+    ),
+    "genome_edit": (
+        "base edit", "base editing", "prime edit", "prime editing", "gene edit", "gene editing",
+        "genome edit", "genome editing", "crispr", "cas9", "cas12", "pegrna",
+    ),
+    "cell_therapy": (
+        "car-t", "car t", "cart", "tcr-t", "tcr t", "engineered t cell", "engineered t-cell",
+        "cellular therapy", "nk cell therapy", "adoptive cell therapy",
+    ),
+    "mrna_vaccine": (
+        "mrna", "rna vaccine", "personalized vaccine", "neoantigen", "cancer vaccine",
+        "tumor antigen vaccine",
+    ),
+}
+
+
+def design_lanes_for_text(text: str) -> set[str]:
+    """The Stage-0 frontier/design lanes a candidate's text implies. Pure + deterministic; the Research
+    Director uses this to attach the right design lane(s) to a frontier bet. Returns an empty set for a
+    non-frontier candidate (e.g. a conventional small molecule → no design lane, it routes to docking)."""
+    normalized = _normalize(text)
+    lanes: set[str] = set()
+    for lane, terms in _DESIGN_LANE_TERMS.items():
+        if any(_term_in_text(term, normalized) for term in terms):
+            lanes.add(lane)
+    return lanes
+
+
 def frontier_modality_profile(
     text: str,
     *,

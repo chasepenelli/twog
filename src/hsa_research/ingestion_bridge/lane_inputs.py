@@ -20,11 +20,25 @@ from .contracts import LaneInputResolution
 
 # validation_type -> the metadata key the lane reads its config from (mirrors _MODAL_LANES / the
 # local omics runner). docking/cofolding/omics are the autonomously-runnable lanes today.
+# Stage-0 frontier/design lanes: first-class modality lanes whose inputs do not exist yet. They are NOT
+# registered as compute lanes (no LaneSpec), so they can never dispatch; the resolver refuses with an
+# honest input checklist until real inputs are attached (Stage 1). The required key-sets below are the
+# REAL scientific inputs each modality needs — published on the site as the "what it would take" checklist.
+_DESIGN_STAGE0_LANES: frozenset[str] = frozenset(
+    {"binder_design", "degrader_design", "genome_edit", "cell_therapy", "mrna_vaccine"}
+)
+
 LANE_CONFIG_KEY: dict[str, str] = {
     "omics": "omics_review",
     "docking": "docking",
     "cofolding": "cofolding",
     "md": "compute_input",
+    # Stage-0 design lanes read their (future) config from an identically-named key.
+    "binder_design": "binder_design",
+    "degrader_design": "degrader_design",
+    "genome_edit": "genome_edit",
+    "cell_therapy": "cell_therapy",
+    "mrna_vaccine": "mrna_vaccine",
 }
 
 # A lane is resolved if its config carries ANY ONE of these required key-sets.
@@ -33,6 +47,17 @@ _REQUIRED_KEY_SETS: dict[str, list[tuple[str, ...]]] = {
     "docking": [("receptor_pdb", "ligand_smiles")],
     "cofolding": [("protein_sequence", "ligand_smiles")],
     "md": [("protein_pdb", "compound_smiles")],
+    # Stage-0 design-lane input contracts (the honest "what a real test would need"):
+    # binder_design — stapled peptides, de-novo binders, the ADC target-engagement arm.
+    "binder_design": [("target_structure", "binder_sequence", "interface_hotspots")],
+    # degrader_design — PROTAC / peptide-PROTAC / molecular glue (also the ADC payload+linker later).
+    "degrader_design": [("target_warhead_smiles", "e3_ligase", "linker", "ternary_target_pose")],
+    # genome_edit — base / prime editing at a specific locus.
+    "genome_edit": [("target_locus", "guide_spacer", "pam", "edit_window", "edit_type")],
+    # cell_therapy — CAR-T / TCR-T against a tumor-selective antigen.
+    "cell_therapy": [("target_antigen", "antigen_expression_tumor_vs_normal", "binder_sequence", "construct")],
+    # mrna_vaccine — personalized neoantigen vaccine.
+    "mrna_vaccine": [("neoantigen_peptides", "hla_alleles", "predicted_binding", "tumor_expression_clonality")],
 }
 
 
@@ -133,6 +158,26 @@ def resolve(candidate: Any, lane: str, *, resolvers: Any = None, target_library:
     if cfg is not None and _complete(lane, cfg):
         return LaneInputResolution(
             lane=lane, config_key=config_key, resolved=True, config=dict(cfg), source="candidate.metadata"
+        )
+
+    # Stage-0 frontier/design lanes: refuse (resolved=False) with the exact real-input checklist and an
+    # honest note. The lane is not registered as a runner, so even a hypothetical resolved=True never
+    # dispatches — this branch exists so the gap reads as "design concept, not tested", never as evidence.
+    if lane in _DESIGN_STAGE0_LANES:
+        required = _REQUIRED_KEY_SETS[lane][0]
+        present = dict(cfg) if cfg else {}
+        missing = [key for key in required if present.get(key) in (None, "", [], {})]
+        return LaneInputResolution(
+            lane=lane,
+            config_key=config_key,
+            resolved=False,
+            config=present,
+            missing=missing,
+            notes=(
+                f"Stage-0 design concept: no real {lane} inputs attached yet — not tested, not evidence. "
+                f"Attach the listed inputs to make it runnable (Stage 1)."
+            ),
+            source="frontier_design_stage0",
         )
 
     if lane == "docking":

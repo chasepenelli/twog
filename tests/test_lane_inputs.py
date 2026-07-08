@@ -248,3 +248,72 @@ def test_service_uses_injected_resolvers_for_input_aware_planning(tmp_path, monk
     result = service.propose_next_falsification("vr-svc-net")
     # docking resolves from the verified library (receptor) + PubChem ligand -> ready and preferred
     assert result.proposed.lane == "docking" and result.proposed.inputs_ready is True
+
+
+# --- Stage-0 frontier/design lanes: first-class + honest, but never runnable (contract only) --------
+
+from typing import get_args as _get_args
+
+from hsa_research.ingestion_bridge import lane_inputs as _li
+from hsa_research.ingestion_bridge import frontier_research_policy as _frp
+from hsa_research.ingestion_bridge.lanes import available_lanes as _available_lanes
+from hsa_research.ingestion_bridge.compute_runners import _MODAL_LANES
+from hsa_research.ingestion_bridge.contracts import FalsificationLane as _FL, ValidationRequest as _VR
+
+
+def test_stage0_design_lanes_are_first_class_but_never_runnable(tmp_path):
+    service, _ = _svc(tmp_path, "s0-contract")
+    fl = set(_get_args(_FL))
+    vt = set(_get_args(_VR.model_fields["validation_type"].annotation))
+    runnable = service._runnable_falsification_lanes()
+    auto = service._autonomously_runnable_lanes()
+    assert _li._DESIGN_STAGE0_LANES, "expected a non-empty Stage-0 lane set"
+    for lane in _li._DESIGN_STAGE0_LANES:
+        # first-class in BOTH Literals (the lockstep the suite enforces)
+        assert lane in fl and lane in vt
+        # carries an honest, non-empty input checklist + a config key
+        assert _li._REQUIRED_KEY_SETS.get(lane)
+        assert lane in _li.LANE_CONFIG_KEY
+        # THE safety floor: no registered runner => can never be proposed, dispatched, or fabricate
+        assert lane not in _available_lanes()
+        assert lane not in _MODAL_LANES
+        assert lane not in runnable
+        assert lane not in auto
+
+
+def test_stage0_resolve_refuses_with_checklist(tmp_path):
+    service, repo = _svc(tmp_path, "s0-refuse")
+    _seed_validation_ready_candidate(repo, candidate_id="s0-cand")
+    for lane in sorted(_li._DESIGN_STAGE0_LANES):
+        res = service.resolve_lane_inputs("s0-cand", lane)
+        assert res.resolved is False
+        assert res.source == "frontier_design_stage0"
+        assert list(res.missing) == list(_li._REQUIRED_KEY_SETS[lane][0])
+        assert "design concept" in (res.notes or "")
+
+
+def test_stage0_list_frontier_design_lanes_maps_modality(tmp_path):
+    service, repo = _svc(tmp_path, "s0-map")
+    _seed_validation_ready_candidate(repo, candidate_id="s0-degrader")
+    cand = service.get_public_candidate("s0-degrader")
+    repo.upsert_public_candidate(cand.model_copy(update={"title": "Peptide-PROTAC degrader of vimentin"}))
+    lanes = service.list_frontier_design_lanes("s0-degrader")
+    assert lanes is not None
+    assert {r.lane for r in lanes} == {"degrader_design"}
+    assert all(r.resolved is False for r in lanes)
+    # a conventional small molecule implies NO design lane
+    _seed_validation_ready_candidate(repo, candidate_id="s0-conv")
+    conv = service.get_public_candidate("s0-conv")
+    repo.upsert_public_candidate(
+        conv.model_copy(update={"title": "alpelisib small-molecule PI3Ka inhibitor", "candidate_therapies": []})
+    )
+    assert service.list_frontier_design_lanes("s0-conv") == []
+    # unknown candidate -> None
+    assert service.list_frontier_design_lanes("does-not-exist") is None
+
+
+def test_design_lanes_for_text_pure_mapping():
+    assert _frp.design_lanes_for_text("base editing to fix a driver mutation") == {"genome_edit"}
+    assert _frp.design_lanes_for_text("CAR-T against a tumor-selective antigen") == {"cell_therapy"}
+    assert _frp.design_lanes_for_text("personalized neoantigen mRNA vaccine") == {"mrna_vaccine"}
+    assert _frp.design_lanes_for_text("a plain kinase inhibitor") == set()

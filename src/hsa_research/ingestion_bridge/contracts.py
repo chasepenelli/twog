@@ -4066,6 +4066,13 @@ class ValidationRequest(StrictBaseModel):
         "expert_review",
         "wet_lab",
         "omics",
+        # Stage-0 frontier/design lanes (see FalsificationLane) — typed + first-class, but intentionally
+        # NOT registered as compute lanes, so they can never auto-dispatch or fabricate a result.
+        "binder_design",
+        "degrader_design",
+        "genome_edit",
+        "cell_therapy",
+        "mrna_vaccine",
     ]
     candidate_id: UUID | None = None
     candidate_name: str | None = None
@@ -6927,6 +6934,16 @@ FalsificationLane = Literal[
     "expert_review",
     "wet_lab",
     "omics",
+    # Stage-0 frontier/design lanes: first-class, typed modality lanes (stapled peptides / binders,
+    # degraders & glues, gene edits, cell therapy, mRNA vaccines) whose resolver REFUSES with an honest
+    # input checklist until real inputs exist. Deliberately NOT registered as compute lanes (no LaneSpec,
+    # absent from available_lanes()), so they can never be proposed, dispatched, or fabricate evidence —
+    # they read as "design concept, not yet tested". Wiring a real runner for one is Stage 1.
+    "binder_design",
+    "degrader_design",
+    "genome_edit",
+    "cell_therapy",
+    "mrna_vaccine",
 ]
 
 

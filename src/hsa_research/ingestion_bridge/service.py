@@ -2610,6 +2610,33 @@ class HSAResearchService:
             return None
         return lane_inputs.resolve(candidate, lane, resolvers=getattr(self, "input_resolvers", None))
 
+    def list_frontier_design_lanes(self, candidate_id: str) -> list[LaneInputResolution] | None:
+        """Stage-0 frontier/design lanes implied by a candidate's modality (stapled peptides, degraders,
+        gene edits, cell therapy, mRNA vaccines), each resolved to show its honest input checklist. These
+        lanes are NOT runnable (no registered runner) — every resolution reads resolved=False / "design
+        concept, not tested" until real inputs exist. Returns None if the candidate does not exist, or an
+        empty list for a non-frontier candidate (a conventional small molecule routes to docking, not a
+        design lane). Pure read; never dispatches, never fabricates."""
+        from . import frontier_research_policy as _frp
+
+        candidate = self.get_public_candidate(candidate_id)
+        if candidate is None:
+            return None
+        text = " ".join(
+            str(part)
+            for part in (
+                candidate.title,
+                candidate.summary,
+                candidate.rationale_md,
+                candidate.mechanism or "",
+                *candidate.candidate_therapies,
+            )
+            if part
+        )
+        lanes = sorted(_frp.design_lanes_for_text(text) & lane_inputs._DESIGN_STAGE0_LANES)
+        resolvers = getattr(self, "input_resolvers", None)
+        return [lane_inputs.resolve(candidate, lane, resolvers=resolvers) for lane in lanes]
+
     # --- Increment 8: the MoonshotRubric — the pre-registered "whole shabang" (derived view) ----
     def _rubric_target(self, target: str, lib: dict[str, Any], *, role: str):
         """Project a target_library entry into a RubricTarget with its REAL 3-state verification."""
