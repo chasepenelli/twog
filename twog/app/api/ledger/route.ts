@@ -58,7 +58,10 @@ function toLedgerEvent(e: PythonActivityEvent, i: number): LedgerEvent | null {
           : `Result posted for ${pretty(e.candidate_id)}.`;
       return {
         id, ts, type: 'decide', exp, verdict, summary,
-        detail: { note: 'Nothing auto-promotes — a human holds the final call.', link: '/candidates' },
+        detail: {
+          note: 'Nothing auto-promotes — a human holds the final call.',
+          link: e.candidate_id ? `/candidates/${e.candidate_id}` : '/candidates',
+        },
       };
     }
     default:

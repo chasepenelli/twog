@@ -151,6 +151,7 @@ from .contracts import (
     OmicsLocusSignalResult,
     OmicsReadoutRequest,
     CollaboratorRecord,
+    default_scopes_for_role,
     OmicsReadoutResult,
     ProofCapsuleLibraryRequest,
     ProofCapsuleRecord,
@@ -1120,6 +1121,13 @@ class HSAResearchService:
     ) -> None:
         self.repository = repository or build_default_repository()
         self.model_profiles = model_profiles or DEFAULT_MODEL_PROFILES
+        # Phase B: deny-unknown access. When True, an UNREGISTERED principal is denied at every
+        # _authorize gate (require registration). Default False preserves the solo-operator model
+        # (unregistered/legacy actors trusted). Independent of the per-workspace external_collaborator
+        # submit gate, which is always enforced regardless of this flag. Env-overridable.
+        self.require_registered_principals = (
+            os.getenv("TWOG_REQUIRE_REGISTERED_PRINCIPALS", "").strip().lower() in {"1", "true", "yes"}
+        )
 
     def search_claims(self, request: ClaimSearchRequest) -> ClaimSearchResults:
         results = self.repository.search_claims(request)
@@ -1452,6 +1460,357 @@ class HSAResearchService:
     def get_public_candidate(self, candidate_id: str) -> PublicCandidateRecord | None:
         return self.repository.get_public_candidate(candidate_id)
 
+    def get_public_candidate_rubric(self, candidate_id: str) -> dict[str, Any] | None:
+        """The pre-registered MoonshotRubric for a candidate, as a display dict. PREFERS the version
+        folded into the candidate's latest published snapshot (the content-hashed pre-registration —
+        exactly what was committed). FALLS BACK to deriving it on demand for candidates that carry no
+        stored rubric (e.g. the autonomously-generated roster), so the grounded reasoning spine renders
+        for EVERY candidate, not just snapshot-published moonshots. The derive path is deterministic and
+        read-only: no provenance writes (log_provenance=False), no network resolver (hash-stable, fast) —
+        roster candidates carry pinned mechanism/translational_path, so the premise/inference/payoff still
+        ground. Returns None only when the candidate itself does not exist."""
+        candidate = self.repository.get_public_candidate(candidate_id)
+        if candidate is None:
+            return None
+        if candidate.latest_snapshot_id is not None:
+            snapshot = self.repository.get_public_candidate_snapshot(candidate.latest_snapshot_id)
+            stored = (snapshot.payload or {}).get("moonshot_rubric") if snapshot else None
+            if isinstance(stored, dict):
+                return stored
+        built = self.build_moonshot_rubric(candidate_id, log_provenance=False)
+        return built.content_payload() if built is not None else None
+
+    def seed_validation_ready_candidate(
+        self,
+        candidate_id: str,
+        *,
+        title: str,
+        evidence_refs: list[str],
+        targets: list[str] | None = None,
+        candidate_therapies: list[str] | None = None,
+        biomarkers: list[str] | None = None,
+        lane_inputs: dict[str, Any] | None = None,
+        decisive_questions: list[str] | None = None,
+        rationale: str = "",
+        mechanism: str | None = None,
+        translational_path: str | None = None,
+        public_status: str = "evidence_supported",
+        ready: bool = True,
+    ):
+        """Seed a real, honestly-validation-ready public candidate (snapshot + record + a
+        validation-ready decision), then run the real readiness gate so `validation_ready` is set by the
+        assessor — NOT by fiat. Builds a campaign roster without a therapy-idea pipeline. Idempotent on
+        candidate_id (upserts). `lane_inputs` rides on metadata['lane_inputs']. `mechanism`/
+        `translational_path` (deterministically composed by the caller from the row's own compound/target/
+        rationale) ground the MoonshotRubric reasoning spine on the no-committee path. Returns the readiness."""
+        content_hash = hashlib.sha256(f"{candidate_id}|{title}".encode("utf-8")).hexdigest()[:40]
+        snapshot = PublicCandidateSnapshot(
+            candidate_id=candidate_id, content_hash=content_hash, title=title,
+            public_status=public_status, snapshot_version=1, source_refs=list(evidence_refs),
+        )
+        self.repository.upsert_public_candidate_snapshot(snapshot)
+        self.repository.upsert_public_candidate(
+            PublicCandidateRecord(
+                candidate_id=candidate_id, title=title,
+                public_status=public_status if ready else "proposed",
+                evidence_refs=list(evidence_refs) if ready else [],
+                targets=list(targets or []), candidate_therapies=list(candidate_therapies or []),
+                biomarkers=list(biomarkers or []),
+                rationale_md=rationale or "", mechanism=mechanism, translational_path=translational_path,
+                content_hash=content_hash, latest_snapshot_id=snapshot.snapshot_id,
+                metadata={"lane_inputs": lane_inputs} if lane_inputs else {},
+            )
+        )
+        decision = ValidationDecisionPacket(
+            decision_id=f"validation_decision:{candidate_id}",
+            packet_id=f"validation_packet:{candidate_id}",
+            candidate_id=candidate_id, source_type="therapy_idea", source_id=candidate_id,
+            title=f"Validation decision: {title}"[:300],
+            outcome="promote_broader_program", confidence=0.7, validation_ready=ready,
+            specific_claim_viability="uncertain", broader_program_signal="strong",
+            rationale=(rationale or f"Seeded validation-ready candidate {candidate_id} for the real campaign.")[:2000],
+            recommended_downstream_action="Run the autonomous falsification loop; promotion stays operator-gated.",
+            decisive_questions=decisive_questions or ["What is the decisive falsification for this candidate?"],
+            evidence_tasks=["Run the proposed falsification test(s)."],
+            evidence_summary={"evidence_refs": list(evidence_refs)},
+        )
+        self.repository.upsert_validation_decision(ValidationDecisionRecord.from_decision(decision))
+        return self.assess_candidate_validation_readiness(candidate_id, persist=True)
+
+    # --- Autonomous idea generation: NEW dockable candidates, gated on real resolvability ---------
+    def _docking_inputs_resolvable(self, target: str, therapy: str) -> tuple[bool, list[str]]:
+        """Would a (target, therapy) actually dock? Run the EXACT same resolution the loop will run
+        (verified target-library entry + PubChem ligand) so the generator never seeds a candidate that
+        would just become another no_runnable_proposal. Returns (resolvable, missing-reasons)."""
+        probe = PublicCandidateRecord(
+            candidate_id="__resolve_probe__", title="resolvability probe",
+            targets=[target], candidate_therapies=[therapy],
+        )
+        res = lane_inputs.resolve(probe, "docking", resolvers=getattr(self, "input_resolvers", None))
+        return bool(res.resolved), list(getattr(res, "missing", []) or [])
+
+    def assess_novelty(
+        self, compound: str, target: str, disease: str = "canine hemangiosarcoma", *, refresh: bool = False
+    ) -> dict[str, Any]:
+        """Prior-art / novelty gate for a (compound, target, disease) hypothesis — the input analog of
+        the docking spend-gate. CACHE-FIRST: an existing novelty_gate assessment for this exact triple
+        is reused (fast, no re-query) — and because every assessment is written to the AgentRun ledger
+        keyed by source_key=triple, the agents accumulate a durable, queryable explored-vs-white-space
+        map they learn from. On a miss, queries the literature (Europe PMC) wrapped in AgentRunner so the
+        verdict is provenance-logged. Returns the verdict dict (see novelty_gate.assess)."""
+        from . import novelty_gate
+
+        key = novelty_gate.triple_key(compound, target, disease)
+        if not refresh:
+            for run in self.repository.list_agent_runs(agent_name="novelty_gate", source_key=key, limit=1):
+                if run.output_payload:
+                    return dict(run.output_payload)  # agent reuse — fast path, no network
+        count_fn = getattr(self, "novelty_count_fn", None) or novelty_gate.europepmc_count
+        return AgentRunner(self.repository).run(
+            agent_name="novelty_gate",
+            input_payload={"compound": compound, "target": target, "disease": disease},
+            source_key=key,
+            execute=lambda: novelty_gate.assess(compound, target, disease, count_fn=count_fn),
+            summarize=lambda v: {
+                "novelty_score": v["novelty_score"], "is_novel": v["is_novel"], "n_ctd": v["prior_art"]["n_ctd"],
+            },
+        )
+
+    def discover_cross_species_white_space(
+        self, *, disease_efo: str = "EFO_0003968", size: int = 25, max_targets: int = 12, refresh: bool = False
+    ) -> dict[str, Any]:
+        """Cross-species white-space discovery (the novel-hypothesis frontier): targets associated with
+        HUMAN angiosarcoma that have a conserved CANINE ortholog but are NOT yet studied in canine HSA.
+        The dog↔human translation is the novelty. Provenance-logged + CACHE-FIRST in the AgentRun ledger
+        (source_key=disease) so agents reuse it and accumulate the map. Targets absent from the verified
+        target library become a `verification_queue` — what to add so drugs can be docked against them
+        (the growth loop). Returns the report dict."""
+        from . import cross_species, novelty_gate, target_library as _tl
+
+        key = f"whitespace:{disease_efo}"
+        if not refresh:
+            for run in self.repository.list_agent_runs(agent_name="cross_species_whitespace", source_key=key, limit=1):
+                if run.output_payload:
+                    return dict(run.output_payload)
+        count_fn = getattr(self, "novelty_count_fn", None) or novelty_gate.europepmc_count
+        ot_fetch = getattr(self, "ot_fetch", None) or cross_species._ot_fetch
+        ens_fetch = getattr(self, "ens_fetch", None) or cross_species._ens_fetch
+        lib = _tl.load_target_library()
+        verified = {k for k, v in (lib.get("entries") or {}).items() if v.get("verified")}
+
+        def _run() -> dict[str, Any]:
+            rows = cross_species.white_space_targets(
+                disease_efo, canine_lit_count=count_fn, verified_targets=verified,
+                ot_fetch=ot_fetch, ens_fetch=ens_fetch, size=size, max_targets=max_targets,
+            )
+            ws = [r for r in rows if r["is_white_space"]]
+            return {
+                "disease_efo": disease_efo,
+                "targets_examined": len(rows),
+                "white_space_count": len(ws),
+                "white_space": ws,
+                "dockable_white_space": [r["symbol"] for r in ws if r["dockable"]],
+                "verification_queue": [r["symbol"] for r in ws if not r["dockable"]],
+            }
+
+        return AgentRunner(self.repository).run(
+            agent_name="cross_species_whitespace",
+            input_payload={"disease_efo": disease_efo, "size": size},
+            source_key=key,
+            execute=_run,
+            summarize=lambda r: {"white_space": r["white_space_count"], "queue": len(r["verification_queue"])},
+        )
+
+    def generate_candidate_ideas(
+        self,
+        *,
+        source: str = "curated_seed",
+        max_new: int = 5,
+        seed_path: str | None = None,
+        require_resolvable: bool = True,
+        check_novelty: bool = False,
+        novelty_disease: str = "canine hemangiosarcoma",
+        persist: bool = True,
+        submitted_by: str | None = None,
+        dry_run: bool = False,
+    ) -> RunManifestRecord:
+        """Propose NEW grounded candidate hypotheses and seed the dockable ones validation-ready, so the
+        falsification loop has fresh work. Generation spends NO GPU money (only PubChem lookups); the
+        downstream docking is what costs. Each idea is gated on real input-resolvability and deduped
+        against existing candidates by a stable (compound,target) id. NEVER promotes — seeding only
+        makes a candidate validation-ready; the human write-gate stays terminal. Persists a
+        RunManifestRecord(manifest_type='candidate_generation') for provenance and returns it."""
+        from . import candidate_generator, target_library as _tl
+
+        if source == "claims":
+            lib = _tl.load_target_library()
+            verified = {k for k, v in (lib.get("entries") or {}).items() if v.get("verified")}
+            try:
+                claims = self.repository.search_claims(
+                    ClaimSearchRequest(query="hemangiosarcoma angiosarcoma therapy target", limit=200, min_confidence=0.0)
+                )
+            except Exception:
+                claims = []
+            rows = candidate_generator.pairs_from_claims(claims, verified)
+        else:
+            rows = candidate_generator.load_candidate_generation_seed(seed_path)
+
+        existing = {c.candidate_id for c in self.list_public_candidates(PublicCandidateLibraryRequest(limit=500)).candidates}
+        seeded: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+
+        for row in rows:
+            if len(seeded) >= max_new:
+                break
+            compound = (row.get("compound") or "").strip()
+            target = (row.get("target") or "").strip()
+            if not compound or not target:
+                rejected.append({"row": row, "reason": "missing compound/target"})
+                continue
+            cid = candidate_generator.candidate_id_for(compound, target)
+            if cid in existing:
+                skipped.append({"candidate_id": cid, "reason": "already exists"})
+                continue
+            resolvable, missing = self._docking_inputs_resolvable(target, compound)
+            if require_resolvable and not resolvable:
+                rejected.append({"candidate_id": cid, "reason": "docking inputs unresolvable", "missing": missing})
+                continue
+            # Novelty / prior-art gate — don't spend compute re-deriving known biochemistry.
+            novelty = None
+            if check_novelty:
+                novelty = self.assess_novelty(compound, target, novelty_disease)
+                if not novelty.get("is_novel"):
+                    rejected.append({
+                        "candidate_id": cid, "reason": "not_novel",
+                        "novelty_score": novelty.get("novelty_score"),
+                        "n_ctd": (novelty.get("prior_art") or {}).get("n_ctd"),
+                    })
+                    continue
+            if dry_run:
+                seeded.append({"candidate_id": cid, "target": target, "therapy": compound, "would_seed": True,
+                               **({"novelty_score": novelty["novelty_score"]} if novelty else {})})
+                existing.add(cid)
+                continue
+            # Ground-at-source: compose a HYPOTHESIS-framed mechanism + conditional translational_path
+            # from the row's own (compound, target, rationale, biomarkers) — a row may also carry explicit
+            # mechanism/translational_path keys (e.g. from the curated seed JSON), which win. So a
+            # generated candidate's MoonshotRubric spine reads grounded, not 'premise_unstated'.
+            _mech, _tp = candidate_generator.compose_candidate_reasoning(
+                compound=compound, target=target,
+                rationale=row.get("rationale", ""), biomarkers=list(row.get("biomarkers") or []),
+            )
+            self.seed_validation_ready_candidate(
+                cid,
+                title=candidate_generator.title_for(compound, target),
+                evidence_refs=list(row.get("evidence_refs") or []),
+                targets=[target],
+                candidate_therapies=[compound],
+                biomarkers=list(row.get("biomarkers") or []),
+                rationale=row.get("rationale", ""),
+                mechanism=row.get("mechanism") or _mech,
+                translational_path=row.get("translational_path") or _tp,
+            )
+            seeded.append({"candidate_id": cid, "target": target, "therapy": compound,
+                           **({"novelty_score": novelty["novelty_score"]} if novelty else {})})
+            existing.add(cid)
+
+        rollup = {
+            "source": source,
+            "seeded": len(seeded),
+            "skipped_exists": len(skipped),
+            "rejected": len(rejected),
+            "dry_run": dry_run,
+        }
+        manifest = RunManifestRecord(
+            manifest_type="candidate_generation",
+            status="completed",
+            title=f"Candidate generation — {len(seeded)} new ({source})"[:500],
+            created_by=submitted_by or "candidate_generator",
+            candidate_ids=[s["candidate_id"] for s in seeded][:200],
+            output_refs={"rollup": rollup, "seeded": seeded, "skipped": skipped, "rejected": rejected},
+            metadata={"source": source, "max_new": max_new, "require_resolvable": require_resolvable},
+        )
+        if persist and not dry_run:
+            self.upsert_run_manifest(manifest)
+        return manifest
+
+    # --- Phase B / Unit 3: the no-compute contribution path (candidate proposals) -----------------
+    def submit_candidate_proposal(
+        self,
+        submitted_by: str,
+        *,
+        candidate_id: str,
+        title: str,
+        rationale: str = "",
+        targets: list[str] | None = None,
+        candidate_therapies: list[str] | None = None,
+        evidence_refs: list[str] | None = None,
+        biomarkers: list[str] | None = None,
+    ) -> PublicCandidateRecord:
+        """A collaborator PROPOSES a candidate/hypothesis to test — the no-compute contribution mode.
+        It enters as a 'proposed' public candidate (NOT validation-ready; zero compute spent),
+        attributed to the submitter, awaiting an operator decision. Proposing is open (a revoked
+        principal is refused); the operator review + running it are the gates, and any run is
+        operator-only spend. Returns the proposed candidate record."""
+        principal = self.resolve_principal(submitted_by)
+        if principal is not None and principal.status == "revoked":
+            raise CollaboratorAccessError(f"principal '{submitted_by}' is revoked and cannot submit proposals.")
+        content_hash = hashlib.sha256(f"proposal|{candidate_id}|{title}".encode("utf-8")).hexdigest()[:40]
+        # A proposal is lightweight — no snapshot yet. Operator approval (decide_candidate_proposal)
+        # seeds the first real snapshot when it makes the candidate validation-ready.
+        record = PublicCandidateRecord(
+            candidate_id=candidate_id, title=title, public_status="proposed",
+            evidence_refs=list(evidence_refs or []), targets=list(targets or []),
+            candidate_therapies=list(candidate_therapies or []), biomarkers=list(biomarkers or []),
+            content_hash=content_hash,
+            metadata={"proposal": {"proposed_by": submitted_by, "rationale": rationale}},
+        )
+        return self.repository.upsert_public_candidate(record)
+
+    def list_candidate_proposals(self, *, limit: int = 200) -> list[PublicCandidateRecord]:
+        """Collaborator-submitted candidate proposals awaiting (or past) an operator decision."""
+        lib = self.list_public_candidates(PublicCandidateLibraryRequest(limit=limit))
+        return [
+            c for c in lib.candidates
+            if isinstance(c.metadata, dict) and "proposal" in c.metadata
+        ]
+
+    def decide_candidate_proposal(
+        self,
+        candidate_id: str,
+        *,
+        approved_by: str,
+        approve: bool,
+        note: str | None = None,
+    ) -> PublicCandidateRecord | None:
+        """Operator decides a collaborator's proposal (operator-gated via `promote_candidate`). Approve
+        → seed it validation-ready (the operator may then run it on our compute — operator-only spend);
+        reject → archive it with a recorded reason. Returns the resulting candidate, or None if absent.
+        NEVER auto-runs: approval only makes it RUNNABLE; dispatch stays a separate operator action."""
+        self._authorize(approved_by, "promote_candidate")
+        record = self.get_public_candidate(candidate_id)
+        if record is None:
+            return None
+        if not approve:
+            archived = record.model_copy(
+                update={
+                    "public_status": "archived",
+                    "metadata": {
+                        **record.metadata,
+                        "proposal_decision": {"by": approved_by, "approved": False, "note": note},
+                    },
+                }
+            )
+            return self.repository.upsert_public_candidate(archived)
+        proposal = record.metadata.get("proposal", {}) if isinstance(record.metadata, dict) else {}
+        self.seed_validation_ready_candidate(
+            candidate_id, title=record.title, evidence_refs=record.evidence_refs,
+            targets=record.targets, candidate_therapies=record.candidate_therapies,
+            biomarkers=record.biomarkers, rationale=proposal.get("rationale", ""),
+        )
+        return self.get_public_candidate(candidate_id)
+
     def list_public_candidates(
         self,
         request: PublicCandidateLibraryRequest | None = None,
@@ -1685,11 +2044,13 @@ class HSAResearchService:
         contact: str | None = None,
         scopes: list[str] | None = None,
         public_key: str | None = None,
+        auth_subject: str | None = None,
         note: str | None = None,
     ) -> CollaboratorRecord:
         """Register (or update) a trusted principal. Re-registering an existing principal updates
         it in place (same collaborator_id), so this is idempotent on the principal slug. An optional
-        Ed25519 public_key (hex) lets anyone verify capsules this principal signs."""
+        Ed25519 public_key (hex) lets anyone verify capsules this principal signs; auth_subject links
+        the principal to its external login identity (WorkOS user id)."""
         existing = self.repository.get_collaborator_by_principal(principal.strip())
         record = CollaboratorRecord(
             collaborator_id=existing.collaborator_id if existing else uuid4(),
@@ -1699,6 +2060,7 @@ class HSAResearchService:
             contact=contact,
             scopes=scopes or [],  # type: ignore[arg-type]
             public_key=public_key or (existing.public_key if existing else None),
+            auth_subject=auth_subject or (existing.auth_subject if existing else None),
             note=note,
         )
         return self.repository.upsert_collaborator(record)
@@ -1728,6 +2090,87 @@ class HSAResearchService:
             return None
         return self.repository.upsert_collaborator(record.model_copy(update={"status": "revoked"}))
 
+    # --- Phase B: semi-open collaborator lifecycle (apply -> operator approves -> scoped key) ------
+    def request_collaborator_access(
+        self,
+        *,
+        principal: str,
+        name: str,
+        public_key: str,
+        contact: str | None = None,
+        auth_subject: str | None = None,
+        note: str | None = None,
+    ) -> CollaboratorRecord:
+        """An applicant requests access (semi-open). Creates a PENDING collaborator: it holds no
+        effective scopes (has_scope() is False until active), so a pending applicant can do nothing
+        until an operator approves. A public_key is required up front — it is what their signed
+        contributions will later verify against. Idempotent on principal; re-applying updates the
+        pending record (a revoked/active principal is not silently reset — re-approval is explicit)."""
+        if not (public_key or "").strip():
+            raise ValueError("a collaborator application requires an Ed25519 public_key")
+        existing = self.repository.get_collaborator_by_principal(principal.strip())
+        # SECURITY: self-service may only create a new applicant or update a still-PENDING one. It must
+        # NEVER mutate an existing active/revoked principal — else anyone could re-apply as an active
+        # principal to swap its public key (account takeover) or demote an operator. Key rotation / role
+        # / re-activation on an existing principal is operator-gated (register/approve/revoke).
+        if existing is not None and existing.status != "pending":
+            raise CollaboratorAccessError(
+                f"principal '{principal}' already exists (status={existing.status}); self-service "
+                f"application cannot change an existing principal's key, role, or status — that is "
+                f"operator-gated."
+            )
+        record = CollaboratorRecord(
+            collaborator_id=existing.collaborator_id if existing else uuid4(),
+            principal=principal,
+            name=name,
+            role="collaborator",
+            scopes=[],  # granted on approval
+            status="pending",  # a fresh or re-submitted application is always pending until approved
+            public_key=public_key,
+            contact=contact,
+            auth_subject=auth_subject,  # stable WorkOS user id captured from the applicant's session
+            note=note,
+        )
+        return self.repository.upsert_collaborator(record)
+
+    def resolve_collaborator_by_auth_subject(self, auth_subject: str | None) -> CollaboratorRecord | None:
+        """Map a logged-in external identity (WorkOS user id) to its twog collaborator. This is the
+        web boundary's account→principal link: a session resolves to a `principal` via this, which then
+        feeds the existing _authorize + scope checks. Returns None if unmapped (→ no access)."""
+        subject = (auth_subject or "").strip()
+        if not subject:
+            return None
+        for record in self.repository.list_collaborators(limit=1000):
+            if record.auth_subject == subject:
+                return record
+        return None
+
+    def approve_collaborator(
+        self,
+        collaborator_id: UUID,
+        *,
+        approved_by: str,
+        scopes: list[str] | None = None,
+        role: str = "collaborator",
+    ) -> CollaboratorRecord | None:
+        """Operator approves a pending applicant → status active with scopes (default: the collaborator
+        capability set — lease/compute/capsule, never the write gate). Operator-gated: the approver
+        must hold `promote_candidate` (an operator-only scope), so collaborators cannot approve peers.
+        Returns None if the collaborator does not exist."""
+        self._authorize(approved_by, "promote_candidate")
+        record = self.repository.get_collaborator(collaborator_id)
+        if record is None:
+            return None
+        approved = record.model_copy(
+            update={
+                "status": "active",
+                "role": role,  # type: ignore[arg-type]
+                "scopes": scopes if scopes is not None else default_scopes_for_role(role),  # type: ignore[arg-type]
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        return self.repository.upsert_collaborator(approved)
+
     def _authorize(self, principal: str | None, scope: str) -> None:
         """Enforce the Phase 4 access layer at a write-gate point. A REGISTERED principal must be
         active and hold the scope; an unregistered/legacy actor (e.g. "twog_operator") is allowed —
@@ -1735,7 +2178,12 @@ class HSAResearchService:
         Opting a principal into the collaborator registry is what constrains them."""
         record = self.resolve_principal(principal)
         if record is None:
-            return  # unregistered/legacy actor — trusted by default
+            if self.require_registered_principals:  # Phase B deny-unknown: registration is mandatory
+                raise CollaboratorAccessError(
+                    f"principal '{principal}' is not registered; '{scope}' requires a registered, "
+                    f"active collaborator (deny-unknown access is enabled)."
+                )
+            return  # unregistered/legacy actor — trusted by default (solo-operator model)
         if not record.has_scope(scope):  # type: ignore[arg-type]
             raise CollaboratorAccessError(
                 f"principal '{record.principal}' (role={record.role}, status={record.status}) "
@@ -1768,24 +2216,29 @@ class HSAResearchService:
         ws = self.repository.get_research_workspace(workspace_id)
         if ws is None:
             return None
-        if self.workspace_lease_active(ws) and ws.leased_by != principal and not steal:
-            raise WorkspaceLeaseError(
-                f"workspace {workspace_id} is leased by '{ws.leased_by}' until "
-                f"{ws.lease_expires_at.isoformat()}"
-            )
         holder = self.resolve_principal(principal)
-        gate_policy = (
-            "external_collaborator" if holder is not None and holder.role != "operator" else ws.gate_policy
+        # None gate_policy = keep the workspace's existing policy (operator leases stay as-is); a
+        # non-operator collaborator lease re-gates the workspace to external_collaborator.
+        gate_policy = "external_collaborator" if (holder is not None and holder.role != "operator") else None
+        # Atomic acquire: the repository guards on the row's CURRENT lease state, so two concurrent
+        # acquirers cannot both win (no double-grant) — the previous read-check-write had a TOCTOU race.
+        acquired = self.repository.acquire_workspace_lease(
+            workspace_id,
+            principal,
+            lease_expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds),
+            gate_policy=gate_policy,
+            steal=steal,
         )
-        updated = ws.model_copy(
-            update={
-                "leased_by": principal,
-                "lease_expires_at": datetime.now(UTC) + timedelta(seconds=ttl_seconds),
-                "status": "active",
-                "gate_policy": gate_policy,
-            }
+        if acquired is not None:
+            return acquired
+        # could not acquire: the workspace still exists, so it is held by another unexpired lease
+        current = self.repository.get_research_workspace(workspace_id)
+        if current is None:
+            return None
+        raise WorkspaceLeaseError(
+            f"workspace {workspace_id} is leased by '{current.leased_by}' until "
+            f"{current.lease_expires_at.isoformat() if current.lease_expires_at else 'n/a'}"
         )
-        return self.repository.upsert_research_workspace(updated)
 
     def release_workspace(
         self,
@@ -1832,11 +2285,106 @@ class HSAResearchService:
             manifest["candidate_id"] = candidate_id
         return manifest
 
+    def describe_contribution_modes(self) -> list[dict[str, Any]]:
+        """The first-class answer to 'what can a collaborator DO in a sandbox?'. Every contribution is
+        an ARTIFACT admitted ONLY by passing the gate for its kind — the operator never bypasses the
+        gate. Compute is the collaborator's (BYOC, Unit 2) or operator-run; nothing is auto-promoted."""
+        return [
+            {
+                "mode": "evidence_capsule",
+                "what": "Run a falsification test in a science lane and contribute the signed result.",
+                "artifact": "ProofCapsule (Ed25519-signed)",
+                "produced_on": "your own compute (BYOC — Phase B Unit 2) or operator-run",
+                "admission_gate": "confound + provenance audit → operator accept/promote (never auto-promoted)",
+                "entry_point": "submit_external_proof_capsule",
+            },
+            {
+                "mode": "target_library_entry",
+                "what": "Verify a NEW docking target (redock its native ligand) to grow the shared verified catalog.",
+                "artifact": "verified target entry + redock evidence (spyrmsd ≤ 2 Å AND PoseBusters-valid)",
+                "produced_on": "your own compute (BYOC — Phase B Unit 2)",
+                "admission_gate": "the redock QC gate re-checked → operator accept",
+                "entry_point": "(Unit 2)",
+            },
+            {
+                "mode": "candidate_proposal",
+                "what": "Propose a new candidate / hypothesis worth testing (no compute needed).",
+                "artifact": "candidate proposal",
+                "produced_on": "n/a",
+                "admission_gate": "operator review queue → operator runs it (operator-only spend)",
+                "entry_point": "(Unit 3 / B5)",
+            },
+            {
+                "mode": "new_lane",
+                "what": "Contribute a brand-new validation lane as a container that honors the lane contract.",
+                "artifact": "lane container (digest-pinned)",
+                "produced_on": "your own compute",
+                "admission_gate": "contract-conformance + provenance (advanced, later)",
+                "entry_point": "(future)",
+            },
+        ]
+
+    def open_collaborator_sandbox(
+        self,
+        principal: str,
+        workspace_id: UUID,
+        *,
+        validation_type: str,
+        candidate_id: str | None = None,
+        ttl_seconds: int = 3600,
+    ) -> dict[str, Any] | None:
+        """Open an isolated sandbox for an ACTIVE collaborator. Leases the (operator-provisioned)
+        workspace to them — which seals it as external_collaborator (its capsules then require operator
+        accept/promote) — and returns the lane sandbox manifest + the contribution modes they can use.
+        Pending / revoked / unregistered principals are denied (the sandbox is collaborator-only). The
+        bundle deliberately carries NO operator secrets (no database_secret_ref). Returns None if the
+        workspace does not exist."""
+        collaborator = self.resolve_principal(principal)
+        if collaborator is None or collaborator.status != "active":
+            raise CollaboratorAccessError(
+                f"principal '{principal}' is not an active collaborator; cannot open a sandbox."
+            )
+        leased = self.lease_workspace(workspace_id, principal, ttl_seconds=ttl_seconds)
+        if leased is None:
+            return None
+        return {
+            "workspace_id": str(leased.workspace_id),
+            "candidate_id": candidate_id,
+            "leased_by": leased.leased_by,
+            "lease_expires_at": leased.lease_expires_at.isoformat() if leased.lease_expires_at else None,
+            "gate_policy": leased.gate_policy,  # external_collaborator — the write gate stays operator-held
+            "sandbox": self.describe_sandbox_environment(validation_type, candidate_id=candidate_id),
+            "contribution_modes": self.describe_contribution_modes(),
+        }
+
     def submit_proof_capsule(
         self,
         request: ProofCapsuleSubmitRequest,
+        *,
+        external_submission: bool = False,
     ) -> ProofCapsuleSubmitResult:
-        return submit_proof_capsule(self.repository, request)
+        return submit_proof_capsule(self.repository, request, external_submission=external_submission)
+
+    def submit_external_proof_capsule(
+        self,
+        request: ProofCapsuleSubmitRequest,
+    ) -> ProofCapsuleSubmitResult:
+        """The Phase B entry point for a capsule produced on a collaborator's OWN compute (BYOC). It
+        must clear the authenticated-submit gate: the submitter must be a registered, active
+        collaborator holding the `submit_capsule` scope, currently hold the target workspace's lease,
+        and sign the capsule's content_hash with the Ed25519 key matching their registered public_key.
+        Validity (is the science right?) remains the job of the confound/provenance auditors + the
+        terminal human accept/promote gate — this proves WHO produced it and that it is bound to a
+        leased sandbox. Operator-hosted compute uses submit_proof_capsule (no signature required)."""
+        return submit_proof_capsule(self.repository, request, external_submission=True)
+
+    def capsule_content_hash_for_submission(self, request: ProofCapsuleSubmitRequest) -> str:
+        """The content_hash a BYOC collaborator signs over before calling submit_external_proof_capsule
+        (the gate recomputes + verifies the same value). The collaborator supplies work_packet_id /
+        candidate_snapshot_hash explicitly so what they sign equals what the gate checks."""
+        from .proof_capsules import capsule_content_hash
+
+        return capsule_content_hash(request)
 
     # --- Cryptographic provenance: tamper-evident lineage + signatures --------------------------
     def sign_capsule_content(self, content_hash: str, private_key_hex: str) -> str:
@@ -1887,6 +2435,65 @@ class HSAResearchService:
         caps = self.repository.list_proof_capsules(candidate_id=candidate_id, limit=500)
         return provenance.merkle_root([c.content_hash for c in caps])
 
+    def public_capsule_provenance(self, capsule_id: "UUID | str") -> dict[str, Any] | None:
+        """The verifiable provenance bundle for a capsule — everything needed to RE-DERIVE trust WITHOUT
+        trusting us: the recomputable content_hash, the Ed25519 signature + the signer's public key + the
+        verification verdict, the hash-linked lineage chain (proof of change), and the deterministic
+        provenance-audit checks. Every value is independently recomputable (provenance.verify is pure;
+        the content_hash is a pure function of public content). Read-only. None if the capsule is absent."""
+        from uuid import UUID as _UUID
+
+        from . import provenance_auditor
+
+        cid = capsule_id if isinstance(capsule_id, _UUID) else _UUID(str(capsule_id))
+        caps = self.list_proof_capsules(ProofCapsuleLibraryRequest(capsule_id=cid, limit=1)).capsules
+        if not caps:
+            return None
+        cap = caps[0]
+        base = self.verify_capsule_provenance(cap)
+        signer = self.resolve_principal(cap.submitted_by) if cap.submitted_by else None
+        chain: dict[str, Any] = {}
+        if cap.candidate_id:
+            versions = self.repository.list_proof_capsules(candidate_id=cap.candidate_id, limit=200)
+            chain = self.verify_capsule_lineage(versions)
+        # Deterministic provenance audit — only when the capsule CLAIMS a compute job (BYOC/foreign compute).
+        audit: dict[str, Any] | None = None
+        job_id = (cap.payload or {}).get("compute_job_id")
+        if job_id:
+            try:
+                job = self.repository.get_compute_job(_UUID(str(job_id)))
+                verdict = provenance_auditor.audit(cap, job)
+                audit = {
+                    "status": verdict.get("status"),
+                    "checks_passed": list(verdict.get("checks_passed") or []),
+                    "mismatches": list(verdict.get("mismatches") or []),
+                }
+            except Exception:
+                audit = None
+        return {
+            "capsule_id": base["capsule_id"],
+            "content_hash": base["content_hash"],
+            "hashing": (
+                "sha256 over the capsule's canonical JSON content (signature, lineage and submitter "
+                "EXCLUDED) — recompute it to verify the content is unaltered."
+            ),
+            "signed": base["signed"],
+            "signature": cap.signature,
+            "signer": base["signer"],
+            "signer_public_key": (signer.public_key if signer else None),
+            "signature_valid": base["signature_valid"],
+            "lineage": {
+                "index": base["lineage_index"],
+                "parent_content_hash": base["parent_content_hash"],
+                "chain_ok": chain.get("ok"),
+                "versions": chain.get("versions"),
+            },
+            "audit": audit,  # None for in-engine (custodial) capsules that claim no foreign compute job
+            "pipeline": ["fold (run the lane)", "hash (content_hash)", "sign (Ed25519)",
+                         "attest (provenance + confound audit)", "pin (lineage + snapshot)"],
+            "verifiable": bool(base["content_hash"]),
+        }
+
     def list_proof_capsules(
         self,
         request: ProofCapsuleLibraryRequest | None = None,
@@ -1925,13 +2532,21 @@ class HSAResearchService:
         *,
         lane_allowlist: list[str] | None = None,
         model_profile: str = "falsification_planner",
+        full_plan: bool = False,
+        candidate_record: "PublicCandidateRecord | None" = None,
+        log_provenance: bool = True,
     ) -> FalsificationPlannerResult | None:
         """Autonomous discovery (read-only): read the candidate's signed proof-capsule ledger and
         propose the next cheapest test that could KILL the leading hypothesis, pre-registering the
         kill-criterion and a lane that is actually runnable. Performs ZERO writes to
         candidates/capsules/compute jobs and never touches the accept/promote write-gate; the proposal
-        is provenance-logged as a durable agent_run. Returns None if the candidate does not exist."""
-        candidate = self.get_public_candidate(candidate_id)
+        is provenance-logged as a durable agent_run. Returns None if the candidate does not exist.
+
+        ``full_plan=True`` clears the inc6 novelty exclusion so EVERY runnable lane gets a
+        pre-registered plan (used by build_moonshot_rubric to show the complete intended test plan,
+        not just what remains untested). ``candidate_record`` lets a caller pass an in-memory (e.g.
+        not-yet-persisted) candidate so the plan can be assembled before the record is committed."""
+        candidate = candidate_record or self.get_public_candidate(candidate_id)
         if candidate is None:
             return None
 
@@ -1941,7 +2556,8 @@ class HSAResearchService:
         ).capsules
         decisions = self.list_validation_decisions(candidate_id=candidate_id, limit=50)
         provider_configured = bool(available_compute_runners())
-        ruled_out = frozenset(failure_corpus.ruled_out_lanes(capsules))  # inc6 novelty penalty
+        # inc6 novelty penalty — cleared for full_plan so already-tested lanes still appear (rubric).
+        ruled_out = frozenset() if full_plan else frozenset(failure_corpus.ruled_out_lanes(capsules))
         # inc7: lanes the candidate has no real inputs for — flagged + ranked last (prefer runnable).
         inputs_unresolved = frozenset(
             lane for lane in runnable if not lane_inputs.resolve(candidate, lane, resolvers=getattr(self, "input_resolvers", None)).resolved
@@ -1956,15 +2572,20 @@ class HSAResearchService:
                 cost_fn=self._estimate_lane_cost,
                 ruled_out=ruled_out,
                 inputs_unresolved=inputs_unresolved,
+                include_tested=full_plan,
             )
             if not provider_configured and "no_compute_provider" not in result.blockers:
                 result = result.model_copy(update={"blockers": [*result.blockers, "no_compute_provider"]})
             return result
 
+        if not log_provenance:
+            # No-provenance mode (e.g. rubric assembly inside snapshot generation) — run the pure planner
+            # directly, skipping the durable agent_run write. Content/hash are unaffected.
+            return _run()
         return AgentRunner(self.repository).run(
             agent_name="active_falsification_planner",
             model_profile=model_profile,
-            input_payload={"candidate_id": candidate_id},
+            input_payload={"candidate_id": candidate_id, "full_plan": full_plan},
             execute=_run,
         )
 
@@ -1988,6 +2609,390 @@ class HSAResearchService:
         if candidate is None:
             return None
         return lane_inputs.resolve(candidate, lane, resolvers=getattr(self, "input_resolvers", None))
+
+    # --- Increment 8: the MoonshotRubric — the pre-registered "whole shabang" (derived view) ----
+    def _rubric_target(self, target: str, lib: dict[str, Any], *, role: str):
+        """Project a target_library entry into a RubricTarget with its REAL 3-state verification."""
+        from . import target_library as _tl
+        from .contracts import RubricTarget
+
+        entry = _tl.get_entry(lib, target) or {}
+        verification = "verified" if entry.get("verified") else ("unverified" if entry else "absent")
+        return RubricTarget(
+            target=target, role=role, uniprot=entry.get("uniprot"), pdb_id=entry.get("pdb_id"),
+            chain=entry.get("chain"), cocrystal_ligand_code=entry.get("cocrystal_ligand_code"),
+            cocrystal_smiles=entry.get("cocrystal_smiles"), verification=verification,
+            redock_rmsd=entry.get("redock_rmsd"), box=(entry.get("box") or {}), notes=entry.get("notes", "") or "",
+        )
+
+    def _rubric_lane_inputs(self, lane: str, res: "LaneInputResolution", candidate, lib: dict[str, Any]):
+        """Typed projection of LaneInputResolution: 3-state readiness + an ALWAYS-present MD schedule
+        for the md lane (the pre-registered protocol, even when inputs are unresolved)."""
+        from . import target_library as _tl
+        from .contracts import MDScheduleSpec, RubricLaneInputs
+
+        keysets = lane_inputs._REQUIRED_KEY_SETS.get(lane) or []
+        cfg = res.config or {}
+        # required_keys: if resolved, the keyset this candidate ACTUALLY satisfied; else the union of all
+        # alternative keys (deduped, order-preserving) so no satisfaction path is hidden (omics has 3).
+        satisfied = next(
+            (ks for ks in keysets if all(cfg.get(k) not in (None, "", [], {}) for k in ks)),
+            None,
+        )
+        if satisfied is not None:
+            required = list(satisfied)
+        else:
+            required = []
+            for ks in keysets:
+                for k in ks:
+                    if k not in required:
+                        required.append(k)
+        readiness = "resolved" if res.resolved else "missing"
+        if not res.resolved and lane == "docking" and candidate.targets:
+            entry = _tl.get_entry(lib, candidate.targets[0])
+            if entry and not entry.get("verified"):
+                readiness = "needs_verification"  # structure exists but failed/awaits the redock QC gate
+        md_schedule = None
+        if lane == "md":
+            md_schedule = MDScheduleSpec(
+                simulation_steps=1000,  # current worker ceiling (le=1000) => maturity flags this 'smoke'
+                equilibration=(
+                    "minimize -> NVT 100ps @300K (heavy-atom restrained) -> NPT 100ps (1 bar, restraints "
+                    "released) -> production sampling."
+                ),
+                preparation_method=(
+                    "Apo receptor = the verified structure's chain (waters/ions/HETATM stripped); ligand "
+                    "placed by the docking lane's top pose; protonation at pH 7.4."
+                ),
+            )
+        return RubricLaneInputs(
+            lane=lane, config_key=res.config_key, readiness=readiness, resolution_source=(res.source or ""),
+            required_keys=required, present_keys=list((res.config or {}).keys()), missing=list(res.missing or []),
+            md_schedule=md_schedule,
+        )
+
+    def _rubric_inputs_rollup(self, test_plan: list, planner_blockers: list[str]):
+        """Section 6 — the honest readiness ledger. ready_to_run_lanes = the ONLY lanes a real-GPU run
+        may dispatch (resolved AND the planner marked inputs_ready)."""
+        from .contracts import RubricInputsRollup
+
+        resolved, needs_ver, missing, ready = [], [], [], []
+        per_missing: dict[str, list[str]] = {}
+        for rl in test_plan:
+            r = rl.inputs.readiness
+            (resolved if r == "resolved" else needs_ver if r == "needs_verification" else missing).append(rl.lane)
+            if rl.inputs.missing:
+                per_missing[rl.lane] = list(rl.inputs.missing)
+            if r == "resolved" and rl.inputs_ready:
+                ready.append(rl.lane)
+
+        def _dedup(xs: list[str]) -> list[str]:
+            # order-preserving dedup — a lane can appear in test_plan more than once (e.g. an omics test
+            # plus an omics confound-audit), but each rollup list must name it once (keeps the hash stable).
+            seen: set[str] = set()
+            out: list[str] = []
+            for x in xs:
+                if x not in seen:
+                    seen.add(x)
+                    out.append(x)
+            return out
+
+        blockers = list(planner_blockers)
+        blockers += [f"{lane}: {', '.join(miss)}" for lane, miss in per_missing.items()]
+        blockers += ["docking_target_unverified" for lane in _dedup(needs_ver) if lane == "docking"]
+        return RubricInputsRollup(
+            resolved_lanes=_dedup(resolved), needs_verification_lanes=_dedup(needs_ver),
+            missing_lanes=_dedup(missing), ready_to_run_lanes=_dedup(ready),
+            per_lane_missing=per_missing, blockers=blockers,
+        )
+
+    def build_moonshot_rubric(self, candidate_id: str, *, min_moonshot_score: float = 0.8, lane_allowlist: list[str] | None = None, candidate_record: "PublicCandidateRecord | None" = None, attach_default_resolver: bool = False, log_provenance: bool = True):
+        """Assemble the pre-registered MoonshotRubric for a candidate — the full spec of WHAT the
+        moonshot wants to see and HOW it must be tested (targets+proteins, compounds+SMILES, the ordered
+        per-lane test plan with pre-registered kill criteria, the MD schedule, the inputs checklist,
+        confounds to audit, cross-species replication, promotion criteria). Derived on demand from
+        existing primitives (planner + lane resolver + target library + moonshot gate + belief state);
+        NEVER re-derives science and NEVER fabricates readiness. Returns None iff the candidate does not
+        exist. The only side-effect is the durable agent_run propose_next_falsification already logs."""
+        from . import target_library as _tl
+        from .contracts import (
+            ConfoundPlan, CrossSpeciesPlan, MoonshotRubric, PromotionCriteria, RubricCompound, RubricLaneTest,
+        )
+        from .falsification_planner import (
+            compose_expected_payoff, compose_inference_chain, compose_lane_reasoning, compose_premise, mech_short,
+        )
+
+        candidate = candidate_record or self.get_public_candidate(candidate_id)
+        if candidate is None:
+            return None
+        notes: list[str] = []
+        resolvers = getattr(self, "input_resolvers", None)
+        if resolvers is None and attach_default_resolver:  # attach PubChem so SMILES surface; degrade gracefully
+            try:
+                from .input_resolvers import NetworkInputResolvers
+                resolvers = NetworkInputResolvers()
+                notes.append("attached_default_pubchem_resolver_for_rubric")
+            except Exception:
+                resolvers = None
+
+        # (1) Thesis + moonshot gate — the RAW dict from the SAME gate the publication path uses (zero drift)
+        gate: dict[str, Any] = {}
+        grade, score = False, 0.0
+        idea = self.get_therapy_idea(candidate.therapy_idea_id) if candidate.therapy_idea_id else None
+        if idea is not None:
+            gate = _public_candidate_moonshot_gate(idea, min_score=min_moonshot_score)
+            grade, score = bool(gate.get("passed")), float(gate.get("weighted_score", 0.0))
+        else:
+            notes.append("no_therapy_idea_linked: moonshot gate not evaluable from the candidate alone")
+
+        # Reasoning-spine inputs — resolved from the idea (preferred) then the candidate's grounded
+        # fields (the no-committee campaign path). The reasoning fields live on the TherapyIdea inside the
+        # TherapyIdeaRecord (idea.idea.*). mech uses ONLY a real mechanism field (never the rationale);
+        # premise_specified is True only when the SOURCE actually stated a mechanism/rationale, so an
+        # absent thesis renders an honest 'premise_unstated' rather than fabricated prose.
+        idea_obj = idea.idea if idea else None
+        idea_mechanism = (idea_obj.mechanism if idea_obj else None) or candidate.mechanism or ""
+        idea_rationale = (idea_obj.rationale if idea_obj else None) or candidate.rationale_md or ""
+        claim_fallback = (idea_obj.hypothesis if idea_obj else None) or candidate.summary or ""
+        evidence_strength = idea_obj.evidence_strength if idea_obj else "unknown"
+        premise_specified = bool(idea_obj and (idea_obj.mechanism or idea_obj.rationale)) or bool(candidate.mechanism)
+        translational_path = (idea_obj.translational_path if idea_obj else None) or candidate.translational_path or ""
+        next_experiment = idea_obj.next_experiments[0] if (idea_obj and idea_obj.next_experiments) else ""
+        _bms = sorted(idea_obj.biomarkers) if (idea_obj and idea_obj.biomarkers) else sorted(candidate.biomarkers)
+        biomarker = _bms[0] if _bms else None
+        # Derive-on-demand grounding: when NO thesis/candidate mechanism is stored (e.g. the autonomously-
+        # generated roster, whose mechanism predates the ground-at-source composer), compose a HYPOTHESIS-
+        # framed premise from the candidate's OWN named entities (compound + target + biomarkers) so the
+        # reasoning spine grounds for EVERY candidate. Deterministic + read-only; never fabricates biology
+        # (it states a hypothesis over real entities, framed 'X is hypothesized to engage Y').
+        if not idea_mechanism and candidate.candidate_therapies and candidate.targets:
+            from .candidate_generator import compose_candidate_reasoning
+            _m, _tp = compose_candidate_reasoning(
+                compound=candidate.candidate_therapies[0], target=candidate.targets[0],
+                rationale=(candidate.rationale_md or candidate.summary or ""), biomarkers=list(candidate.biomarkers),
+            )
+            idea_mechanism = _m
+            translational_path = translational_path or _tp
+            premise_specified = True  # grounded in the candidate's real named entities, framed as a hypothesis
+            notes.append("premise_composed_from_candidate_entities")
+        mech = mech_short(idea_mechanism)
+        mechanistic_premise_str = (
+            idea_mechanism or (idea_obj.rationale if idea_obj else None)
+            or candidate.rationale_md or candidate.summary or ""
+        )
+        if not idea_mechanism and not candidate.rationale_md:
+            notes.append("reasoning_unstated_upstream")
+
+        # full_plan=True → EVERY runnable lane gets a pre-registered plan (the complete intended test
+        # plan, not just what remains untested) — already-tested lanes still appear, marked by outcome.
+        planner = self.propose_next_falsification(candidate_id, lane_allowlist=lane_allowlist, full_plan=True, candidate_record=candidate, log_provenance=log_provenance)
+        belief = planner.belief_state if planner else None
+        plans = [p for p in (([planner.proposed] if (planner and planner.proposed) else []) + (list(planner.alternatives) if planner else [])) if p]
+        runnable = list(planner.runnable_lanes) if planner else []
+        # per-lane outcome from the signed ledger (to mark each test's standing) + controlled confounds
+        ledger = self.list_proof_capsules(ProofCapsuleLibraryRequest(candidate_id=candidate_id, limit=200)).capsules
+        # Per-lane signal mirrors distill_belief_state's authoritative source: ONLY compute_artifact
+        # capsules carry a run signal; key on validation_type (fall back to target.section) and accept
+        # only real lanes. Latest-WINS by explicit timestamp — never trust ledger iteration order, so a
+        # later 'supports' correctly supersedes an earlier 'refutes' (and vice-versa) in the snapshot.
+        from .falsification_planner import _LANE_MEMBERS, _SIGNAL_PACKET_TYPES
+        lane_signal: dict[str, str] = {}
+        lane_latest: dict[str, Any] = {}
+        for c in ledger:
+            if getattr(c, "packet_type", None) not in _SIGNAL_PACKET_TYPES:
+                continue
+            payload = c.payload or {}
+            section = payload.get("validation_type") or (c.target.section if c.target else None)
+            sig = payload.get("signal")
+            if section not in _LANE_MEMBERS or not sig:
+                continue
+            ts = getattr(c, "updated_at", None) or getattr(c, "created_at", None)
+            prev = lane_latest.get(section)
+            if section not in lane_latest or (ts is not None and (prev is None or ts >= prev)):
+                lane_signal[section] = sig
+                lane_latest[section] = ts
+        caught = {e.confound for e in self.get_failure_corpus(candidate_id) if e.kind == "caught_confound" and e.confound}
+        # the genuine NEXT-to-run = first untested lane whose inputs are ready (VOI-ranked order)
+        queued_idx = next(
+            (j for j, p in enumerate(plans) if lane_signal.get(p.lane) not in ("supports", "refutes") and p.inputs_ready),
+            None,
+        )
+
+        # (2) Targets needed — 3-state verification from the library flag (NOT substring matching)
+        lib = _tl.load_target_library()
+        targets_needed = [self._rubric_target(t, lib, role=("primary" if i == 0 else "orthogonal")) for i, t in enumerate(candidate.targets)]
+        if "docking" in runnable and not any(t.verification == "verified" for t in targets_needed):
+            notes.append("no_verified_docking_target: the docking spend-gate will refuse real GPU")
+
+        # Entities the reasoning prose is grounded in (the compound/target the candidate NAMES) — constant
+        # across lanes, computed once.
+        tgt = targets_needed[0].target if targets_needed else (candidate.targets[0] if candidate.targets else "the target")
+        pdb = targets_needed[0].pdb_id if targets_needed else None
+        cmpd = candidate.candidate_therapies[0] if candidate.candidate_therapies else "the compound"
+
+        # (4)/(5) Ordered test plan — project each plan (strip plan_id/created_at), attach inputs + MD schedule
+        smiles_seen: dict[str, tuple] = {}
+        test_plan: list = []
+        for i, plan in enumerate(plans):
+            res = lane_inputs.resolve(candidate, plan.lane, resolvers=resolvers)
+            lane_proj = self._rubric_lane_inputs(plan.lane, res, candidate, lib)
+            for k in ("ligand_smiles", "compound_smiles"):
+                v = (res.config or {}).get(k)
+                if v:
+                    nm = (res.config or {}).get("ligand_name") or (candidate.candidate_therapies[0] if candidate.candidate_therapies else "ligand")
+                    smiles_seen.setdefault(nm, (v, res.source or "resolver"))
+            spec = get_lane(plan.lane)
+            autonomously = spec is None or spec.gate is None
+            maturity = "smoke" if (plan.lane == "md" and lane_proj.md_schedule and lane_proj.md_schedule.simulation_steps <= 1000) else "production"
+            is_proposed = i == queued_idx
+            sig = lane_signal.get(plan.lane)
+            if is_proposed:
+                standing = "queued"
+            elif plan.addresses_confound is not None:
+                # A confound-audit test's standing is its OWN audit state — NEVER the audited lane's
+                # signal (else an untested purity control inherits 'supports' and reads as done).
+                standing = "controlled" if plan.addresses_confound.kind in caught else "untested"
+            elif sig == "supports":
+                standing = "supports_unaudited"  # tested + supports, but unaudited until confounds clear
+            elif sig == "refutes":
+                standing = "refuted"
+            else:
+                standing = "untested"
+            # Reasoning spine: grounded probes / why-it-bears / pre-committed interpretation for THIS lane,
+            # composed from the named compound+target+biomarker + the lane's OWN pre-registered kill criterion.
+            probes, why_it_bears, interpretation = compose_lane_reasoning(
+                lane=plan.lane, compound=cmpd, target=tgt, pdb_id=pdb, biomarker=biomarker,
+                kill_criterion=plan.kill_criterion, mechanism_short=mech, maturity=maturity,
+            )
+            test_plan.append(RubricLaneTest(
+                order=i + 1, lane=plan.lane, validation_type=plan.validation_type, test_objective=plan.test_objective,
+                kill_criterion=plan.kill_criterion, expected_signal_if_alive=plan.expected_signal_if_alive,
+                addresses_confound=plan.addresses_confound, est_cost_usd=plan.est_cost_usd,
+                value_of_information=plan.value_of_information, inputs_ready=plan.inputs_ready,
+                is_proposed=is_proposed, autonomously_runnable=autonomously, maturity=maturity,
+                standing=standing, inputs=lane_proj,
+                rank_rationale=plan.rank_rationale, novelty_note=plan.novelty_note,
+                mechanistic_premise=mech, probes=probes, why_it_bears=why_it_bears, interpretation=interpretation,
+            ))
+
+        # Display the plan in the SAME canonical logical order as the inference chain (engagement →
+        # orthogonal check → stability → cross-species translation), so the two sections read consistently
+        # instead of the planner's VOI order fighting the chain's order. is_proposed (the VOI-next test)
+        # rides on each entry, so reordering for display preserves which test is genuinely queued next;
+        # `order` is renumbered to the display position. Same-lane ties keep their VOI order.
+        _CANON = {"docking": 0, "cofolding": 1, "md": 2, "omics": 3}
+        test_plan.sort(key=lambda t: (_CANON.get(t.lane, 9), t.order))
+        test_plan = [t.model_copy(update={"order": i + 1}) for i, t in enumerate(test_plan)]
+
+        # (3) Compounds — names from the candidate; SMILES ONLY from what the resolver surfaced (+ native cocrystals)
+        compounds = [RubricCompound(
+            name=n, role="lead", smiles=smiles_seen.get(n, (None, "unresolved"))[0],
+            readiness=("resolved" if n in smiles_seen else "missing"),
+            resolution_source=smiles_seen.get(n, (None, "unresolved"))[1], intended_targets=candidate.targets[:1],
+        ) for n in candidate.candidate_therapies]
+        compounds += [RubricCompound(
+            name=(t.cocrystal_ligand_code or f"{t.target}_cocrystal"), role="native_cocrystal", smiles=t.cocrystal_smiles,
+            readiness="resolved", resolution_source="curated_library", intended_targets=[t.target],
+        ) for t in targets_needed if t.verification == "verified" and t.cocrystal_smiles]
+
+        # (6) rollup · (7) confounds (open vs controlled via the failure corpus) · (8) cross-species (real omics KC)
+        rollup = self._rubric_inputs_rollup(test_plan, list(planner.blockers) if planner else [])
+        from .contracts import ConfoundFlag
+        open_cf = list(belief.open_confounds) if belief else []
+        # distill_belief_state DROPS a confound from open_confounds the instant it is controlled, so a
+        # successfully-audited confound would otherwise vanish from BOTH lists. Re-surface each caught
+        # kind as an explicit 'controlled' flag, sourced from the failure corpus independently of belief.
+        # (defensive construction: ConfoundFlag.kind is a Literal; skip corpus values outside it.)
+        controlled_cf: list = []
+        for k in sorted(caught):
+            try:
+                controlled_cf.append(ConfoundFlag(kind=k, status="controlled", control_lane="omics"))
+            except Exception:
+                continue
+        confounds = ConfoundPlan(
+            open_confounds=[c for c in open_cf if c.kind not in caught],
+            controlled_confounds=controlled_cf,
+        )
+        omics_kc = next((rl.kill_criterion for rl in test_plan if rl.lane == "omics"), None)
+        cross = CrossSpeciesPlan(
+            # the REASONED payoff axis, not a summary echo (idea/candidate translational_path → mechanism → summary)
+            replication_axis=(translational_path or idea_mechanism or candidate.summary or "")[:2000], kill_criterion=omics_kc,
+            replication_lane=("omics" if omics_kc else None),
+            evidence_to_date=[r for r in candidate.evidence_refs if ("cross" in r.lower() or "auc" in r.lower())],
+        )
+        # Reasoning spine: the premise ('because of A'), the inference chain (one link per lane in VOI
+        # order — conjunctive-survival / single-refutation-kills), and the earned payoff ('if it works, P').
+        premise = compose_premise(
+            mechanism=idea_mechanism, rationale=idea_rationale, claim_fallback=claim_fallback,
+            evidence_strength=evidence_strength, is_specified=premise_specified,
+        )
+        # The inference chain reads as a coherent argument, NOT the planner's raw VOI order: one link per
+        # distinct lane in a logical sequence (engagement → orthogonal check → stability → cross-species
+        # translation) so the terminal survived_known_confounds conclusion lands on the omics keystone.
+        _chain_order = ["docking", "cofolding", "md", "omics"]
+        _seen_lane: set[str] = set()
+        chain_lanes: list = []
+        for ln in _chain_order:
+            rl = next((t for t in test_plan if t.lane == ln), None)
+            if rl is not None and ln not in _seen_lane:
+                chain_lanes.append(rl)
+                _seen_lane.add(ln)
+        for t in test_plan:  # any lane outside the canonical list, in test_plan order
+            if t.lane not in _seen_lane:
+                chain_lanes.append(t)
+                _seen_lane.add(t.lane)
+        inference_chain = compose_inference_chain(
+            [(rl.lane, rl.expected_signal_if_alive, rl.kill_criterion) for rl in chain_lanes],
+            target=tgt, mechanism_short=mech, translational_path=translational_path,
+            payoff_specified=bool(translational_path),
+        )
+        expected_payoff = compose_expected_payoff(
+            translational_path=translational_path, next_experiment=next_experiment,
+            mechanism_short=mech, vois=[rl.value_of_information for rl in test_plan],
+        )
+        # (11) promotion — typed, never auto-satisfiable
+        promotion = PromotionCriteria(
+            required_surviving_lanes=sorted({rl.lane for rl in test_plan}),
+            required_confounds_controlled=[c.kind for c in open_cf],
+            statement=(
+                "Promote only if every test-plan lane survives its pre-registered kill criterion, all open "
+                "confounds are controlled, the cross-species axis replicates in an orthogonal cohort, and an "
+                "operator accepts the resulting capsules. Never auto-promoted."
+            ),
+        )
+        if planner and "cofolding" not in runnable:
+            notes.append("cofolding is supported by lane_inputs but absent from the FalsificationLane planner set (known gap)")
+
+        rubric = MoonshotRubric(
+            candidate_id=candidate_id, title=candidate.title, candidate_snapshot_hash=candidate.content_hash,
+            thesis=(candidate.summary or (belief.leading_hypothesis if belief else "")), rationale_md=candidate.rationale_md,
+            moonshot_gate=gate, moonshot_grade=grade, moonshot_score=score,
+            mechanistic_premise=mechanistic_premise_str[:3000], premises=[premise],
+            inference_chain=inference_chain, expected_payoff=expected_payoff,
+            targets_needed=targets_needed, compounds_needed=compounds, test_plan=test_plan, runnable_lanes=runnable,
+            inputs_rollup=rollup, confounds=confounds, cross_species=cross, evidence_anchors=list(candidate.evidence_refs),
+            risks=[*candidate.risk_flags, *(planner.blockers if planner else [])], promotion=promotion,
+            belief_state=belief, net_signal=(belief.net_signal if belief else "none"),
+            net_confidence=(belief.net_confidence if belief else 0.0),
+            signalful_capsule_count=(belief.signalful_capsule_count if belief else 0),
+            planner_blockers=(list(planner.blockers) if planner else []),
+            ready_to_run=bool(grade and rollup.ready_to_run_lanes),
+            # Substantive (NOT a tautology): a real pre-registered plan requires at least one lane test
+            # AND a concrete way to actually run one — EITHER a named target that exists in the
+            # verified-or-unverified library (docking is obtainable) OR at least one lane whose inputs
+            # are non-"missing" (e.g. a cross-species OMICS test with real expression+strata attached —
+            # the project's core thesis, which needs no curated docking structure). A hollow score-passing
+            # thesis with a hallucinated target ("MADEUPGENE": absent target AND every lane unresolved)
+            # therefore fails the publication HARD-FAIL gate. The target-presence clause keeps the
+            # no-resolver publication path working for a verified target whose SMILES isn't resolved yet
+            # (still falsifiable-in-principle); readiness is reported honestly+separately in inputs_rollup.
+            has_falsifiable_plan=bool(test_plan) and (
+                any(t.verification != "absent" for t in targets_needed)
+                or any(rl.inputs.readiness != "missing" for rl in test_plan)
+            ),
+            assembly_notes=notes,
+        )
+        return rubric.model_copy(update={"rubric_hash": _public_candidate_content_hash(rubric.content_payload())})
 
     # --- Falsification round: pre-registration + auto-dispatch (increment 2) --------------------
     def _falsification_preregistration_hash(
@@ -2116,15 +3121,22 @@ class HSAResearchService:
         proposal = self.propose_next_falsification(candidate_id, lane_allowlist=lane_allowlist)
         if proposal is None:
             return None
-        if proposal.proposed is None:
+        # The RUNNABLE test space is exhausted when there is no proposal, OR — on a REAL runner — when
+        # the best remaining proposal has no resolved inputs (inputs_ready=False). Dispatching an
+        # inputs-unready plan on a real runner just burns the proposal cost and produces no capsule
+        # (the no-op rounds that made every real candidate read 'underpowered/max_rounds'), so we
+        # terminate cleanly instead. The mock runner fabricates signals WITHOUT inputs, so it still
+        # exercises inputs-unready lanes — its behavior is unchanged.
+        proposed = proposal.proposed
+        if proposed is None or (runner_kind != "mock" and not proposed.inputs_ready):
             return FalsificationRoundResult(
                 candidate_id=candidate_id,
-                blockers=proposal.blockers,
+                blockers=[*proposal.blockers, "inputs_unresolved"] if proposed is not None else proposal.blockers,
                 errors=["no_runnable_proposal"],
                 agent_run_id=proposal.agent_run_id,
             )
 
-        plan = proposal.proposed
+        plan = proposed
         prereg = self.register_falsification_test(plan, submitted_by=submitted_by)
         flow = self.run_compute_validation_flow(
             candidate_id, prereg.queue_item_id, runner_kind=runner_kind, submitted_by=submitted_by
@@ -2221,6 +3233,108 @@ class HSAResearchService:
             leading_hypothesis_status=status,  # type: ignore[arg-type]
             total_est_cost_usd=total_cost,
         )
+
+    def run_falsification_campaign(
+        self,
+        candidate_ids: list[str] | None = None,
+        *,
+        max_rounds: int = 3,
+        budget_usd_per_candidate: float = 0.50,
+        campaign_budget_usd: float = 2.0,
+        max_candidates: int | None = None,
+        lane_allowlist: list[str] | None = None,
+        runner_kind: str = "mock",
+        submitted_by: str | None = None,
+        persist: bool = True,
+    ) -> RunManifestRecord:
+        """Run the autonomous falsification loop across a roster (budget-capped) and persist a durable
+        aggregate report as a RunManifestRecord(manifest_type='falsification_campaign'). NEVER
+        auto-promotes (every round's loop is terminal-gated). If candidate_ids is None, selects all
+        validation-ready candidates."""
+        if candidate_ids is None:
+            lib = self.list_public_candidates(PublicCandidateLibraryRequest(limit=500))
+            raw = [c.candidate_id for c in lib.candidates if c.validation_ready is True]
+        else:
+            raw = list(candidate_ids)
+        seen: set[str] = set()
+        ordered = [c for c in raw if not (c in seen or seen.add(c))]  # dedup, preserve order
+
+        rows: list[dict[str, Any]] = []
+        terminal_reasons: dict[str, int] = {}
+        status_counts: dict[str, int] = {}
+        job_ids: list[UUID] = []
+        running_cost = 0.0
+        processed = 0
+        budget_exhausted = False
+
+        for cid in ordered:
+            if max_candidates is not None and processed >= max_candidates:
+                break
+            if running_cost >= campaign_budget_usd:
+                budget_exhausted = True
+                break
+            result = self.run_falsification_loop(
+                cid,
+                max_rounds=max_rounds,
+                budget_usd=budget_usd_per_candidate,
+                lane_allowlist=lane_allowlist,
+                runner_kind=runner_kind,
+                submitted_by=submitted_by,
+            )
+            if result is None:
+                rows.append({"candidate_id": cid, "skipped": "candidate_not_found"})
+                continue
+            running_cost += float(result.total_est_cost_usd)
+            terminal_reasons[result.terminal_reason] = terminal_reasons.get(result.terminal_reason, 0) + 1
+            status_counts[result.leading_hypothesis_status] = (
+                status_counts.get(result.leading_hypothesis_status, 0) + 1
+            )
+            round_jobs = [r.compute_job_id for r in result.rounds if r.compute_job_id]
+            job_ids.extend(round_jobs)
+            rows.append(
+                {
+                    "candidate_id": result.candidate_id,
+                    "terminal_reason": result.terminal_reason,
+                    "leading_hypothesis_status": result.leading_hypothesis_status,
+                    "rounds_run": result.rounds_run,
+                    "total_est_cost_usd": float(result.total_est_cost_usd),
+                    "promoted": bool(result.promoted),
+                    "capsule_ids": [str(r.capsule_id) for r in result.rounds if r.capsule_id],
+                    "compute_job_ids": [str(j) for j in round_jobs],
+                }
+            )
+            processed += 1
+
+        rollup = {
+            "candidates_selected": len(ordered),
+            "candidates_processed": processed,
+            "total_est_cost_usd": round(running_cost, 4),
+            "budget_exhausted": budget_exhausted,
+            "any_promoted": any(bool(r.get("promoted")) for r in rows),
+            "terminal_reasons": terminal_reasons,
+            "leading_hypothesis_status": status_counts,
+        }
+        manifest = RunManifestRecord(
+            manifest_type="falsification_campaign",
+            status="completed",
+            title=f"Falsification campaign — {processed} candidate(s), runner={runner_kind}"[:500],
+            created_by=submitted_by or "falsification_campaign",
+            candidate_ids=[r["candidate_id"] for r in rows][:200],
+            compute_job_ids=job_ids[:200],
+            output_refs={"rollup": rollup, "rows": rows},
+            metadata={
+                "runner_kind": runner_kind,
+                "budgets": {
+                    "per_candidate_usd": budget_usd_per_candidate,
+                    "campaign_usd": campaign_budget_usd,
+                    "max_rounds": max_rounds,
+                    "max_candidates": max_candidates,
+                },
+            },
+        )
+        if persist:
+            self.upsert_run_manifest(manifest)
+        return manifest
 
     # --- Confound Auditor pre-gate (increment 3) -----------------------------------------------
     def _confound_audit_dict(self, capsule: ProofCapsuleRecord) -> dict[str, Any]:
@@ -2378,7 +3492,18 @@ class HSAResearchService:
             if capsule is None:
                 return None
             prov = self._provenance_audit_dict(capsule)
-            if not prov["ok"]:
+            # Foreign compute (BYOC container) shifts trust onto the signature: a capsule claiming a
+            # container job is acceptable ONLY if it is cryptographically signed by the runner (its
+            # registered key). Operator-hosted capsules don't require a signature here (trust = our infra).
+            job = self._resolve_claimed_compute_job(capsule)
+            is_foreign = job is not None and getattr(job, "runner_kind", None) == "container"
+            sig_valid = True
+            if is_foreign:
+                sig_valid = bool(self.verify_capsule_provenance(capsule).get("signature_valid"))
+            if not prov["ok"] or not sig_valid:
+                mismatches = list(prov["mismatches"])
+                if not sig_valid:
+                    mismatches.append("foreign_capsule_signature_invalid")
                 blocked = capsule.model_copy(
                     update={
                         "metadata": {
@@ -2386,8 +3511,9 @@ class HSAResearchService:
                             "provenance_gate": {
                                 "status": "blocked",
                                 "verdict": prov["status"],
-                                "mismatches": prov["mismatches"],
-                                "reason": prov["rationale"],
+                                "mismatches": mismatches,
+                                "reason": prov["rationale"]
+                                + ("" if sig_valid else " Foreign (container) capsule lacks a valid signature."),
                                 "reviewer": reviewer,
                             },
                         }
@@ -2479,16 +3605,42 @@ class HSAResearchService:
         prereg_block = None
         job_input = job.input_payload if isinstance(job.input_payload, dict) else {}
         request_blob = job_input.get("validation_request")
-        if isinstance(request_blob, dict):
-            request_meta = request_blob.get("metadata")
-            if isinstance(request_meta, dict) and isinstance(
-                request_meta.get("falsification_preregistration"), dict
-            ):
-                prereg_block = request_meta["falsification_preregistration"]
+        # Hoisted (was scoped inside the isinstance branch) so the cross-species disclosure below can read
+        # the lane config (source_pdb / target) that lives under request metadata.
+        request_meta = request_blob.get("metadata") if isinstance(request_blob, dict) else None
+        if isinstance(request_meta, dict) and isinstance(
+            request_meta.get("falsification_preregistration"), dict
+        ):
+            prereg_block = request_meta["falsification_preregistration"]
 
         def _min3(text: str, fallback: str) -> str:
             text = (text or "").strip()
             return text if len(text) >= 3 else fallback
+
+        def _species_disclosure(validation_type: str | None, meta: object) -> str | None:
+            """Docking/co-folding lanes run against HUMAN ortholog structures (the redock-verified library
+            is human PDBs; co-folding pulls the human Swiss-Prot sequence) while candidates target the
+            canine protein. Name that substitution explicitly on the surfaced limitations so the evidence
+            never reads as if it ran on the canine target. Returns None for non-structure lanes."""
+            lane = (validation_type or "").lower()
+            if lane not in {"docking", "cofolding"}:
+                return None
+            cfg = meta.get(lane) if isinstance(meta, dict) else None
+            cfg = cfg if isinstance(cfg, dict) else {}
+            target = str(cfg.get("target") or getattr(job, "target_name", None) or "the target")
+            if lane == "docking":
+                pdb = cfg.get("source_pdb")
+                struct = f"human {pdb}" if pdb else "a human experimental structure"
+                return (
+                    f"Structure used is {struct} ({target}); it stands in for the canine ortholog — "
+                    f"sequence/structure differences at the binding site are not accounted for. "
+                    f"Cross-species inference only."
+                )
+            return (
+                f"Co-folded against the human reviewed (Swiss-Prot) sequence for {target}; it stands in "
+                f"for the canine ortholog — sequence differences at the binding interface are not "
+                f"accounted for. Cross-species inference only."
+            )
 
         finding = _min3(
             str(out.get("findings") or ""),
@@ -2497,6 +3649,9 @@ class HSAResearchService:
         limitations = [str(item) for item in (out.get("limitations") or []) if str(item).strip()] or [
             "Computational result; not independently validated."
         ]
+        _disclosure = _species_disclosure(job.validation_type, request_meta)
+        if _disclosure and _disclosure not in limitations:
+            limitations.append(_disclosure)
         source_refs = [
             ProofCapsuleSourceRef(**ref) if isinstance(ref, dict) else ProofCapsuleSourceRef(source_id=str(ref))
             for ref in (out.get("source_refs") or [])
@@ -6965,6 +8120,28 @@ class HSAResearchService:
             limit=limit,
         )
 
+    def list_compute_jobs(
+        self,
+        *,
+        status: str | None = None,
+        runner_kind: str | None = None,
+        limit: int | None = 50,
+    ) -> list[ComputeJobRecord]:
+        """Recent compute jobs (the GPU lanes), newest-first — powers the live activity feed + the honest
+        online/idle signal. Read-only pass-through to the repository."""
+        return self.repository.list_compute_jobs(status=status, runner_kind=runner_kind, limit=limit)
+
+    def list_public_candidate_decision_events(
+        self,
+        *,
+        candidate_id: str | None = None,
+        limit: int | None = 100,
+    ) -> list["PublicCandidateDecisionEvent"]:
+        """Recent public-candidate decision events (proposed / advanced / held / snapshot_generated …),
+        newest-first — the richest activity-stream primitive (each links its agent_run / compute_job /
+        capsule). Read-only pass-through."""
+        return self.repository.list_public_candidate_decision_events(candidate_id=candidate_id, limit=limit)
+
     def create_agent_run_review(self, record: AgentRunReviewRecord) -> AgentRunReviewRecord:
         return self.repository.create_agent_run_review(record)
 
@@ -7943,6 +9120,42 @@ def _generate_public_candidate_snapshot(
     candidate_id = request.candidate_id or (candidate.candidate_id if candidate else _public_candidate_id(therapy_idea))
     display_id = request.display_id or (candidate.display_id if candidate else _public_candidate_display_id(candidate_id))
     candidate_kind = request.candidate_kind or (candidate.candidate_kind if candidate else _public_candidate_kind(therapy_idea))
+
+    # Moonshot rubric — the pre-registered "whole shabang". Built from a provisional record derived
+    # DETERMINISTICALLY from the therapy idea (NOT the persisted candidate, whose volatile content_hash
+    # would break snapshot idempotency across regenerations — the snapshot reflects the idea anyway).
+    # PUBLICATION GATE: a moonshot-grade candidate MUST carry a falsifiable test plan — one that passes
+    # the score gate but has nothing to falsify is not a moonshot.
+    _rubric_candidate = PublicCandidateRecord(
+        candidate_id=candidate_id,
+        title=(display_id or candidate_id),
+        summary=therapy_idea.idea.hypothesis,
+        rationale_md=therapy_idea.idea.rationale,
+        therapy_idea_id=therapy_idea.therapy_idea_id,
+        targets=list(therapy_idea.targets),
+        biomarkers=list(therapy_idea.biomarkers),
+        candidate_therapies=list(therapy_idea.candidate_therapies),
+        evidence_refs=list(therapy_idea.evidence_refs),
+        # carry the persisted candidate's curated/PINNED lane_inputs (resolved SMILES / receptor / sequence)
+        # so the rubric reflects what has actually been resolved — deterministically, from stored values,
+        # never a live fetch at build time (the publication hash stays stable).
+        metadata=(candidate.metadata if candidate else {}),
+    )
+    moonshot_rubric = None
+    try:
+        moonshot_rubric = HSAResearchService(repository).build_moonshot_rubric(
+            candidate_id, min_moonshot_score=request.min_moonshot_score,
+            candidate_record=_rubric_candidate, attach_default_resolver=False,
+            log_provenance=False,  # snapshot generation is read-shaped; don't write 4 agent_run rows per call
+        )
+    except Exception:  # the rubric is provenance, never crashes publication — degrade to "no rubric"
+        moonshot_rubric = None
+    if request.require_moonshot_grade and not (moonshot_rubric and moonshot_rubric.has_falsifiable_plan):
+        return PublicCandidateSnapshotResult(
+            moonshot_gate=moonshot_gate,
+            errors=["public_candidate_requires_moonshot_grade", "missing_falsification_rubric"],
+        )
+
     validation_decisions = (
         repository.list_validation_decisions(therapy_idea_id=therapy_idea.therapy_idea_id, limit=25)
         if request.include_decisions
@@ -8005,6 +9218,10 @@ def _generate_public_candidate_snapshot(
         pipeline_version=request.pipeline_version,
         commit_sha=request.commit_sha,
     )
+    if moonshot_rubric is not None:
+        # Inject ONLY the deterministic content (timestamps/hash excluded) so the snapshot content_hash
+        # stays idempotent across regenerations while folding the rubric in (tamper-evident).
+        payload["moonshot_rubric"] = moonshot_rubric.content_payload()
     content_hash = _public_candidate_content_hash(payload)
     snapshots = repository.list_public_candidate_snapshots(candidate_id=candidate_id, limit=1)
     snapshot_version = (snapshots[0].snapshot_version + 1) if snapshots else 1
@@ -8028,6 +9245,8 @@ def _generate_public_candidate_snapshot(
         ]
     )
     method_refs = _public_candidate_method_refs(compute_jobs, validation_decisions)
+    if moonshot_rubric is not None and moonshot_rubric.rubric_hash:
+        method_refs = [*method_refs, f"moonshot-rubric:{moonshot_rubric.rubric_hash}"]
     snapshot = PublicCandidateSnapshot(
         snapshot_id=snapshot_id,
         trace_id=trace_id,

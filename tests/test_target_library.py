@@ -72,8 +72,17 @@ def test_curated_docking_config_gate():
     assert tl.curated_docking_config(verified, "MTOR", ligand_smiles="CCO", ligand_name="x") is None
 
 
-def test_shipped_library_loads_and_entries_start_unverified():
-    lib = tl.load_target_library()  # the real data/target_library.json
+def test_shipped_library_loads_and_verified_iff_redock_evidence():
+    """The real data/target_library.json. The gate invariant: an entry is verified() IFF it carries
+    redock evidence (prepared receptor_pdb + box + redock_rmsd <= 2.0 set by the verifier). Unverified
+    entries carry no receptor, so curated_docking_config refuses them. (The shipped file is updated by
+    scripts/verify_target_library.py after a real redock — e.g. PIK3CA/KDR verified, MTOR refused.)"""
+    lib = tl.load_target_library()
     assert "PIK3CA" in lib["entries"]
-    # entries ship unverified (verifier fills them) -> the gate refuses until a real redock passes
-    assert lib["entries"]["PIK3CA"]["verified"] is False
+    for name, entry in lib["entries"].items():
+        if entry.get("verified"):
+            assert entry.get("receptor_pdb") and entry.get("box"), f"{name} verified without a prepared receptor/box"
+            assert entry.get("redock_rmsd") is not None and entry["redock_rmsd"] <= 2.0, f"{name} verified with a failing redock"
+        else:
+            # an unverified entry must not expose a usable docking config (the spend gate stays shut)
+            assert entry.get("receptor_pdb") in (None, "")

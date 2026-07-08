@@ -81,7 +81,7 @@ export const REAL_RUN: LedgerEvent[] = [
     exp: 'EXP-a4c2036',
     summary: 'Result: supports the idea — but NOT promoted. A human decides what’s real.',
     verdict: 'supports',
-    detail: { metric: '−9.8 kcal/mol', note: 'The hypothesis survived its own falsification attempt.', link: '/candidates' },
+    detail: { metric: '−9.8 kcal/mol', note: 'The hypothesis survived its own falsification attempt.', link: '/candidates/alpelisib-pi3ka' },
   },
 ];
 

@@ -1,51 +1,67 @@
 import Link from 'next/link';
-import { formatPublicDate, publicCandidates, readableKind, shortHash } from '@/lib/public-candidates';
+import { connection } from 'next/server';
+import '../v4/v4.css';
+import '../v2/v2.css';
+import '../detail.css';
+import { ProofStamp } from '@/components/v2/ProofStamp';
+import { SiteNav } from '@/components/v4/SiteNav';
+import { listCandidates } from '@/lib/public-candidates-live';
+import { VERDICT_META, STAMP_FOR, prettyCandidate } from '@/lib/verdict';
 
 export const metadata = {
   title: 'Candidates — TWOG',
-  description: 'Inspectable TWOG public candidate records.',
+  description: 'Every idea the engine is testing — each a real drug against a real target, and where it stands.',
 };
 
-export default function CandidatesPage() {
-  return (
-    <div className="site-shell page-shell">
-      <section className="page-hero">
-        <p className="section-kicker">Public proof records</p>
-        <h1>Candidates</h1>
-        <p>
-          Each candidate page is a citeable research artifact: rationale, source audit,
-          decision history, known gaps, and the method version used to publish it.
-        </p>
-      </section>
+export default async function CandidatesPage() {
+  await connection(); // Next 16: read live per request (pg reads aren't auto-detected as dynamic)
+  const candidates = await listCandidates(200);
 
-      <section className="record-list">
-        {publicCandidates.length === 0 ? (
-          <article className="proof-card">
-            <span>No public candidates exported yet</span>
-            <p>Run the candidate sync script after the Command Center is serving public candidate records.</p>
-          </article>
+  return (
+    <div className="v4-shell">
+      <div className="v4-grain" />
+      <div className="v4-detail">
+        <SiteNav />
+
+        <p className="v4-kick">Candidates</p>
+        <h1 className="v4-dh1">Every idea we’re putting to the test.</h1>
+        <p className="v4-lead">
+          Each candidate is a real drug against a real target in the cancer dogs and people share. The
+          engine tries to <strong>disprove</strong> each one with a pre-registered kill-test — and keeps
+          only what survives. Open any idea to see its evidence and the run that tested it.
+        </p>
+
+        {candidates.length ? (
+          <div className="v4-cards">
+            {candidates.map((c) => {
+              const v = VERDICT_META[c.verdict];
+              const stripe = v.tone === 'ok' ? 'var(--bone)' : v.tone === 'ko' ? 'var(--kill)' : 'var(--line-2)';
+              return (
+                <Link
+                  key={c.candidate_id}
+                  href={`/candidates/${c.candidate_id}`}
+                  className="v4-card v4-card--stripe"
+                  style={{ ['--spine' as string]: stripe } as React.CSSProperties}
+                >
+                  <div className="v4-card__row">
+                    <span className="v4-card__title">
+                      {c.title && !/^falsify/i.test(c.title) ? c.title : prettyCandidate(c.candidate_id)}
+                    </span>
+                    <ProofStamp verdict={STAMP_FOR[c.verdict]} />
+                  </div>
+                  <div className="v4-card__meta">
+                    {c.targets.length ? `target ${c.targets.join(' · ')}` : 'target —'} · {v.label}
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
         ) : (
-          publicCandidates.map(({ candidate, latest_snapshot }) => (
-            <Link
-              href={`/candidates/${candidate.display_id?.toLowerCase() ?? candidate.candidate_id}`}
-              className="candidate-row"
-              key={candidate.candidate_id}
-            >
-              <div>
-                <p className="row-kicker">{candidate.display_id ?? candidate.candidate_id}</p>
-                <h2>{candidate.title}</h2>
-                <p>{candidate.summary}</p>
-              </div>
-              <div className="row-meta">
-                <span>{readableKind(candidate.public_status)}</span>
-                <span>{candidate.targets?.join(' / ')}</span>
-                <span>hash {shortHash(candidate.content_hash ?? latest_snapshot?.content_hash)}</span>
-                <span>{formatPublicDate(candidate.updated_at)}</span>
-              </div>
-            </Link>
-          ))
+          <p className="v4-lead v4-muted" style={{ marginTop: '2rem' }}>
+            No candidates to show yet — ideas appear here as the engine generates and tests them.
+          </p>
         )}
-      </section>
+      </div>
     </div>
   );
 }

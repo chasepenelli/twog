@@ -2360,6 +2360,55 @@ class SQLiteResearchRepository(ResearchRepository):
         self.conn.commit()
         return record
 
+    def acquire_workspace_lease(
+        self,
+        workspace_id: UUID,
+        principal: str,
+        *,
+        lease_expires_at: datetime,
+        gate_policy: str | None = None,
+        steal: bool = False,
+    ) -> ResearchWorkspaceRecord | None:
+        existing = self.get_research_workspace(workspace_id)
+        if existing is None:
+            return None
+        now = datetime.now(UTC)
+        candidate = existing.model_copy(
+            update={
+                "leased_by": principal,
+                "lease_expires_at": lease_expires_at,
+                "status": "active",
+                "gate_policy": gate_policy or existing.gate_policy,
+                "updated_at": now,
+            }
+        )
+        # Conditional UPDATE guarded on the row's CURRENT lease state (lease fields live in the JSON
+        # payload → json_extract). ISO-8601 UTC timestamps compare correctly lexicographically. SQLite
+        # serializes writers, so only one acquirer's WHERE can match.
+        cursor = self.conn.execute(
+            """
+            update research_workspaces
+            set status = 'active', updated_at = ?, payload = ?
+            where workspace_id = ?
+              and (
+                    ?
+                    or json_extract(payload, '$.leased_by') is null
+                    or json_extract(payload, '$.leased_by') = ?
+                    or json_extract(payload, '$.lease_expires_at') < ?
+                  )
+            """,
+            (
+                now.isoformat(),
+                json.dumps(candidate.model_dump(mode="json"), sort_keys=True),
+                str(workspace_id),
+                1 if steal else 0,
+                principal,
+                now.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return candidate if cursor.rowcount == 1 else None
+
     def get_research_workspace(self, workspace_id: UUID) -> ResearchWorkspaceRecord | None:
         row = self.conn.execute(
             "select payload from research_workspaces where workspace_id = ?",

@@ -417,3 +417,117 @@ class ModalCheckpointComputeRunner:
 
 
 register_compute_runner("modal_checkpoint", lambda: ModalCheckpointComputeRunner())
+
+
+# --- Phase B: bring-your-own-compute via a generic container runner ----------------------------
+# A vetted collaborator runs the SAME lane logic as a DIGEST-PINNED container, on THEIR OWN backend,
+# with THEIR OWN credentials — so a BYOC run spends their resources, not twog's. The runner is
+# provider-agnostic: the collaborator registers a ContainerBackend (Docker, their cluster, a cloud
+# batch API, …) and supplies credentials PER JOB (never stored centrally). The result flows back
+# through the same gates as any capsule; foreign-compute provenance (image digest + runner identity +
+# signature) is verified before it can be accepted (see provenance_auditor / B4).
+
+
+@runtime_checkable
+class ContainerBackend(Protocol):
+    """A collaborator-supplied execution backend that runs a digest-pinned lane container and returns
+    the standard lane result. ``spec`` carries: image (digest-pinned), entrypoint, lane, config (the
+    lane inputs), credentials (the collaborator's OWN — opaque, never persisted by twog), job_id,
+    runner_principal. Returns a dict with at least ``status`` + ``output_payload`` (the lane result)."""
+
+    def run(self, spec: dict[str, Any]) -> dict[str, Any]: ...
+
+
+_CONTAINER_BACKENDS: dict[str, Callable[[], ContainerBackend]] = {}
+
+
+def register_container_backend(name: str, factory: Callable[[], ContainerBackend]) -> None:
+    """Register a collaborator's container execution backend (selected per-job by ``container.backend``)."""
+    _CONTAINER_BACKENDS[name] = factory
+
+
+def available_container_backends() -> tuple[str, ...]:
+    return tuple(sorted(_CONTAINER_BACKENDS))
+
+
+class ContainerComputeRunner:
+    """BYOC provider (runner_kind="container"). Runs the job's DIGEST-PINNED container on the
+    collaborator-configured ContainerBackend with their own credentials, then wraps the lane result
+    with provenance breadcrumbs (image digest, backend, runner principal) that the provenance auditor
+    verifies before acceptance. twog's own budget is never touched — the collaborator's backend pays."""
+
+    def submit(self, record: ComputeJobRecord) -> dict[str, Any]:
+        run_id = f"container:{record.compute_job_id}"
+
+        def _fail(error: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+            return {
+                "status": "failed",
+                "external_run_id": run_id,
+                "provider_job_id": run_id,
+                "output_payload": {"provider": "container", "error": error, **(extra or {})},
+                "metadata": {"provider": "container"},
+            }
+
+        image = (record.container_image or "").strip()
+        if not image:
+            return _fail("container_image_required")
+        # Reproducibility + provenance: only digest-pinned images (a mutable tag could change under us).
+        if "@sha256:" not in image:
+            return _fail("container_image_must_be_digest_pinned", {"image": image})
+
+        container = _extract_lane_config(record, "container") or {}
+        backend_name = container.get("backend")
+        if not backend_name:
+            return _fail("container_backend_unspecified")
+        factory = _CONTAINER_BACKENDS.get(backend_name)
+        if factory is None:
+            return _fail(
+                "container_backend_not_registered",
+                {"backend": backend_name, "available": list(available_container_backends())},
+            )
+
+        lane_config = container.get("config")
+        if lane_config is None and record.validation_type:
+            lane_config = _extract_lane_config(record, record.validation_type)
+        spec = {
+            "image": image,
+            "entrypoint": list(record.entrypoint),
+            "lane": record.validation_type,
+            "config": lane_config or {},
+            "credentials": container.get("credentials") or {},  # collaborator's own; not persisted
+            "job_id": str(record.compute_job_id),
+            "runner_principal": record.submitted_by,
+        }
+        try:
+            result = factory().run(spec)
+        except Exception as exc:  # backend/auth/runtime errors surface as a failed job
+            return _fail("container_run_failed", {"detail": str(exc)[:500], "backend": backend_name})
+
+        lane_result = result.get("output_payload") or {}
+        return {
+            "status": result.get("status", "completed"),
+            "external_run_id": result.get("external_run_id", run_id),
+            "provider_job_id": result.get("provider_job_id", run_id),
+            "output_payload": {
+                "provider": "container",
+                "container_image": image,  # the DIGEST — provenance verifies the capsule's claim matches
+                "container_backend": backend_name,
+                "runner_principal": record.submitted_by,  # provenance verifies == the leasing collaborator
+                **lane_result,
+            },
+            "metadata": {"provider": "container", "backend": backend_name, "image": image},
+        }
+
+    def poll(self, record: ComputeJobRecord) -> dict[str, Any]:
+        return {
+            "status": record.status if record.status in {"completed", "failed", "cancelled"} else "completed",
+            "output_payload": record.output_payload or {"provider": "container"},
+            "last_error": None,
+            "metadata": {"provider": "container"},
+        }
+
+    def cancel(self, record: ComputeJobRecord) -> dict[str, Any]:
+        return {"status": "cancelled", "output_payload": {}, "metadata": {"provider": "container"}}
+
+
+register_compute_runner("container", lambda: ContainerComputeRunner())

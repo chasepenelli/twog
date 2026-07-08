@@ -200,6 +200,51 @@ def test_revoked_principal_cannot_run_compute(tmp_path):
         )
 
 
+def test_atomic_lease_acquire_semantics(tmp_path):
+    """The row-locked lease (Postgres hardening): acquire iff free / expired / own / steal — exercised
+    via the repository's atomic acquire_workspace_lease and the service wrapper."""
+    from datetime import UTC, datetime, timedelta
+
+    repo = SQLiteResearchRepository(tmp_path / "lease.sqlite3", seed=False)
+    service = HSAResearchService(repo)
+    service.register_collaborator(principal="vet1", name="Vet One", role="collaborator")
+    service.register_collaborator(principal="vet2", name="Vet Two", role="collaborator")
+    ws = repo.upsert_research_workspace(
+        ResearchWorkspaceRecord(
+            candidate_id="twog-candidate-lease01", work_packet_id="wp-l", provider="neon",
+            neon_branch_id="br-l", neon_branch_name="twog-l", provider_workspace_id="br-l",
+            database_secret_ref="neon://p/br-l/db/owner", status="ready",
+        )
+    )
+    # free -> vet1 acquires
+    a = service.lease_workspace(ws.workspace_id, "vet1", ttl_seconds=3600)
+    assert a is not None and a.leased_by == "vet1" and a.gate_policy == "external_collaborator"
+    # held by vet1 -> vet2 is rejected (no double-grant), and steal=False raises
+    import pytest as _pytest
+
+    with _pytest.raises(WorkspaceLeaseError):
+        service.lease_workspace(ws.workspace_id, "vet2")
+    # owner renews
+    assert service.lease_workspace(ws.workspace_id, "vet1").leased_by == "vet1"
+    # direct repo: an expired lease is acquirable by another
+    repo.acquire_workspace_lease(
+        ws.workspace_id, "vet1", lease_expires_at=datetime.now(UTC) - timedelta(seconds=1)
+    )
+    got = repo.acquire_workspace_lease(
+        ws.workspace_id, "vet2", lease_expires_at=datetime.now(UTC) + timedelta(hours=1)
+    )
+    assert got is not None and got.leased_by == "vet2"
+    # contended (held by vet2, unexpired) -> None from the atomic acquire
+    assert repo.acquire_workspace_lease(
+        ws.workspace_id, "vet1", lease_expires_at=datetime.now(UTC) + timedelta(hours=1)
+    ) is None
+    # steal overrides
+    stolen = repo.acquire_workspace_lease(
+        ws.workspace_id, "vet1", lease_expires_at=datetime.now(UTC) + timedelta(hours=1), steal=True
+    )
+    assert stolen is not None and stolen.leased_by == "vet1"
+
+
 def test_collaborator_run_marks_external_collaborator_gate(tmp_path):
     repo = SQLiteResearchRepository(tmp_path / "co.sqlite3", seed=False)
     service = HSAResearchService(repo)

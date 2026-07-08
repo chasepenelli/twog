@@ -340,7 +340,7 @@ ResearchWorkspaceGatePolicy = Literal["trusted_operator", "external_collaborator
 # principal holds; an operator holds all, a collaborator may run the middle (lease/compute/capsule)
 # but NOT the write-gate actions (accept/promote).
 CollaboratorRole = Literal["operator", "collaborator"]
-CollaboratorStatus = Literal["active", "revoked"]
+CollaboratorStatus = Literal["pending", "active", "revoked"]  # pending = applied, awaiting operator approval
 CollaboratorScope = Literal[
     "lease_workspace",
     "submit_compute",
@@ -626,7 +626,8 @@ ValidationRequestQueueStatus = Literal[
 ]
 
 ComputeRunnerKind = Literal[
-    "local", "dagster", "external", "mock", "modal", "checkpoint", "modal_checkpoint"
+    "local", "dagster", "external", "mock", "modal", "checkpoint", "modal_checkpoint",
+    "container",  # Phase B BYOC: a digest-pinned lane container on a collaborator's own backend
 ]
 ComputeProfile = Literal["cpu", "gpu", "gpu_a10", "gpu_l4", "gpu_a100", "gpu_h100", "unknown"]
 ComputeJobStatus = Literal[
@@ -648,6 +649,8 @@ RunManifestKind = Literal[
     "mcp_invocation",
     "public_candidate_snapshot",
     "compute_job",
+    "falsification_campaign",
+    "candidate_generation",
     "reward_sync",
     "manual",
 ]
@@ -4820,6 +4823,7 @@ class CollaboratorRecord(StrictBaseModel):
     scopes: list[CollaboratorScope] = Field(default_factory=list)
     status: CollaboratorStatus = "active"
     public_key: str | None = Field(default=None, max_length=128)  # Ed25519 pubkey (hex) — verifies their signed capsules
+    auth_subject: str | None = Field(default=None, max_length=255)  # stable external auth id (WorkOS user id) this principal logs in as
     note: str | None = Field(default=None, max_length=1000)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -5445,6 +5449,11 @@ class PublicCandidateRecord(StrictBaseModel):
     title: str = Field(min_length=3, max_length=500)
     summary: str = Field(default="", max_length=3000)
     rationale_md: str = Field(default="", max_length=6000)
+    # Grounded reasoning carried even on the no-committee campaign path (deterministically composed from
+    # the candidate's own compound/target/rationale/biomarkers — a HYPOTHESIS, never a finding). Lets the
+    # MoonshotRubric reasoning spine be non-empty without an LLM. None when not yet populated.
+    mechanism: str | None = Field(default=None, max_length=1500)
+    translational_path: str | None = Field(default=None, max_length=2000)
     public_status: PublicCandidateStatus = "draft"
     visibility: PublicCandidateVisibility = "private"
     therapy_idea_id: UUID | None = None
@@ -7166,5 +7175,279 @@ class LaneInputResolution(StrictBaseModel):
     config_key: str = Field(min_length=1, max_length=100)  # the validation_request.metadata key the lane reads
     resolved: bool
     config: dict[str, Any] = Field(default_factory=dict)
-    missing: list[str] = Field(default_factory=list, max_length=20)
+    missing: list[str] = Field(default_factory=list, max_length=20)  # missing CONFIG KEY NAMES only (a checklist)
+    notes: str = Field(default="", max_length=500)  # human reason a lane is unresolved (prose, NOT a key name)
     source: str = Field(default="", max_length=200)
+
+
+# --- Increment 8: MoonshotRubric — the pre-registered "whole shabang" (derived view) ----------
+# ASSEMBLED on demand from existing data (planner + lane resolver + target library + moonshot gate +
+# belief state). Never re-derives science; never fakes readiness. Carries a deterministic rubric_hash
+# (tamper-evident pre-registration) but is NOT a new source of truth — no mandatory persistence.
+# REUSES KillCriterion / ConfoundFlag / BeliefState / FalsificationLane verbatim and PROJECTS
+# FalsificationPlan + LaneInputResolution + MDInputPacket (ids/timestamps stripped → hash-stable).
+
+RubricReadiness = Literal["resolved", "needs_verification", "missing"]
+TargetVerificationStatus = Literal["verified", "unverified", "absent"]
+LaneMaturity = Literal["smoke", "production"]  # honesty flag: smoke runs are <=1000 MD steps
+
+
+class RubricTarget(StrictBaseModel):
+    """A protein/structure the moonshot needs, with its REAL verification status from the curated,
+    redock-verified target library (the docking spend gate). `verification` is the single source of
+    truth for whether a docking lane can ever run real GPU against this target."""
+
+    target: str = Field(min_length=1, max_length=120)
+    role: str = Field(default="primary", max_length=120)  # primary | orthogonal | counter_screen
+    uniprot: str | None = Field(default=None, max_length=20)
+    pdb_id: str | None = Field(default=None, max_length=12)
+    chain: str | None = Field(default=None, max_length=8)
+    cocrystal_ligand_code: str | None = Field(default=None, max_length=12)
+    cocrystal_smiles: str | None = Field(default=None, max_length=500)
+    verification: TargetVerificationStatus = "absent"
+    redock_rmsd: float | None = Field(default=None, ge=0.0)
+    box: dict[str, float] = Field(default_factory=dict)
+    notes: str = Field(default="", max_length=2000)
+
+
+class RubricCompound(StrictBaseModel):
+    """A ligand the moonshot needs, with SMILES-resolution status (NEVER fabricated)."""
+
+    name: str = Field(min_length=1, max_length=200)
+    role: str = Field(default="lead", max_length=120)  # lead | tool | native_cocrystal | control
+    smiles: str | None = Field(default=None, max_length=500)
+    readiness: RubricReadiness = "missing"
+    resolution_source: str = Field(default="unresolved", max_length=200)
+    intended_targets: list[str] = Field(default_factory=list, max_length=20)
+
+
+class MDScheduleSpec(StrictBaseModel):
+    """The MD protocol the moonshot PRE-REGISTERS — a schedule-only projection of MDInputPacket's
+    simulation knobs (NO protein_pdb/compound_smiles/source payload — those live in the inputs rollup).
+    Present even when inputs are unresolved (the schedule is the PLAN). simulation_steps mirrors the
+    live le=1000 smoke ceiling, so a scientist is never misled into trusting a smoke run as
+    binding-pose-stability evidence (see `maturity` on the lane)."""
+
+    simulation_steps: int = Field(default=10, ge=1, le=1000)
+    temperature: float = Field(default=300.0, ge=250.0, le=350.0)
+    ph: float | None = Field(default=7.4, ge=0.0, le=14.0)
+    box_padding: float | None = Field(default=10.0, ge=0.0, le=20.0)
+    force_field: str | None = Field(default="protein=amber14; ligand=worker_default_openff_or_gaff", max_length=100)
+    solvent_model: str | None = Field(default="tip3p", max_length=100)
+    enable_docking: bool = False
+    equilibration: str = Field(default="", max_length=1000)
+    preparation_method: str = Field(default="", max_length=1000)
+
+    @classmethod
+    def from_md_input_packet(cls, packet: "MDInputPacket", *, equilibration: str = "") -> "MDScheduleSpec":
+        return cls(
+            simulation_steps=packet.simulation_steps, temperature=packet.temperature, ph=packet.ph,
+            box_padding=packet.box_padding, force_field=packet.force_field, solvent_model=packet.solvent_model,
+            enable_docking=packet.enable_docking, equilibration=equilibration,
+            preparation_method=packet.preparation_method,
+        )
+
+
+class RubricLaneInputs(StrictBaseModel):
+    """Per-lane input resolution — a typed projection of LaneInputResolution (honest resolved/missing)."""
+
+    lane: FalsificationLane
+    config_key: str = Field(min_length=1, max_length=100)
+    readiness: RubricReadiness = "missing"
+    resolution_source: str = Field(default="", max_length=200)
+    required_keys: list[str] = Field(default_factory=list, max_length=20)
+    present_keys: list[str] = Field(default_factory=list, max_length=40)
+    missing: list[str] = Field(default_factory=list, max_length=20)
+    md_schedule: MDScheduleSpec | None = None  # populated ONLY for lane == "md"
+
+
+class RubricPremise(StrictBaseModel):
+    """The grounded 'because of A' the moonshot rests on. Every field traces to a real therapy-idea /
+    candidate input — NEVER fabricated. When the upstream thesis states no mechanism/rationale,
+    `is_specified=False` and `basis='premise_unstated…'` so the gap is shown honestly, not invented.
+    `strength` is the idea's stated evidence tier VERBATIM (never upgraded — the verdict ceiling)."""
+
+    claim: str = Field(default="", max_length=1000)
+    basis: str = Field(default="", max_length=1500)
+    supports_quality: str = Field(default="", max_length=600)
+    strength: Literal["high", "medium", "low", "unknown"] = "unknown"
+    is_specified: bool = False
+
+
+class TestInterpretation(StrictBaseModel):
+    """Pre-committed reading of EVERY outcome of a lane test (anti-HARKing). Each string is composed from
+    the lane's own pre-registered KillCriterion + the grounded mechanism. Vocabulary is locked to
+    supports/refutes/neutral; `supports` is always capped 'unaudited — never accepted as proof'."""
+
+    supports: str = Field(default="", max_length=800)
+    refutes: str = Field(default="", max_length=800)
+    neutral: str = Field(default="", max_length=800)
+
+
+class RubricInferenceLink(StrictBaseModel):
+    """One link in the falsification-first inference chain: if THIS lane survives its kill criterion, what
+    the moonshot is then entitled to do (proceed / conclude). `if_broken` restates the lane's REAL kill
+    criterion as the refutation that breaks the chain here. Conjunctive-survival, single-refutation-kills:
+    survival of earlier links never rescues a later refutation."""
+
+    step: int = Field(ge=1, le=50)
+    from_lanes: list[FalsificationLane] = Field(default_factory=list, max_length=8)
+    infers: str = Field(default="", max_length=1000)
+    if_broken: str = Field(default="", max_length=800)
+
+
+class RubricExpectedPayoff(StrictBaseModel):
+    """The conclusion the program is trying to EARN — the 'if it works, we can expect P, next step N'
+    clause, composed from idea.translational_path + next_experiments. `caveat` is a FIXED string pinning
+    the ceiling at survived_known_confounds (never 'proven'). `is_specified=False` with an honest
+    fallback when no upstream translational path exists."""
+
+    if_survives: str = Field(default="", max_length=1500)
+    translational_claim: str = Field(default="", max_length=1200)
+    next_step: str = Field(default="", max_length=800)
+    value_of_information: float | None = Field(default=None, ge=0.0, le=1.0)
+    is_specified: bool = False
+    caveat: str = Field(
+        default="survived_known_confounds, never proven; the operator write-gate is terminal.",
+        max_length=600,
+    )
+
+
+class RubricLaneTest(StrictBaseModel):
+    """One ordered step in the test plan: a lane + its PRE-REGISTERED KillCriterion (reused verbatim
+    from the planner's FalsificationPlan — the anti-p-hacking lock) + inputs + standing + the grounded
+    reasoning that makes it a STEP IN AN ARGUMENT (what quality it probes, why it bears on the thesis,
+    what every outcome means). Projected from FalsificationPlan with the non-deterministic
+    plan_id/created_at STRIPPED so the rubric is hash-stable and safe to inject into the snapshot."""
+
+    order: int = Field(ge=1, le=50)
+    lane: FalsificationLane
+    validation_type: str = Field(min_length=1, max_length=100)
+    test_objective: str = Field(min_length=1, max_length=2000)
+    kill_criterion: KillCriterion
+    expected_signal_if_alive: Literal["supports", "refutes", "neutral"]
+    addresses_confound: ConfoundFlag | None = None
+    est_cost_usd: float = Field(ge=0.0)
+    value_of_information: float = Field(ge=0.0, le=1.0)
+    inputs_ready: bool = False
+    is_proposed: bool = False
+    autonomously_runnable: bool = True
+    maturity: LaneMaturity = "production"
+    standing: Literal["untested", "queued", "supports_unaudited", "refuted", "controlled"] = "untested"
+    inputs: RubricLaneInputs
+    rank_rationale: str = Field(default="", max_length=2000)
+    novelty_note: str = Field(default="", max_length=1000)
+    # Reasoning spine (grounded; empty/honest when the thesis is silent) — what makes a test an ARGUMENT
+    mechanistic_premise: str = Field(default="", max_length=1500)
+    probes: list[str] = Field(default_factory=list, max_length=8)
+    why_it_bears: str = Field(default="", max_length=1200)
+    interpretation: TestInterpretation = Field(default_factory=TestInterpretation)
+
+
+class RubricInputsRollup(StrictBaseModel):
+    """Section 6 — the honest readiness ledger across lanes. `ready_to_run_lanes` are the ONLY lanes a
+    real-GPU run may dispatch (the anti-fake-readiness guarantee)."""
+
+    resolved_lanes: list[FalsificationLane] = Field(default_factory=list, max_length=20)
+    needs_verification_lanes: list[FalsificationLane] = Field(default_factory=list, max_length=20)
+    missing_lanes: list[FalsificationLane] = Field(default_factory=list, max_length=20)
+    ready_to_run_lanes: list[FalsificationLane] = Field(default_factory=list, max_length=20)
+    per_lane_missing: dict[str, list[str]] = Field(default_factory=dict)
+    blockers: list[str] = Field(default_factory=list, max_length=40)
+
+
+class ConfoundPlan(StrictBaseModel):
+    """Section 7 — confounds to audit before any `supports` may be trusted (the Confound Auditor
+    mandate). open vs controlled is the live audit state; audit_policy is hard-coded so the discipline
+    is structurally unviolatable."""
+
+    open_confounds: list[ConfoundFlag] = Field(default_factory=list, max_length=20)
+    controlled_confounds: list[ConfoundFlag] = Field(default_factory=list, max_length=20)
+    audit_policy: str = Field(
+        default=(
+            "No `supports` signal may be accepted onto this candidate until every open confound has a "
+            "surviving control. The best attainable verdict is 'survived_known_confounds', never 'true'."
+        ),
+        max_length=2000,
+    )
+
+
+class CrossSpeciesPlan(StrictBaseModel):
+    """Section 8 — the cross-species replication the moonshot MUST show (canine HSA × human AS). The
+    omics lane's cross_species_axis_direction KillCriterion is the OPERATIONAL test (not prose)."""
+
+    species: list[str] = Field(default_factory=lambda: ["canine", "human"], max_length=8)
+    disease_context: str = Field(default="canine hemangiosarcoma and human angiosarcoma", max_length=500)
+    replication_axis: str = Field(default="", max_length=2000)
+    orthogonal_cohort_required: bool = True
+    kill_criterion: KillCriterion | None = None  # REUSED — the omics-lane criterion if present
+    replication_lane: FalsificationLane | None = "omics"
+    evidence_to_date: list[str] = Field(default_factory=list, max_length=40)
+    notes: str = Field(default="", max_length=2000)
+
+
+class PromotionCriteria(StrictBaseModel):
+    """Section 11 — the bar to PROMOTE this moonshot. NEVER auto-satisfiable (terminal human
+    write-gate). auto_promotable is fixed False at the type level."""
+
+    auto_promotable: Literal[False] = False
+    required_surviving_lanes: list[FalsificationLane] = Field(default_factory=list, max_length=20)
+    required_confounds_controlled: list[str] = Field(default_factory=list, max_length=20)
+    cross_species_replication_required: bool = True
+    min_signalful_capsules: int = Field(default=2, ge=1)
+    human_write_gate: str = Field(
+        default="Operator accept_capsule + promote_candidate scopes are terminal; the rubric records the bar only.",
+        max_length=2000,
+    )
+    statement: str = Field(default="", max_length=4000)
+
+
+class MoonshotRubric(StrictBaseModel):
+    rubric_version: str = "moonshot-rubric-v1"
+    candidate_id: str = Field(min_length=1, max_length=260)
+    title: str = Field(default="", max_length=500)
+    candidate_snapshot_hash: str | None = Field(default=None, max_length=160)
+    # (1) Thesis + moonshot-gate verdict
+    thesis: str = Field(default="", max_length=4000)
+    rationale_md: str = Field(default="", max_length=6000)
+    moonshot_gate: dict[str, Any] = Field(default_factory=dict)  # VERBATIM _public_candidate_moonshot_gate dict
+    moonshot_grade: bool = False
+    moonshot_score: float = Field(default=0.0, ge=0.0)
+    # (1b) Reasoning spine — the grounded scientific ARGUMENT (because of A → test X/Y/Z → expect P).
+    # Every field is composed deterministically from real inputs; empty/honest when the thesis is silent.
+    mechanistic_premise: str = Field(default="", max_length=3000)
+    premises: list[RubricPremise] = Field(default_factory=list, max_length=12)
+    inference_chain: list[RubricInferenceLink] = Field(default_factory=list, max_length=12)
+    expected_payoff: RubricExpectedPayoff = Field(default_factory=RubricExpectedPayoff)
+    # (2)-(3) Targets + compounds needed
+    targets_needed: list[RubricTarget] = Field(default_factory=list, max_length=50)
+    compounds_needed: list[RubricCompound] = Field(default_factory=list, max_length=50)
+    # (4)-(5) Ordered test plan w/ per-lane kill criterion, protocol, MD schedule
+    test_plan: list[RubricLaneTest] = Field(default_factory=list, max_length=20)
+    runnable_lanes: list[FalsificationLane] = Field(default_factory=list)
+    # (6) Inputs checklist rollup
+    inputs_rollup: RubricInputsRollup = Field(default_factory=RubricInputsRollup)
+    # (7)-(11)
+    confounds: ConfoundPlan = Field(default_factory=ConfoundPlan)
+    cross_species: CrossSpeciesPlan = Field(default_factory=CrossSpeciesPlan)
+    evidence_anchors: list[str] = Field(default_factory=list, max_length=100)
+    risks: list[str] = Field(default_factory=list, max_length=50)
+    promotion: PromotionCriteria = Field(default_factory=PromotionCriteria)
+    # Provenance / honesty
+    belief_state: BeliefState | None = None
+    net_signal: Literal["supports", "refutes", "neutral", "none"] = "none"
+    net_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    signalful_capsule_count: int = Field(default=0, ge=0)
+    planner_blockers: list[str] = Field(default_factory=list, max_length=20)
+    ready_to_run: bool = False
+    has_falsifiable_plan: bool = False
+    assembly_notes: list[str] = Field(default_factory=list, max_length=50)
+    rubric_hash: str | None = Field(default=None, max_length=160)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    def content_payload(self) -> dict[str, Any]:
+        """Stable scientific content for hashing — excludes timestamps, the hash itself, and the
+        candidate_snapshot_hash pointer (a version pointer, not content — and circular when the rubric
+        is embedded in the very snapshot whose hash that would be). Mirrors the
+        _public_candidate_content_hash + ProofCapsuleRecord.content_hash convention."""
+        return self.model_dump(mode="json", exclude={"rubric_hash", "created_at", "candidate_snapshot_hash"})

@@ -1,5 +1,4 @@
-// The homepage IS the v4 "PROOF" experience. The prior landing now lives at /legacy, and /v4 still
-// renders the same component for side-by-side reference.
+// The homepage IS the v4 "PROOF" experience (app/v4/page.tsx). /v4 renders the same component.
 import V4 from './v4/page';
 
 export const metadata = {

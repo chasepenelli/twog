@@ -16,7 +16,6 @@ import urllib.request
 
 from hsa_research.ingestion_bridge.postgres_store import PostgresResearchRepository
 from hsa_research.ingestion_bridge.service import HSAResearchService
-from tests.test_candidates import _seed_validation_ready_candidate
 
 CANDIDATE_ID = "alpelisib-pi3ka-demo"
 PDB_ID = "4JPS"  # PI3Ka (p110a) co-crystal with alpelisib (BYL719)
@@ -83,14 +82,16 @@ def main() -> None:
     print(f"  alpelisib SMILES: {smiles}")
     print(f"  receptor: {receptor.count(chr(10))} ATOM lines; box center: {box.get('center_x')},{box.get('center_y')},{box.get('center_z')}")
 
-    _seed_validation_ready_candidate(repo, candidate_id=CANDIDATE_ID, ready=True)
-    cand = service.get_public_candidate(CANDIDATE_ID)
     docking_inputs = {"receptor_pdb": receptor, "ligand_smiles": smiles,
                       "target": "PI3Ka_4JPS", "ligand_name": "alpelisib", **box}
-    repo.upsert_public_candidate(cand.model_copy(update={
-        "targets": ["PIK3CA"], "candidate_therapies": ["alpelisib"],
-        "metadata": {"lane_inputs": {"docking": docking_inputs}},
-    }))
+    service.seed_validation_ready_candidate(
+        CANDIDATE_ID,
+        title="Alpelisib (PI3Ka inhibitor) for PIK3CA-driven hemangiosarcoma (curated demo)",
+        evidence_refs=["PMID:31889578", PDB_ID],
+        targets=["PIK3CA"],
+        candidate_therapies=["alpelisib"],
+        lane_inputs={"docking": docking_inputs},
+    )
     print(f"\nSeeded validation-ready candidate '{CANDIDATE_ID}' with real docking inputs.\n")
 
     print("Running the autonomous falsification loop (runner_kind='modal', real gnina on A100) ...", flush=True)

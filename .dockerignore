@@ -1,0 +1,16 @@
+# Keep the API image lean — exclude the front-end, tests, notes, local state, caches.
+web/
+tests/
+docs/
+threadnotes/
+research/
+.git/
+.venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.ruff_cache/
+.env
+.env.*
+*.sqlite3
+uv.lock

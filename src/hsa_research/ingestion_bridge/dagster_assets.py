@@ -5749,6 +5749,11 @@ if dg is not None:
             "budget_usd_per_candidate": dg.Field(float, default_value=0.50),
             "tick_budget_usd": dg.Field(float, default_value=2.0, description="Hard cost cap across the whole tick."),
             "runner_kind": dg.Field(str, default_value="modal"),
+            "generate": dg.Field(bool, default_value=False, description="Generate NEW dockable candidates before running the loop (autonomous idea flow)."),
+            "generate_max_new": dg.Field(int, default_value=3, description="Max new candidates to seed per tick."),
+            "generate_source": dg.Field(str, default_value="curated_seed"),
+            "generate_check_novelty": dg.Field(bool, default_value=False, description="Prior-art gate generated ideas — keep only hypotheses with no published literature."),
+            "generate_seed_path": dg.Field(str, default_value="", description="Seed JSON path (e.g. data/repurposing_seed.json); empty = built-in curated seed."),
         },
     )
     def falsification_loop_report(
@@ -5761,6 +5766,7 @@ if dg is not None:
         terminal."""
 
         from .service import HSAResearchService
+        from .input_resolvers import NetworkInputResolvers
 
         config = context.op_config
         enabled = bool(config.get("enabled", True))
@@ -5769,9 +5775,29 @@ if dg is not None:
         budget_usd_per_candidate = float(config.get("budget_usd_per_candidate", 0.50))
         tick_budget_usd = float(config.get("tick_budget_usd", 2.0))
         runner_kind = str(config.get("runner_kind") or "modal")
+        generate = bool(config.get("generate", False))
+        generate_max_new = int(config.get("generate_max_new", 3))
+        generate_source = str(config.get("generate_source") or "curated_seed")
+        generate_check_novelty = bool(config.get("generate_check_novelty", False))
+        generate_seed_path = str(config.get("generate_seed_path") or "") or None
 
         repository = research_repository.build_repository()
         service = HSAResearchService(repository)
+        # Real docking resolves the ligand SMILES from PubChem via the verified target library — without
+        # this the loop refuses every input (no resolver) and docks nothing. Mock runs need no network.
+        if runner_kind != "mock":
+            service.input_resolvers = NetworkInputResolvers()
+
+        # Autonomous idea flow: seed NEW dockable candidates first, so the loop has fresh work this tick.
+        # Generation spends no GPU (PubChem only); it never promotes. Skipped in dry_run.
+        generation: dict[str, Any] = {"ran": False}
+        if generate and enabled and not dry_run:
+            gen_manifest = service.generate_candidate_ideas(
+                source=generate_source, max_new=generate_max_new,
+                check_novelty=generate_check_novelty, seed_path=generate_seed_path,
+                submitted_by=f"falsification_loop_scheduler:{context.run_id}",
+            )
+            generation = {"ran": True, **(gen_manifest.output_refs.get("rollup", {}))}
 
         library = service.list_public_candidates(PublicCandidateLibraryRequest(limit=500))
         ready = [record for record in library.candidates if record.validation_ready is True]
@@ -5822,6 +5848,7 @@ if dg is not None:
             "enabled": enabled,
             "dry_run": dry_run,
             "runner_kind": runner_kind,
+            "generation": generation,
             "candidates_available": len(ready),
             "candidates_processed": processed,
             "total_est_cost_usd": running_cost,
@@ -9066,7 +9093,7 @@ if dg is not None:
         job=falsification_loop_job,
         cron_schedule="0 * * * *",
         execution_timezone=SCHEDULE_TIMEZONE,
-        default_status=dg.DefaultScheduleStatus.STOPPED,
+        default_status=dg.DefaultScheduleStatus.RUNNING,
         run_config={
             "ops": {
                 "falsification_loop_report": {
@@ -9077,6 +9104,11 @@ if dg is not None:
                         "budget_usd_per_candidate": 0.50,
                         "tick_budget_usd": 2.0,
                         "runner_kind": "modal",
+                        "generate": True,
+                        "generate_max_new": 3,
+                        "generate_source": "curated_seed",
+                        "generate_check_novelty": True,
+                        "generate_seed_path": "data/repurposing_seed.json",
                     }
                 }
             }

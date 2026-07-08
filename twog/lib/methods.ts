@@ -209,22 +209,22 @@ export const methods: MethodRecord[] = [
       },
       {
         label: 'Example checkout',
-        path: '/api/public-candidates/twog-candidate-e5e8a4f68611',
-        href: '/api/public-candidates/twog-candidate-e5e8a4f68611',
+        path: '/api/public-candidates/rly2608-pik3ca',
+        href: '/api/public-candidates/rly2608-pik3ca',
         detail:
           'A live candidate payload using the stable candidate ID. Display IDs resolve on the page; the API uses durable IDs.',
       },
       {
         label: 'Evidence bundle',
-        path: '/api/public-candidates/twog-candidate-e5e8a4f68611/evidence-bundle',
-        href: '/api/public-candidates/twog-candidate-e5e8a4f68611/evidence-bundle',
+        path: '/api/public-candidates/rly2608-pik3ca/evidence-bundle',
+        href: '/api/public-candidates/rly2608-pik3ca/evidence-bundle',
         detail:
           'Returns the actionable checkout packet: source-document dossier, chunk manifest, artifact manifest, compute/MD reproducibility contract, and check-in endpoints.',
       },
       {
         label: 'Contribution template',
-        path: '/api/public-candidates/twog-candidate-e5e8a4f68611/contribution-template',
-        href: '/api/public-candidates/twog-candidate-e5e8a4f68611/contribution-template',
+        path: '/api/public-candidates/rly2608-pik3ca/contribution-template',
+        href: '/api/public-candidates/rly2608-pik3ca/contribution-template',
         detail:
           'Returns a fillable contribution packet for evidence, critique, replication notes, artifacts, or validation proposals tied to this snapshot.',
       },
@@ -311,14 +311,14 @@ export const methods: MethodRecord[] = [
     endpoints: [
       {
         label: 'Evidence bundle',
-        path: '/api/public-candidates/twog-candidate-e5e8a4f68611/evidence-bundle',
-        href: '/api/public-candidates/twog-candidate-e5e8a4f68611/evidence-bundle',
+        path: '/api/public-candidates/rly2608-pik3ca/evidence-bundle',
+        href: '/api/public-candidates/rly2608-pik3ca/evidence-bundle',
         detail: 'Live example of the actionable checkout packet attached to a public candidate.',
       },
       {
         label: 'Candidate payload',
-        path: '/api/public-candidates/twog-candidate-e5e8a4f68611',
-        href: '/api/public-candidates/twog-candidate-e5e8a4f68611',
+        path: '/api/public-candidates/rly2608-pik3ca',
+        href: '/api/public-candidates/rly2608-pik3ca',
         detail: 'The public record payload the evidence bundle extends.',
       },
     ],
@@ -403,14 +403,14 @@ export const methods: MethodRecord[] = [
     endpoints: [
       {
         label: 'Contribution template',
-        path: '/api/public-candidates/twog-candidate-e5e8a4f68611/contribution-template',
-        href: '/api/public-candidates/twog-candidate-e5e8a4f68611/contribution-template',
+        path: '/api/public-candidates/rly2608-pik3ca/contribution-template',
+        href: '/api/public-candidates/rly2608-pik3ca/contribution-template',
         detail: 'The structured check-in packet shape for one candidate snapshot.',
       },
       {
         label: 'Check-in endpoint',
-        path: '/api/public-candidates/twog-candidate-e5e8a4f68611/contributions',
-        href: '/api/public-candidates/twog-candidate-e5e8a4f68611/contributions',
+        path: '/api/public-candidates/rly2608-pik3ca/contributions',
+        href: '/api/public-candidates/rly2608-pik3ca/contributions',
         detail: 'The endpoint shape for submissions when public intake is enabled.',
       },
     ],

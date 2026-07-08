@@ -80,17 +80,6 @@ export default function Nav() {
         />
       </button>
 
-      {/* Live indicator */}
-      <div className="hidden md:flex items-center gap-2">
-        <span className="relative flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
-        </span>
-        <span className="text-[0.65rem] uppercase tracking-[0.1em] text-[var(--gray-400)]">
-          Pipeline Live
-        </span>
-      </div>
-
       {/* Mobile menu overlay */}
       {menuOpen && (
         <div className="md:hidden fixed inset-0 top-[57px] bg-[var(--background)] z-40 flex flex-col items-center pt-12 gap-6">
@@ -119,15 +108,6 @@ export default function Nav() {
               </Link>
             )
           ))}
-          <div className="flex items-center gap-2 mt-6">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
-            </span>
-            <span className="text-[0.65rem] uppercase tracking-[0.1em] text-[var(--gray-400)]">
-              Pipeline Live
-            </span>
-          </div>
         </div>
       )}
 

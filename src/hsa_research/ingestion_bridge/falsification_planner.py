@@ -23,6 +23,10 @@ from .contracts import (
     FalsificationPlan,
     FalsificationPlannerResult,
     KillCriterion,
+    RubricExpectedPayoff,
+    RubricInferenceLink,
+    RubricPremise,
+    TestInterpretation,
 )
 
 # Signal is read only from these packet types (a literature/citation capsule carries no run signal).
@@ -43,6 +47,198 @@ def _capsule_confidence(payload: dict[str, Any]) -> float:
         return _clamp01(float(raw))
     except (TypeError, ValueError):
         return 0.5  # a signalful capsule with no stated confidence still carries some weight
+
+
+# ---------------------------------------------------------------------------------------------------
+# Reasoning-spine composers (pure, deterministic — used by service.build_moonshot_rubric)
+#
+# Turn the rubric from a checklist ("dock / MD / omics") into a falsification-first ARGUMENT
+# ("because of A, we test X/Y/Z to interrogate quality Q; if each survives its kill criterion we are
+# entitled to expect P; any single refutation kills it"). Every string traces to a REAL input — the
+# therapy idea's mechanism/rationale/biomarkers/translational_path, the candidate's named compound/
+# target, or the lane's OWN pre-registered KillCriterion. Where the thesis is silent, these emit honest
+# "unstated" markers, NEVER fabricated biology. No LLM, no I/O, no RNG/datetime/uuid — so the composed
+# prose folds into the deterministic rubric_hash. The verdict ceiling is structurally survived_known_
+# confounds; the words "true"/"proven"/"cure" never appear; vocabulary is supports|refutes|neutral only.
+# ---------------------------------------------------------------------------------------------------
+
+def mech_short(mechanism: str | None) -> str:
+    """Hash-stable short form of a mechanism: its first CLAUSE — stop at the earliest sentence/clause
+    boundary (period, semicolon, colon, em/en-dash) — capped at 200. Empty/None -> ''. Deterministic
+    (no RNG/locale), so identical mechanism text always yields the identical substring."""
+    s = (mechanism or "").strip()
+    if not s:
+        return ""
+    cut = len(s)
+    for delim in (". ", "; ", ": ", " — ", " – ", " - "):
+        i = s.find(delim)
+        if i != -1:
+            cut = min(cut, i)
+    return s[:cut].strip()[:200]
+
+
+_DECLARATIVE_MARKERS = (" is ", " are ", " was ", " were ", " engages ", "hypothesiz", " should ", " acts ")
+
+
+def _mech_label(mechanism_short: str) -> str:
+    """A short phrase safe to embed mid-sentence ('the site that <label> requires', 'treat <label> as
+    live'). Only a genuinely short NOUN PHRASE (<=60 chars, no finite-verb/declarative marker) is embedded
+    verbatim; a declarative or long mechanism is referenced as 'the proposed mechanism' (its full text
+    lives in the premise block), so the prose never reads clunky. '' when no mechanism. Deterministic."""
+    s = (mechanism_short or "").strip()
+    if not s:
+        return ""
+    declarative = any(m in s.lower() for m in _DECLARATIVE_MARKERS)
+    if len(s) <= 60 and not declarative:
+        return s  # a clean noun phrase ("mutation-selective PI3Kα inhibition") — safe to embed
+    return "the proposed mechanism"
+
+
+def compose_premise(
+    *, mechanism: str, rationale: str, claim_fallback: str, evidence_strength: str, is_specified: bool
+) -> RubricPremise:
+    """The grounded 'because of A'. `is_specified` (computed by the caller from whether the SOURCE stated
+    a mechanism/rationale, not a fallback) gates honest 'premise_unstated'. `strength` is the idea's
+    stated tier VERBATIM — never upgraded (the verdict ceiling). `basis`/`supports_quality` only carry
+    text that ADDS to the claim — when the only grounding is the bare hypothesis (the roster case), they
+    stay empty rather than echoing the claim sentence three times."""
+    ms = mech_short(mechanism)
+    claim = (ms or claim_fallback or "").strip()
+    if not is_specified:
+        basis = "premise_unstated — no upstream mechanism/rationale; treat as hypothesis-only"
+    else:
+        # the rationale is the 'why' ONLY when it's real and distinct from the claim/mechanism — else
+        # it would just repeat the claim, so leave basis empty (the UI then shows the claim alone).
+        r = (rationale or "").strip()
+        basis = r if (r and r != claim and r != (mechanism or "").strip()) else ""
+    supports_quality = ms.strip() if ms.strip() and ms.strip() != claim else ""  # never echo the claim
+    strength = evidence_strength if evidence_strength in ("high", "medium", "low", "unknown") else "unknown"
+    return RubricPremise(
+        claim=claim[:1000],
+        basis=basis[:1500],
+        supports_quality=supports_quality[:600],
+        strength=strength,
+        is_specified=is_specified,
+    )
+
+
+def compose_lane_reasoning(
+    *,
+    lane: str,
+    compound: str,
+    target: str,
+    pdb_id: str | None,
+    biomarker: str | None,
+    kill_criterion: KillCriterion,
+    mechanism_short: str,
+    maturity: str,
+) -> tuple[list[str], str, TestInterpretation]:
+    """(probes, why_it_bears, interpretation) for one lane — entity-grounded in the compound/target/
+    biomarker the candidate NAMES + the lane's REAL kill criterion. Empty mechanism still yields
+    entity-grounded probes (it never invents biology). interpretation pre-commits every outcome; for a
+    smoke MD run `supports` is structurally replaced so a sanity run is never sold as stability proof."""
+    kc = kill_criterion
+    thr = str(kc.threshold)
+    pdb = f" (PDB {pdb_id})" if pdb_id else ""
+    label = _mech_label(mechanism_short)  # safe to embed mid-sentence ('' when no mechanism)
+    if lane == "docking":
+        probes = [
+            f"Can the modeled pose let {compound} occupy the site at {target}{pdb}"
+            + (f" that {label} requires" if label else "")
+            + "?"
+        ]
+    elif lane == "md":
+        probes = [
+            f"Does the docked {compound}-{target} pose stay seated under dynamics "
+            f"(ligand_pocket_rmsd_nm <= {thr}) — stable engagement vs a single-pose artifact?"
+        ]
+    elif lane == "cofolding":
+        probes = [f"Does an independent co-fold predict the {compound}-{target} complex (iptm >= {thr})?"]
+    elif lane == "omics":
+        probes = [f"Does the {biomarker or target} axis move in the SAME direction across canine HSA x human AS?"]
+    else:
+        probes = [f"Does the {lane} readout support engagement of {compound} at {target}?"]
+
+    if label:
+        why = f"This lane interrogates {label} — the {lane} precondition the thesis depends on. {kc.rationale}"
+    else:
+        why = f"generic lane test; mechanism unstated upstream. {kc.rationale}"
+
+    refutes = (
+        f"Observed {kc.metric} {kc.comparator} {thr} -> {kc.rationale} "
+        f"The target-mediated story for {compound} collapses here."
+    )
+    if maturity == "smoke":
+        supports = (
+            "Pose did not drift within the <=1000-step smoke window; this is NOT binding-pose-stability "
+            "evidence and cannot be read as engagement confirmation."
+        )
+    else:
+        supports = (
+            f"Consistent with {label or ('engagement at ' + target)}; it stays live but remains "
+            "unaudited (open confounds not yet controlled) — never accepted as proof."
+        )
+    neutral = "Inconclusive; belief unmoved — the lane does not license the next inference link."
+    interp = TestInterpretation(supports=supports[:800], refutes=refutes[:800], neutral=neutral[:800])
+    return [p[:600] for p in probes][:8], why[:1200], interp
+
+
+def compose_inference_chain(
+    steps: list[tuple[str, str, KillCriterion]],
+    *,
+    target: str,
+    mechanism_short: str,
+    translational_path: str,
+    payoff_specified: bool,
+) -> list[RubricInferenceLink]:
+    """One link per test_plan entry in the planner's existing VOI order. Conjunctive-survival /
+    single-refutation-kills: each `if_broken` restates that lane's REAL kill criterion as the refutation
+    that breaks the chain HERE. The terminal link caps at survived_known_confounds (+ the payoff if a
+    real translational path exists). `steps` = parallel (lane, expected_signal_if_alive, kill_criterion)."""
+    links: list[RubricInferenceLink] = []
+    label = _mech_label(mechanism_short)
+    n = len(steps)
+    for i, (lane, expected_signal, kc) in enumerate(steps):
+        thr = str(kc.threshold)
+        if i + 1 < n:
+            next_lane = steps[i + 1][0]
+            infers = (
+                f"If {lane} survives ({expected_signal} at {target}), treat "
+                f"{label or 'engagement'} as live and proceed to {next_lane}."
+            )
+        else:
+            tail = f" and we are entitled to expect: {translational_path}" if (payoff_specified and translational_path) else ""
+            infers = (
+                f"If {lane} survives, every pre-registered necessary condition has survived its kill "
+                f"criterion -> the claim has survived_known_confounds{tail}."
+            )
+        if_broken = (
+            f"A refuting {lane} readout ({kc.metric} {kc.comparator} {thr}) breaks the chain at step {i + 1}; "
+            "the leading claim dies — survival of earlier lanes does not rescue it; any single refutation is "
+            "sufficient."
+        )
+        links.append(RubricInferenceLink(step=i + 1, from_lanes=[lane], infers=infers[:1000], if_broken=if_broken[:800]))
+    return links
+
+
+def compose_expected_payoff(
+    *, translational_path: str, next_experiment: str, mechanism_short: str, vois: list[float]
+) -> RubricExpectedPayoff:
+    """The conclusion the program is trying to EARN. Conditional + capped at survived_known_confounds
+    (the fixed caveat). Honest fallback when no upstream translational path exists."""
+    tp = (translational_path or "").strip()
+    is_specified = bool(tp)
+    if_survives = "If all lanes survive their pre-registered kill criteria and the open confounds are controlled, " + (
+        tp if tp else "the candidate has survived its known confounds (no upstream translational path stated)"
+    )
+    voi = round(sum(vois) / len(vois), 4) if vois else None
+    return RubricExpectedPayoff(
+        if_survives=if_survives[:1500],
+        translational_claim=(tp or mechanism_short or "")[:1200],
+        next_step=(next_experiment or "Confirm the cross-species axis in an orthogonal cohort.")[:800],
+        value_of_information=voi,
+        is_specified=is_specified,
+    )
 
 
 def distill_belief_state(candidate: Any, capsules: list[Any], decisions: list[Any]) -> BeliefState:
@@ -252,13 +448,15 @@ def rank_falsification_tests(
     cost_fn: Callable[[str], float],
     ruled_out: frozenset[str] = frozenset(),
     inputs_unresolved: frozenset[str] = frozenset(),
+    include_tested: bool = False,
 ) -> list[FalsificationPlan]:
     """Generate candidate tests and rank them by value-of-information per dollar (falsification-first).
     Confound-audit tests are keyed on the confound (not the lane), so they survive lane de-dup; generic
-    orthogonal tests are skipped for already-tested lanes. ``ruled_out`` lanes (settled in the Failure
-    Corpus) take a novelty penalty. ``inputs_unresolved`` lanes (the candidate has no real inputs for
-    them) are flagged inputs_ready=False and rank BELOW all input-ready lanes — the planner prefers what
-    it can actually run with real data."""
+    orthogonal tests are skipped for already-tested lanes UNLESS ``include_tested`` (the rubric wants the
+    COMPLETE intended plan, incl. already-run lanes). ``ruled_out`` lanes (settled in the Failure Corpus)
+    take a novelty penalty. ``inputs_unresolved`` lanes (the candidate has no real inputs for them) are
+    flagged inputs_ready=False and rank BELOW all input-ready lanes — the planner prefers what it can
+    actually run with real data."""
     plans: list[FalsificationPlan] = []
 
     for flag in belief.open_confounds:
@@ -270,7 +468,7 @@ def rank_falsification_tests(
 
     tested = set(belief.tested_lanes)
     for lane in sorted(runnable_lanes):
-        if lane in tested:
+        if lane in tested and not include_tested:
             continue
         plans.append(_generic_plan(belief, lane, cost_fn))
 
@@ -320,11 +518,13 @@ def propose(
     cost_fn: Callable[[str], float],
     ruled_out: frozenset[str] = frozenset(),
     inputs_unresolved: frozenset[str] = frozenset(),
+    include_tested: bool = False,
 ) -> FalsificationPlannerResult:
     """Compose belief distillation + ranking into a read-only proposal."""
     belief = distill_belief_state(candidate, capsules, decisions)
     ranked = rank_falsification_tests(
-        belief, set(runnable_lanes), cost_fn, ruled_out=ruled_out, inputs_unresolved=inputs_unresolved
+        belief, set(runnable_lanes), cost_fn, ruled_out=ruled_out, inputs_unresolved=inputs_unresolved,
+        include_tested=include_tested,
     )
 
     blockers: list[str] = []

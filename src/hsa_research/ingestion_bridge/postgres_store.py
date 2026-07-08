@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+import threading
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -85,6 +86,10 @@ class PostgresResearchRepository(ResearchRepository):
 
         self.database_url = database_url
         self._json = _load_json_adapter()
+        # Serializes access to the single psycopg2 connection so ONE long-lived repo can be shared
+        # across a threaded HTTP server (reused connection = no per-request TLS handshake to Neon).
+        # Reentrant so a helper that internally calls another guarded op does not self-deadlock.
+        self._lock = threading.RLock()
         self.conn = psycopg2.connect(database_url, cursor_factory=RealDictCursor)
         self._init_schema()
         if seed:
@@ -2219,6 +2224,57 @@ class PostgresResearchRepository(ResearchRepository):
             ),
         )
         return record
+
+    def acquire_workspace_lease(
+        self,
+        workspace_id: UUID,
+        principal: str,
+        *,
+        lease_expires_at: datetime,
+        gate_policy: str | None = None,
+        steal: bool = False,
+    ) -> ResearchWorkspaceRecord | None:
+        existing = self.get_research_workspace(workspace_id)
+        if existing is None:
+            return None
+        now = datetime.now(UTC)
+        candidate = existing.model_copy(
+            update={
+                "leased_by": principal,
+                "lease_expires_at": lease_expires_at,
+                "status": "active",
+                "gate_policy": gate_policy or existing.gate_policy,
+                "updated_at": now,
+            }
+        )
+        # The WHERE clause is evaluated atomically against the row's CURRENT lease state under the row
+        # lock, so two concurrent acquirers cannot both match — the loser updates 0 rows.
+        with self.conn.cursor() as cursor:
+            cursor.execute(
+                """
+                update research_workspaces
+                set status = 'active', updated_at = %s, payload = %s
+                where workspace_id = %s
+                  and (
+                        %s
+                        or payload->>'leased_by' is null
+                        or payload->>'leased_by' = %s
+                        or (payload->>'lease_expires_at')::timestamptz < %s
+                      )
+                returning workspace_id
+                """,
+                (
+                    now,
+                    self._json(candidate.model_dump(mode="json")),
+                    str(workspace_id),
+                    bool(steal),
+                    principal,
+                    now,
+                ),
+            )
+            acquired = cursor.fetchone() is not None
+        self.conn.commit()
+        return candidate if acquired else None
 
     def get_research_workspace(self, workspace_id: UUID) -> ResearchWorkspaceRecord | None:
         row = self._fetchone(
@@ -4859,20 +4915,55 @@ class PostgresResearchRepository(ResearchRepository):
         for claim in seed_claims():
             self.upsert_claim(claim)
 
+    def _reconnect(self) -> None:
+        """Drop + reopen the connection. Neon (serverless) closes idle connections, and a long compute
+        job can outlast the timeout — so a dropped connection must auto-heal rather than lose the run."""
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+        self.conn = psycopg2.connect(self.database_url, cursor_factory=RealDictCursor)
+
+    def _with_reconnect(self, op):
+        """Run a DB op; on a dropped/broken connection, reconnect once and retry. Each primitive is a
+        single statement (+commit), so a retry after reconnect is safe (nothing partially committed).
+        Holds `self._lock` for the whole op so concurrent HTTP threads never share a cursor on the one
+        connection (all DB access funnels through here)."""
+        import psycopg2
+
+        with self._lock:
+            try:
+                return op()
+            except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                self._reconnect()
+                return op()
+
     def _execute(self, sql: str, params: tuple[object, ...] | list[object] | None = None) -> None:
-        with self.conn.cursor() as cursor:
-            cursor.execute(sql, params)
-        self.conn.commit()
+        def op() -> None:
+            with self.conn.cursor() as cursor:
+                cursor.execute(sql, params)
+            self.conn.commit()
+
+        self._with_reconnect(op)
 
     def _fetchone(self, sql: str, params: tuple[object, ...] | list[object] | None = None) -> dict[str, Any] | None:
-        with self.conn.cursor() as cursor:
-            cursor.execute(sql, params)
-            return cursor.fetchone()
+        def op() -> dict[str, Any] | None:
+            with self.conn.cursor() as cursor:
+                cursor.execute(sql, params)
+                return cursor.fetchone()
+
+        return self._with_reconnect(op)
 
     def _fetchall(self, sql: str, params: tuple[object, ...] | list[object] | None = None) -> list[dict[str, Any]]:
-        with self.conn.cursor() as cursor:
-            cursor.execute(sql, params)
-            return list(cursor.fetchall())
+        def op() -> list[dict[str, Any]]:
+            with self.conn.cursor() as cursor:
+                cursor.execute(sql, params)
+                return list(cursor.fetchall())
+
+        return self._with_reconnect(op)
 
     def _scalar(self, sql: str, params: tuple[object, ...] | list[object] | None = None) -> int:
         row = self._fetchone(sql, params)

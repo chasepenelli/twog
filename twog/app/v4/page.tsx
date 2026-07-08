@@ -17,9 +17,9 @@ const BOTTOM = ['Real proof', 'Tested in the open', 'Worth believing', 'Proof en
 const CLOSE = ['Real proof', 'Worth believing', 'Tested in the open', 'Built in public', 'Starting with dogs'];
 
 const LADDER = [
-  ['Watch', 'Watch', 'Open the live ledger and see the engine run. No signup.', 'Watch it work →', '#ledger'],
+  ['Watch', 'Watch', 'Watch the engine work through a real run, step by step. No signup.', 'Watch it work →', '#ledger'],
   ['Follow', '1 click', 'Get the next result in your inbox when an experiment resolves.', 'Follow the build →', 'https://pushingc.substack.com/subscribe'],
-  ['Suggest', 'Low', 'Name a drug, a target, or a question. We’ll put it to the test in public.', 'Suggest something →', '#contact'],
+  ['Suggest', 'Low', 'Name a drug, a target, or a question. We’ll put it to the test in public.', 'Suggest something →', '/involved#suggest'],
   ['Contribute', 'Hands on', 'Inspect a real record, pressure-test a result, return structured work.', 'Inspect records →', '/candidates'],
   ['Run an agent', 'All in', 'Spin up your own experiment under the same rules.', 'Run an experiment →', '/architecture'],
 ] as const;
@@ -133,7 +133,11 @@ export default function V4() {
         <ProofStamp verdict="survived" size="lg" />
         <p>TWOG — proof, not promises. Built in public.</p>
         <div className="v4-footer__links">
+          <Link href="/orchestration">The director</Link>
+          <Link href="/runs">Runs</Link>
+          <Link href="/evidence">Evidence</Link>
           <Link href="/candidates">Records</Link>
+          <Link href="/involved">Get involved</Link>
           <Link href="/architecture">Architecture</Link>
           <a href="https://pushingc.substack.com/subscribe" target="_blank" rel="noopener noreferrer">Field notes</a>
         </div>

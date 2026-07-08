@@ -133,6 +133,10 @@ def test_public_candidate_snapshot_generation_links_therapy_decision_compute_and
             visibility="draft_public",
             pipeline_version="test-v1",
             commit_sha="abc123",
+            # This exercises therapy->decision->compute->artifact LINKING with a deliberately minimal VIM
+            # candidate (no curated docking target, no attached lane inputs). It is NOT a moonshot-gate
+            # test, so opt out of the substantive falsifiable-plan publication gate (Increment 8).
+            require_moonshot_grade=False,
         )
     )
 

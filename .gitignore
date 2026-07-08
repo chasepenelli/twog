@@ -19,6 +19,8 @@ lib/
 lib64/
 !twog/lib/
 !twog/lib/**
+!web/lib/
+!web/lib/**
 parts/
 sdist/
 var/
@@ -217,3 +219,6 @@ __marimo__/
 
 # Large public-data matrices (re-downloaded by scripts/run_megquier_crux.py)
 data/*.gz
+
+# large design PDFs — keep out of git history
+threadnotes/*.pdf

@@ -16,9 +16,8 @@ from hsa_research.ingestion_bridge.input_resolvers import NetworkInputResolvers
 from hsa_research.ingestion_bridge.postgres_store import PostgresResearchRepository
 from hsa_research.ingestion_bridge.service import HSAResearchService
 
-# reuse the Neon-url + candidate-seed helpers from the curated demo
+# reuse the Neon-url helper from the curated demo
 from scripts.run_real_demo import _database_url
-from tests.test_candidates import _seed_validation_ready_candidate
 
 # Usage: python scripts/run_autonomous_demo.py [TARGET] [THERAPY]
 #   default        -> PIK3CA / alpelisib (a real inhibitor: expect the hypothesis to STAND)
@@ -33,11 +32,14 @@ def main() -> None:
     service = HSAResearchService(repo)
     service.input_resolvers = NetworkInputResolvers()  # turn ON live PubChem + RCSB resolution
 
-    _seed_validation_ready_candidate(repo, candidate_id=CANDIDATE_ID, ready=True)
-    cand = service.get_public_candidate(CANDIDATE_ID)
-    repo.upsert_public_candidate(cand.model_copy(update={
-        "targets": [TARGET], "candidate_therapies": [THERAPY], "metadata": {},  # NO curated inputs
-    }))
+    service.seed_validation_ready_candidate(
+        CANDIDATE_ID,
+        title=f"Autonomous demo: {THERAPY} for {TARGET}-driven hemangiosarcoma",
+        evidence_refs=["demo"],
+        targets=[TARGET],
+        candidate_therapies=[THERAPY],
+        lane_inputs=None,  # NO curated inputs — force the network resolvers to self-resolve
+    )
     print(f"Seeded '{CANDIDATE_ID}' naming ONLY target={TARGET}, therapy={THERAPY} — no curated inputs.\n")
 
     print("Running the loop (network resolvers ON: RCSB structure + PubChem SMILES; real gnina on Modal)...", flush=True)

@@ -5,15 +5,13 @@ import {
   isCandidateContributionStorageConfigured,
   normalizeCandidateContributionPacket,
 } from '@/lib/candidate-contributions';
-import {
-  getCandidate,
-  publicCandidateEvidenceBundlePath,
-  publicCandidatePayloadPath,
-} from '@/lib/public-candidates';
+import { getCandidate as getLiveCandidate, asPublicCandidateDetail } from '@/lib/public-candidates-live';
+import { publicCandidateEvidenceBundlePath, publicCandidatePayloadPath } from '@/lib/public-candidates';
 import {
   CANDIDATE_CONTRIBUTIONS_PAUSED,
   CANDIDATE_CONTRIBUTIONS_PAUSED_MESSAGE,
 } from '@/lib/public-contribution-status';
+import { rateLimit } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 
@@ -24,9 +22,9 @@ export async function GET(
   { params }: { params: Promise<{ candidateId: string }> }
 ) {
   const { candidateId } = await params;
-  const candidate = getCandidate(candidateId);
+  const lean = await getLiveCandidate(candidateId);
 
-  if (!candidate) {
+  if (!lean) {
     return NextResponse.json(
       {
         error: 'public_candidate_not_found',
@@ -35,6 +33,7 @@ export async function GET(
       { status: 404 }
     );
   }
+  const candidate = asPublicCandidateDetail(lean);
 
   return NextResponse.json({
     endpoint: `/api/public-candidates/${candidate.candidate.candidate_id}/contributions`,
@@ -74,6 +73,19 @@ export async function POST(
     );
   }
 
+  // Per-IP throttle so one source can't flood the review queue. Best-effort (fails open on a DB hiccup).
+  const rl = await rateLimit({ scope: 'contribute', request, limit: 4, windowSec: 600 });
+  if (!rl.ok) {
+    return NextResponse.json(
+      {
+        error: 'rate_limited',
+        message: 'You’ve submitted a few contributions already — give it a few minutes before sending more.',
+        retry_after: rl.retryAfterSec,
+      },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec) } }
+    );
+  }
+
   const contentLength = Number(request.headers.get('content-length') ?? 0);
   if (contentLength > MAX_BODY_BYTES) {
     return NextResponse.json(
@@ -86,9 +98,9 @@ export async function POST(
   }
 
   const { candidateId } = await params;
-  const candidate = getCandidate(candidateId);
+  const lean = await getLiveCandidate(candidateId);
 
-  if (!candidate) {
+  if (!lean) {
     return NextResponse.json(
       {
         error: 'public_candidate_not_found',
@@ -97,6 +109,7 @@ export async function POST(
       { status: 404 }
     );
   }
+  const candidate = asPublicCandidateDetail(lean);
 
   let body: unknown;
   try {

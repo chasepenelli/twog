@@ -67,6 +67,19 @@ def audit(capsule: Any, compute_job: Any) -> dict[str, Any]:
     )
     _check("validation_type", payload.get("validation_type"), getattr(compute_job, "validation_type", None))
 
+    # Foreign compute (Phase B BYOC, runner_kind="container"): the capsule was produced on a
+    # collaborator's own backend, so integrity rests on the container identity, not our infra. Verify
+    # the image is digest-pinned (immutable + reproducible) and that the capsule's CLAIMED image + the
+    # runner principal match the linked job — i.e. it ran the container it says it did, as who it says.
+    if getattr(compute_job, "runner_kind", None) == "container":
+        image = getattr(compute_job, "container_image", None)
+        if image and "@sha256:" in str(image):
+            checks_passed.append("container_image_digest_pinned")
+        else:
+            mismatches.append(f"container_image_not_digest_pinned:{image!r}")
+        _check("container_image", payload.get("container_image"), image)
+        _check("runner_principal", payload.get("runner_principal"), getattr(compute_job, "submitted_by", None))
+
     # You cannot claim evidence from a job that never completed.
     if getattr(compute_job, "status", None) == "completed":
         checks_passed.append("compute_job_completed")
