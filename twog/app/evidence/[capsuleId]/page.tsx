@@ -61,6 +61,11 @@ export default async function CapsuleDetail({
         <section className="v4-sec2">
           <div className="v4-dh2">The test</div>
           <p className="v4-lead">{cap.method}</p>
+          {cap.cross_species ? (
+            <p className="v4-note">
+              <strong style={{ color: 'var(--bone)' }}>Cross-species caveat.</strong> {cap.cross_species}
+            </p>
+          ) : null}
         </section>
 
         <section className="v4-sec2">

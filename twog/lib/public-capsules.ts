@@ -54,12 +54,10 @@ function shapeCapsule(row: Row): Capsule {
     method: (validation_type && LANE_METHOD[validation_type]) || 'A real pre-registered test on the engine.',
     readout: summary.finding ?? '',
     why_it_matters: summary.why_it_matters ?? '',
-    limitations: (() => {
-      const base = [...(summary.limitations ?? p.limitations ?? [])];
-      const note = crossSpeciesNote(validation_type, row.candidate_id);
-      if (note && !base.some((l) => /Cross-species inference only/i.test(String(l)))) base.push(note);
-      return base;
-    })(),
+    limitations: summary.limitations ?? p.limitations ?? [],
+    // A dedicated, PUBLIC (ungated) caveat for structure lanes — see crossSpeciesNote. Kept out of the
+    // member-gated `limitations` list so every visitor sees it.
+    cross_species: crossSpeciesNote(validation_type, row.candidate_id),
     confidence: typeof inner.confidence === 'number' ? inner.confidence : null,
     content_hash: p.content_hash ?? null,
     preregistration: inner.falsification_preregistration ?? null,

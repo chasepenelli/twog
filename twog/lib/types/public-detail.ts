@@ -42,6 +42,7 @@ export interface Capsule {
   readout: string;
   why_it_matters: string;
   limitations: string[];
+  cross_species: string | null; // public cross-species caveat for structure lanes (human ortholog used)
   confidence: number | null;
   content_hash: string | null;
   preregistration: Record<string, unknown> | null; // falsification_preregistration (the locked kill-criterion)
