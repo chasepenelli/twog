@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>TWOG — Landing Design Package</title>
+<style>
+  @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap");
+  @page { size: A4; margin: 16mm 14mm; }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font-family: "IBM Plex Sans", system-ui, sans-serif; color: #0a0a0a; margin: 0; line-height: 1.5; font-size: 10.5pt; }
+  .mono { font-family: "IBM Plex Mono", monospace; }
+  h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; line-height: 1.05; }
+  .kick { font-family: "IBM Plex Mono", monospace; font-size: 8pt; letter-spacing: 0.2em; text-transform: uppercase; color: #6b6b6b; display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+  .kick::before { content: ""; width: 20px; height: 1px; background: #0a0a0a; }
+  .page { page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
+  a { color: #0a0a0a; }
+
+  /* cover */
+  .cover { height: 252mm; display: flex; flex-direction: column; justify-content: space-between; }
+  .cover h1 { font-size: 46pt; margin: 18px 0 0; }
+  .cover .em { display: inline-block; border-bottom: 5px solid #0a0a0a; }
+  .cover .sub { font-size: 12pt; color: #2a2a2a; max-width: 60ch; margin-top: 18px; }
+  .cover .meta { font-family: "IBM Plex Mono", monospace; font-size: 8.5pt; color: #6b6b6b; border-top: 1px solid #0a0a0a; padding-top: 10px; display: flex; justify-content: space-between; }
+
+  .sec-title { font-size: 22pt; margin: 0 0 4px; }
+  .lead { color: #4a4a4a; max-width: 70ch; margin: 0 0 16px; }
+
+  /* library cards */
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .card { border: 1px solid #0a0a0a; border-radius: 3px; padding: 12px 13px; page-break-inside: avoid; }
+  .card h3 { font-size: 12.5pt; margin: 0 0 2px; }
+  .card .role { font-family: "IBM Plex Mono", monospace; font-size: 7.5pt; letter-spacing: 0.12em; text-transform: uppercase; color: #6b6b6b; }
+  .card p { margin: 7px 0 0; font-size: 9.3pt; }
+  .card .blue { font-family: "IBM Plex Mono", monospace; font-size: 7.6pt; white-space: pre; background: #f5f5f5; border: 1px solid #e4e4e4; border-radius: 2px; padding: 7px; margin-top: 8px; line-height: 1.35; overflow: hidden; }
+  .card .fit { margin-top: 8px; font-size: 8.6pt; }
+  .fit b { font-family: "IBM Plex Mono", monospace; }
+  .stars { letter-spacing: 1px; }
+
+  /* blueprint */
+  .act { border-left: 2px solid #0a0a0a; padding: 4px 0 10px 14px; margin: 0 0 12px; page-break-inside: avoid; }
+  .act h3 { font-size: 12pt; margin: 0; }
+  .act .tag { font-family: "IBM Plex Mono", monospace; font-size: 7.6pt; color: #6b6b6b; letter-spacing: 0.1em; text-transform: uppercase; }
+  .act p { margin: 5px 0 0; font-size: 9.4pt; }
+  .act .asset { display: inline-block; font-family: "IBM Plex Mono", monospace; font-size: 7.6pt; background: #0a0a0a; color: #fff; padding: 1px 6px; border-radius: 2px; margin-top: 6px; }
+
+  /* asset prompts */
+  .asset-card { border: 1px solid #0a0a0a; border-radius: 3px; padding: 13px 14px; margin-bottom: 12px; page-break-inside: avoid; }
+  .asset-card .hd { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; border-bottom: 1px solid #e4e4e4; padding-bottom: 7px; margin-bottom: 9px; }
+  .asset-card .hd h3 { font-size: 12.5pt; }
+  .asset-card .specs { font-family: "IBM Plex Mono", monospace; font-size: 7.6pt; color: #6b6b6b; text-align: right; white-space: nowrap; }
+  .asset-card .where { font-size: 9pt; color: #4a4a4a; margin: 0 0 9px; }
+  pre.prompt { font-family: "IBM Plex Mono", monospace; font-size: 8.4pt; line-height: 1.45; white-space: pre-wrap; background: #0a0a0a; color: #fff; border-radius: 3px; padding: 11px 12px; margin: 0; }
+  .note { font-size: 8.4pt; color: #6b6b6b; margin: 7px 0 0; }
+  ul.tight { margin: 8px 0 0; padding-left: 18px; }
+  ul.tight li { margin: 3px 0; font-size: 9.3pt; }
+  .src { font-family: "IBM Plex Mono", monospace; font-size: 8pt; color: #6b6b6b; }
+</style>
+</head>
+<body>
+
+<!-- COVER -->
+<section class="page cover">
+  <div>
+    <p class="kick">TWOG · landing design package</p>
+    <h1>Build a <span class="em">portal</span>,<br/>not a page.</h1>
+    <p class="sub">A reusable layout library distilled from award-winning one-page sites (ref: <em>The Nifty Portal</em>), plus a white/black “Portal” landing assembled from it — and every image &amp; video asset specced as a ready-to-paste Nano Banana Pro prompt.</p>
+  </div>
+  <div class="meta">
+    <span>white / black · IBM Plex · GSAP · WebGL</span>
+    <span>2026-06-23 · preview: /v2 → /v3</span>
+  </div>
+</section>
+
+<!-- REFERENCE STUDY -->
+<section class="page">
+  <p class="kick">01 · reference study</p>
+  <h2 class="sec-title">What to steal from The Nifty Portal</h2>
+  <p class="lead">The Awwwards SOTD reference isn’t a literal 3-D wormhole — it’s a <b>type-as-art, one-page, kinetic experience</b> built with WebGL + Webpack + GSAP. Its power is restraint plus motion: oversized retro typography, marquee bands that scroll sideways while you scroll down, and a single continuous narrative instead of stacked “sections.” That maps cleanly onto our scientific-brutalist white/black direction.</p>
+  <div class="grid">
+    <div class="card"><span class="role">Signature 1</span><h3>Kinetic marquee type</h3><p>Oversized words scroll horizontally as the page scrolls vertically — type <i>is</i> the artwork. Cheap to build (GSAP), huge presence, zero imagery required.</p></div>
+    <div class="card"><span class="role">Signature 2</span><h3>One continuous scene</h3><p>No visible section seams. Acts blend via pinning, scrub and reveal — the page feels authored, not assembled. Justifies having only a few “sections.”</p></div>
+    <div class="card"><span class="role">Signature 3</span><h3>WebGL as texture</h3><p>WebGL used as an ambient field behind type, not a literal object — exactly our hero contour-field shader. Atmosphere, not spectacle.</p></div>
+    <div class="card"><span class="role">Signature 4</span><h3>Editorial restraint</h3><p>Tight palette, enormous negative space, one idea per screen. Trust is carried by typographic confidence, not decoration.</p></div>
+  </div>
+  <p class="note">Sources: awwwards.com/inspiration/the-nifty-portal-nft-art-project · awwwards.com/sites/the-nifty-portal · tech: WebGL · Webpack · GSAP.</p>
+</section>
+
+<!-- LAYOUT LIBRARY -->
+<section class="page">
+  <p class="kick">02 · layout library</p>
+  <h2 class="sec-title">Eight reusable layout archetypes</h2>
+  <p class="lead">A pattern kit for one-page, motion-led landings. Each is buildable in our stack (Next + GSAP/ScrollTrigger + Lenis, already wired). “Fit” = relevance to TWOG’s simple, honest landing.</p>
+  <div class="grid">
+
+    <div class="card">
+      <span class="role">A · hero</span><h3>Portal Hero</h3>
+      <p>Full-viewport ambient field (WebGL/loop) behind one huge statement line; depth via parallax + slow zoom.</p>
+      <div class="blue">┌───────────────┐
+│  ·field·      │
+│  HUGE LINE    │
+│  sub · cta    │
+└──────┬────────┘</div>
+      <div class="fit"><b>Fit</b> <span class="stars">★★★★★</span> — already our hero; we have it.</div>
+    </div>
+
+    <div class="card">
+      <span class="role">B · transition</span><h3>Kinetic Marquee Band</h3>
+      <p>Oversized words slide horizontally on scroll. Carry a mantra or the live verdict stream.</p>
+      <div class="blue">‹ PROVE IT WRONG · FALSIFY ›
+‹ NOTHING AUTO-PROMOTED · ›</div>
+      <div class="fit"><b>Fit</b> <span class="stars">★★★★★</span> — the Nifty Portal signature; new for us.</div>
+    </div>
+
+    <div class="card">
+      <span class="role">C · sequence</span><h3>Pinned Scene Sequence</h3>
+      <p>Section pins; content scrubs through N states as you scroll. Few sections, lots of story.</p>
+      <div class="blue">[pin] 01 → 02 → 03 →
+      big № swaps</div>
+      <div class="fit"><b>Fit</b> <span class="stars">★★★★★</span> — our “how it works” stepper.</div>
+    </div>
+
+    <div class="card">
+      <span class="role">D · content</span><h3>Index / Manifest</h3>
+      <p>A numbered, monospace registry that reads like a ledger or table of contents. Honest, data-forward.</p>
+      <div class="blue">01 PROPOSE  ·········
+02 LOCK     ·········
+03 DOCK     ·········</div>
+      <div class="fit"><b>Fit</b> <span class="stars">★★★★★</span> — our Live Ledger, reframed.</div>
+    </div>
+
+    <div class="card">
+      <span class="role">E · content</span><h3>Editorial Split</h3>
+      <p>Big type one side, a single full-bleed image/portrait the other. The page’s one emotional beat.</p>
+      <div class="blue">┌──────┬────────┐
+│ TYPE │ [photo]│
+└──────┴────────┘</div>
+      <div class="fit"><b>Fit</b> <span class="stars">★★★★☆</span> — “why dogs” needs one image.</div>
+    </div>
+
+    <div class="card">
+      <span class="role">F · hero alt</span><h3>Full-bleed Loop Hero</h3>
+      <p>Silent looping video fills the viewport; minimal type overlaid. Use instead of (or with) WebGL.</p>
+      <div class="blue">█████ loop █████
+    TYPE overlay</div>
+      <div class="fit"><b>Fit</b> <span class="stars">★★★★☆</span> — optional, if you generate a loop.</div>
+    </div>
+
+    <div class="card">
+      <span class="role">G · content</span><h3>Sticky Reveal Stack</h3>
+      <p>Cards stack and cross-fade in place as you scroll — one claim resolves into the next.</p>
+      <div class="blue">▣ claim → ▣ proof
+   (stack/peel)</div>
+      <div class="fit"><b>Fit</b> <span class="stars">★★★☆☆</span> — optional for proof points.</div>
+    </div>
+
+    <div class="card">
+      <span class="role">H · act</span><h3>Horizontal Scroll Act</h3>
+      <p>One act scrolls sideways — a gallery of candidates/records moving against the vertical flow.</p>
+      <div class="blue">→ ▢ ▢ ▢ ▢ →
+  (x-scroll)</div>
+      <div class="fit"><b>Fit</b> <span class="stars">★★★☆☆</span> — later, for a candidates strip.</div>
+    </div>
+
+  </div>
+</section>
+
+<!-- TWOG LANDING BLUEPRINT -->
+<section class="page">
+  <p class="kick">03 · the build</p>
+  <h2 class="sec-title">TWOG “Portal” landing — one continuous scroll</h2>
+  <p class="lead">Assembled from the library: a single authored scene, white/black, IBM Plex. Asset slots are tagged where Nano Banana Pro output drops in. Everything stays honest — the ledger replays the one real run; cost is never shown.</p>
+
+  <div class="act">
+    <span class="tag">Act 0 · archetype A — Portal Hero</span>
+    <h3>“Built to prove itself wrong.”</h3>
+    <p>WebGL contour field (we have it) behind the headline; a generated still/loop can deepen it. Huge IBM Plex line, mono kicker, two CTAs, scroll cue.</p>
+    <span class="asset">A1 hero field still</span> <span class="asset">A1b hero loop (optional)</span>
+  </div>
+
+  <div class="act">
+    <span class="tag">Act 1 · archetype B — Kinetic Marquee</span>
+    <h3>The mantra band</h3>
+    <p>Edge-to-edge marquee scrolling on scroll: <span class="mono">PROVE IT WRONG · FALSIFICATION FIRST · NOTHING AUTO-PROMOTED · PUBLISHED IN PUBLIC ·</span> Pure type, no assets. The bridge between hero and ledger.</p>
+  </div>
+
+  <div class="act">
+    <span class="tag">Act 2 · archetype D — Index / Manifest</span>
+    <h3>The Live Ledger</h3>
+    <p>Reframed as a numbered manifest of the engine’s real run; click any row to inspect the pre-locked hash. A faint molecular mark can sit beside the heading.</p>
+    <span class="asset">A4 molecular mark (optional)</span>
+  </div>
+
+  <div class="act">
+    <span class="tag">Act 3 · archetype C — Pinned Sequence</span>
+    <h3>How one experiment works (01→05)</h3>
+    <p>The pinned stepper we built; big number swaps as you scroll. No assets — pure type + motion.</p>
+  </div>
+
+  <div class="act">
+    <span class="tag">Act 4 · archetype E — Editorial Split</span>
+    <h3>Why dogs, why now</h3>
+    <p>The page’s single emotional beat: big type left, one dignified B&amp;W dog portrait right. The honest bridge to comparative oncology.</p>
+    <span class="asset">A2 dog portrait</span>
+  </div>
+
+  <div class="act">
+    <span class="tag">Act 5 · archetype B/D — Get involved</span>
+    <h3>Pick your altitude</h3>
+    <p>The participation ladder; a closing marquee (“GET INVOLVED · WATCH · SUGGEST · CONTRIBUTE ·”) seals the loop. Footer carries one big ✗ KILLED stamp.</p>
+  </div>
+  <p class="note">Social/SEO: A3 OG share image (not on the page, but needed for links).</p>
+</section>
+
+<!-- ASSET BRIEF -->
+<section class="page">
+  <p class="kick">04 · asset brief — Nano Banana Pro</p>
+  <h2 class="sec-title">Generate these (prompts ready to paste)</h2>
+  <p class="lead">Model: <span class="mono">gemini-3-pro-image-preview</span>. For cross-asset consistency, upload the first approved still (A1) as a <b>style reference</b> on the others. Keep any in-image text ≤ 3 short phrases. All assets pure monochrome to match the site.</p>
+
+  <div class="asset-card">
+    <div class="hd"><h3>A1 — Hero portal field (still)</h3><div class="specs">16:9 · thinking HIGH<br/>place: Act 0 background</div></div>
+    <p class="where">Ambient field behind the headline. Must stay faint so black type reads on top.</p>
+<pre class="prompt">A high-contrast black-and-white abstract render of a circular data portal: hundreds of fine concentric contour rings and thin radial lines converging toward a bright vanishing point at center, on a pure white background — like a topographic map folding into infinity. Crisp 1px charcoal linework, vast negative space, no color, no text. Minimalist scientific data-visualization aesthetic, plotter-drawn precision, faint film grain. Centered, symmetrical, wide 16:9, gallery quality, 4K.</pre>
+    <p class="note">Tip: also export a near-white “light” variant (lower line opacity) — easier to lay type over.</p>
+  </div>
+
+  <div class="asset-card">
+    <div class="hd"><h3>A1b — Hero loop (video, optional)</h3><div class="specs">16:9 · 8s seamless<br/>place: Act 0 (alt to WebGL)</div></div>
+    <p class="where">Drop-in alternative/overlay to the live WebGL shader. (Use your video model; prompt phrased generically.)</p>
+<pre class="prompt">An 8-second seamless looping animation on a pure white background: a monochrome topographic contour field breathing and rippling slowly outward from the center like sonar, thin charcoal lines, extremely calm and minimal, faint grain, scientific aesthetic, no color, no text. Perfect seamless loop with no visible seam, gentle continuous motion, 16:9, high detail.</pre>
+  </div>
+
+  <div class="asset-card">
+    <div class="hd"><h3>A2 — “Why dogs” portrait</h3><div class="specs">3:4 · thinking HIGH<br/>place: Act 4 (split, right)</div></div>
+    <p class="where">The single emotional image. Dignified, hopeful, never sentimental/stock.</p>
+<pre class="prompt">A dignified black-and-white editorial portrait of an old large-breed dog with a greying muzzle and calm, soulful eyes, in profile turning slightly toward camera. Soft directional window light from the left, deep gentle shadows, plain seamless light-grey studio backdrop. Shot on an 85mm lens at f/2.0, shallow depth of field, fine Kodak Tri-X film grain, monochrome. Tender, quietly hopeful mood, high detail, 3:4 portrait. No text.</pre>
+  </div>
+
+  <div class="asset-card">
+    <div class="hd"><h3>A3 — OG / social share image</h3><div class="specs">16:9 · thinking HIGH<br/>place: meta tags (links)</div></div>
+    <p class="where">What renders when the link is shared. Two short text phrases only.</p>
+<pre class="prompt">A minimalist black-and-white social share graphic on a pure white background. Centered, large bold IBM Plex Sans wordmark reading "TWOG". A thin charcoal concentric contour-ring motif sits faintly behind the wordmark. Below it, a small monospace caption reading "PROVE IT WRONG". Clean editorial layout, generous margins, crisp high-contrast typography, no other text or elements, 16:9.</pre>
+    <p class="note">Text phrases kept to 2 (“TWOG”, “PROVE IT WRONG”), both ≤ 14 chars — within the legible-text limit.</p>
+  </div>
+
+  <div class="asset-card">
+    <div class="hd"><h3>A4 — Molecular mark (optional)</h3><div class="specs">1:1 · thinking MINIMAL<br/>place: Act 2 / dividers</div></div>
+    <p class="where">A small schematic accent beside the ledger or as a section divider.</p>
+<pre class="prompt">A black-and-white wireframe rendering of an abstract small-molecule ball-and-stick structure, drawn as thin charcoal lines and hollow circles on a pure white background, technical schematic style, precise and minimal, abundant negative space, perfectly centered, no color, no text, 1:1, gallery quality.</pre>
+  </div>
+
+  <h3 style="font-size:12pt;margin:14px 0 4px;">Generation checklist</h3>
+  <ul class="tight">
+    <li><b>Consistency:</b> approve A1 first, then attach it as a style reference for A2–A4 so linework/grain match.</li>
+    <li><b>Aspect ratios:</b> A1/A1b/A3 = 16:9 · A2 = 3:4 · A4 = 1:1. Generate at the largest size offered, then we downscale.</li>
+    <li><b>Monochrome discipline:</b> if any color sneaks in, add “strictly grayscale, no color” and regenerate.</li>
+    <li><b>Deliver to:</b> <span class="mono">twog/public/v3/</span> (I’ll wire them into the coded landing).</li>
+    <li><b>Naming:</b> <span class="mono">a1-hero.png · a1b-hero-loop.mp4 · a2-dog.png · a3-og.png · a4-mol.png</span></li>
+  </ul>
+</section>
+
+<!-- NEXT -->
+<section class="page">
+  <p class="kick">05 · next</p>
+  <h2 class="sec-title">From assets to a live page</h2>
+  <ul class="tight">
+    <li><b>You:</b> generate A1–A4 (+ optional A1b) in Nano Banana Pro using the prompts above; drop into <span class="mono">twog/public/v3/</span>.</li>
+    <li><b>Me:</b> build <span class="mono">/v3</span> — the Portal landing — assembling archetypes A–E with the real assets: WebGL+still hero, the kinetic marquee band, the ledger-as-manifest, the pinned stepper, and the editorial “why dogs” split. White/black, IBM Plex, GSAP/Lenis (already wired), reduced-motion safe.</li>
+    <li><b>Then:</b> review side-by-side (/v2 vs /v3), lock the hero line, and promote to <span class="mono">/</span>.</li>
+  </ul>
+  <p class="note" style="margin-top:18px;">This document + the layout library live in <span class="mono">twog/threadnotes/</span>. The library archetypes (A–H) are reusable for any future page, not just the landing.</p>
+</section>
+
+</body>
+</html>
