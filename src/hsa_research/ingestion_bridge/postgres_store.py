@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+import threading
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -85,6 +86,10 @@ class PostgresResearchRepository(ResearchRepository):
 
         self.database_url = database_url
         self._json = _load_json_adapter()
+        # Serializes access to the single psycopg2 connection so ONE long-lived repo can be shared
+        # across a threaded HTTP server (reused connection = no per-request TLS handshake to Neon).
+        # Reentrant so a helper that internally calls another guarded op does not self-deadlock.
+        self._lock = threading.RLock()
         self.conn = psycopg2.connect(database_url, cursor_factory=RealDictCursor)
         self._init_schema()
         if seed:
@@ -4924,14 +4929,17 @@ class PostgresResearchRepository(ResearchRepository):
 
     def _with_reconnect(self, op):
         """Run a DB op; on a dropped/broken connection, reconnect once and retry. Each primitive is a
-        single statement (+commit), so a retry after reconnect is safe (nothing partially committed)."""
+        single statement (+commit), so a retry after reconnect is safe (nothing partially committed).
+        Holds `self._lock` for the whole op so concurrent HTTP threads never share a cursor on the one
+        connection (all DB access funnels through here)."""
         import psycopg2
 
-        try:
-            return op()
-        except (psycopg2.OperationalError, psycopg2.InterfaceError):
-            self._reconnect()
-            return op()
+        with self._lock:
+            try:
+                return op()
+            except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                self._reconnect()
+                return op()
 
     def _execute(self, sql: str, params: tuple[object, ...] | list[object] | None = None) -> None:
         def op() -> None:

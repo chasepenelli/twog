@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import itertools
 import os
 import pathlib
 
@@ -50,11 +51,20 @@ def main() -> None:
 
     url = _database_url()
 
-    # Per-request service so a dropped Neon connection (serverless idle timeout) never wedges the
-    # server — each request gets a fresh, healthy connection via the pooled URL. Single-threaded
-    # stdlib server + low launch traffic makes this cheap; swap in a pool if traffic grows.
+    # A small POOL of long-lived services, handed out round-robin. Fresh service-per-request opened a
+    # new Neon connection (TLS handshake ≈ 1-2s) AND re-ran the whole schema DDL every time, x2 factory
+    # calls per request — a page firing ~6 API calls paid ~12 handshakes + 12 schema rebuilds (~20s).
+    # A single shared connection fixes that but serializes every request through one lock, so the
+    # homepage's concurrent calls contend and a slow query (engine-state) stretches past the client
+    # timeout. The pool gives BOTH: connections are reused (schema runs once each, at startup) and
+    # concurrent requests run in parallel across separate connections. Each repo keeps an internal
+    # lock, so if round-robin lands two concurrent requests on the same service they're still safe.
+    pool_size = int(os.environ.get("TWOG_API_POOL_SIZE", "4"))
+    pool = [HSAResearchService(PostgresResearchRepository(url, seed=False)) for _ in range(pool_size)]
+    counter = itertools.count()
+
     def _service_factory() -> HSAResearchService:
-        return HSAResearchService(PostgresResearchRepository(url, seed=False))
+        return pool[next(counter) % pool_size]
 
     print(f"twog web API → http://{args.host}:{args.port}  (public reads open; gated routes 401 until WorkOS)")
     run_api_server(
