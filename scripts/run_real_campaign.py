@@ -21,6 +21,10 @@ from scripts.run_web_api import _database_url
 CAMPAIGN_BUDGET_USD = float(os.environ.get("CAMPAIGN_BUDGET_USD", "5.00"))
 PER_CANDIDATE_USD = float(os.environ.get("PER_CANDIDATE_USD", "0.50"))
 MAX_ROUNDS = int(os.environ.get("MAX_ROUNDS", "2"))
+# Lane allowlist — restricts what the campaign can dispatch (the cost+safety gate). Defaults to docking;
+# set LANES=cofolding for the orthogonal engagement sweep. NEVER include 'md' here (md is $40/run and
+# expert-gated) unless you mean it.
+LANES = [s.strip() for s in os.environ.get("LANES", "docking").split(",") if s.strip()]
 
 
 def main() -> None:
@@ -30,8 +34,9 @@ def main() -> None:
     # read-through catalog so resolved SMILES/sequences are reused (resolve-once) and persisted
     svc.input_resolvers = CatalogResolvers(NetworkInputResolvers(), InputCatalog())
 
+    assert "md" not in LANES, "refusing to autodispatch the md lane ($40/run) from a campaign"
     print(
-        f"campaign: runner=modal · lanes=[docking] · max_rounds={MAX_ROUNDS} · "
+        f"campaign: runner=modal · lanes={LANES} · max_rounds={MAX_ROUNDS} · "
         f"per_candidate=${PER_CANDIDATE_USD:.2f} · CAP=${CAMPAIGN_BUDGET_USD:.2f}",
         flush=True,
     )
@@ -40,7 +45,7 @@ def main() -> None:
         max_rounds=MAX_ROUNDS,
         budget_usd_per_candidate=PER_CANDIDATE_USD,
         campaign_budget_usd=CAMPAIGN_BUDGET_USD,
-        lane_allowlist=["docking"],
+        lane_allowlist=LANES,
         runner_kind="modal",
         submitted_by="chasepenelli",
         persist=True,
