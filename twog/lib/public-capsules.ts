@@ -14,6 +14,29 @@ const LANE_METHOD: Record<string, string> = {
   omics: 'Check what real patient tumors actually show for this axis.',
 };
 
+// Cross-species honesty: every runnable structure lane (docking / co-folding) ran against a HUMAN
+// ortholog — the redock-verified library is human PDBs, and co-folding pulls the human Swiss-Prot
+// sequence — while candidates target the canine protein. Surface that substitution as a limitation so
+// evidence never reads as if it ran on the canine target. The engine now writes this into NEW capsules
+// directly (service.py); this covers historical capsules at display time without rewriting the record
+// or invalidating any content hash. Idempotent via the "Cross-species inference only" marker.
+const HUMAN_STRUCT: Record<string, string> = {
+  pik3ca: 'human 4JPS (PI3Kα / p110α)',
+  pi3ka: 'human 4JPS (PI3Kα / p110α)',
+  kdr: 'human 3VHE (VEGFR2 / KDR)',
+  vegfr2: 'human 3VHE (VEGFR2 / KDR)',
+};
+function crossSpeciesNote(validationType: string | null, candidateId: string): string | null {
+  if (validationType !== 'docking' && validationType !== 'cofolding') return null;
+  const key = candidateId.replace(/-(auto|demo|crux)$/i, '').split('-').pop() ?? '';
+  const struct = HUMAN_STRUCT[key] ?? 'a human ortholog structure';
+  const verb = validationType === 'docking' ? 'Docked against' : 'Co-folded against';
+  return (
+    `${verb} ${struct} — a human structure standing in for the canine ortholog; sequence/structure ` +
+    `differences at the binding site are not accounted for. Cross-species inference only.`
+  );
+}
+
 type Row = { capsule_id: string; candidate_id: string; status: string; payload: Record<string, any> };
 
 function shapeCapsule(row: Row): Capsule {
@@ -31,7 +54,12 @@ function shapeCapsule(row: Row): Capsule {
     method: (validation_type && LANE_METHOD[validation_type]) || 'A real pre-registered test on the engine.',
     readout: summary.finding ?? '',
     why_it_matters: summary.why_it_matters ?? '',
-    limitations: summary.limitations ?? p.limitations ?? [],
+    limitations: (() => {
+      const base = [...(summary.limitations ?? p.limitations ?? [])];
+      const note = crossSpeciesNote(validation_type, row.candidate_id);
+      if (note && !base.some((l) => /Cross-species inference only/i.test(String(l)))) base.push(note);
+      return base;
+    })(),
     confidence: typeof inner.confidence === 'number' ? inner.confidence : null,
     content_hash: p.content_hash ?? null,
     preregistration: inner.falsification_preregistration ?? null,
