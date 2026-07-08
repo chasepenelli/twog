@@ -3605,16 +3605,42 @@ class HSAResearchService:
         prereg_block = None
         job_input = job.input_payload if isinstance(job.input_payload, dict) else {}
         request_blob = job_input.get("validation_request")
-        if isinstance(request_blob, dict):
-            request_meta = request_blob.get("metadata")
-            if isinstance(request_meta, dict) and isinstance(
-                request_meta.get("falsification_preregistration"), dict
-            ):
-                prereg_block = request_meta["falsification_preregistration"]
+        # Hoisted (was scoped inside the isinstance branch) so the cross-species disclosure below can read
+        # the lane config (source_pdb / target) that lives under request metadata.
+        request_meta = request_blob.get("metadata") if isinstance(request_blob, dict) else None
+        if isinstance(request_meta, dict) and isinstance(
+            request_meta.get("falsification_preregistration"), dict
+        ):
+            prereg_block = request_meta["falsification_preregistration"]
 
         def _min3(text: str, fallback: str) -> str:
             text = (text or "").strip()
             return text if len(text) >= 3 else fallback
+
+        def _species_disclosure(validation_type: str | None, meta: object) -> str | None:
+            """Docking/co-folding lanes run against HUMAN ortholog structures (the redock-verified library
+            is human PDBs; co-folding pulls the human Swiss-Prot sequence) while candidates target the
+            canine protein. Name that substitution explicitly on the surfaced limitations so the evidence
+            never reads as if it ran on the canine target. Returns None for non-structure lanes."""
+            lane = (validation_type or "").lower()
+            if lane not in {"docking", "cofolding"}:
+                return None
+            cfg = meta.get(lane) if isinstance(meta, dict) else None
+            cfg = cfg if isinstance(cfg, dict) else {}
+            target = str(cfg.get("target") or getattr(job, "target_name", None) or "the target")
+            if lane == "docking":
+                pdb = cfg.get("source_pdb")
+                struct = f"human {pdb}" if pdb else "a human experimental structure"
+                return (
+                    f"Structure used is {struct} ({target}); it stands in for the canine ortholog — "
+                    f"sequence/structure differences at the binding site are not accounted for. "
+                    f"Cross-species inference only."
+                )
+            return (
+                f"Co-folded against the human reviewed (Swiss-Prot) sequence for {target}; it stands in "
+                f"for the canine ortholog — sequence differences at the binding interface are not "
+                f"accounted for. Cross-species inference only."
+            )
 
         finding = _min3(
             str(out.get("findings") or ""),
@@ -3623,6 +3649,9 @@ class HSAResearchService:
         limitations = [str(item) for item in (out.get("limitations") or []) if str(item).strip()] or [
             "Computational result; not independently validated."
         ]
+        _disclosure = _species_disclosure(job.validation_type, request_meta)
+        if _disclosure and _disclosure not in limitations:
+            limitations.append(_disclosure)
         source_refs = [
             ProofCapsuleSourceRef(**ref) if isinstance(ref, dict) else ProofCapsuleSourceRef(source_id=str(ref))
             for ref in (out.get("source_refs") or [])

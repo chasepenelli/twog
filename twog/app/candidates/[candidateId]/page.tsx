@@ -69,7 +69,7 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
           <div className="v4-dh2">Where it stands — {meta.label}</div>
           <p className="v4-lead">{meta.gloss}</p>
           <p className="v4-note">
-            Status on the engine: <strong style={{ color: 'var(--bone)' }}>{(candidate.public_status ?? 'open').replace(/_/g, ' ')}</strong>
+            Status on the engine: <strong style={{ color: 'var(--bone)' }}>{verdict === 'still-standing' ? (candidate.public_status ?? 'open').replace(/_/g, ' ') : meta.label}</strong>
             {candidate.validation_ready && verdict !== 'ruled-out' ? ' · validation-ready' : ''}. Nothing here is promoted automatically —
             a human holds the final call.
           </p>
