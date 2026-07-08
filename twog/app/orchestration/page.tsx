@@ -85,14 +85,14 @@ export default async function OrchestrationPage() {
                         {d.modality ? <span className="v4-chip v4-chip--mod">{MODALITY_LABEL[d.modality] ?? d.modality}</span> : null}
                         {d.target ? <span className="v4-chip">target · {d.target}</span> : null}
                         {propose ? (
-                          d.testable_now
-                            ? <span className="v4-badge v4-badge--ok">testable now{d.next_lane ? ` · ${d.next_lane}` : ''}</span>
+                          d.genuinely_testable
+                            ? <span className="v4-badge v4-badge--ok">testable now · {d.next_lane}</span>
                             : <span className="v4-badge v4-badge--run">needs non-structural eval</span>
                         ) : (
                           d.current_verdict ? <span className="v4-chip">{d.current_verdict.replace(/-/g, ' ')}</span> : null
                         )}
                         {typeof d.confidence === 'number' ? <span className="v4-chip">confidence {Math.round(d.confidence * 100)}%</span> : null}
-                        {propose && d.testable_now && typeof d.est_cost_usd === 'number' && d.est_cost_usd > 0 ? <span className="v4-chip">~${d.est_cost_usd.toFixed(2)}</span> : null}
+                        {propose && d.genuinely_testable && typeof d.est_cost_usd === 'number' && d.est_cost_usd > 0 ? <span className="v4-chip">~${d.est_cost_usd.toFixed(2)}</span> : null}
                       </div>
 
                       <p className="v4-dir__why">{d.rationale}</p>
