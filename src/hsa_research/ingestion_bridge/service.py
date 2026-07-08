@@ -3048,6 +3048,19 @@ class HSAResearchService:
         """Freeze a proposed test's kill-criterion onto an approved validation-queue item, content
         hashed BEFORE any compute runs (the pre-registration lock). The hash + frozen criterion ride in
         validation_request.metadata so they thread to the resulting proof capsule unchanged."""
+        # Refuse a lane that is not a dispatchable validation task type BEFORE building any queue item.
+        # FalsificationPlan.lane accepts the full FalsificationLane set (incl. the Stage-0 design lanes),
+        # but ValidationRequestQueueItem.task_type is the narrower ValidationPlanTaskType — a design lane
+        # would otherwise raise a raw pydantic ValidationError deep in the queue write. Fail honestly here.
+        from typing import get_args as _get_args
+        from .contracts import ValidationPlanTaskType as _ValidationPlanTaskType
+
+        if plan.validation_type not in set(_get_args(_ValidationPlanTaskType)):
+            raise ValueError(
+                f"cannot register a falsification test for lane '{plan.validation_type}': it has no runner "
+                f"wired (Stage-0 design lanes stay design concepts until a Stage-1 runner exists). "
+                f"Refusing to queue it rather than fabricating a dispatchable test."
+            )
         prereg_hash = self._falsification_preregistration_hash(
             candidate_id=plan.candidate_id,
             lane=plan.lane,
@@ -5460,6 +5473,19 @@ class HSAResearchService:
         record = self.repository.get_compute_job(compute_job_id)
         if record is None:
             return None
+        # Belt-and-suspenders: a Stage-0 design lane has no runner wired and must never reach a compute
+        # runner (not even the ungated mock). Only a raw ComputeJobRecord write that bypassed the planner
+        # + registration gates could get here — block it so the enforced boundary matches the contract
+        # (Stage-0 lanes never produce a capsule).
+        if record.validation_type in lane_inputs._DESIGN_STAGE0_LANES:
+            updated = self.repository.update_compute_job(
+                compute_job_id,
+                status="blocked",
+                dagster_run_id=dagster_run_id,
+                last_error=f"design_lane_not_runnable:{record.validation_type}",
+                metadata={"design_lane_blocked_at": datetime.now(UTC).isoformat()},
+            )
+            return _attach_compute_job_run_manifest(self.repository, updated) if updated else None
         retryable_md_gate_block = (
             record.validation_type == "md"
             and record.status == "blocked"

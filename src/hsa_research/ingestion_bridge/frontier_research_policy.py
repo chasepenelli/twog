@@ -114,15 +114,19 @@ _DESIGN_LANE_TERMS: dict[str, tuple[str, ...]] = {
     "binder_design": (
         "stapled peptide", "hydrocarbon stapled", "cell-penetrating peptide", "targeting peptide",
         "directed peptide", "de novo binder", "de-novo binder", "minibinder", "peptide strategy",
-        "antibody-drug conjugate", "antibody drug conjugate", "adc", "targeting antibody",
+        # NOTE: bare "adc" is deliberately omitted — it collides with "apparent diffusion coefficient"
+        # (in nearly every DWI-MRI paper). The spelled-out forms below are unambiguous.
+        "antibody-drug conjugate", "antibody drug conjugate", "targeting antibody",
     ),
     "genome_edit": (
         "base edit", "base editing", "prime edit", "prime editing", "gene edit", "gene editing",
         "genome edit", "genome editing", "crispr", "cas9", "cas12", "pegrna",
     ),
     "cell_therapy": (
-        "car-t", "car t", "cart", "tcr-t", "tcr t", "engineered t cell", "engineered t-cell",
-        "cellular therapy", "nk cell therapy", "adoptive cell therapy",
+        # NOTE: bare "cart" is deliberately omitted — it collides with CART regression trees / the CART
+        # neuropeptide / "shopping cart". Real CAR-T bets use "CAR-T"/"CAR T"/"chimeric antigen receptor".
+        "car-t", "car t", "chimeric antigen receptor", "tcr-t", "tcr t", "engineered t cell",
+        "engineered t-cell", "cellular therapy", "nk cell therapy", "adoptive cell therapy",
     ),
     "mrna_vaccine": (
         "mrna", "rna vaccine", "personalized vaccine", "neoantigen", "cancer vaccine",
@@ -193,7 +197,10 @@ def frontier_policy_note() -> str:
 
 
 def _normalize(text: str) -> str:
-    return re.sub(r"\s+", " ", str(text).casefold()).strip()
+    # Fold the Unicode dash/hyphen family to an ASCII hyphen so a copy-pasted typeset term like
+    # "antibody–drug conjugate" (en-dash) matches "antibody-drug conjugate", then casefold + collapse ws.
+    folded = re.sub(r"[‐‑‒–—―−]", "-", str(text))
+    return re.sub(r"\s+", " ", folded.casefold()).strip()
 
 
 def _term_in_text(term: str, text: str) -> bool:
@@ -202,4 +209,11 @@ def _term_in_text(term: str, text: str) -> bool:
         return False
     if re.fullmatch(r"[a-z0-9]+", normalized):
         return re.search(rf"\b{re.escape(normalized)}\b", text) is not None
-    return normalized in text
+    # Multiword / hyphenated term: require word boundaries at BOTH ends and treat any run of spaces or
+    # hyphens as one separator. So "car t" and "car-t" both match, but "scar tissue" and "database
+    # editing" do NOT (there is no word boundary before the embedded "car"/"base") — no substring bleed.
+    tokens = [t for t in re.split(r"[\s-]+", normalized) if t]
+    if not tokens:
+        return False
+    pattern = r"\b" + r"[\s-]+".join(re.escape(t) for t in tokens) + r"\b"
+    return re.search(pattern, text) is not None

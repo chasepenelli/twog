@@ -155,29 +155,35 @@ def resolve(candidate: Any, lane: str, *, resolvers: Any = None, target_library:
     config_key = LANE_CONFIG_KEY.get(lane, lane)
     cfg = _candidate_lane_inputs(candidate, lane)
 
-    if cfg is not None and _complete(lane, cfg):
-        return LaneInputResolution(
-            lane=lane, config_key=config_key, resolved=True, config=dict(cfg), source="candidate.metadata"
-        )
-
-    # Stage-0 frontier/design lanes: refuse (resolved=False) with the exact real-input checklist and an
-    # honest note. The lane is not registered as a runner, so even a hypothetical resolved=True never
-    # dispatches — this branch exists so the gap reads as "design concept, not tested", never as evidence.
+    # Stage-0 frontier/design lanes: ALWAYS refuse (resolved=False). This branch is FIRST — before the
+    # curated-complete check — so a design lane can never read resolved=True (there is no runner wired,
+    # so "inputs complete" still means "not runnable / not tested"). The note adapts: if a full keyset is
+    # attached it reads "inputs attached, awaiting a Stage-1 runner", else "no inputs yet". This keeps the
+    # honest "design concept, not tested" framing on every read, never presenting as run-ready evidence.
     if lane in _DESIGN_STAGE0_LANES:
         required = _REQUIRED_KEY_SETS[lane][0]
         present = dict(cfg) if cfg else {}
         missing = [key for key in required if present.get(key) in (None, "", [], {})]
+        note = (
+            f"Stage-0 design concept: all {lane} inputs attached, but no runner is wired yet (Stage 1) — "
+            f"still not tested, not evidence."
+            if not missing
+            else f"Stage-0 design concept: no real {lane} inputs attached yet — not tested, not evidence. "
+            f"Attach the listed inputs (then a Stage-1 runner) to make it runnable."
+        )
         return LaneInputResolution(
             lane=lane,
             config_key=config_key,
             resolved=False,
             config=present,
             missing=missing,
-            notes=(
-                f"Stage-0 design concept: no real {lane} inputs attached yet — not tested, not evidence. "
-                f"Attach the listed inputs to make it runnable (Stage 1)."
-            ),
+            notes=note,
             source="frontier_design_stage0",
+        )
+
+    if cfg is not None and _complete(lane, cfg):
+        return LaneInputResolution(
+            lane=lane, config_key=config_key, resolved=True, config=dict(cfg), source="candidate.metadata"
         )
 
     if lane == "docking":

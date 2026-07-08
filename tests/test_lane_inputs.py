@@ -317,3 +317,81 @@ def test_design_lanes_for_text_pure_mapping():
     assert _frp.design_lanes_for_text("CAR-T against a tumor-selective antigen") == {"cell_therapy"}
     assert _frp.design_lanes_for_text("personalized neoantigen mRNA vaccine") == {"mrna_vaccine"}
     assert _frp.design_lanes_for_text("a plain kinase inhibitor") == set()
+
+
+def test_design_lanes_no_false_positives_on_conventional_terms():
+    # common oncology/biostat terms that merely CONTAIN a modality substring must not map to a design lane
+    assert _frp.design_lanes_for_text("apparent diffusion coefficient (ADC) on diffusion-weighted MRI") == set()
+    assert _frp.design_lanes_for_text("a small molecule that reduces scar tissue formation") == set()
+    assert _frp.design_lanes_for_text("a CART model for risk stratification") == set()
+    assert _frp.design_lanes_for_text("database editing pipeline") == set()
+
+
+def test_design_lanes_catch_spelled_out_and_endash_forms():
+    # spelled-out CAR and typeset en-dash ADC must still map (word-boundary + dash-fold)
+    assert _frp.design_lanes_for_text("chimeric antigen receptor T cells") == {"cell_therapy"}
+    assert "binder_design" in _frp.design_lanes_for_text("antibody–drug conjugate with a cleavable linker")
+    assert _frp.design_lanes_for_text("a peptide-PROTAC degrader") == {"degrader_design"}
+
+
+def test_stage0_complete_keyset_still_resolves_false(tmp_path):
+    # honesty: even a FULL design-lane keyset must never read resolved=True (no runner wired)
+    service, repo = _svc(tmp_path, "s0-complete")
+    bag = {"binder_design": {"target_structure": "PDB", "binder_sequence": "ACDE", "interface_hotspots": [1]}}
+    _candidate_with_inputs(repo, service, "s0-full", bag)
+    res = service.resolve_lane_inputs("s0-full", "binder_design")
+    assert res.resolved is False
+    assert res.source == "frontier_design_stage0"
+    assert res.missing == []  # inputs complete...
+    assert "no runner is wired" in (res.notes or "")  # ...but still not runnable
+
+
+def test_stage0_lanes_are_not_valid_task_types():
+    # documents the gap the register guard depends on: every Stage-0 design lane is absent from
+    # ValidationPlanTaskType, so register_falsification_test refuses it cleanly instead of crashing on
+    # the queue-item task_type Literal. (homology is a separate legacy non-task-type lane; not asserted.)
+    from hsa_research.ingestion_bridge.contracts import ValidationPlanTaskType
+    lane_members = set(_get_args(_FL))
+    task_types = set(_get_args(ValidationPlanTaskType))
+    assert set(_li._DESIGN_STAGE0_LANES).isdisjoint(task_types)
+    assert set(_li._DESIGN_STAGE0_LANES) <= (lane_members - task_types)
+
+
+def test_register_falsification_test_refuses_design_lane_cleanly(tmp_path):
+    from hsa_research.ingestion_bridge.contracts import FalsificationPlan, KillCriterion
+    service, repo = _svc(tmp_path, "s0-register")
+    _seed_validation_ready_candidate(repo, candidate_id="s0-reg")
+    plan = FalsificationPlan(
+        candidate_id="s0-reg", test_objective="design a binder", lane="binder_design",
+        validation_type="binder_design",
+        kill_criterion=KillCriterion(metric="ddg", comparator="<", threshold=0.0, rationale="no interface"),
+        expected_signal_if_alive="supports", est_cost_usd=0.0, value_of_information=0.5,
+    )
+    # honest refusal (ValueError), NOT a raw pydantic crash deep in the queue write
+    import pytest
+    with pytest.raises(ValueError, match="no runner"):
+        service.register_falsification_test(plan)
+
+
+def test_submit_compute_job_blocks_design_lane(tmp_path):
+    import uuid
+    from hsa_research.ingestion_bridge.contracts import ComputeJobRecord, ValidationRequest, ValidationAssayContext
+    service, repo = _svc(tmp_path, "s0-submit")
+    _seed_validation_ready_candidate(repo, candidate_id="s0-sub")
+    ws = service.ensure_internal_workspace_for_candidate("s0-sub").workspace
+    req = ValidationRequest(
+        validation_type="degrader_design", candidate_name="s0-sub", target_name="VIM", objective="x",
+        assay_context=ValidationAssayContext(disease_context="x", species=["canine"], model_system="m",
+                                             assay_type="in silico", readout="s", endpoint="p"),
+    )
+    job = ComputeJobRecord(
+        compute_job_id=uuid.uuid4(), trace_id=uuid.uuid4(), queue_item_id=uuid.uuid4(), status="approved",
+        runner_kind="mock", compute_profile="cpu", validation_type="degrader_design", title="d", objective="x",
+        candidate_id="s0-sub", workspace_id=ws.workspace_id, candidate_snapshot_hash=ws.candidate_snapshot_hash,
+        checkout_manifest_hash=ws.checkout_manifest_hash,
+        input_payload={"validation_request": req.model_dump(mode="json")},
+    )
+    repo.upsert_compute_job(job)
+    out = service.submit_compute_job(job.compute_job_id, dry_run=False)
+    assert out is not None and out.status == "blocked"
+    assert "design_lane_not_runnable" in (out.last_error or "")
