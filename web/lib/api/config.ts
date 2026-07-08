@@ -19,6 +19,9 @@ export const API_BASE_URL =
 /** Simulated network latency (ms) for mock calls, to exercise loading states. */
 const MOCK_LATENCY_MS = 280;
 
+/** Hard ceiling for a real backend call, so a slow/cold Neon query can never hang a page render. */
+const REQUEST_TIMEOUT_MS = 12_000;
+
 /** Error thrown by the client. Carries an HTTP-ish status for UI branching. */
 export class ApiError extends Error {
   status: number;
@@ -55,21 +58,32 @@ export async function request<T>(
   { method = "GET", body, signal }: RequestOptions = {},
 ): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
+  // Compose an internal timeout with any caller-supplied signal, so a cold/slow backend aborts fast
+  // (a page render never blocks longer than REQUEST_TIMEOUT_MS on one call).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
   let res: Response;
   try {
     res = await fetch(url, {
       method,
       headers: body ? { "Content-Type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined,
-      signal,
+      signal: controller.signal,
       // always hit the live backend — never serve a stale Next.js fetch cache (these are live results)
       cache: "no-store",
     });
   } catch (err) {
+    const aborted = (err as Error).name === "AbortError";
     throw new ApiError(
-      `Network request failed: ${(err as Error).message}`,
+      aborted ? `Request timed out after ${REQUEST_TIMEOUT_MS}ms` : `Network request failed: ${(err as Error).message}`,
       0,
     );
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!res.ok) {

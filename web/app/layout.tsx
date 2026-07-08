@@ -4,6 +4,7 @@ import { IBM_Plex_Sans, IBM_Plex_Serif, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { getPrincipal } from "@/lib/auth/server";
 import { SessionProvider } from "@/components/providers/SessionProvider";
+import { MotionProvider } from "@/components/motion";
 import { BrandShell } from "@/components/shell/brand-shell";
 import { Toaster } from "@/components/ui/toaster";
 
@@ -48,7 +49,9 @@ export default async function RootLayout({
     <html lang="en" className={`${sans.variable} ${serif.variable} ${mono.variable}`}>
       <body>
         <SessionProvider principal={principal}>
-          <BrandShell>{children}</BrandShell>
+          <MotionProvider>
+            <BrandShell>{children}</BrandShell>
+          </MotionProvider>
           <Toaster />
         </SessionProvider>
       </body>

@@ -82,8 +82,9 @@ export function LiveActivity({ variant = "light" }: { variant?: "light" | "dark"
             {idle ? "idle" : `running · ${running}`}
           </span>
         </div>
-        <div style={{ padding: "16px 18px 20px", height: 340, overflowY: "auto", display: "flex", flexDirection: "column",
+        <div data-lenis-prevent style={{ padding: "16px 18px 20px", height: 340, overflowY: "auto", display: "flex", flexDirection: "column",
                       gap: 11, fontSize: 13.5, lineHeight: 1.5 }}>
+          {!feed && !err ? <div style={{ color: "#6f7480" }}>connecting to the engine ledger&hellip;</div> : null}
           {err && !feed ? <div style={{ color: "#8a8f98" }}>activity feed unavailable</div> : null}
           {events.map((e, i) => {
             const tag = DARK_TAG[e.type] ?? DARK_TAG.agent;
@@ -116,7 +117,7 @@ export function LiveActivity({ variant = "light" }: { variant?: "light" | "dark"
           {idle ? (feed?.idle_reason ?? "IDLE — NO RUNNABLE WORK") : `RUNNING · ${running} job${running === 1 ? "" : "s"}`}
         </span>
       </div>
-      <div style={{ maxHeight: 420, overflowY: "auto" }}>
+      <div data-lenis-prevent style={{ maxHeight: 420, overflowY: "auto" }}>
         {events.map((e, i) => {
           const badge = LIGHT_BADGE[e.type] ?? LIGHT_BADGE.agent;
           return (
