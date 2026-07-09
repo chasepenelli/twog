@@ -25,7 +25,8 @@ const CANINE_FIDELITY: Record<string, Fidelity> = {
     struct: 'human 4JPS (PI3Kα / p110α)',
     note:
       'the canine PIK3CA ortholog (UniProt A0A5F4C2B1 / RefSeq XP_545208.2, taxid 9615) is 99.8% ' +
-      'identical to human overall and 100% identical at every alpelisib/ATP-pocket residue',
+      'identical to human overall and 100% identical at every alpelisib/ATP-pocket residue — and a ' +
+      'redock-verified canine receptor (AlphaFold AF-A0A5F4C2B1, alpelisib redock 0.62 Å) is now in the library',
   },
   kdr: {
     struct: 'human 3VHE (VEGFR2 / KDR)',
